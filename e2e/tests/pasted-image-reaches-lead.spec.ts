@@ -51,14 +51,35 @@ const RUN_HANDLE = '__LOADOUT_IMAGE_RUN__';
 const TABS_STORE = '/src/sections/run/tabs/store.ts';
 const TABS_HANDLE = '__LOADOUT_IMAGE_TABS__';
 
+/* TA SAMA ODPOWIEDZ NA KAZDE PYTANIE, a nie jedna w kolejce.
+ *
+ * ZMIERZONE 2026-08-31, na jedenastu przypadkach tego pliku naraz. `openApp({replies})` trzyma
+ * KOLEJKE na nazwe komendy i zdejmuje z niej po jednym (`e2e/harness.ts`, `replies[cmd].shift()`);
+ * kiedy kolejka jest pusta, atrapa oddaje `[]` na kazde `list_*`. Kolejka dlugosci JEDEN opisuje
+ * wiec dysk, ktory ma jednego agenta przy pierwszym pytaniu i zadnego przy drugim — a to nie jest
+ * dysk, tylko licznik wywolan przebrany za fiksture.
+ *
+ * Zlamalo sie to w chwili, w ktorej boczne menu zaczelo liczyc te sama polke (`src/ui/shell/
+ * what-you-have.ts`, kłódka i licznik przy pozycji): pierwsza odpowiedz szla do menu, a kontrolka
+ * lidera w pasku dostawala juz pusta liste i malowala sie jako `disabled`. Kazdy z jedenastu
+ * przypadkow padal potem na `locator.selectOption: element is not enabled` — czyli na fiksturze,
+ * nie na zachowaniu, ktorego ten plik pilnuje.
+ *
+ * `say_to_orchestrator` zostaje kolejka i to jest cala roznica: tam KAZDA odpowiedz jest inna
+ * i to ona jest tasma, ktora ten plik sadzi.
+ */
+function copies<T>(value: T, count = 24): readonly { readonly value: T }[] {
+  return Array.from({ length: count }, () => ({ value }));
+}
+
 function withReplies(
   replies: readonly TauriReply[],
   workspaces: readonly (typeof WORKSPACE)[],
 ): OpenAppOptions {
   return {
     replies: {
-      list_workspaces: [{ value: workspaces }],
-      list_agents: [{ value: [AGENT] }],
+      list_workspaces: copies(workspaces),
+      list_agents: copies([AGENT]),
       say_to_orchestrator: replies,
     },
   };

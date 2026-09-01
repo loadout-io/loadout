@@ -42,8 +42,14 @@ const TILE = 'main [data-tile]';
 /** How long we wait for what a click asks for. Generous: this is a real dev server. */
 const APPEARS = 8_000;
 
-/** Ile odroczonych odpowiedzi trzyma kolejka. Z zapasem na sekcje, które czytają katalog. */
-const LISTINGS = 12;
+/** Ile odroczonych odpowiedzi trzyma kolejka. Z zapasem na sekcje, które czytają katalog.
+ *
+ * PODNIESIONE 2026-08-31 z dwunastu. Katalog czyta dziś także boczne menu — kłódka i licznik
+ * przy pozycji są liczone z tej samej półki (`src/ui/shell/what-you-have.ts`) — a menu liczy
+ * ją przy każdym przejściu i przy każdej zmianie zakresu. Trzy przełączenia tego przypadku
+ * mieszczą się dziś w kilkunastu listowaniach. Pusta kolejka nie ucisza niczego: atrapa oddaje
+ * wtedy `[]`, ekran robi się pusty i punkt „drugi zakres nie pokazuje nic swojego" pada. */
+const LISTINGS = 24;
 
 interface WireStep {
   readonly kind: 'agent';
@@ -131,19 +137,61 @@ async function nth(
   return calls[count - 1]?.args ?? {};
 }
 
-/** Nazwy workflow, które człowiek naprawdę widzi na ekranie, w kolejności z DOM-u. */
-async function onScreen(app: RunningApp): Promise<readonly string[]> {
-  return app.page.locator(TILE).evaluateAll((tiles) => tiles.map((tile) => tile.textContent ?? ''));
+/** Czeka, aż granicę przetnie listowanie TEGO folderu, i oddaje numer NAJNOWSZEGO listowania.
+ *
+ * DLACZEGO NIE „NASTĘPNE PO POPRZEDNIM". Nagłówek tego pliku obiecuje, że kryterium liczy to,
+ * co naprawdę przeszło przez granicę, „zamiast zakładać liczbę" — a `forB = forA + 1` zakładało
+ * dokładnie liczbę: że po przełączeniu zakresu katalog czyta jeden czytelnik. Od chwili, w której
+ * boczne menu zaczęło liczyć tę samą półkę, jedno przełączenie przecina granicę dwa razy, więc
+ * `+1` trafiało w listowanie MENU, a listowanie ekranu zostawało w toku — ekran pokazywał wtedy
+ * poprzedni projekt i kryterium obwiniało o to produkt. Numer jest więc CZYTANY z taśmy.
+ */
+async function newestListingFor(app: RunningApp, after: number, folder: string): Promise<number> {
+  const deadline = Date.now() + APPEARS;
+  while (Date.now() < deadline) {
+    const calls = (await app.calls()).filter((one) => one.cmd === 'list_workflows');
+    const hit = calls.findIndex(
+      (one, index) => index >= after && (one.args ?? {})['folder'] === folder,
+    );
+    if (hit >= 0) return calls.length;
+    await app.page.waitForTimeout(20);
+  }
+  return (await app.calls()).filter((one) => one.cmd === 'list_workflows').length;
 }
 
-/** Czeka, aż ekran pokaże dokładnie te workflow — i oddaje to, co naprawdę pokazuje. */
-async function settledScreen(
+/** Domyka KAŻDE listowanie od `from` do `to` tym samym katalogiem.
+ *
+ * Ta sama odpowiedź dla każdego z nich jest PRAWDĄ, a nie ustępstwem: wszyscy czytelnicy pytają
+ * w tej samej chwili o ten sam folder, więc dysk ma dla nich jedną odpowiedź. Domknięcie jednego
+ * wskazanego palcem zostawiało resztę w toku.
+ */
+async function settleThrough(
   app: RunningApp,
+  from: number,
+  to: number,
+  catalogue: unknown,
+): Promise<void> {
+  for (let index = from; index <= to; index += 1) {
+    await app.settle('listing-' + String(index), { value: catalogue });
+  }
+}
+
+/** Odpowiada każdemu, kto jeszcze zapyta, aż ekran pokaże to, co dysk trzyma. */
+async function catalogueReaches(
+  app: RunningApp,
+  from: number,
+  catalogue: unknown,
   wanted: readonly string[],
 ): Promise<readonly string[]> {
   const deadline = Date.now() + APPEARS;
+  let answered = from - 1;
   let showing: readonly string[] = [];
   while (Date.now() < deadline) {
+    const crossed = await crossings(app, 'list_workflows');
+    if (crossed > answered) {
+      await settleThrough(app, answered + 1, crossed, catalogue);
+      answered = crossed;
+    }
     showing = await onScreen(app);
     if (wanted.every((name) => showing.some((tile) => tile.includes(name)))) {
       if (showing.length === wanted.length) return showing;
@@ -151,6 +199,11 @@ async function settledScreen(
     await app.page.waitForTimeout(25);
   }
   return showing;
+}
+
+/** Nazwy workflow, które człowiek naprawdę widzi na ekranie, w kolejności z DOM-u. */
+async function onScreen(app: RunningApp): Promise<readonly string[]> {
+  return app.page.locator(TILE).evaluateAll((tiles) => tiles.map((tile) => tile.textContent ?? ''));
 }
 
 async function switchTo(app: RunningApp, workspace: string): Promise<void> {
@@ -179,37 +232,38 @@ describe('a workflow belongs to the workspace it will be run in', () => {
       await page.locator(WORKFLOWS_SWITCH).click();
       await page.locator(WORKFLOWS_SCREEN).waitFor({ state: 'attached', timeout: APPEARS });
 
-      const forA = await crossings(app, 'list_workflows');
+      const forA = await newestListingFor(app, 0, A);
       expect(
         forA,
         'opening Workflows asked for no catalogue at all, so nothing below could tell the two ' +
           'projects apart.',
       ).toBeGreaterThan(0);
-      await app.settle('listing-' + String(forA), { value: CATALOG_A });
-
-      expect(
-        await settledScreen(app, ['Ship a feature', 'Shared cleanup']),
-        'the workflows of the open workspace never reached the screen, so the switch below ' +
-          'would prove nothing.',
-      ).toHaveLength(2);
       expect(
         (await nth(app, 'list_workflows', forA))['folder'],
         'the catalogue was read without saying which folder it belongs to. One global folder ' +
           'is exactly the defect this task closes: open B and you are reading A.',
       ).toBe(A);
 
+      expect(
+        await catalogueReaches(app, 1, CATALOG_A, ['Ship a feature', 'Shared cleanup']),
+        'the workflows of the open workspace never reached the screen, so the switch below ' +
+          'would prove nothing.',
+      ).toHaveLength(2);
+
       /* ── człowiek przełącza się na B ─────────────────────────────────────────────────────── */
       await switchTo(app, B);
-      const forB = forA + 1;
+      const forB = await newestListingFor(app, forA, B);
       const asked = await nth(app, 'list_workflows', forB);
       expect(
         asked['folder'],
         'switching the workspace did not ask the disk again for THAT folder. The screen then ' +
           'keeps showing the previous project and nothing says so.',
       ).toBe(B);
-      await app.settle('listing-' + String(forB), { value: CATALOG_B });
 
-      const showing = await settledScreen(app, ['Nightly sweep', 'Shared cleanup']);
+      const showing = await catalogueReaches(app, forA + 1, CATALOG_B, [
+        'Nightly sweep',
+        'Shared cleanup',
+      ]);
       expect(
         showing.join(' | '),
         'the workflow saved in the first workspace is still on the screen of the second. This ' +
@@ -237,14 +291,15 @@ describe('a workflow belongs to the workspace it will be run in', () => {
 
       /* ── droga powrotna: kryterium nie chwali kodu, który po prostu czyści listę ─────────── */
       await switchTo(app, A);
-      const backToA = forB + 1;
+      const backToA = await newestListingFor(app, forB, A);
       expect(
         (await nth(app, 'list_workflows', backToA))['folder'],
         'switching back did not read the first folder again.',
       ).toBe(A);
-      await app.settle('listing-' + String(backToA), { value: CATALOG_A });
       expect(
-        (await settledScreen(app, ['Ship a feature', 'Shared cleanup'])).join(' | '),
+        (
+          await catalogueReaches(app, forB + 1, CATALOG_A, ['Ship a feature', 'Shared cleanup'])
+        ).join(' | '),
         'coming back to the first workspace does not bring its workflow back, so the screen ' +
           'forgets instead of scoping.',
       ).toContain('Ship a feature');

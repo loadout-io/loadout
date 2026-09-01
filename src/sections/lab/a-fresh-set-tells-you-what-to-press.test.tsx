@@ -115,6 +115,55 @@ describe('a set with nothing in it yet', () => {
     expect(markup, 'Write cases is the whole next step from here').toContain('data-lab-propose');
   });
 
+  it('puts the weight on the only thing that can be done', () => {
+    /* ZMIERZONE NA CZLOWIEKU 2026-08-31. Wlasciciel trzy razy pod rzad napisal „nie kumam,
+     * jak to dziala", stojac nad ekranem, ktory mowil mu wprost, co nacisnac. Zdanie bylo —
+     * akcent lezal na `Run`, duzym, kolorowym i WYGASZONYM, a jedyna mozliwa czynnosc stala
+     * obok jako cichy obrys. Ekran krzyczal o rzeczy niemozliwej.
+     *
+     * SLABA WERSJA: asercja, ze `bg-accent` gdziekolwiek jest. Przechodzi ja ekran, na ktorym
+     * akcent nosi WYGASZONY Run — czyli dokladnie ten, ktory to kryterium ma usunac. */
+    const propose = /<button[^>]*data-lab-propose[^>]*>/.exec(markup)?.[0] ?? '';
+    const run = /<button[^>]*data-lab-run[^>]*>/.exec(markup)?.[0] ?? '';
+    expect(propose, 'both controls have to be in the document to be judged').not.toBe('');
+    expect(run).not.toBe('');
+    expect(
+      propose.includes('bg-accent'),
+      'with nothing to run, the biggest thing on the screen has to be the thing a person can ' +
+        'actually press',
+    ).toBe(true);
+    expect(
+      run.includes('bg-accent'),
+      'and a control nobody can press may not be the loudest one on it',
+    ).toBe(false);
+  });
+
+  it('hands the weight back to Run as soon as there is something to run', () => {
+    const ready = screen(
+      aBoard(
+        [
+          {
+            id: 'one',
+            name: 'Reads the guard',
+            task: 'say which file resolves the tenant',
+            expect: [],
+            command: '',
+            proof: '',
+            status: 'in-use',
+            because: 'src/guard.ts:14',
+          },
+        ],
+        null,
+      ),
+    );
+    const propose = /<button[^>]*data-lab-propose[^>]*>/.exec(ready)?.[0] ?? '';
+    const run = /<button[^>]*data-lab-run[^>]*>/.exec(ready)?.[0] ?? '';
+    expect(run.includes('bg-accent'), 'now Run is the next move and carries the weight').toBe(true);
+    expect(propose.includes('bg-accent'), 'two accents on one screen is no accent at all').toBe(
+      false,
+    );
+  });
+
   it('says which field is a name and which is a model, in words a person can see', () => {
     /* Zmierzone na żywym ekranie: właściciel wpisał nazwę modelu w pole obok, bo placeholder
      * znika po pierwszym znaku i nic już nie mówi, czym jest to, co wpisał. */

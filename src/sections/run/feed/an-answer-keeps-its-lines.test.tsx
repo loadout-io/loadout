@@ -61,9 +61,14 @@ function markup(): string {
   );
 }
 
-/** Element otaczający zdanie agenta, razem z jego klasami. */
+/** Element otaczający zdanie agenta, razem z jego klasami.
+ *
+ * 2026-08-31 — SZUKA KLASY, NIE TEKSTU TUŻ ZA NIĄ. Poprzednia wersja dopasowywała
+ * `<span class="…">Three districts` i przestała cokolwiek znajdować, kiedy między klasą a tekstem
+ * stanął renderer nagłówka. Zwracała wtedy pusty napis, a wszystkie asercje na niej stały się
+ * zdaniami o pustym napisie — czyli czerwone nad poprawnym kodem. */
 function wrapper(html: string): string {
-  return /<span class="([^"]*)">Three districts/.exec(html)?.[1] ?? '';
+  return /<span class="([^"]*whitespace-pre-line[^"]*)"/.exec(html)?.[1] ?? '';
 }
 
 describe('an answer keeps the shape the agent gave it', () => {
@@ -147,7 +152,11 @@ describe('an answer too long for its row is reachable, and reads as prose', () =
 
   it('draws it as prose, not as the output of something that failed', () => {
     const html = withBody();
-    const opened = /<p[^>]*data-line-body[^>]*>/.exec(html)?.[0] ?? '';
+    /* ZNACZNIK DOWOLNY, `data-line-body` obowiązkowy. Pierwsza wersja szukała `<p …>` i zapaliła
+       się przy wpięciu renderera markdownu, który potrzebuje `<div>` — bo blok kodu i lista nie
+       mieszczą się w akapicie. To kryterium pyta, CZYM ta treść jest narysowana, a nie jakim
+       znacznikiem, więc kotwiczy na atrybucie, który jest jej adresem. */
+    const opened = /<[a-z]+[^>]*data-line-body[^>]*>/.exec(html)?.[0] ?? '';
 
     expect(opened, 'the opened answer has no element of its own: ' + html.slice(0, 300)).not.toBe(
       '',
@@ -160,9 +169,18 @@ describe('an answer too long for its row is reachable, and reads as prose', () =
         opened,
     ).toBe(false);
     expect(
-      /whitespace-pre-line/.test(opened),
-      'and it keeps the line breaks the agent wrote, for the same reason the row above does',
+      /max-w-\[/.test(opened),
+      'and it keeps the readable measure the mockup sets. Prose does not get wider just because ' +
+        'it was opened: ' +
+        opened,
     ).toBe(true);
+    /* PRZEŁAMANIA SĄ TERAZ ROBOTĄ RENDERERA, nie CSS-u: akapit, lista i blok kodu przyjeżdżają
+       jako osobne elementy, więc `whitespace-pre-line` na pojemniku nie ma czego zachowywać.
+       Kryterium tamtej reguły stoi w `answer-is-elements-never-html.test.tsx`. */
+    expect(
+      html.includes('## Evidence'),
+      'a heading shown literally is the noise this renderer exists to remove: ' + html,
+    ).toBe(false);
   });
 
   it('gives a short answer no control at all', () => {
@@ -185,6 +203,44 @@ describe('an answer too long for its row is reachable, and reads as prose', () =
       html.includes('Show more'),
       'an expand control on a two-word note is a step to take for nothing, and it makes the ' +
         'person wonder what is hidden when nothing is',
+    ).toBe(false);
+  });
+});
+
+/* ── I ŻE WIERSZ NAPRAWDĘ GO UŻYWA ──────────────────────────────────────────────────────────
+ *
+ * 2026-08-31 — TO KRYTERIUM POWSTAŁO PO PUSTEJ MUTACJI. Zdjęcie `<AnswerLine>` z `line.tsx` nie
+ * zapaliło ani jednego z trzech kryteriów, które właśnie napisałem obok: wszystkie sądziły sam
+ * komponent, więc były zielone także dla wersji, w której wiersz go nie woła. Komponent wpięty
+ * w nic wygląda dokładnie tak samo, jak wpięty naprawdę — do chwili, gdy ktoś spojrzy na ekran.
+ */
+describe('the row itself draws its headline as markdown', () => {
+  it('shows a heading opener as words, not as two hash characters', () => {
+    const feed = createFeed(sealedScroller());
+    feed.appendLines([line.note(3, 0, FORGE, '## Backend: nothing to implement')]);
+    const row = feed.view.history[0];
+    const html =
+      row === undefined
+        ? ''
+        : renderToStaticMarkup(
+            <Line
+              row={row}
+              onToggle={() => {
+                /* To kryterium pyta o markup, nie o skutek kliknięcia. */
+              }}
+            />,
+          );
+
+    expect(
+      html.includes('Backend: nothing to implement'),
+      'the headline carries the summary of the whole answer: ' + html,
+    ).toBe(true);
+    expect(
+      html.includes('##'),
+      "measured on the owner's own runs: four first lines out of six carry markdown. Raw, this " +
+        'row shows those characters — and it is the row a person sees ALWAYS, not after a click. ' +
+        'It rendered: ' +
+        html,
     ).toBe(false);
   });
 });

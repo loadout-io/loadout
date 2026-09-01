@@ -1,4 +1,10 @@
-/* Płótno: React Flow, dwa rodzaje kafelka i pięć przycisków, z których każdy ma handler.
+/* Płótno: React Flow, cztery rodzaje kafelka i dwie kontrolki, z których każda ma handler.
+ *
+ * DWIE, nie sześć — 2026-08-31. Dolny rząd miał do tego dnia sześć przycisków tej samej wagi,
+ * czyli trzy różne czynności (postawić kafelek, narysować strzałkę, przestawić cały układ)
+ * udające jedną rodzinę. Dziś stoi tu jedno `＋ Add` z listą pogrupowaną wedle tego, po co
+ * człowiek sięga, i osobno od niego `Rearrange every step`, bo porządki niczego nie dodają.
+ * Brzmienia i grupy mieszkają w `add-menu.tsx`, razem z uzasadnieniem każdego z osobna.
  *
  * Ten plik jest MONTAŻEM, nie logiką: wszystko, co decyduje, mieszka w czystych funkcjach obok
  * (`connect.ts`, `map.ts`, `tidy.ts`, `problems.tsx`) i tam jest sprawdzane. Powód jest
@@ -13,11 +19,24 @@
  * decyzją i nie wychodzą nigdy — to jest kryterium `to-file` postawione w kodzie aplikacji,
  * a nie tylko w teście.
  *
- * `Run` MIESZKA TUTAJ (`RunBar`, razem z paskiem uwag), bo blokada uruchomienia i zdanie o tym,
- * dlaczego nie da się uruchomić, są jednym faktem (niezmiennik 13). Ekran, który to płótno
- * zamontuje, nie ma prawa dołożyć drugiego `Run` w nagłówku — makieta rysuje go w nagłówku,
- * ale dwa przyciski o tej samej nazwie i różnym stanie to dokładnie ta awaria, przed którą
- * stoi ten niezmiennik.
+ * `Run` NIE MIESZKA JUŻ TUTAJ — 2026-08-31, zgłoszenie właściciela. Do tego dnia stał w tym
+ * pliku, w `<Panel position="top-right">`, czyli jako mała nakładka w rogu płótna; „Tidy up",
+ * czynność porządkowa używana raz na dziesięć razy, miała obok pełnowymiarowy przycisk w rzędzie
+ * na dole. Odwrócona waga. Dziś `Run` stoi w nagłówku ekranu (`editor.tsx`), tam gdzie ten
+ * produkt trzyma główną akcję KAŻDEGO ekranu — `.btn-primary` na końcu `.screen-head`, dokładnie
+ * jak `＋ Create` na liście workflow. Makieta rysowała go tam od początku.
+ *
+ * Niezmiennik 13 jest przez to spełniony MOCNIEJ, nie słabiej: blokada uruchomienia i zdanie
+ * o tym, dlaczego nie da się uruchomić, dalej są jednym faktem policzonym w jednym miejscu
+ * (`problems.tsx`, `RunButton` i `ThingsToFix` czytają tę samą listę uwag), a plakietka
+ * „N things to fix" przestała mieć drugą kopię w nagłówku. Płótno nie zna dziś uwag wcale i to
+ * jest cała różnica: prop `notes` zniknął stąd razem z `onRun`, bo służył wyłącznie tamtej
+ * nakładce.
+ *
+ * ZOSTAŁA JEDNA NITKA: kliknięcie uwagi ma przesunąć płótno na krok, którego uwaga dotyczy.
+ * `fitView` przychodzi z `useReactFlow()`, więc umie je zawołać tylko komponent stojący WEWNĄTRZ
+ * `ReactFlowProvider` — czyli ten. Ekran podaje więc `bringIntoView` (niżej) i to jest jedyny
+ * powód, dla którego ten prop istnieje.
  */
 import type { Edge, EdgeChange, Node, NodeChange, NodeProps } from '@xyflow/react';
 import {
@@ -40,11 +59,13 @@ import './react-flow-tokens.css';
 import type { ReactElement } from 'react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { Agent } from '../../../state/agents';
-import type { Fix, Note, Step, WorkflowFile } from '../../../state/workflows';
+import type { Step, WorkflowFile } from '../../../state/workflows';
 import { GRID } from '../../../state/workflows';
+import type { AddChoice } from './add-menu';
+import { AddMenu } from './add-menu';
 import { addLoop, addStep, isValidConnection, onConnect, onConnectEnd } from './connect';
 import { deleteFrom, importedConditionLabel, onNodeDragStop, toCanvas } from './map';
-import { RunBar, focusNote } from './problems';
+import type { NoteFocus } from './problems';
 import { StepTile } from './tile';
 import { tidyUp } from './tidy';
 
@@ -133,15 +154,24 @@ export interface WorkflowCanvasProps {
   document: WorkflowFile;
   /** Biblioteka agentów: kafelek nazywa agenta kroku po imieniu, a krok trzyma id. */
   agents: readonly Agent[];
-  /** Uwagi z walidatora Rusta (T-12). Płótno ich nie liczy i nie tłumaczy. */
-  notes: Note[];
   /** Jedyne wyjście z tego komponentu: nowy dokument po decyzji użytkownika. */
   onChange: (next: WorkflowFile) => void;
-  onRun: () => void;
-  /** Otwiera panel kroku. Panel mieszka w ekranie obok płótna (makieta 536-570). */
+  /** Otwiera panel kroku. Panel mieszka w ekranie NAD płótnem (`editor.tsx`). */
   onOpenPanel: (stepId: string) => void;
-  /** Wykonuje naprawę, którą niesie uwaga. Płótno jej nie liczy i nie wie, czego dotyczy. */
-  onApplyFix?: (fix: Fix) => void;
+  /**
+   * Prośba ekranu: przesuń widok tak, żeby ten krok było widać.
+   *
+   * NOWY OBIEKT JEST SYGNAŁEM, nie sama jego zawartość. Ekran trzyma to w stanie i podmienia
+   * przy każdym kliknięciu uwagi, więc dwa kliknięcia w TĘ SAMĄ uwagę przesuwają płótno dwa
+   * razy — a dopóki nikt niczego nie wskazał (`null`), nie dzieje się nic.
+   *
+   * Wnętrze to gotowe argumenty `fitView`, złożone przez `focusNote` (`problems.tsx`): czas
+   * i sufit powiększenia są faktem o UWADZE, nie o płótnie, więc nie przepisujemy ich tutaj
+   * drugi raz. Ten prop istnieje wyłącznie dlatego, że `fitView` przychodzi z `useReactFlow()`
+   * i umie je zawołać tylko komponent wewnątrz `ReactFlowProvider` — a uwagi stoją od
+   * 2026-08-31 w nagłówku ekranu, czyli na zewnątrz.
+   */
+  bringIntoView?: { view: Parameters<NoteFocus['fitView']>[0] } | null;
 }
 
 /** Punkt zdarzenia wskaźnika w układzie EKRANU. Dotyk daje współrzędne w innym miejscu niż
@@ -222,13 +252,20 @@ function viewOf(file: WorkflowFile): { tiles: StepNode[]; arrows: Edge[] } {
 function Canvas({
   document: file,
   agents,
-  notes,
   onChange,
-  onRun,
   onOpenPanel,
-  onApplyFix,
+  bringIntoView = null,
 }: WorkflowCanvasProps): ReactElement {
   const { screenToFlowPosition, fitView } = useReactFlow();
+
+  /* PRZESUNIĘCIE NA ŻĄDANIE EKRANU. Efekt, a nie wywołanie w handlerze, bo prośba przychodzi
+   * z KLIKNIĘCIA POZA tym drzewem — w uwagę stojącą w nagłówku — i dociera tu jako nowa wartość
+   * propsu. Zależność jest na całym obiekcie z rozmysłu: to jego TOŻSAMOŚĆ niesie „poproszono
+   * jeszcze raz", więc dwa kliknięcia w tę samą uwagę dają dwa przesunięcia. */
+  useEffect(() => {
+    if (bringIntoView === null) return;
+    fitView(bringIntoView.view);
+  }, [bringIntoView, fitView]);
   const view = useMemo(() => viewOf(file), [file]);
   /* `tiles` i `arrows`, nie `nodes` i `edges`: to są nazwy, którymi ta aplikacja mówi
    * o kafelkach i strzałkach (niezmiennik 14), a przy okazji jedyne, które nie wpadają
@@ -342,6 +379,37 @@ function Canvas({
     [sendingBack, file, onChange, leaveLoopMode],
   );
 
+  /* LISTA `＋ Add`. Stan stoi TUTAJ, a nie w `add-menu.tsx`, bo zamyka ją nie tylko własny
+   * przycisk: zamyka ją też kliknięcie w płótno i w kafelek. Lista, która została otwarta nad
+   * tablicą po tym, jak człowiek poszedł klikać gdzie indziej, zasłania dokładnie to, po co
+   * ją otwierał. */
+  const [adding, setAdding] = useState(false);
+
+  const closeAdd = useCallback(() => {
+    setAdding(false);
+  }, []);
+
+  const toggleAdd = useCallback(() => {
+    setAdding((open) => !open);
+  }, []);
+
+  /* Wybór z listy. Cztery pozycje stawiają kafelek, piąta włącza tryb wskazywania dwóch
+   * kafelków — i to jest cała różnica między nimi, wyrażona tutaj raz, zamiast w pięciu
+   * handlerach przy pięciu przyciskach. */
+  const pick = useCallback(
+    (choice: AddChoice) => {
+      setAdding(false);
+      if (choice === 'way-back') {
+        setPickingLoop(true);
+        setSendingBack(null);
+        setLoopSaid(null);
+        return;
+      }
+      add(choice);
+    },
+    [add],
+  );
+
   /* Zdanie trybu pętli: co człowiek ma teraz zrobić albo dlaczego się nie da. Nazwa kroku,
    * nigdy jego identyfikator (niezmiennik 14). */
   const loopHint =
@@ -415,7 +483,12 @@ function Canvas({
               onNodeDragStop={(_event, node) => {
                 onChange(onNodeDragStop({ id: node.id, position: node.position }, file));
               }}
+              /* Kliknięcie w tło zamyka listę `＋ Add`, tak jak zamyka ją każde menu, które
+               * człowiek zna z tego systemu. Bez tego lista zostaje nad tablicą i zasłania
+               * miejsce, w które człowiek właśnie celował. */
+              onPaneClick={closeAdd}
               onNodeClick={(_event, node) => {
+                closeAdd();
                 /* W trybie pętli kliknięcie WSKAZUJE, a nie otwiera panelu: panel zasłoniłby
                  * połowę płótna dokładnie wtedy, gdy człowiek szuka drugiego kafelka. */
                 if (pickingLoop) {
@@ -445,89 +518,42 @@ function Canvas({
                   </div>
                 </Panel>
               ) : null}
-              <Panel position="top-right">
-                <RunBar
-                  notes={notes}
-                  onRun={onRun}
-                  {...(onApplyFix === undefined ? {} : { onApplyFix })}
-                  onFocusNote={(note) => {
-                    focusNote(note, { fitView, openPanel: onOpenPanel });
-                  }}
-                />
-              </Panel>
             </ReactFlow>
           </div>
 
-          {/* Przyciski tworzące (makieta 528-529 rysuje dwa; „Add loop" doszedł 2026-08-22).
-            „Tidy up" stoi obok nich, a nie w nagłówku ekranu: układ jest własnością płótna,
-            a nagłówek należy do ekranu, który to płótno montuje. */}
-          <div className="flex gap-2">
+          {/* JEDNO WEJŚCIE DO STAWIANIA, i osobno od niego — porządki. 2026-08-31,
+              zgłoszenie właściciela.
+
+              Do tego dnia stało tu SZEŚĆ przycisków tej samej wagi i tego samego kształtu.
+              Cztery z nich stawiały kafelek, piąty rysował strzałkę, szósty przestawiał cały
+              układ — trzy różne czynności udające jedną rodzinę. Powód, dla którego rósł, jest
+              zresztą widoczny w historii tego pliku: każdy nowy rodzaj kroku dokładał tu
+              siódmy, ósmy, dziewiąty przycisk, bo miejsce obok było jedynym, jakie miał.
+              Rząd, który rośnie z liczbą wariantów w kodzie, JEST paletą słów kluczowych.
+
+              Nazwy i grupowanie mieszkają w `add-menu.tsx` — tam też stoi uzasadnienie każdego
+              brzmienia z osobna. Tutaj zostaje sam montaż i jedna rzecz, której tamten plik
+              nie zna: `Tidy up` NIE WCHODZI do listy „Add", bo nic nie dodaje.
+
+              `Rearrange every step`, nie „Tidy up". Stara nazwa nie mówiła, co się stanie po
+              naciśnięciu, a stanie się rzecz o zasięgu całej tablicy: przestawia KAŻDY kafelek,
+              nieodwracalnie i bez podglądu. Słowo `every` jest w tej nazwie najważniejsze — to
+              ono jest zaskoczeniem. Cofnięcia dalej nie ma i to zostaje zgłoszone człowiekowi
+              jako osobna rzecz do zrobienia: historia zmian dokumentu jest mechanizmem,
+              a nie brzmieniem przycisku. */}
+          <div className="flex items-center gap-2">
+            <AddMenu open={adding} onToggle={toggleAdd} onPick={pick} onDismiss={closeAdd} />
+            {/* PORZĄDKI SĄ CICHSZE OD STAWIANIA — 2026-08-31, ta sama naprawa odwróconej wagi,
+                co przeniesienie `Run` do nagłówka. `ml-auto` odsuwa je od `＋ Add` także
+                w przestrzeni: to nie jest drugi sposób dołożenia czegoś do grafu. */}
             <button
               type="button"
-              className="btn"
-              onClick={() => {
-                add('agent');
-              }}
-            >
-              ＋ Add step
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                add('checkpoint');
-              }}
-            >
-              ＋ Add a checkpoint
-            </button>
-            {/* KAFELEK, KTÓRY COŚ PODNOSI I IDZIE DALEJ. Doszedł 2026-08-23, na prośbę
-                właściciela, i stoi obok dwóch pozostałych, bo stawia to samo co one — kafelek.
-                Nie ma go w makiecie: makieta powstała, zanim ten kształt był potrzebny. */}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                add('serve');
-              }}
-            >
-              ＋ Start something
-            </button>
-            {/* KAFELEK, KTÓRY SAM WYSTAWIA WYNIK. Doszedł 2026-08-23 i jest trzecim rodzajem
-                z D6 („sprawdź"): Rust miał go w całości od T-23, płótno umiało go narysować,
-                a postawić go nie dało się wcale. Dopóki tego przycisku nie było, KAŻDA pętla,
-                jaką człowiek zbuduje, była pętlą „co agent powiedział" — a rozróżnienie, dla
-                którego ten produkt istnieje, nie miało na płótnie żadnego nośnika. */}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                add('check');
-              }}
-            >
-              ＋ Run a check
-            </button>
-            {/* PĘTLA MA WŁASNY PRZYCISK od 2026-08-22, na prośbę właściciela. Stoi obok dwóch
-                tworzących, bo tworzy to samo co one — kawałek grafu — tylko że strzałkę zamiast
-                kafelka. Nie ma go w makiecie: makieta powstała przed pętlą. */}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                setPickingLoop(true);
-                setSendingBack(null);
-                setLoopSaid(null);
-              }}
-            >
-              ＋ Add loop
-            </button>
-            <button
-              type="button"
-              className="btn"
+              className="btn-quiet ml-auto"
               onClick={() => {
                 onChange(tidyUp(file));
               }}
             >
-              Tidy up
+              Rearrange every step
             </button>
           </div>
         </div>

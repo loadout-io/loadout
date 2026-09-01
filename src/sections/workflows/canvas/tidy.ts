@@ -1,4 +1,9 @@
-/* „Tidy up" — jeden przycisk, który układa kafelki z góry na dół.
+/* „Rearrange every step" — jeden przycisk, który układa kafelki z góry na dół.
+ *
+ * DO 2026-08-31 NAZYWAŁ SIĘ „Tidy up" i dalsze akapity tego pliku cytują tamtą nazwę, bo
+ * opisują incydenty sprzed zmiany. Nazwa ustąpiła, bo nie mówiła, co się stanie po naciśnięciu,
+ * a stanie się rzecz o zasięgu całej tablicy: przestawia KAŻDY kafelek, nieodwracalnie i bez
+ * podglądu. Słowo `every` jest w nowej nazwie najważniejsze — to ono jest zaskoczeniem.
  *
  * Dlaczego to nie jest kosmetyka: układ zwraca ZMIENNOPRZECINKOWE środki węzłów, więc płótno,
  * które przycina pozycje tylko w handlerze przeciągania, po każdym „Tidy up" zapisuje plik

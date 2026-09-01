@@ -18,7 +18,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Note } from '../../../state/workflows';
 import type { NoteFocus } from './problems';
-import { RunBar, focusNote } from './problems';
+import { RunButton, ThingsToFix, focusNote } from './problems';
 
 /** Zdanie z `workflow::check`, słowo w słowo. Ono ląduje na ekranie i w podpowiedzi Run. */
 const CIRCLE = 'These steps point back at each other in a circle. Work would never finish.';
@@ -36,8 +36,23 @@ function noop(): void {
   /* sterowany pasek: w statycznym renderze nic tego nie woła */
 }
 
+/* DWA KOMPONENTY W JEDNYM RENDERZE, od 2026-08-31 — bo `RunBar` rozpadł się na dwoje i to jest
+ * dokładnie ten podział, o który pyta to kryterium. Lista uwag stoi teraz pod plakietką
+ * w nagłówku edytora, a przycisk na końcu tego samego nagłówka; oba czytają JEDNĄ listę uwag
+ * i o to tu chodzi. Renderowane obok siebie, żeby każde `expect` niżej pytało o to samo, co
+ * pytało przedtem — bo pytanie („czy problem gasi Run, a ostrzeżenie nie") się nie zmieniło.
+ *
+ * Czego tu już NIE MA: liczby „N things to fix". Pisze ją `howMany`, a rysuje plakietka
+ * w nagłówku (`sections/workflows/editor.tsx`), i to jest jedyne miejsce, w którym stoi —
+ * do 2026-08-31 stała w dwóch (niezmiennik 13). Zdanie widoczne dla człowieka sądzi więc
+ * kryterium ekranu, `./the-run-button-is-the-loudest-thing.test.tsx`, a nie ten plik. */
 function markup(notes: Note[]): string {
-  return renderToStaticMarkup(<RunBar notes={notes} onRun={noop} onFocusNote={noop} />);
+  return renderToStaticMarkup(
+    <>
+      <ThingsToFix notes={notes} onFocusNote={noop} />
+      <RunButton notes={notes} onRun={noop} />
+    </>,
+  );
 }
 
 function plain(fragment: string): string {
@@ -96,15 +111,9 @@ function first(notes: Note[]): Note {
 }
 
 describe('a problem stops Run and says which one; a warning stops nothing', () => {
-  it('counts both notes, blocks Run, and puts the first problem in the tooltip word for word', () => {
+  it('blocks Run and puts the first problem in the tooltip word for word', () => {
     const notes = [circle(), lonely()];
     const html = markup(notes);
-
-    expect(
-      plain(html),
-      'one line above the button, both notes counted. Two lines about two notes is two ' +
-        'places where the same fact lives',
-    ).toContain('2 things to fix');
 
     const run = buttonAttributes(html, 'Run');
     expect(
@@ -123,10 +132,8 @@ describe('a problem stops Run and says which one; a warning stops nothing', () =
     ).not.toBe('Fix the errors first');
   });
 
-  it('leaves Run alive when the only note is a warning, and counts one thing in the singular', () => {
+  it('leaves Run alive when the only note is a warning', () => {
     const html = markup([lonely()]);
-
-    expect(plain(html), 'one note, one thing — not "1 things"').toContain('1 thing to fix');
 
     const run = buttonAttributes(html, 'Run');
     expect(

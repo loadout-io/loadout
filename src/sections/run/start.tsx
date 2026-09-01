@@ -43,12 +43,12 @@ import {
   subscribeToBudget,
 } from './limits/chosen';
 import type { Choice } from './choices';
-import { choiceFor, firstRunnable, toChoices } from './choices';
+import { choiceFor, willRun } from './choices';
 import { launchRun } from './launch';
 import { LEAD_LABEL, lead as leadNow, setLead, subscribeToLead } from './lead';
 import { launchRequested } from './requested-launch';
 import { requestedRun, subscribeToRequests } from './requested';
-import { list } from '../workflows/io';
+import { subscribeToWhatIsReady, whatIsReady } from './whats-ready';
 import { list as savedAgents } from '../agents/io';
 import { runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
@@ -185,26 +185,44 @@ export interface StartProps {
 }
 
 /**
+ * Napis na kontrolce recznego biegu. CZYNNOSC, nie nazwa workflow.
+ *
+ * 2026-09-01 — POWOD, DLA KTOREGO TO JEST STALA, A NIE ZDANIE Z NAZWA. Nazwa workflow stala na
+ * ekranie biegu TRZY RAZY naraz: w tytule naglowka, tutaj i jako zaznaczona pozycja listy
+ * wyboru. Jeden fakt, trzy nosniki — czyli trzy miejsca, ktore moga sie nie zgodzic
+ * (niezmiennik 13), i dokladnie ta wada ze zgloszenia wlasciciela: naglowek oglaszal jeden
+ * workflow, przycisk obok nazywal drugi. Nazwa ma dzis jeden nosnik i jest nim tytul naglowka,
+ * ktory JEST kontrolka wyboru; caly rachunek stoi przy `WhichWorkflow` w `./index.tsx`.
+ *
+ * Ten przycisk odpowiada wiec na inne pytanie: co zrobi nacisniecie. Ktory plik przy tym
+ * poleci, mowi `data-workflow` i mowi to jedynym jezykiem, ktory tu nie klamie — nazwa pliku.
+ */
+const RUN_LABEL = 'Run workflow';
+
+/**
  * Widoczna nazwa i wyjasnienie recznego uruchomienia workflow.
  *
  * 2026-08-21 — samo `Start` stalo bezposrednio obok wyboru lidera, chociaz lider nie mial
  * z tym przyciskiem nic wspolnego. Klikniecie po zakonczonej pracy uruchomilo caly pierwszy
- * workflow od poczatku z pustym zadaniem i wygladalo jak restart rozmowy. Nazwa workflow jest
- * wiec czescia kontrolki; tooltip dopowiada granice nowego biegu zamiast obiecywac wznowienie.
+ * workflow od poczatku z pustym zadaniem i wygladalo jak restart rozmowy. Napis mowi wiec, ze to
+ * jest bieg WORKFLOW, a nie kolejna tura rozmowy; tooltip dopowiada granice nowego biegu zamiast
+ * obiecywac wznowienie.
+ *
+ * 2026-09-01 — NAZWA ZOSTALA W PODPOWIEDZI I ZESZLA Z NAPISU, i to nie jest cofniecie tamtej
+ * naprawy. Podpowiedz jest niewidoczna, dopoki sie na nia nie wskaze, i liczy sie z TEGO SAMEGO
+ * `Choice`, ktorego `path` ten przycisk wysyla — wiec nie ma jak nazwac innego workflow niz ten,
+ * ktory ruszy. Napis dalej nie brzmi `Start` i dalej mowi, ze to caly bieg workflow.
  */
 function runActionFor(choice: Choice | null): {
   readonly label: string;
   readonly title: string;
 } {
-  if (choice === null) {
-    return {
-      label: 'Run workflow',
-      title: 'Add steps to a workflow before starting a run.',
-    };
-  }
   return {
-    label: `Run ${choice.name}`,
-    title: `Starts a new run of the complete ${choice.name} workflow from the beginning.`,
+    label: RUN_LABEL,
+    title:
+      choice === null
+        ? 'Add steps to a workflow before starting a run.'
+        : `Starts a new run of the complete ${choice.name} workflow from the beginning.`,
   };
 }
 
@@ -224,7 +242,9 @@ export function WorkflowRunButton({
   return (
     <button
       type="button"
-      className={PRIMARY}
+      /* `shrink-0`: czynnosc glowna nie ma prawa zwezac sie ani wyjezdzac poza kadr — powod
+         w calosci stoi przy rzedzie kontrolek (`../strip/strip.tsx`). */
+      className={PRIMARY + ' shrink-0'}
       data-workflow-run="manual"
       data-workflow={choice?.path ?? ''}
       title={action.title}
@@ -237,7 +257,27 @@ export function WorkflowRunButton({
 }
 
 export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactElement {
-  const [choices, setChoices] = useState<readonly Choice[]>([]);
+  /* CO LEŻY W KATALOGU I CO Z TEGO CZŁOWIEK WSKAZAŁ — czytane z nośnika ekranu, nigdy własnym
+   * odczytem dysku, i to jest naprawa zgłoszenia właściciela z 2026-08-31 („czemu mi się ten
+   * deep reaserch pojawia, przecież nie wybrałem żadnego workflow").
+   *
+   * CO TU BYŁO. `useState<readonly Choice[]>([])` plus własny efekt wołający `list()`. Ten sam
+   * katalog był więc czytany DWA RAZY — raz tutaj, raz przez ekran (`./index.tsx` do
+   * `./whats-ready.ts`) — i każdy odczyt trzymał własną odpowiedź. Zmierzone w prawdziwym
+   * chromium przez opakowanie `window.__TAURI_INTERNALS__.invoke`: po powrocie na sekcję Run
+   * wychodzą dwa niezależne `list_workflows`, jedno stąd, jedno stamtąd.
+   *
+   * I NIE BYŁO TO SAMO OPÓŹNIENIE. W scenie, w której granica odpowiada na każde wywołanie inną
+   * listą, ustane okno pokazywało w nagłówku „Answer ten", a na tym przycisku „Run Answer nine"
+   * — dwa różne pliki naraz i na stałe. Dodatkowo ten `useState` ginął przy każdym wyjściu do
+   * innej sekcji (`src/App.tsx` trzyma w drzewie DOKŁADNIE jedną), więc po powrocie przycisk
+   * przez dwa obroty IPC mówił „Run workflow" i był WYGASZONY pod nagłówkiem, który ogłaszał
+   * gotowość — dokładnie ten rozjazd, który właściciel sfotografował.
+   *
+   * Nośnik przeżywa odmontowanie, więc znika też tamto miganie; świeżość jest ta sama, bo ekran
+   * czyta katalog przy KAŻDYM wejściu w sekcję. */
+  const ready = useSyncExternalStore(subscribeToWhatIsReady, whatIsReady, whatIsReady);
+  const choices = ready.choices;
   /* KIM JEST LIDER — jeden fakt, jeden dom (niezmiennik 13). W oknie mieszka WYŁĄCZNIE wskazanie,
    * czyli identyfikator zapisanego agenta; vendor, model i dial bezpieczeństwa czyta Rust z jego
    * pliku (`commands::chat::Lead`). Kopia któregokolwiek z tych pól trzymana tutaj byłaby pierwszą
@@ -304,27 +344,10 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
    * go nie puścisz". Kontrolka „dalej" żyje z drugiego. */
   const atCheckpoint = view.parked;
 
-  /* Katalog czytamy przy wejściu na sekcję. Pliki są prawdą, a ekran jest ich widokiem —
-   * lista trzymana w pamięci między wejściami pokazywałaby workflow skasowany obok. */
-  useEffect(() => {
-    let alive = true;
-    list()
-      .then((entries) => {
-        if (!alive) return;
-        setChoices(toChoices(entries));
-      })
-      .catch((error: unknown) => {
-        if (!alive) return;
-        /* Odmowa Rusta jest już napisana po ludzku; własne zdanie dokładamy tylko wtedy,
-         * gdy jego nie ma — cicha porażka czyta się jak pusty katalog. Wyjęcie zdania
-         * z odmowy mieszka w `src/ipc/why.ts`: Tauri odrzuca NAPISEM, nie `Error`, więc
-         * warunek `instanceof Error` stojący tu do 2026-08-18 był zawsze fałszywy. */
-        setSaid(why(error, 'Loadout could not read the workflows folder.'));
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  /* KATALOG CZYTA EKRAN, NIE TA KONTROLKA, i zdanie o nieczytelnym katalogu mówi tam, gdzie
+   * czytanie się dzieje (`./index.tsx`, efekt przy `rememberWorkflows`). Odczyt zrobiony tutaj
+   * drugi raz byłby drugą odpowiedzią na pytanie „jakie workflow istnieją" — powód w całości
+   * przy `ready` wyżej. */
 
   /* Biblioteka agentów, tym samym adapterem, którego używa sekcja Agenci — więc nie powstaje
    * druga odpowiedź na pytanie „kogo mam zapisanego" (niezmiennik 13). Czytana tutaj, a nie
@@ -354,25 +377,25 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
     };
   }, []);
 
-  /* DOMYŚLNY WYBÓR TO PIERWSZY WORKFLOW, KTÓRY MA KROKI — nie pierwszy z listy.
+  /* KTÓRY WORKFLOW RUSZY — pytanie zadane `./choices.ts`, nie rozstrzygnięte tutaj.
    *
-   * 2026-08-18 — stało tu `choices[0]?.path`, a lista przychodzi posortowana BAJTOWO
-   * (`commands/workflows.rs`, `paths.sort()`). `new-workflow-2.json` (znak `-`, 0x2D) wypada
-   * przed `new-workflow.json` (znak `.`, 0x2E) — a ten pierwszy miał `"steps": []`. Skutek dla
-   * człowieka: klikał Run na workflow z dwoma krokami, na tym ekranie stało „New workflow 2",
-   * a Start odpowiadał „There are no steps yet." o czymś, co przed chwilą miało dwa kroki.
-   * Ironia jest zapisana w `docs/STATUS.md:19`, który używa właśnie tego pliku jako dowodu,
-   * że aplikacja nie jest atrapą.
+   * WSKAZANIE CZŁOWIEKA BIJE POLITYKĘ DOMYŚLNĄ, a kiedy nikt nie wskazywał, `willRun` oddaje
+   * pierwszy workflow Z KROKAMI — nie `choices[0]`. Powód tamtej reguły stoi w całości przy
+   * `firstRunnable`: lista przychodzi posortowana BAJTOWO, a pierwszy bajtowo bywa świeżym
+   * szkicem bez ani jednego kroku, którego bieg Rust odrzuca zdaniem „There are no steps yet."
    *
-   * Pusty napis, kiedy ŻADEN workflow nie ma kroków: wtedy nie ma czego wybrać, a Start jest
-   * wygaszony. Wybór, który z definicji odmówi, jest gorszy niż brak wyboru.
+   * 2026-08-31 — KONTROLKA WYBORU WRÓCIŁA NA EKRAN, tylko nie do tego paska. Rząd kontrolek
+   * jest pełny co do piksela przy 1512 px, a sufit chrome z `docs/ARCHITECTURE.md` §7 daje
+   * 96 px przy 93 wydanych — ósma kontrolka nie ma tu gdzie stanąć. Wybór stoi więc w nagłówku
+   * biegu, czyli w treści ekranu, tam gdzie ekran już ogłasza, co jest gotowe (`./index.tsx`).
+   * Ten przycisk czyta tę samą odpowiedź, więc nagłówek, wybór i napis na przycisku nie mają
+   * jak powiedzieć trzech różnych rzeczy.
    *
-   * 2026-08-20 — ODKĄD LISTA WYBORU ODDAŁA SWOJE MIEJSCE LIDEROWI, ten domyślny wybór jest
-   * JEDYNYM, jaki ma przycisk Start: nie ma już czym wskazać innego pliku z paska. Drogi, które
-   * plik WYBIERAJĄ, są dwie i obie zostają — `/run <workflow> <co zbudować>` w wierszu wejścia
-   * i zielony `Run` w edytorze workflow (przez `./requested-launch`). Jest to zawężenie i jest
-   * zapisane tutaj, a nie przemilczane. */
-  const runnable = firstRunnable(choices);
+   * Pusty napis, kiedy nie ma czego uruchomić: Start jest wtedy wygaszony, bo wybór, który
+   * z definicji odmówi, jest gorszy niż brak wyboru. Drogi, które plik WYBIERAJĄ, są dalej
+   * trzy i wszystkie zostają — kontrolka w nagłówku, `/run <workflow> <co zbudować>` w wierszu
+   * wejścia i zielony `Run` w edytorze workflow (przez `./requested-launch`). */
+  const runnable = willRun(choices, ready.chosen);
   const chosen = runnable?.path ?? '';
 
   /* KTÓRY BIEG OPISUJE POLE KWOTY — trwający, dopóki trwa, a poza tym ten, który pojedzie
@@ -450,8 +473,12 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
 
   return (
     /* JEDEN WIERSZ, bez panelu i bez paddingu: ta kontrolka stoi teraz w prawej grupie paska
-     * loadoutu, więc własne tło i obramowanie rysowałyby panel w panelu. */
-    <div className="flex min-w-0 items-center gap-2">
+     * loadoutu, więc własne tło i obramowanie rysowałyby panel w panelu.
+     *
+     * `min-w-0` ZDJETE 2026-08-31: nalezy do napisu, ktory sie skraca, a nie do rzedu trzymajacego
+     * kontrolki o stalej szerokosci — na rzedzie znosi ochrone `min-width: auto`, wiec rzad
+     * kurczy sie ponizej swojej tresci, a dzieci z `shrink-0` maluja sie na sasiedzie. */
+    <div className="flex shrink-0 items-center gap-2">
       {/* KTO TU RZĄDZI — w miejscu, w którym do 2026-08-20 stała lista wyboru workflow.
        *
        * Rozstrzygnięcie właściciela: tamta lista była słabszą z dwóch dróg do jednej czynności
@@ -477,7 +504,11 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
        * ani kto prowadzi, ani że trzeba wskazać kogoś na nowo. */}
       <select
         aria-label={LEAD_LABEL}
-        className={FIELD}
+        /* `w-44` STOI TU, a nie w pasku (`./strip/strip.tsx`, akapit o `[&_.field]`): tyle
+           bierze najdłuższa nazwa agenta w bibliotece właściciela („ai-systems-architect”),
+           a wybór, który ucina nazwę lidera, jest zagadką o tym, z kim się rozmawia.
+           `shrink-0`: rzad paska ustepuje napisami, nigdy kontrolkami. */
+        className={FIELD + ' w-44 shrink-0'}
         value={leadIsOnTheList ? chosenLead : ''}
         disabled={leads.length === 0}
         onChange={(event) => {
@@ -516,7 +547,19 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
         type="text"
         aria-label={TASK_LABEL}
         placeholder={TASK_LABEL}
-        className={FIELD + ' w-44 min-w-0'}
+        /* WĘŻSZE OD WYBORU LIDERA OD 2026-08-31, i to jest wybór, nie zaniedbanie. Zdanie
+           „What should this run build?” nie mieści się w tym polu przy ŻADNEJ szerokości, jaką
+           ten pasek unosi — ani przy 176 px, ani przy 144 — więc te 32 px kupowały wyłącznie
+           dłuższy fragment ucięcia. Zmierzone na oknie 1512 px: bez nich rząd kontrolek był
+           szerszy od paska o 24 px, a nadmiar zabierał nazwę sekcji („R..”) i wypychał sufit
+           wydatku poza kadr. Kontrolka, do której trzeba się doprzewijać, kosztuje więcej niż
+           cztery znaki podpowiedzi.
+
+           128 px, NIE 144: przy 144 pasek mieścił się co do piksela, ale ośmiu brakowało nazwie
+           ptaszka obok („Learn from this r…"). Nazwa kontrolki jest treścią, a szerokość pola,
+           w którym i tak widać wycinek, jest jedyną metadaną w tym rzędzie, która ma jeszcze co
+           oddać. */
+        className={FIELD + ' w-32 shrink-0'}
         value={task}
         disabled={busy}
         title={busy ? TASK_LOCKED : undefined}

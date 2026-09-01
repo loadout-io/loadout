@@ -171,8 +171,15 @@ const FIELD = 'field';
  * w tej aplikacji. `h-auto` jest narzędziem z warstwy `utilities`, więc bije regułę z warstwy
  * `components`, i oddaje wysokość atrybutowi `rows` — czyli liczbie wierszy, którą to pole
  * naprawdę ma. Arkusz zostaje nietknięty (i musi: `src/styles/theme.css` leży poza zakresem
- * tej zmiany), a `resize: vertical` z tej samej reguły dalej pozwala pociągnąć róg. */
-const AREA = 'field h-auto';
+ * tej zmiany), a `resize: vertical` z tej samej reguły dalej pozwala pociągnąć róg.
+ *
+ * `flex-1` DOSZŁO 2026-08-31, kiedy arkusz roli przestał być kolumną 332 px i wziął całą
+ * wysokość ciała ekranu. Wtedy `rows` przestaje być wysokością i staje się WYSOKOŚCIĄ
+ * MINIMALNĄ: w kolumnie elastycznej to pole rośnie o całą wysokość, której nie zabrały
+ * pozostałe sześć wierszy, a poniżej ośmiu wierszy nie zejdzie, bo minimum elementu
+ * elastycznego liczy się z jego treści. `Taller` dalej robi dokładnie to, co mówi — podnosi
+ * to minimum ponad to, co zostało, i wtedy arkusz się przewija. */
+const AREA = 'field h-auto flex-1';
 
 /* Ile wierszy widać, zanim ktokolwiek o coś poprosi, i ile po naciśnięciu `Taller`.
  *
@@ -246,7 +253,10 @@ export function AgentForm({
   return (
     <form
       data-agent-form
-      className="stack"
+      /* `flex-1`, bo od 2026-08-31 formularz stoi w kolumnie o wysokości ciała ekranu, a nie
+         w rurze 332 px: bez tego wiersz instrukcji nie miałby czego dzielić i pole wracałoby
+         do ośmiu wierszy pod półmetrem pustki. `.stack` jest już kolumną elastyczną. */
+      className="stack flex-1"
       data-gap="3"
       onSubmit={(event) => {
         event.preventDefault();
@@ -290,7 +300,10 @@ export function AgentForm({
 
       {/* INSTRUKCJE STOJĄ TRZECIE I DOSTAJĄ NAJWIĘCEJ MIEJSCA W CAŁYM FORMULARZU, bo są całą
           treścią agenta. Do 2026-08-31 stały czwarte, pod `Colour`. */}
-      <div className="stack">
+      {/* `flex-1` NA WIERSZU INSTRUKCJI — 2026-08-31. To jest ten jeden wiersz formularza,
+          któremu wolno urosnąć o całą wolną wysokość arkusza: instrukcje są całą treścią roli,
+          a pozostałych sześć wierszy to jedna kontrolka każdy i wyższe być nie mają jak. */}
+      <div className="stack flex-1">
         <div className="flex items-center gap-2">
           <label htmlFor="agent-instructions" className="label">
             Instructions

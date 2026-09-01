@@ -36,6 +36,10 @@ import * as Disk from './io';
 import * as agentsIo from '../agents/io';
 import { listSkills } from '../skills/io';
 import { requestRun } from '../run/requested';
+import { listRuns } from '../run/io';
+import type { RunsBehindIt } from './list/history';
+import { runsBehindThem } from './list/history';
+import { activeWorkspace } from '../../state/workspaces';
 import type { Agent } from '../../state/agents';
 import type { WorkflowFile } from '../../state/workflows';
 import { useSectionStore } from '../../ui/shell/section-store';
@@ -91,6 +95,23 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
     void store.getState().load();
   }, [store, readingFolderOf]);
 
+  /* Ten sam zakres, co katalog workflow: biegi należą do folderu, więc przełączenie karty
+   * zmienia też historię. `null`, a nie `undefined` — `listRuns` bierze `string | null`
+   * i pusty zakres ma znaczyć „nie powiedziano", a nie „folder o pustej nazwie". */
+  useEffect(() => {
+    let alive = true;
+    listRuns(activeWorkspace()?.folder ?? null)
+      .then((rows) => {
+        if (alive) setRuns(runsBehindThem(rows));
+      })
+      .catch(() => {
+        if (alive) setRuns(new Map());
+      });
+    return () => {
+      alive = false;
+    };
+  }, [readingFolderOf]);
+
   /* Który plik jest otwarty w edytorze. `null` znaczy „lista" — jeden fakt, jedno miejsce,
    * bez drugiego boolean-a „czy edytujemy" (niezmiennik 13). */
   /* Rewizja jedzie w tej samej parze co dokument, bo opisuje DOKŁADNIE te bajty, które
@@ -108,6 +129,24 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
    * odrzuconej obietnicy, a plik, którego NIE dało się przeczytać, wjeżdżał do edytora jako
    * `document` i zabijał sekcję na `state.document.steps` (zmierzone w przeglądarce). */
   const [said, setSaid] = useState<string | null>(null);
+
+  /* CO KTÓRY WORKFLOW MA ZA SOBĄ (2026-08-31).
+   *
+   * Do tego dnia karta na liście mówiła wyłącznie `3 steps · 3 agents` — dwie liczby policzone
+   * z samego pliku — i ani słowa o tym, czy ten workflow kiedykolwiek ruszał. Człowiek stojący
+   * nad sześcioma jednakowymi kartami nie miał po czym poznać, którą uruchamiał wczoraj.
+   *
+   * Odpowiedź leżała na drucie od dawna: `list_runs` oddaje wiersze historii tego folderu.
+   * Ten efekt jest jedynym miejscem, w którym ta sekcja o nie pyta; złączenie z plikami robi
+   * czysta funkcja w `./list/history.ts` i tam też stoi zapisane, po czym łączy i czego ten
+   * drut nie umie.
+   *
+   * ODMOWA NIE MA TU ZDANIA NA EKRANIE i to jest wybór, nie połknięcie: historia biegów jest
+   * ozdobą karty, nie jej treścią, a drugie zdanie o nieczytelnym katalogu biegów stałoby obok
+   * pierwszego, które mówi o katalogu workflow — dwa komunikaty o dwóch różnych folderach nad
+   * jedną listą (niezmiennik 13). Bez odpowiedzi karty wyglądają dokładnie tak, jak wyglądały
+   * przez cały sierpień. */
+  const [runs, setRuns] = useState<ReadonlyMap<string, RunsBehindIt>>(new Map());
 
   /* Biblioteka agentów jedzie do panelu kroku: panel pokazuje wartości EFEKTYWNE, więc bez
    * agenta nie umie odróżnić nadpisania od dziedziczenia. Czytamy ją raz, przy wejściu na
@@ -216,6 +255,12 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
         refusal={state.refusal}
         pendingDeleteId={state.pendingDeleteId}
         actions={state}
+        runs={runs}
+        /* TA SAMA DROGA, CO `Run` W EDYTORZE, i to jest cały powód, dla którego stoi tu
+           `requestRun`, a nie `start()`: polityka startu — zapadka na drugie kliknięcie, limit
+           „ile naraz", folder z aktywnej karty — mieszka w sekcji Run (niezmiennik 23). Druga
+           jej kopia tutaj rozjechałaby się przy pierwszej zmianie. */
+        onRun={requestRun}
         onOpen={(path) => {
           /* Dokument bierzemy z DYSKU, a nie z pozycji listy: lista trzyma migawkę z chwili
            * odczytu katalogu, a edytor ma otwierać to, co naprawdę tam leży (niezmiennik 4). */

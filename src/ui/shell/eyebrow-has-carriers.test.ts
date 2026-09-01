@@ -171,7 +171,15 @@ describe('stopien nadoczka ma nosniki', () => {
      * na literaly bierze wtedy KOD za tekst widoczny dla czlowieka i zglasza slowa, ktorych
      * w zadnym napisie nie ma. Wersja bez cudzyslowow jest przy tym rownie mocna: pytamy
      * o obecnosc jednego stopnia i nieobecnosc drugiego, a nie o dokladna tresc atrybutu. */
-    const heading = /<h2[^>]*>/.exec(markup)?.[0] ?? '';
+    /* PIERWSZY `h2`, KTORY NIE JEST NAZWA SEKCJI — poprawka celowania z 2026-08-31, nie
+     * zluzowanie. Do przebudowy pierwszym `h2` widoku pracy byl jego wlasny naglowek i tylko
+     * on; dzis stoi przed nim nazwa sekcji z paska (`data-section-name`), ktora nadoczkiem
+     * byc NIE MOZE: rung nadoczka wersalikuje tresc arkuszem, a `e2e/tests/sections-mount.spec.ts`
+     * porownuje ten napis z rejestrem sekcji wprost i szlo na czerwono na samej wielkosci liter.
+     * Dwa naglowki, dwa rozne pytania — to kryterium pyta o naglowek WIDOKU, co ma w nazwie.
+     * Obie asercje nizej zostaja co do znaku. */
+    const headings = [...markup.matchAll(/<h2[^>]*>/g)].map((hit) => hit[0]);
+    const heading = headings.find((one) => !one.includes('data-section-name')) ?? '';
     expect(
       heading,
       'the work view rendered no <h2> at all, so the two assertions below would run against ' +

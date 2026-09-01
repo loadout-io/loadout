@@ -68,10 +68,23 @@ const PLAN_COLUMN = 'data-plan-column';
 /** Lista kroków, czyli to, co obraz rysuje, kiedy plik nie mówi, gdzie kafelki stoją. */
 const PICTURE = 'data-step-list';
 
-/** Sama szuflada, wycięta z markupu. Pusta, kiedy jej nie ma. */
+/**
+ * Sama szuflada, wycięta z markupu. Pusta, kiedy jej nie ma.
+ *
+ * 2026-08-31 — WYCINEK KOŃCZY SIĘ NA KOŃCU SWOJEJ KOLUMNY, nie na końcu ekranu. Wersja biorąca
+ * wszystko do końca dokumentu przechodziła wyłącznie dlatego, że kolumna planu stała na ekranie
+ * OSTATNIA: kiedy kolumny zamieniły się miejscami, do „szuflady" wpadł cały strumień razem
+ * z wierszami cudzych kroków, i punkt o zawężeniu do jednego kroku sądził pół ekranu. Granicą
+ * jest znacznik następnej kolumny — po którejkolwiek stronie ona stoi.
+ */
 function drawerIn(markup: string): string {
   const at = markup.indexOf(DRAWER);
-  return at < 0 ? '' : markup.slice(at);
+  if (at < 0) return '';
+  const rest = markup.slice(at);
+  const ends = [rest.indexOf('data-stream-column', 1), rest.indexOf(PLAN_COLUMN, 1)].filter(
+    (one) => one > 0,
+  );
+  return ends.length === 0 ? rest : rest.slice(0, Math.min(...ends));
 }
 
 /** Tekst, który człowiek naprawdę czyta — bez znaczników, więc bez klas i atrybutów `data-*`. */

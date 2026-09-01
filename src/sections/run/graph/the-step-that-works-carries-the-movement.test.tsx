@@ -16,13 +16,21 @@
  *
  * STRZAŁKA NIE TRACI NIC POZA RUCHEM. Barwę „dzieje się teraz" niesie dalej — dziś klasą,
  * nie ruchem — więc ścieżkę, którą przyszła praca, widać także z wyłączonymi animacjami.
+ *
+ * 2026-08-31, DRUGA ZMIANA TEGO DNIA: DWA OSTATNIE PUNKTY PYTAŁY `edgesFor`, CZYLI STRZAŁKI
+ * PŁÓTNA. Płótno zeszło z ekranu biegu w całości (`./graph.tsx`, nagłówek) i `edgesFor` zeszło
+ * razem z nim, bo nie miało już ani jednego wołającego. Pytanie „czy praca ma na obrazie jeden
+ * nośnik, a nie dwa" zostaje i jest dziś MOCNIEJSZE: zamiast pytać funkcję o pole `animated`,
+ * które nikt nie renderował, liczy ruszające się rzeczy w markupie, który widzi człowiek
+ * (niezmiennik 29). Drugie pytanie tamtych punktów — którędy praca przyszła — odpowiada dziś
+ * zdanie na karcie („after Reproduce") i jest sądzone tam, gdzie stoi
+ * (`./a-plan-without-a-layout-shows-a-list.test.tsx`).
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { AgentStatus } from '../rail/card';
 import type { GraphStep, Plan } from './model';
-import { RunGraph, edgesFor } from './graph';
-import { LIVE_ARROW } from './model';
+import { RunGraph } from './graph';
 
 const SIX: readonly AgentStatus[] = [
   'waiting',
@@ -57,19 +65,6 @@ function cards(markup: string): readonly string[] {
 const DRAWN = cards(MARKUP);
 const of = (status: AgentStatus): string => DRAWN[SIX.indexOf(status)] ?? '';
 
-/** Plan z układem: praca stoi na środkowym kroku, więc przyszła pierwszą strzałką. */
-const RUNNING: Plan = {
-  steps: [
-    { id: 'plan', name: 'Plan the work', status: 'done', at: { x: 0, y: 0 } },
-    { id: 'build', name: 'Build the parser', status: 'working', at: { x: 264, y: 0 } },
-    { id: 'ship', name: 'Ship it', status: 'waiting', at: { x: 528, y: 0 } },
-  ],
-  links: [
-    { from: 'plan', to: 'build' },
-    { from: 'build', to: 'ship' },
-  ],
-};
-
 describe('ruch stoi na kroku, który pracuje', () => {
   it('draws one card per step, so everything below has something to read', () => {
     expect(
@@ -100,27 +95,26 @@ describe('ruch stoi na kroku, który pracuje', () => {
     ).toEqual([]);
   });
 
-  it('marks the arrow the work came along, so the path is readable without motion', () => {
-    const marked = edgesFor(RUNNING).filter((arrow) =>
-      (arrow.className ?? '').includes(LIVE_ARROW),
-    );
-    expect(
-      marked.map((arrow) => arrow.id),
-      'the model knows which arrow the work travelled and this is the only place that answer ' +
-        'reaches the drawing. A version that keeps it to itself stays green while the picture ' +
-        'says nothing.',
-    ).toEqual(['plan->build']);
-  });
+  it('lets one thing move on the whole picture, and it is the card that is working', () => {
+    const moving = [...MARKUP.matchAll(/animate-[a-z0-9-]+/g)].map((hit) => hit[0]);
 
-  it('lets no arrow move, because the step it points at already carries that fact', () => {
-    const shifting = edgesFor(RUNNING).filter((arrow) => arrow.animated === true);
     expect(
-      shifting.map((arrow) => arrow.id),
-      'these arrows still move: ' +
-        JSON.stringify(shifting.map((arrow) => arrow.id)) +
-        '. Together with the dot on the step and the dot on a card in the background that is a ' +
-        'third kind of moving thing, and ARCHITECTURE §7 allows two. The arrow and the dot ' +
-        'answer the same question, so the one that stands on the thing it talks about stays.',
-    ).toEqual([]);
+      moving,
+      'the picture of this run has six steps and exactly one of them is working, so exactly one ' +
+        'thing on it may move. It carries ' +
+        String(moving.length) +
+        ': ' +
+        JSON.stringify([...new Set(moving)]) +
+        '. ARCHITECTURE §7 allows two kinds of moving region in the whole application, and the ' +
+        'live card in the background already spends one. Movement everywhere is movement ' +
+        'nowhere — the eye chases it instead of reading.',
+    ).toHaveLength(1);
+
+    expect(
+      of('working'),
+      'the one moving thing on the picture stands somewhere other than the card of the step ' +
+        'that is working. A run screen answers one question at a glance — which of these is ' +
+        'happening NOW — and the answer has to stand on the thing it talks about.',
+    ).toContain(moving[0] ?? '');
   });
 });

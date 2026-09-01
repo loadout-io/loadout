@@ -31,12 +31,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createElement } from 'react';
+import { Fragment, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { freshId, freshStep } from '../sections/workflows/canvas/connect';
-import { RunBar, focusNote } from '../sections/workflows/canvas/problems';
+import { RunButton, ThingsToFix, focusNote } from '../sections/workflows/canvas/problems';
 import * as disk from '../sections/workflows/io';
 import type { Note, Step, WorkflowFile, WorkflowIo } from './workflows';
 import { createWorkflowStore } from './workflows';
@@ -248,7 +248,18 @@ describe('a check tile with no pattern is refused by name, not saved in silence'
     ).toBe(1);
 
     const markup = readable(
-      renderToStaticMarkup(createElement(RunBar, { notes, onRun: noop, onFocusNote: noop })),
+      /* Dwa komponenty od 2026-08-31, wcześniej jeden (`RunBar`): zdanie uwagi rysuje dziś lista
+         pod plakietką w nagłówku edytora, a `disabled` niesie przycisk na końcu tego samego
+         nagłówka. Oba czytają tę samą listę uwag, więc to kryterium pyta dokładnie o to, o co
+         pytało — o zdanie i o zgaszony start naraz. */
+      renderToStaticMarkup(
+        createElement(
+          Fragment,
+          null,
+          createElement(ThingsToFix, { notes, onFocusNote: noop }),
+          createElement(RunButton, { notes, onRun: noop }),
+        ),
+      ),
     );
 
     expect(

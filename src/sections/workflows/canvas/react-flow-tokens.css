@@ -24,8 +24,32 @@
  */
 
 .react-flow {
-  /* Strzałki: makieta ma `#5a6d76` z grotem, czyli dokładnie `--color-line-strong`. */
-  --xy-edge-stroke: var(--color-line-strong);
+  /* ── STRZAŁKI. Przemierzone 2026-08-31, po zgłoszeniu właściciela („przy dziewięciu krokach
+   * nie widać, co z czego wynika"). Zdanie, które stało tutaj do dziś — „makieta ma `#5a6d76`
+   * z grotem, czyli dokładnie `--color-line-strong`" — było NIEPRAWDĄ, i to jest cała historia
+   * tej wady. `--color-line-strong` nie jest dziś barwą, tylko BIELĄ 16%: położona na
+   * `--color-bg` (`#07070b`) daje w oknie `rgb(46, 46, 49)`, czyli kontrast 1,5:1. Makietowe
+   * `#5a6d76` daje na tym samym tle 3,68:1. Komentarz opisywał więc parytet, którego token
+   * przestał dowozić w chwili, w której powierzchnie przeszły na alfę — po cichu, bo nic
+   * w bramce nie mierzy kontrastu, a nazwa tokenu została ta sama.
+   *
+   * 1,5:1 to nie „słabo widoczne", to niewidoczne: próg dla grafiki, która NIESIE ZNACZENIE,
+   * wynosi 3:1 (WCAG 1.4.11). A strzałki są JEDYNĄ rzeczą, którą ten graf mówi ponad listę
+   * kroków — kolejność, rozgałęzienie i zejście się z powrotem. Kiedy ich nie widać, płótno
+   * jest listą kafelków rozrzuconą po ciemnym prostokącie.
+   *
+   * `--color-muted` daje 5,87:1 i jest to ten sam stopień, którym ta aplikacja pisze metadane
+   * (stopka kafelka, etykieta pola) — czyli strzałka jest teraz tak samo głośna jak najcichszy
+   * tekst, i ani odrobinę głośniejsza. NOWEGO TOKENU NIE DOKŁADAM: paleta ma jedno miejsce
+   * i to nie jest ten plik. Gdyby to okazało się za dużo, właściwą naprawą jest wartość między
+   * `--color-line-strong` a `--color-muted` w `theme.css`, nie literał tutaj.
+   *
+   * GRUBOŚĆ 2 px, wobec 1 px, który biblioteka daje domyślnie. Kontrast rozstrzyga o tym, czy
+   * linię widać w ogóle; grubość — czy da się ją PRZEŚLEDZIĆ wzrokiem przez ekran z dziewięcioma
+   * kafelkami i siatką kropek pod spodem. Włos o poprawnym kontraście dalej gubi się w kropkach,
+   * bo obie rzeczy mają wtedy tę samą wagę. */
+  --xy-edge-stroke: var(--color-muted);
+  --xy-edge-stroke-width: 2;
   /* Zaznaczona strzałka i strzałka W TRAKCIE rysowania są jedyną rzeczą, która „dzieje się
    * teraz" na tym ekranie — a to jest dokładnie znaczenie accentu (DESIGN §3). */
   --xy-edge-stroke-selected: var(--color-accent);
@@ -70,7 +94,18 @@
 
 /* Powrót rysuje się słabiej niż strzałka „po": to jest ścieżka wyjątkowa, nie główny nurt pracy,
  * i nie ma przykuwać wzroku mocniej niż kolejność kroków. Sam wzór kreski dokłada `canvas.tsx`
- * (kształt, nie kolor). */
+ * (kształt, nie kolor).
+ *
+ * SŁABIEJ ZNACZY DZIŚ CIEŃSZY, NIE CIEMNIEJSZY — 2026-08-31, ta sama naprawa co wyżej i ta sama
+ * przyczyna. Do dziś stało tu `--color-line`, czyli BIEL 9%: na `--color-bg` wychodzi z tego
+ * 1,19:1, a to nie jest „ciszej", tylko „wcale". Rzecz narysowana ciszej dalej musi być
+ * narysowana; powrót jest jedynym nośnikiem kształtu „implementer → sprawdzenie → poprawka"
+ * i człowiek ma go zobaczyć bez otwierania panelu.
+ *
+ * Różnicę niesie więc FORMA, nie barwa — dokładnie tą regułą `theme.css` rozdziela `--live`
+ * od `--fail`, kiedy dwie rzeczy stoją obok siebie w jednym widoku. Powrót ma kreskę przerywaną
+ * (`canvas.tsx`), podpis „up to 3 tries" i cieńszą linię; strzałka „po" jest ciągła, bez podpisu
+ * i grubsza. Trzy różnice, z których każda działa osobno. */
 .loadout-way-back .react-flow__edge-path {
-  stroke: var(--color-line);
+  stroke-width: 1.25;
 }

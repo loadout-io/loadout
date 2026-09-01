@@ -1,5 +1,5 @@
-/* JEDYNY dom tego, co Loadout robi domyślnie, po stronie okna (niezmiennik 13). Dwa fakty:
- * kto prowadzi rozmowę i ile wolno wydać na jeden bieg.
+/* JEDYNY dom tego, co Loadout robi domyślnie, po stronie okna (niezmiennik 13). Trzy fakty:
+ * kto prowadzi rozmowę, ile wolno wydać na jeden bieg i czy boczne menu stoi zwinięte.
  *
  * CZYM TO JEST, A CZYM NIE JEST. „Domyślny lider" to jeden globalny wybór, który Run bierze,
  * kiedy człowiek nie powiedział inaczej w pasku. Run go POKAZUJE i nie trzyma drugiej kopii:
@@ -45,6 +45,60 @@ const CEILING_BEFORE_THE_DISK_ANSWERS = 75;
 
 let ceiling = CEILING_BEFORE_THE_DISK_ANSWERS;
 const budgetListeners = new Set<() => void>();
+
+/**
+ * Czy boczne menu stoi zwinięte do samych ikon. Trzeci wybór tego pliku, od 2026-08-31.
+ *
+ * `false`, czyli rozwinięte, dopóki dysk nie odpowie — i to jest ta sama decyzja, co przy
+ * suficie wydatku obok: pierwsza chwila życia okna ma pokazywać stan, w którym widać wszystko.
+ * Odpowiedź z pliku nadpisuje to przy pierwszym powrocie `read_settings`.
+ */
+let narrow = false;
+const navListeners = new Set<() => void>();
+
+/** Czy boczne menu stoi zwinięte do samych ikon. */
+export function navIsCollapsed(): boolean {
+  return narrow;
+}
+
+/** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
+export function subscribeToNavCollapsed(listener: () => void): () => void {
+  navListeners.add(listener);
+  return () => {
+    navListeners.delete(listener);
+  };
+}
+
+function rememberNav(collapsed: boolean): void {
+  if (collapsed === narrow) return;
+  narrow = collapsed;
+  for (const listener of navListeners) listener();
+}
+
+/**
+ * Zwija albo rozwija boczne menu. Oddaje zdanie odmowy dla człowieka albo `null`.
+ *
+ * OKNO PIERWSZE, PLIK DRUGI — i to jest JEDYNY wybór w tym pliku, który tak działa, więc powód
+ * jest tu wypisany, a nie domyślny. Lider i sufit są DYSK-PIERWSZE, bo oba są obietnicą
+ * o PRZYSZŁYM biegu: stan okna, który wyprzedził plik, pokazuje wtedy lidera, który nie
+ * poprowadzi, i sufit, który nie zatrzyma — a przy suficie pomyłka kosztuje pieniądze. Tryb
+ * menu nie jest obietnicą o niczym przyszłym: jest szerokością kolumny, którą człowiek widzi
+ * NATYCHMIAST. Czekanie na potwierdzenie z dysku zamieniłoby kliknięcie w kontrolkę, po której
+ * przez moment nic się nie dzieje, a nieudany zapis — w kontrolkę martwą (niezmiennik 16).
+ *
+ * CO KOSZTUJE NIEUDANY ZAPIS, powiedziane wprost, żeby nikt nie musiał tego zgadywać: menu
+ * zostaje tam, gdzie człowiek je postawił, i wraca do poprzedniego trybu przy następnym
+ * uruchomieniu. Zdanie odmowy wraca stąd wołającemu — to on decyduje, czy ma je gdzie pokazać.
+ *
+ * NIESIE CAŁY WPIS, jak oba zapisy niżej: plik jest jeden i zapis niosący jedną trzecią
+ * skasowałby dwie pozostałe.
+ */
+export function collapseNav(collapsed: boolean): Promise<string | null> {
+  rememberNav(collapsed);
+  return saveSettings({ defaultLead: chosen, defaultBudgetUsd: ceiling, navCollapsed: collapsed })
+    .then(kept)
+    .catch((error: unknown) => why(error, 'Loadout could not remember the side nav mode.'));
+}
 
 /** Identyfikator agenta, który prowadzi domyślnie, albo `''`, dopóki nikt nie wybierał. */
 export function defaultLead(): string {
@@ -111,6 +165,18 @@ function ceilingIn(answer: unknown): number {
   return typeof said === 'number' && Number.isFinite(said) ? said : ceiling;
 }
 
+/* Tryb menu z odpowiedzi granicy — a kiedy go w niej nie ma, ZOSTAJE TEN, KTÓRY JUŻ MAMY.
+ *
+ * Ta sama decyzja, co przy suficie obok, i z tego samego powodu: klucza nie ma w dwóch
+ * normalnych przypadkach — plik zapisany przez wcześniejszą wersję Loadouta oraz atrapa granicy
+ * w kryteriach przeglądarkowych, która odpowiada `null` na komendę, której scena nie wymieniła.
+ * „Nie wiem" nie ma prawa rozwinąć menu, które człowiek przed chwilą zwinął. */
+function navIn(answer: unknown): boolean {
+  if (typeof answer !== 'object' || answer === null) return narrow;
+  const said = (answer as { navCollapsed?: unknown }).navCollapsed;
+  return typeof said === 'boolean' ? said : narrow;
+}
+
 /** Jedno pytanie do dysku na okno; następni wołający dostają tę samą obietnicę. */
 let asked: Promise<string | null> | null = null;
 
@@ -125,6 +191,7 @@ export function loadSettings(): Promise<string | null> {
     .then((settings) => {
       remember(leadIn(settings));
       rememberCeiling(ceilingIn(settings));
+      rememberNav(navIn(settings));
       return null;
     })
     .catch((error: unknown) => why(error, 'Loadout could not read what it does by default.'));
@@ -143,7 +210,7 @@ export function loadSettings(): Promise<string | null> {
  * drugą połowę (`src-tauri/src/commands/settings.rs`, `save_settings_inner`).
  */
 export function chooseDefaultLead(id: string): Promise<string | null> {
-  return saveSettings({ defaultLead: id, defaultBudgetUsd: ceiling })
+  return saveSettings({ defaultLead: id, defaultBudgetUsd: ceiling, navCollapsed: narrow })
     .then(kept)
     .catch((error: unknown) => why(error, 'Loadout could not save who leads by default.'));
 }
@@ -161,7 +228,7 @@ export function chooseDefaultLead(id: string): Promise<string | null> {
  * ten jeden wybór, przy którym pomyłka kosztuje pieniądze.
  */
 export function chooseDefaultBudgetUsd(dollars: number): Promise<string | null> {
-  return saveSettings({ defaultLead: chosen, defaultBudgetUsd: dollars })
+  return saveSettings({ defaultLead: chosen, defaultBudgetUsd: dollars, navCollapsed: narrow })
     .then(kept)
     .catch((error: unknown) =>
       why(error, 'Loadout could not save how much a run may spend by default.'),
@@ -172,6 +239,7 @@ export function chooseDefaultBudgetUsd(dollars: number): Promise<string | null> 
 function kept(settings: Settings): null {
   remember(leadIn(settings));
   rememberCeiling(ceilingIn(settings));
+  rememberNav(navIn(settings));
   /* Zapisane wybory są od tej chwili tym, co odda `loadSettings()` następnemu ekranowi:
    * bez tego powrót na Run czytałby dysk odpowiedzią zapamiętaną przed zapisem. */
   asked = Promise.resolve(null);

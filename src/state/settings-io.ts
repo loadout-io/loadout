@@ -15,7 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 /**
  * Co Loadout robi domyślnie — lustro `commands::settings::SettingsWire`.
  *
- * Dwa pola, bo dwa wybory. Przy liderze: wskazanie, nie opis agenta — vendor, model i dial
+ * Trzy pola, bo trzy wybory. Przy liderze: wskazanie, nie opis agenta — vendor, model i dial
  * bezpieczeństwa czyta Rust z pliku definicji, a kopia któregokolwiek z nich trzymana obok
  * identyfikatora byłaby pierwszą rzeczą, która się rozjedzie (niezmiennik 13).
  */
@@ -31,6 +31,18 @@ export interface Settings {
    * (`sections/run/limits/budget.tsx`, `NO_CEILING_SAID`).
    */
   readonly defaultBudgetUsd: number;
+  /**
+   * Czy boczne menu stoi zwinięte do samych ikon.
+   *
+   * 2026-08-31 — TRZECI WYBÓR, bo trzeci raz to samo pytanie: „czy człowiek ma to wybierać przy
+   * każdym uruchomieniu". Tryb nawigacji jest decyzją o tym, jak się pracuje, podejmowaną raz,
+   * a nie czynnością przed pracą — dokładnie jak folder (2026-08-18) i lider (2026-08-29).
+   *
+   * `?`, bo plik zapisany przez wcześniejszą wersję Loadouta tego klucza nie ma, a `read_settings`
+   * z atrapy granicy w kryteriach przeglądarkowych oddaje wyłącznie to, co scena wymieniła.
+   * Brak klucza znaczy „nikt nie wybierał", nie „rozwinięte na siłę".
+   */
+  readonly navCollapsed?: boolean;
 }
 
 /**
@@ -49,13 +61,14 @@ export function readSettings(): Promise<Settings> {
  * i `default_budget_usd` skorupy w `src-tauri/src/ipc.rs`. Podmiana klucza nie jest błędem
  * kompilacji po żadnej ze stron — jest wywołaniem ODRZUCONYM, o którym nikt się nie dowie.
  *
- * OBA POLA W KAŻDYM ZAPISIE, bo plik jest jeden. Wywołanie niosące sam sufit nadpisałoby
+ * WSZYSTKIE POLA W KAŻDYM ZAPISIE, bo plik jest jeden. Wywołanie niosące sam sufit nadpisałoby
  * lidera tym, co akurat trzymało okno, i odwrotnie — a to jest ta klasa rozjazdu, którą
- * „dysk pierwszy" (`./settings.ts`) miał zamknąć.
+ * „dysk pierwszy" (`./settings.ts`) miał zamknąć. Od 2026-08-31 dotyczy to także trybu menu.
  */
 export function saveSettings(args: {
   defaultLead: string;
   defaultBudgetUsd: number;
+  navCollapsed: boolean;
 }): Promise<Settings> {
   return invoke<Settings>('save_settings', args);
 }

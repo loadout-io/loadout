@@ -17,9 +17,12 @@
  * rozjazd między nimi jest cichy (niezmiennik 13).
  */
 import type { FormEvent, ReactElement, ReactNode } from 'react';
-import { useState } from 'react';
-import { Line } from './line';
+import { Fragment, useEffect, useState } from 'react';
+import { answerForKey, choiceOf, keyMayAnswer } from './choice';
+import { Answered, Message } from './message';
 import type { FeedView, Question } from './model';
+import { EVERYONE, onlyFrom, speakersIn } from './speakers';
+import { StreamHead } from './stream-head';
 
 export interface FeedProps {
   view: FeedView;
@@ -110,50 +113,125 @@ export function Asked({ question, onAnswer }: AskedProps): ReactElement {
     setTyped('');
   }
 
+  /* NUMER NA PRZYCISKU MA BYĆ PRAWDZIWYM KLAWISZEM.
+   *
+   * Kwadracik z `1` narysowany nad martwym nasłuchem jest gorszy niż jego brak: obiecuje skrót,
+   * po którym nic się nie dzieje (niezmiennik 16), a bieg stoi i kosztuje pieniądze, dopóki
+   * człowiek nie odpowie. Nasłuch wisi na dokumencie, bo karta nie ma ogniska — a karta, która
+   * ognisko ZABIERA, wyrywałaby kursor z wiersza wejścia w chwili, w której agent zapyta.
+   *
+   * PISANIE NIE JEST ODPOWIADANIEM — i „pisanie" znaczy tu POLE Z TREŚCIĄ, nie samo ognisko.
+   * Powód w całości stoi przy `keyMayAnswer` w `./choice.ts`: wiersz wejścia tego ekranu łapie
+   * kursor sam, więc warunek na samym ognisku zabiłby ten skrót w działającej aplikacji.
+   *
+   * NASŁUCH ŻYJE RAZEM Z KARTĄ. Zdejmuje go `useEffect`, więc kiedy bieg zejdzie i karta zniknie
+   * (`./model.ts`, `runEnded` czyści kolejkę pytań), klawisz przestaje odpowiadać agentowi,
+   * który już nie pracuje. */
+  useEffect(() => {
+    function pressed(event: KeyboardEvent): void {
+      const on = event.target;
+      const inAField =
+        on instanceof HTMLInputElement || on instanceof HTMLTextAreaElement
+          ? on.value !== ''
+          : on instanceof HTMLElement && on.isContentEditable && on.textContent !== '';
+      if (
+        !keyMayAnswer({
+          modified: event.metaKey || event.ctrlKey || event.altKey,
+          typing: inAField,
+        })
+      ) {
+        return;
+      }
+      const chosen = answerForKey(event.key, question.options);
+      if (chosen === null) return;
+      event.preventDefault();
+      onAnswer(question.id, chosen);
+    }
+    document.addEventListener('keydown', pressed);
+    return () => {
+      document.removeEventListener('keydown', pressed);
+    };
+  }, [question.id, question.options, onAnswer]);
+
   return (
     /* WCHODZI SPRĘŻYNĄ, i to jest jedyne miejsce w tym pliku, które ma do tego prawo.
        DESIGN §7 wymienia kartę pytania wprost jako powierzchnię, która POJAWIA SIĘ nad tym,
        co już jest na ekranie: karta wskakująca skokiem czyta się jak przeskok widoku — oko nie
-       wie, czy patrzy na to samo miejsce. `.enter` niesie `--duration` i krzywą osobno, więc nie
-       wpada w pułapkę skrótu `animation`, w której drugi czas staje się opóźnieniem.
+       wie, czy patrzy na to samo miejsce.
 
-       Ton idzie atrybutem, nie klasą-bliźniakiem: `[data-tone]` bije samą klasę niezależnie od
-       kolejności reguł, a `.card-attend` obok `.card` byłoby drugim napisem do ręcznego
-       utrzymania. Lewa krawędź i wypełnienie zostają klasami narzędziowymi — te wygrywają
-       z prymitywem, bo warstwa `utilities` stoi nad `components`. */
+       TON `live`, NIE `attend`, i to jest zmiana z 2026-08-31. Makieta `polecenie.html` (`.ask`)
+       daje tej karcie pomarańczową ramkę z poświatą i świecącą krawędź po lewej — a `--color-live`
+       jest tą samą pomarańczą, którą bije kropka nad strumieniem. Jedna barwa na „TO stoi i czeka
+       na ciebie" zamiast dwóch, które trzeba rozróżniać. */
     <div
       /* ZNACZNIK JEST TU OD 2026-08-31, odkąd karta ma DWA legalne miejsca: pod krokiem, który
          zapytał, i — kiedy takiego kroku nie da się wskazać — na dole strumienia. Kryterium
          musi umieć policzyć, ile ich stoi, a nie da się tego zrobić po tekście pytania: to samo
          zdanie żyje na tym ekranie drugi raz, jako wiersz historii, który zostaje na zawsze. */
       data-asked={question.id}
-      data-tone="attend"
-      className="card enter shrink-0 border-l-2 border-l-attend bg-attend-soft"
+      data-tone="live"
+      className="card enter shrink-0 border-l-2 border-l-live bg-live-soft"
     >
-      <p className="label text-attend">Needs your answer</p>
-      {/* `text-body` obok `text-ink` było DWIEMA barwami na jeden napis, nie stopniem i barwą:
-          zmierzone 2026-08-31 kompilacją arkusza — przy zdefiniowanym `--color-body` Tailwind
-          rozstrzyga `text-body` jako barwę i stopnia nie wypisuje wcale, a w gotowym arkuszu
-          `.text-ink` stoi za `.text-body`, więc wygrywał już wcześniej. Napis znika bez zmiany
-          na ekranie; stopień prozy jest odziedziczony z `body`. */}
-      <p className="mt-1 text-ink">{question.text}</p>
+      {/* KTO CZEKA, NIE „ktoś czeka". Zmierzone: bieg tego produktu prowadzi kilku agentów naraz,
+          więc zdanie „needs your answer" bez nazwy zostawia człowieka szukającego, KTÓRY z nich
+          stanął — a stoją wtedy wszyscy za nim. Nazwa przyjeżdża z pytania (`Question.agent`),
+          czyli z podpisu, pod którym Rust je przysłał. */}
+      {/* BARWA `--live`, NIE AKCENT. Stopień nadoczka niesie wersaliki i akcent sam
+          (`src/styles/theme.css`, `.text-eyebrow`) — wypisanie ich tutaj byłoby drugą kopią
+          jednego faktu. Barwę przestawiamy, bo to nadoczko mówi „TO stoi i czeka na ciebie",
+          czyli dokładnie to samo, co bijąca kropka nad strumieniem; warstwa `utilities` stoi
+          nad `components`, więc `text-live` wygrywa. */}
+      <p data-waiting-for={question.agent} className="text-eyebrow text-live">
+        {question.agent} is waiting for you
+      </p>
+
+      {/* PYTANIE W STOPNIU PYTANIA. `--text-question` istnieje w drabince dokładnie po to
+          (17 px, waga 600) i do 2026-08-31 nie miał ani jednego wołającego: karta pisała pytanie
+          stopniem prozy, czyli tym samym, którym pisany jest każdy wiersz strumienia obok.
+          Rzecz, na której stoi cały bieg, nie ma prawa wyglądać jak wiersz historii. */}
+      <p className="mt-2 text-question text-ink">{question.text}</p>
 
       {question.options.length === 0 ? null : (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {question.options.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => onAnswer(question.id, option)}
-              className="btn"
-            >
-              {option}
-            </button>
-          ))}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {question.options.map((option, at) => {
+            const { title, consequence } = choiceOf(option);
+            return (
+              <button
+                key={option}
+                type="button"
+                data-choice={at + 1}
+                onClick={() => {
+                  onAnswer(question.id, option);
+                }}
+                /* SZEROKI PRZYCISK, nie pastylka: opcja niesie dwa wiersze — czynność i to, co
+                   z niej wyniknie — a pastylka mieści jeden. `flex-1` z `basis`, żeby dwie opcje
+                   stanęły obok siebie, a cztery zawinęły się po dwie zamiast ścisnąć się w kreski. */
+                className="btn h-auto min-w-[220px] flex-1 basis-[240px] items-start gap-3 px-3 py-[11px] text-left"
+              >
+                {/* NUMER W KWADRACIE. To jest jedyna rzecz na ekranie, która mówi, KTÓRY klawisz
+                    odpowiada tą opcją — a nasłuch wyżej jest tym, co czyni ją prawdą. */}
+                <kbd
+                  data-tone="accent"
+                  className="chip h-[22px] w-[22px] rounded-sm px-0 font-mono text-mono-strong"
+                >
+                  {at + 1}
+                </kbd>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-ui text-ink">{title}</span>
+                  {/* ZDANIE KONSEKWENCJI TYLKO WTEDY, GDY AGENT JE NAPISAŁ. Pusty wiersz pod
+                      tytułem byłby miejscem, w którym oko szuka treści i jej nie znajduje;
+                      wymyślone zdanie byłoby obietnicą, której nikt nie złożył (niezmiennik 17). */}
+                  {consequence === '' ? null : (
+                    <span className="lead mt-[2px] block whitespace-normal">{consequence}</span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 
-      <form onSubmit={send} className="mt-2 flex items-center gap-2">
+      <form onSubmit={send} className="mt-3 flex items-center gap-2">
         <input
           aria-label="Your answer"
           placeholder={ANSWER_PROMPT}
@@ -164,10 +242,28 @@ export function Asked({ question, onAnswer }: AskedProps): ReactElement {
           }}
           className="field flex-1"
         />
-        <button type="submit" className="btn">
+        {/* WYPEŁNIONY AKCENTEM, bo to jest w tej karcie JEDYNA rzecz do naciśnięcia, kiedy
+            człowiek napisał własne zdanie — a makieta rysuje wysyłkę jako okrągły, wypełniony
+            przycisk po prawej krawędzi pola. Nazwa zostaje słowem, nie strzałką: czytnik ekranu
+            i oko dostają to samo zdanie. */}
+        <button type="submit" className="btn-primary rounded-pill px-4">
           Send
         </button>
       </form>
+
+      {/* WIERSZ SKRÓTÓW — `.gest` z makiety, ale WYŁĄCZNIE te, które naprawdę coś robią.
+          Makieta wymienia cztery; czwarty (`⌘⏎ answer and continue`) nie ma w tej aplikacji
+          nasłuchu i wypisany tutaj byłby skrótem, po którym nic się nie dzieje (niezmiennik 16).
+          Trzy pozostałe mają: numery odpowiadają nasłuchem wyżej, `/` otwiera listę komend
+          w wierszu wejścia (`../entry/entry.tsx`), a `⌘K` paletę (`src/ui/palette/keys.ts`).
+
+          STOI POD KARTĄ, nie pod strumieniem, i gaśnie razem z nią: zdanie „1 or 2 answer" nad
+          biegiem, który zszedł, opisuje klawisz, który już nikomu nie odpowiada. */}
+      <p data-answer-keys className="value mt-2 flex flex-wrap gap-4 text-meta">
+        {question.options.length < 2 ? null : <span>1 or 2 answer</span>}
+        <span>/ commands</span>
+        <span>⌘K anywhere</span>
+      </p>
     </div>
   );
 }
@@ -185,8 +281,40 @@ export function Feed({
    * przy pracujących agentach to co innego — wtedy zaproszenie kłamałoby o stanie maszyny. */
   const nothingYet = view.history.length === 0 && view.now.rows.length === 0;
 
+  /**
+   * Który podpis jest w mocy. Stan WIDOKU, nie modelu, i to jest wybór.
+   *
+   * Zawężenie jest tym, na co patrzy JEDNA para oczu przy JEDNYM oknie — nie faktem o biegu.
+   * Trzymane w modelu, przestawiałoby się razem z sesją folderu i wracało po przełączeniu
+   * zakresu, a strumień, który sam się zawęża, wygląda jak strumień, w którym zniknęli agenci.
+   * Wraca do `EVERYONE` przy odmontowaniu kolumny i tak ma być.
+   */
+  const [showing, setShowing] = useState(EVERYONE);
+  const speakers = speakersIn(view.history);
+  /* Chip, który zniknął z rzędu — bo zawężenie przeżyło bieg, w którym ten agent mówił — nie ma
+   * prawa zostać w mocy: strumień byłby wtedy pusty, a nic na ekranie nie mówiłoby dlaczego
+   * (niezmiennik 17). */
+  const inForce = showing === EVERYONE || speakers.includes(showing) ? showing : EVERYONE;
+  const rows = onlyFrom(view.history, inForce);
+
   return (
-    <section data-feed className="flex min-h-0 flex-1 flex-col gap-2">
+    <section data-feed className="flex min-h-0 flex-1 flex-col">
+      {nothingYet ? null : (
+        <StreamHead
+          speakers={speakers}
+          showing={inForce}
+          onShow={setShowing}
+          /* ŻYWE ZNACZY „KTOŚ TERAZ PRACUJE", i model jest jedynym miejscem, które to wie:
+             strefa TERAZ trzyma wiersz na agenta, który IDZIE, a `runEnded` opróżnia ją całą.
+             Drugi warunek policzony tutaj byłby drugą odpowiedzią na to samo pytanie
+             (niezmiennik 13). */
+          live={view.now.rows.length > 0 || view.now.thinking !== null}
+          /* Przypięcie do dołu robi układ (`flex-col-reverse` niżej), więc dopóki w strumieniu
+             są wiersze, najnowszy stoi pod okiem. */
+          following={view.history.length > 0}
+        />
+      )}
+
       {nothingYet ? (
         /* PUSTY EKRAN TO ZAPROSZENIE, NIE KOMUNIKAT O BRAKU DANYCH (DESIGN §6) — a od
          * 2026-08-31 zaproszenie ma czym być. Kiedy ekran poda `guide`, stoi ono tutaj: to jest
@@ -195,15 +323,9 @@ export function Feed({
          *
          * ZDANIE NIŻEJ ZOSTAJE NA SWOIM MIEJSCU i nie jest długiem: bez `guide` ten komponent
          * nie wie o świecie nic poza tym, że wierszy nie ma, i wtedy zdanie o braku wierszy jest
-         * dokładnie tym, co umie powiedzieć uczciwie. Przycisku i „Type /plan to start" nie ma
-         * tu dalej z tego samego powodu, co przedtem: zaproszenie wskazujące na kontrolkę,
-         * której ten komponent nie ma, jest gorsze niż zdanie mniej (niezmiennik 16). */
+         * dokładnie tym, co umie powiedzieć uczciwie. */
         (guide ?? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3">
-            {/* Znak pustego ekranu jest ROLĄ, nie napisem: `.mark` niesie 40 px, ramkę kreskowaną
-              i promień pojemnika treści. Ten znak był jedną z dziewięciu ręcznych kopii tej samej
-              rzeczy, rysowaną w 32 px; DESIGN §6 rozstrzyga tę rozbieżność na 40 — tyle ma
-              prymityw, który już istniał (`src/ui/primitives/empty-state.tsx`). */}
             <span className="mark">◇</span>
             <p data-empty className="text-ink">
               Nothing here yet: the work shows up line by line.
@@ -211,19 +333,50 @@ export function Feed({
           </div>
         ))
       ) : (
-        <div ref={portRef} className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto">
+        <div ref={portRef} className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto py-2">
           {/* Jedno dziecko kontenera odwróconego: wiersze zostają w swojej kolejności, a to,
               co się odwraca, to kierunek wypełniania — czyli przypięcie do dołu. */}
           <div>
-            {/* KOMENDA JEDZIE Z WIERSZA, i to jest cała droga propozycji do przycisku: model
-                przepisuje ją z linii, ten plik podaje ją komponentowi, a `line.tsx` rysuje
-                kontrolkę wyłącznie wtedy, gdy ją dostanie. Bez tej jednej właściwości przycisk
-                startu istnieje tylko w teście — czyli jest kontrolką, której nikt nie zobaczy
-                (niezmiennik 16). O tym, CZY on w ogóle jest, rozstrzyga rodzaj wiersza, czyli
-                decyzja podjęta w Ruście; ta linia niczego nie rozpoznaje. */}
-            {view.history.map((row) => (
-              <Line key={row.id} row={row} onToggle={onToggle} command={row.command} />
+            {/* WYPOWIEDŹ, NIE WIERSZ TRANSKRYPTU. Powód, dla którego ta kolumna ma własny
+                kształt wiersza, stoi w całości w nagłówku `./message.tsx`: to jest pierwsza
+                powierzchnia biegu, a nie przegląd tysiąca linii.
+
+                KOMENDA JEDZIE Z WIERSZA, i to jest cała droga propozycji do przycisku: model
+                przepisuje ją z linii, ten plik podaje ją komponentowi, a `message.tsx` rysuje
+                kontrolkę wyłącznie wtedy, gdy ją dostanie (niezmiennik 16). */}
+            {rows.map((row) => (
+              <Fragment key={row.id}>
+                <Message row={row} onToggle={onToggle} command={row.command} />
+                {/* TWOJA ODPOWIEDŹ STOI POD PYTANIEM, NA KTÓRE PADŁA, i to jest jedyne miejsce,
+                    w którym ma sens: strumień jest zapisem tego, co się wydarzyło, a wybrana
+                    opcja jest jedynym śladem tego, w którą stronę bieg został skierowany.
+                    Bez tego naciśnięcie `1` zdejmowało kartę i nie zostawiało na ekranie ani
+                    jednego znaku — czyli wyglądało dokładnie jak klawisz, który nie zadziałał
+                    (DESIGN §8).
+
+                    ŁĄCZONE PO IDENTYFIKATORZE, nie po kolejności: `Answer.questionId` jest
+                    identyfikatorem LINII, która zapytała, więc to jest ta sama liczba, którą
+                    wiersz historii nosi w `id`. Relacja jest w danych, nie dorysowana
+                    (niezmiennik 17). */}
+                {view.answers
+                  .filter((answer) => answer.questionId === row.id)
+                  .map((answer) => (
+                    <Answered
+                      key={String(answer.questionId) + answer.option}
+                      agent={row.agent}
+                      option={answer.option}
+                    />
+                  ))}
+              </Fragment>
             ))}
+            {/* ZAWĘŻENIE, KTÓRE NIC NIE ZOSTAWIŁO, MÓWI O SOBIE. Pusta kolumna po naciśnięciu
+                chipa czyta się jak bieg, który zniknął — a zniknął tylko jeden wątek. Zdanie
+                nazywa podpis i nazywa drogę powrotną, bo chip `All` stoi wtedy nad nim. */}
+            {rows.length > 0 ? null : (
+              <p data-narrowed-to-nothing className="lead px-[18px] py-3">
+                {'Nothing from ' + inForce + ' in this run yet — press All to see everyone.'}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -236,7 +389,7 @@ export function Feed({
       )}
 
       {view.history.length === 0 ? null : (
-        <div className="flex shrink-0 justify-end">
+        <div className="flex shrink-0 justify-end px-[18px] pt-1">
           <button type="button" onClick={onJumpToNewest} className="btn-quiet">
             Jump to newest
           </button>

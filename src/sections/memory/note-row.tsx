@@ -70,6 +70,24 @@ export interface NoteRowProps {
   onKeepIt?: () => void;
   /** Jedyna akcja notatki projektowej, która nadal leży w bibliotece. */
   onMove?: (address: NoteAddress) => void;
+  /**
+   * Gdzie ten wiersz stoi: w kolejce decyzji, czy na półce (2026-08-31, fala kompozycji).
+   *
+   * `undefined` znaczy PÓŁKA i jest dokładnie tym, czym ten wiersz był do dziś — dlatego
+   * wołający, którzy tego propsa nie podają (`note-row.test.tsx` z T-17 i dwie półki
+   * biblioteczne), nie zmieniają się ani o piksel.
+   *
+   * KOLEJKA JEST BOHATEREM EKRANU, więc jej wiersz układa się inaczej: zdanie po lewej,
+   * decyzja po prawej, w jednym pasie na całą szerokość. Wiersz półki zostaje kolumną, bo
+   * półka stoi w jednej z dwóch kolumn i pas na całą szerokość by się tam nie zmieścił.
+   *
+   * `'head'` to CZOŁO kolejki i jedyny wiersz na całym ekranie, który niesie czynność główną.
+   * Kolejka wymaga po jednej decyzji naraz i czyta się od góry — a rząd trzech jednakowych
+   * przycisków akcentu znaczy, że nikt nie rozstrzygnął, od którego zacząć (DESIGN §6, trzy
+   * poziomy głośności). Pozostałe wiersze kolejki mają tę samą czynność zwykłym `.btn`:
+   * ciszej, ale nadal jednym kliknięciem.
+   */
+  queue?: 'head' | 'behind';
 }
 
 /**
@@ -123,6 +141,14 @@ function suggestedAfter(from: string): string {
   return 'Suggested after run ' + from;
 }
 
+/* Pas kolejki: zdanie po lewej, decyzja po prawej. Na wąskim oknie wraca do kolumny, bo dwie
+ * kolumny w 320 px to dwie kolumny po nic. `items-start`, żeby przycisk stał przy PIERWSZYM
+ * wierszu zdania, a nie w pionowym środku akapitu, który bywa czterowierszowy. */
+const QUEUE_ROW =
+  'flex flex-col gap-3 border-b border-line px-2 py-4 md:flex-row md:items-start md:gap-6';
+/** Wiersz półki — dokładnie ten sam kształt, co przed falą kompozycji. */
+const SHELF_ROW = 'stack border-b border-line px-2 py-3';
+
 export function NoteRow({
   note,
   onUse,
@@ -132,6 +158,7 @@ export function NoteRow({
   onDiscardForGood,
   onKeepIt,
   onMove,
+  queue,
 }: NoteRowProps): ReactElement {
   /* Jedno pytanie zadane RAZ. Trzy osobne `note.status === 'suggested'` w trzech gałęziach to
    * trzy miejsca, w których wiersz odpowiada na to samo — i pierwsze, które ktoś zmieni,
@@ -144,144 +171,176 @@ export function NoteRow({
    * dostałby pytanie bez wyjścia — a to jest gorsze niż jego brak (niezmiennik 16). */
   const asking =
     askingToDiscard === true && onDiscardForGood !== undefined && onKeepIt !== undefined;
+  /* PYTANIE ROZKŁADA PAS Z POWROTEM NA KOLUMNĘ. Zdanie „to nie wróci" plus dwa przyciski nie
+   * mieszczą się w slocie decyzji obok akapitu, a ściśnięte tam czyta się gorzej dokładnie
+   * w tej jednej chwili, w której człowiek MUSI przeczytać (2026-08-31). */
+  const wide = queue !== undefined && !asking;
+
+  /* METADANA STOI POD ZDANIEM, NIE NAD NIM (2026-08-31, fala kompozycji). Do tego dnia
+   * pierwszym wierszem, na który padało oko, był ciąg „Suggested · Length 44 · This project ·
+   * Suggested after run run-2026-08-30-1412" — dłuższy niż samo zdanie notatki i pisany przez
+   * maszynę. Treść pisana przez człowieka idzie pierwsza; fakty o niej czyta się potem.
+   * `flex-wrap`, bo metadana ma się ZAWIJAĆ, a nie ściskać zdania obok. */
+  const facts = (
+    <div className="flex flex-wrap items-center gap-2">
+      {/* Ton idzie ATRYBUTEM, nie drugą klasą (warstwa prymitywów w `theme.css`): dwa napisy
+          na jedną pigułkę trzeba było trzymać zgodnie ręcznie.
+
+          Kolor jest wybrany, nie odziedziczony po makiecie. `--attend` odpowiada na pytanie
+          „co czeka na moją decyzję?" [DESIGN §3] i kandydatka jest dokładnie tym. Notatka
+          w użyciu nie chce niczego, więc zostaje przy wariancie neutralnym: gdyby i ona była
+          nasycona, kolor przestałby znaczyć „twoja kolej". `--accent` odpada osobno — znaczy
+          „teraz", a notatka niczego nie robi. */}
+      {legacy ? null : (
+        <span data-state className="chip" data-tone={waiting ? 'attend' : undefined}>
+          {waiting ? 'Suggested' : 'In use'}
+        </span>
+      )}
+      <span className="label">{lengthLabel(note.length)}</span>
+      {/* Zasięg wynika ze scope, a nazwa agenta doprecyzowuje wyłącznie `this-agent`.
+          Biblioteczne legacy nie udaje „This project" przed jawnym Move. */}
+      {reach ? <span className="label">{reach}</span> : null}
+      {note.project ? <span className="label">{importedFrom(note.project)}</span> : null}
+      {note.from ? <span className="label">{suggestedAfter(note.from)}</span> : null}
+    </div>
+  );
+
+  const decision = asking ? (
+    /* POTWIERDZENIE JEST PRAWDZIWYM RENDEREM, nie `window.confirm` — ten sam wybór i ten
+       sam powód, co przy usuwaniu agenta (`src/sections/agents/index.tsx`): dialog
+       przeglądarki blokuje webview i zabiera całą sesję pracy, a przy oknie Tauri nie ma
+       go czym odblokować.
+
+       PYTANIE STOI W MIEJSCU AKCJI, nie obok nich. Zdanie o nieodwracalności obok wciąż
+       czynnego „Discard" zostawia człowieka z dwoma przyciskami o tej samej nazwie
+       i z pytaniem, na które można nie odpowiedzieć. Sprężyna mówi „to jest nowe",
+       zamiast pozwolić dwóm różnym rzeczom mrugnąć w jednym miejscu; drugiego regionu to
+       zdarzenie nie rusza (ARCHITECTURE §7). */
+    <div className="stack" data-gap="2">
+      <p data-confirm-drop className="enter text-ink">
+        {NOT_COMING_BACK}
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          data-forever={note.id}
+          className="btn-danger"
+          onClick={() => {
+            onDiscardForGood?.(address);
+          }}
+        >
+          Discard for good
+        </button>
+        <button
+          type="button"
+          className="btn-quiet"
+          onClick={() => {
+            onKeepIt?.();
+          }}
+        >
+          Keep it
+        </button>
+      </div>
+    </div>
+  ) : (
+    <div className="flex flex-wrap items-center gap-2">
+      {legacy ? (
+        onMove ? (
+          <button
+            type="button"
+            data-move={note.id}
+            className="btn-quiet"
+            onClick={() => {
+              onMove(address);
+            }}
+          >
+            Move to this project
+          </button>
+        ) : null
+      ) : (
+        <button
+          type="button"
+          data-act={note.id}
+          /* TRZY POZIOMY GŁOŚNOŚCI, JEDNA CZYNNOŚĆ GŁÓWNA (2026-08-31). Czoło kolejki niesie
+             akcent, bo to jest ta jedna rzecz, po którą człowiek na ten ekran przyszedł;
+             reszta kolejki dostaje obrys, a półka zostaje przy cichym wariancie, bo notatka
+             już w użyciu niczego od nikogo nie chce. Do tego dnia wszystkie trzy były tym
+             samym `btn-quiet` i najgłośniejszą rzeczą na ekranie był rząd czerwonych
+             „Remove" pod listą umiejętności. */
+          className={queue === 'head' ? 'btn-primary' : queue === undefined ? 'btn-quiet' : 'btn'}
+          onClick={() => {
+            if (waiting) {
+              onUse(address);
+            } else {
+              onStopUse(address);
+            }
+          }}
+        >
+          {waiting ? 'Use this' : 'Stop using'}
+        </button>
+      )}
+
+      {/* Druga decyzja — i WYŁĄCZNIE przy kandydatce. Odrzucenie notatki, która właśnie jedzie
+        do promptu, jest drugim pytaniem w ubraniu pierwszego: znika w jednym kliknięciu
+        z miejsca, w którym człowiek jej szukał, a on prosił o jedno. Najpierw „Stop using",
+        potem decyzja, czy to zdanie ma odejść.
+
+        Warunek pyta też o handler, bo wiersz montuje się i bez niego (patrz `onDiscard`):
+        przycisk narysowany bez handlera odmawia każdemu kliknięciu, a to jest z zewnątrz
+        nieodróżnialne od zepsutej aplikacji (niezmiennik 16). */}
+      {!legacy && waiting && onDiscard ? (
+        <button
+          type="button"
+          data-drop={note.id}
+          className="btn-quiet"
+          onClick={() => {
+            onDiscard(address);
+          }}
+        >
+          Discard
+        </button>
+      ) : null}
+    </div>
+  );
 
   return (
     <li
       data-note={note.id}
       data-note-address={`${note.place}:${note.id}`}
-      className="stack border-b border-line px-2 py-3"
+      className={wide ? QUEUE_ROW : SHELF_ROW}
     >
-      <div className="flex items-center gap-2">
-        {/* Ton idzie ATRYBUTEM, nie drugą klasą (warstwa prymitywów w `theme.css`): dwa napisy
-            na jedną pigułkę trzeba było trzymać zgodnie ręcznie.
+      <div className="stack min-w-0 max-w-160">
+        {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania.
 
-            Kolor jest wybrany, nie odziedziczony po makiecie. `--attend` odpowiada na pytanie
-            „co czeka na moją decyzję?" [DESIGN §3] i kandydatka jest dokładnie tym. Notatka
-            w użyciu nie chce niczego, więc zostaje przy wariancie neutralnym: gdyby i ona była
-            nasycona, kolor przestałby znaczyć „twoja kolej". `--accent` odpada osobno — znaczy
-            „teraz", a notatka niczego nie robi. */}
-        {legacy ? null : (
-          <span data-state className="chip" data-tone={waiting ? 'attend' : undefined}>
-            {waiting ? 'Suggested' : 'In use'}
-          </span>
-        )}
-        <span className="label">{lengthLabel(note.length)}</span>
-        {/* Zasięg wynika ze scope, a nazwa agenta doprecyzowuje wyłącznie `this-agent`.
-            Biblioteczne legacy nie udaje „This project" przed jawnym Move. */}
-        {reach ? <span className="label">{reach}</span> : null}
-        {note.project ? <span className="label">{importedFrom(note.project)}</span> : null}
-        {note.from ? <span className="label">{suggestedAfter(note.from)}</span> : null}
+            `text-body` stało tu obok `text-ink` i było bez skutku: w tym motywie `--color-body`
+            i `--text-body` noszą tę samą nazwę, a Tailwind rozstrzyga `text-body` na BARWĘ, nie
+            na stopień. Dwie barwy na jednym napisie — wygrywała druga. Stopień prozy niesie i tak
+            `body` z arkusza (DESIGN §6), więc zostaje sama barwa, i to ta, która działała.
+
+            CZOŁO KOLEJKI DOSTAJE STOPIEŃ WYŻEJ. Bohater ekranu ma być największą rzeczą na
+            nim, a przy jednym stopniu dla wszystkiego największą rzeczą była lista półki. */}
+        <p className={queue === 'head' ? 'text-subhead text-ink' : 'text-ink'}>{note.rule}</p>
+
+        {/* Powód stoi pod nim, na ekranie, zawsze. To jest jedyna rzecz, po której człowiek
+            poznaje, czy TO JEST PRAWDA — a bez „dlaczego" notatki nie da się później bezpiecznie
+            usunąć, bo trzeba od nowa wyprowadzić jej interakcje z każdą inną [T6 §5.1]. */}
+        <p className="lead">{note.because}</p>
+
+        {note.leftOut ? (
+          <p className="lead" data-tone="attend">
+            Not in prompts right now because it exceeds the length limit.
+          </p>
+        ) : null}
+
+        {facts}
       </div>
 
-      {/* Zdanie, które naprawdę jedzie do modelu — nie streszczenie tego zdania.
-
-          `text-body` stało tu obok `text-ink` i było bez skutku: w tym motywie `--color-body`
-          i `--text-body` noszą tę samą nazwę, a Tailwind rozstrzyga `text-body` na BARWĘ, nie
-          na stopień. Dwie barwy na jednym napisie — wygrywała druga. Stopień prozy niesie i tak
-          `body` z arkusza (DESIGN §6), więc zostaje sama barwa, i to ta, która działała. */}
-      <p className="text-ink">{note.rule}</p>
-
-      {/* Powód stoi pod nim, na ekranie, zawsze. To jest jedyna rzecz, po której człowiek
-          poznaje, czy TO JEST PRAWDA — a bez „dlaczego" notatki nie da się później bezpiecznie
-          usunąć, bo trzeba od nowa wyprowadzić jej interakcje z każdą inną [T6 §5.1]. */}
-      <p className="lead">{note.because}</p>
-
-      {note.leftOut ? (
-        <p className="lead" data-tone="attend">
-          Not in prompts right now because it exceeds the length limit.
-        </p>
-      ) : null}
-
-      {asking ? (
-        /* POTWIERDZENIE JEST PRAWDZIWYM RENDEREM, nie `window.confirm` — ten sam wybór i ten
-           sam powód, co przy usuwaniu agenta (`src/sections/agents/index.tsx`): dialog
-           przeglądarki blokuje webview i zabiera całą sesję pracy, a przy oknie Tauri nie ma
-           go czym odblokować.
-
-           PYTANIE STOI W MIEJSCU AKCJI, nie obok nich. Zdanie o nieodwracalności obok wciąż
-           czynnego „Discard" zostawia człowieka z dwoma przyciskami o tej samej nazwie
-           i z pytaniem, na które można nie odpowiedzieć. Sprężyna mówi „to jest nowe",
-           zamiast pozwolić dwóm różnym rzeczom mrugnąć w jednym miejscu; drugiego regionu to
-           zdarzenie nie rusza (ARCHITECTURE §7). */
-        <div className="stack" data-gap="2">
-          <p data-confirm-drop className="enter text-ink">
-            {NOT_COMING_BACK}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              data-forever={note.id}
-              className="btn-danger"
-              onClick={() => {
-                onDiscardForGood?.(address);
-              }}
-            >
-              Discard for good
-            </button>
-            <button
-              type="button"
-              className="btn-quiet"
-              onClick={() => {
-                onKeepIt?.();
-              }}
-            >
-              Keep it
-            </button>
-          </div>
-        </div>
+      {/* Decyzja po prawej stronie pasa, kiedy wiersz stoi w kolejce; pod zdaniem, kiedy stoi
+          na półce. `ml-auto` dopiero od szerokości, w której pas naprawdę jest pasem. */}
+      {wide ? (
+        <div className="flex shrink-0 items-center gap-2 md:ml-auto">{decision}</div>
       ) : (
-        <div className="flex items-center gap-2">
-          {legacy ? (
-            onMove ? (
-              <button
-                type="button"
-                data-move={note.id}
-                className="btn-quiet"
-                onClick={() => {
-                  onMove(address);
-                }}
-              >
-                Move to this project
-              </button>
-            ) : null
-          ) : (
-            <button
-              type="button"
-              data-act={note.id}
-              className="btn-quiet"
-              onClick={() => {
-                if (waiting) {
-                  onUse(address);
-                } else {
-                  onStopUse(address);
-                }
-              }}
-            >
-              {waiting ? 'Use this' : 'Stop using'}
-            </button>
-          )}
-
-          {/* Druga decyzja — i WYŁĄCZNIE przy kandydatce. Odrzucenie notatki, która właśnie jedzie
-            do promptu, jest drugim pytaniem w ubraniu pierwszego: znika w jednym kliknięciu
-            z miejsca, w którym człowiek jej szukał, a on prosił o jedno. Najpierw „Stop using",
-            potem decyzja, czy to zdanie ma odejść.
-
-            Warunek pyta też o handler, bo wiersz montuje się i bez niego (patrz `onDiscard`):
-            przycisk narysowany bez handlera odmawia każdemu kliknięciu, a to jest z zewnątrz
-            nieodróżnialne od zepsutej aplikacji (niezmiennik 16). */}
-          {!legacy && waiting && onDiscard ? (
-            <button
-              type="button"
-              data-drop={note.id}
-              className="btn-quiet"
-              onClick={() => {
-                onDiscard(address);
-              }}
-            >
-              Discard
-            </button>
-          ) : null}
-        </div>
+        decision
       )}
     </li>
   );

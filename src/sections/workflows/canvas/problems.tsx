@@ -1,4 +1,4 @@
-/* Pasek nad przyciskiem Run: ile jest rzeczy do poprawienia i czy Run w ogóle działa.
+/* Co jest do poprawienia w tym workflow i czy Run w ogóle działa — DWIE rzeczy, dwa komponenty.
  *
  * Uwagi przychodzą Z RUSTA (`workflow::check`, T-12) i są tu tylko wyświetlane. Frontend ich nie
  * wymyśla, nie tłumaczy i nie liczy po swojemu — `message` jest gotowym angielskim zdaniem
@@ -6,23 +6,44 @@
  * „Fix the errors first" jest przyciskiem bez wyjaśnienia: użytkownik widzi, że nie może
  * kliknąć, i nie wie dlaczego [T3 §5.3].
  *
- * Podział wagi jest całą treścią tego paska: `Problem` blokuje Run, `Warning` NIE blokuje.
- * Pasek, który liczy wszystkie uwagi i przy każdej gasi Run, zamienia ostrzeżenie o niepodłączonym
+ * Podział wagi jest całą treścią tego pliku: `Problem` blokuje Run, `Warning` NIE blokuje.
+ * Lista, która liczy wszystkie uwagi i przy każdej gasi Run, zamienia ostrzeżenie o niepodłączonym
  * kroku w blokadę uruchomienia — a to jest workflow, który wolno uruchomić.
+ *
+ * ROZPAD `RunBar` NA DWOJE, 2026-08-31 (zgłoszenie właściciela: „Run jest najmniejszym elementem
+ * na tym ekranie"). Do dziś stał tu JEDEN komponent: pionowy stos, w którym uwagi leżały NAD
+ * przyciskiem, a całość wisiała w `<Panel position="top-right">` płótna. Z tego brały się trzy
+ * osobne wady i żadnej z nich nie dało się naprawić bez rozdzielenia:
+ *   główna akcja ekranu była nakładką w rogu płótna, mniejszą niż „Tidy up" na dole;
+ *   trzy uwagi spychały ją w dół o ~150 px — czyli przycisk wędrował tym bardziej, im więcej
+ *   było powodów, żeby na niego patrzeć;
+ *   liczba „N things to fix" stała RAZ tutaj i drugi raz w plakietce nagłówka edytora, dwoma
+ *   niezależnymi kawałkami kodu liczącymi to samo (niezmiennik 13).
+ *
+ * Od teraz `RunButton` idzie do nagłówka ekranu — tam, gdzie ten produkt trzyma główną akcję
+ * każdego ekranu (`.btn-primary` na końcu `.screen-head`, tak jak `＋ Create` na liście
+ * workflow) — a `ThingsToFix` wychodzi spod plakietki, która LICZY. Liczbę pisze `howMany`
+ * i jest ona eksportowana właśnie po to, żeby plakietka i ta lista nie miały dwóch odpowiedzi
+ * na jedno pytanie.
  */
 import type { ReactElement } from 'react';
 import { useState } from 'react';
 import type { Fix, Note } from '../../../state/workflows';
 import type { FileAccess } from '../../../state/agents';
 
-export interface RunBarProps {
+export interface ThingsToFixProps {
   /** Uwagi z ostatniego sprawdzenia. Pusta lista znaczy „nie ma nic do poprawienia". */
   notes: Note[];
-  onRun: () => void;
   /** Kliknięcie uwagi przesuwa płótno na winny krok i otwiera jego panel. */
   onFocusNote: (note: Note) => void;
   /** Wykonuje naprawę, którą niesie uwaga. Brak propsu znaczy „ten ekran nie umie naprawiać". */
   onApplyFix?: (fix: Fix) => void;
+}
+
+export interface RunButtonProps {
+  /** Te same uwagi. Przycisk czyta z nich JEDNO: czy któraś ma wagę `problem`. */
+  notes: Note[];
+  onRun: () => void;
 }
 
 /** Co [`focusNote`] woła. Obie funkcje przychodzą z płótna — `fitView` z `useReactFlow()`,
@@ -108,12 +129,19 @@ function worstFirst(notes: Note[]): Note[] {
 /** „2 things to fix" — jedno zdanie, policzone z listy uwag i z niczego innego.
  *
  * Liczba pojedyncza nie jest kosmetyką: „1 things to fix" czyta się jak usterka narzędzia,
- * a użytkownik ma w tej chwili wierzyć, że narzędzie wie, co mówi. */
-function howMany(notes: Note[]): string {
+ * a użytkownik ma w tej chwili wierzyć, że narzędzie wie, co mówi.
+ *
+ * EKSPORTOWANE OD 2026-08-31, i to jest naprawa niezmiennika 13, a nie wygoda. Plakietka
+ * w nagłówku edytora miała własną kopię tej odmiany, wpisaną w JSX — dwa kawałki kodu liczące
+ * jeden fakt, więc pierwsza zmiana brzmienia rozjechałaby je po cichu. Zdanie mieszka tam, gdzie
+ * mieszka podział na `problem` i `warning`, czyli tutaj; nagłówek je WOŁA. */
+export function howMany(notes: Note[]): string {
   return `${String(notes.length)} ${notes.length === 1 ? 'thing' : 'things'} to fix`;
 }
 
-export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): ReactElement {
+/** Uwagi jako lista zdań. Liczbę mówi plakietka, spod której ta lista wychodzi — tutaj jej NIE MA
+ * (niezmiennik 13). Bez uwag nie ma czego pokazać i komponent nie rysuje nic. */
+export function ThingsToFix({ notes, onFocusNote, onApplyFix }: ThingsToFixProps): ReactElement {
   /* Zwinięte na starcie i przy KAŻDYM nowym sprawdzeniu — nie zapamiętujemy rozwinięcia między
    * dokumentami. Człowiek, który rozwinął czterdzieści uwag w jednym workflow i przeszedł do
    * drugiego, dostawałby tam czterdzieści cudzych. */
@@ -121,17 +149,11 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
   const sorted = worstFirst(notes);
   const shown = showAll ? sorted : sorted.slice(0, AT_FIRST);
   const hidden = sorted.length - shown.length;
-  /* Blokuje WYŁĄCZNIE `problem`. Pasek, który liczy wszystkie uwagi i przy każdej gasi Run,
-   * zamienia ostrzeżenie o niepodłączonym kroku w zamek bez klucza — a taki workflow wolno
-   * uruchomić. Podpowiedź jest samą uwagą, słowo w słowo z walidatora: „Fix the errors first"
-   * pod zgaszonym przyciskiem mówi użytkownikowi, że nie może kliknąć, i nic poza tym. */
-  const blocker = notes.find((note) => note.level === 'problem');
 
   return (
     <div className="flex flex-col gap-2">
       {notes.length > 0 ? (
         <div className="flex flex-col gap-1">
-          <span className="label">{howMany(notes)}</span>
           {/* KLUCZ Z POZYCJI, NIE Z TREŚCI — naprawa z 2026-08-23, z konsoli okna właściciela:
               „Encountered two children with the same key, `warning:s_3:"New step" and "New step"
               can run at the same time…`". Walidator zgłasza tę regułę PER PARĘ kroków, a zdanie
@@ -211,17 +233,32 @@ export function RunBar({ notes, onRun, onFocusNote, onApplyFix }: RunBarProps): 
           )}
         </div>
       ) : null}
-
-      <button
-        type="button"
-        className="btn-primary"
-        disabled={blocker !== undefined}
-        title={blocker?.message}
-        onClick={onRun}
-      >
-        Run
-      </button>
     </div>
+  );
+}
+
+/** Główna akcja ekranu edytora. Stoi w nagłówku, a nie nad listą uwag — powód w nagłówku pliku.
+ *
+ * Ten komponent istnieje osobno WŁAŚNIE dlatego, że polityka „co blokuje start" ma zostać
+ * w jednym miejscu razem z listą, mimo że rysują się w dwóch różnych rogach ekranu
+ * (niezmiennik 23: polityka w rdzeniu, nie przepisana w miejscu użycia). */
+export function RunButton({ notes, onRun }: RunButtonProps): ReactElement {
+  /* Blokuje WYŁĄCZNIE `problem`. Przycisk, który gaśnie przy każdej uwadze, zamienia ostrzeżenie
+   * o niepodłączonym kroku w zamek bez klucza — a taki workflow wolno uruchomić. Podpowiedź jest
+   * samą uwagą, słowo w słowo z walidatora: „Fix the errors first" pod zgaszonym przyciskiem mówi
+   * użytkownikowi, że nie może kliknąć, i nic poza tym. */
+  const blocker = notes.find((note) => note.level === 'problem');
+
+  return (
+    <button
+      type="button"
+      className="btn-primary"
+      disabled={blocker !== undefined}
+      title={blocker?.message}
+      onClick={onRun}
+    >
+      Run
+    </button>
   );
 }
 

@@ -74,14 +74,122 @@ function sheet(html: string): string {
   return withoutComments(/<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? '');
 }
 
-/** Cienie reguly, ktore NIE sa `inset`. Refleks na krawedzi szkla nie jest glebia. */
-function liftingShadows(body: string): readonly string[] {
+/** Czlony deklaracji `box-shadow`, po jednym na cien.
+ *
+ * PODZIAL LICZY NAWIASY, poprawione 2026-08-31. Stalo tu `split(/,(?![^(]*\))/)`, czyli „przecinek,
+ * po ktorym nie ma zamkniecia nawiasu" — i to nie widzi ZAGNIEZDZENIA. W `color-mix(in srgb,
+ * var(--c) 22%,transparent)` po pierwszym przecinku stoi `var(`, wiec wyprzedzenie nie trafia
+ * i jedna barwa rozpadala sie na trzy czlony. Zaden punkt tego nie pokazywal, bo lista byla
+ * skladana z powrotem przez `join`, a poskladany napis wyglada jak caly cien.
+ */
+function shadowParts(body: string): readonly string[] {
   const declared = /(?:^|;)\s*box-shadow\s*:([^;]*)/.exec(body)?.[1] ?? '';
   if (declared.trim() === '') return [];
-  return declared
-    .split(/,(?![^(]*\))/)
-    .map((part) => part.trim())
-    .filter((part) => part !== '' && part !== 'none' && !/^inset\b/.test(part));
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const letter of declared) {
+    if (letter === '(') depth += 1;
+    if (letter === ')') depth -= 1;
+    if (letter === ',' && depth === 0) {
+      out.push(current);
+      current = '';
+      continue;
+    }
+    current += letter;
+  }
+  out.push(current);
+  return out.map((part) => part.trim()).filter((part) => part !== '' && part !== 'none');
+}
+
+/** Slowa czlonu, z funkcja koloru trzymana w calosci.
+ *
+ * Podzial liczy nawiasy, a nie bialy znak: `color-mix(in srgb , var(--c) 22%,transparent)` ma
+ * w srodku i spacje, i przecinki, wiec goly `split` rozsypalby jedna barwe na cztery „dlugosci"
+ * i kazdy cien z taka barwa czytalby sie jako przesuniety.
+ */
+function words(part: string): readonly string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const letter of part) {
+    if (letter === '(') depth += 1;
+    if (letter === ')') depth -= 1;
+    if (depth === 0 && /\s/.test(letter)) {
+      if (current !== '') out.push(current);
+      current = '';
+      continue;
+    }
+    current += letter;
+  }
+  if (current !== '') out.push(current);
+  return out;
+}
+
+const LENGTH = /^-?[\d.]+[a-z%]*$/i;
+const ZERO = /^-?0(?:[a-z%]+)?$/i;
+
+/** Przesuniecia czlonu: pierwsze dwie dlugosci, bo tak stoi w gramatyce `box-shadow`. */
+function offsets(part: string): readonly string[] {
+  return words(part)
+    .filter((word) => word !== 'inset' && LENGTH.test(word))
+    .slice(0, 2);
+}
+
+/** Barwa czlonu: pierwsze slowo, ktore nie jest ani `inset`, ani dlugoscia. */
+function colourOf(part: string): string {
+  return words(part).find((word) => word !== 'inset' && !LENGTH.test(word)) ?? '';
+}
+
+/** Czy czlon jest BLASKIEM: oba przesuniecia zerowe, czyli swiatlo bez kierunku. */
+function isGlow(part: string): boolean {
+  const shift = offsets(part);
+  return shift.length === 2 && shift.every((one) => ZERO.test(one));
+}
+
+/** Barwy, ktore nie niosa ani stanu, ani tozsamosci: czern, biel, kazda szarosc, brak barwy. */
+function neutral(colour: string): boolean {
+  if (colour === '') return true;
+  if (/^(black|white|gr[ae]y|currentColor|transparent)$/i.test(colour)) return true;
+  const hex = /^#([0-9a-f]{3,8})$/i.exec(colour)?.[1];
+  if (hex !== undefined && (hex.length === 3 || hex.length === 4)) {
+    return hex[0] === hex[1] && hex[1] === hex[2];
+  }
+  if (hex !== undefined && (hex.length === 6 || hex.length === 8)) {
+    return hex.slice(0, 2) === hex.slice(2, 4) && hex.slice(2, 4) === hex.slice(4, 6);
+  }
+  const channels = /^rgba?\(([^)]*)\)$/i.exec(colour)?.[1];
+  if (channels !== undefined) {
+    const three = channels
+      .split(/[,\s/]+/)
+      .filter((one) => one !== '')
+      .slice(0, 3);
+    return three.length === 3 && three[0] === three[1] && three[1] === three[2];
+  }
+  return false;
+}
+
+/** PODNIESIENIA reguly: czlony, ktore naprawde klada rzecz NAD strona.
+ *
+ * DWIE ODJETE KLASY, obie z DESIGN §3 („Blask nie jest glebia", 2026-08-31):
+ *
+ *   `inset` — refleks na krawedzi szkla nigdy nie byl glebia i nigdy tu nie wpadal;
+ *   BLASK (`0 0 <promien> <barwa>`) — swiatlo bez kierunku. Nie udaje zrodla z gory, wiec nie
+ *     buduje warstw: swieci ta sama barwa, co stan albo tozsamosc, ktora niesie, i gasnie razem
+ *     z nia. Do 2026-08-31 ta funkcja czytala KAZDY czlon bez `inset`, czyli sadzila regule,
+ *     ktorej DESIGN juz nie stawia — i byla przez to czerwona na makiecie zgodnej z dokumentem.
+ *
+ * Blask nie jest zwolnieniem: punkt „a glow carries a colour" nizej pilnuje, zeby zerowe
+ * przesuniecie nie stalo sie furtka dla czarnej poswiaty, czyli dla podniesienia napisanego
+ * inaczej.
+ */
+function liftingShadows(body: string): readonly string[] {
+  return shadowParts(body).filter((part) => !/^inset\b/.test(part) && !isGlow(part));
+}
+
+/** BLASKI reguly: czlony bez `inset`, ktore nie maja kierunku. */
+function glows(body: string): readonly string[] {
+  return shadowParts(body).filter((part) => !/^inset\b/.test(part) && isGlow(part));
 }
 
 describe('plywa dokladnie jedna rzecz', () => {
@@ -136,6 +244,31 @@ describe('plywa dokladnie jedna rzecz', () => {
       'these rules carry a lifting shadow and they do not float. DESIGN §3 keeps shadows for ' +
         'the one thing that is above the page; anything else gets its depth from a change of ' +
         'surface. Inset shadows are allowed everywhere — a gleam on the edge of glass is not depth.',
+    ).toEqual([]);
+  });
+
+  it('lets a glow carry a colour, never the black one that lifting is written in', () => {
+    /* DRUGA POLOWA REGULY z DESIGN §3, dopisana 2026-08-31 razem z rozroznieniem blask/podniesienie.
+     * Bez niej „zerowe przesuniecie" byloby furtka: `0 0 24px rgba(0,0,0,.5)` klamie o kierunku
+     * i robi dokladnie to, co cien podnoszacy — kladzie rzecz nad strona. Dokument mowi to wprost:
+     * blask ma barwe tokenu stanu albo tozsamosci i gasnie razem z nim, a blask w kolorze
+     * neutralnym jest podniesieniem napisanym inaczej.
+     *
+     * Ten punkt jest tez KONTROLA nad punktem wyzej: to on trzyma sume obu regul na tym samym
+     * poziomie, na ktorym stala jedna regula przed rozdzieleniem. */
+    const all = rules.flatMap((rule) =>
+      glows(rule.body).map((part) => ({ rule, part, colour: colourOf(part) })),
+    );
+    expect(
+      all.length,
+      'not one glow was read out of the mockup, so this point would demand nothing of anything',
+    ).toBeGreaterThan(0);
+    expect(
+      all.filter((one) => neutral(one.colour)).map((one) => one.rule.selector + ' -> ' + one.part),
+      'these glows carry no colour of their own. A glow says "this is live", "this is done", ' +
+        '"this is that agent" — it borrows the colour of the thing it belongs to and goes out ' +
+        'with it. A neutral one says nothing and only lifts, which is the rule above written ' +
+        'the other way round.',
     ).toEqual([]);
   });
 

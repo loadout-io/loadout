@@ -210,10 +210,20 @@ describe('the run controls carry the lead, and the green Run in the editor still
     const loaded = renderToStaticMarkup(
       <WorkflowRunButton choice={CHOICES[1] ?? null} disabled={false} onRun={() => undefined} />,
     );
+    /* 2026-09-01 — TEN PUNKT ZADAL DO DZIS `['Run Ship a feature']`, CZYLI ZEBY NAPIS NAZYWAL
+       ZALADOWANY WORKFLOW. Nazwa zeszla z napisu z powodu, ktory stoi w calosci przy
+       `WhichWorkflow` w `./index.tsx`: stala na ekranie biegu TRZY RAZY naraz (tytul naglowka,
+       ten napis, zaznaczona pozycja listy), a jeden fakt ma jeden nosnik (niezmiennik 13) —
+       trzy nosniki to trzy miejsca, ktore moga sie nie zgodzic, i wlasnie taka niezgode
+       zglosil wlasciciel. Sens tego punktu zostaje CALY: napis dalej nie brzmi `Start`, dalej
+       mowi, ze to jest bieg WORKFLOW, a nie kolejna tura rozmowy z liderem, a KTORY workflow
+       jest zaladowany, mowia dwa punkty ponizej — podpowiedz i nazwa pliku na drucie. */
     expect(
       buttonLabels(loaded),
-      'the actual workflow button mounted by Start does not name the loaded workflow.',
-    ).toEqual(['Run Ship a feature']);
+      'the button mounted by Start no longer says it starts a workflow run. Pressed after a ' +
+        'finished piece of work it begins a complete new run from the beginning, so a label ' +
+        'that reads as the next turn of the lead conversation promises the wrong thing.',
+    ).toEqual(['Run workflow']);
     expect(
       loaded,
       'the explanation has to say this is a new complete run from the beginning, not a resumed ' +
@@ -223,7 +233,8 @@ describe('the run controls carry the lead, and the green Run in the editor still
     );
     expect(
       loaded,
-      'the visible workflow and the file sent on click have to come from the same choice.',
+      'the workflow named in the explanation and the file sent on click have to come from the ' +
+        'same choice.',
     ).toContain('data-workflow="ship-a-feature.json"');
   });
 

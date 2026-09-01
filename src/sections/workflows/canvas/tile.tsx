@@ -66,6 +66,42 @@ const CARD = 'card enter w-61.5 bg-raised text-body';
 const CARD_LINE = 'border-line-strong';
 const CARD_SELECTED = 'border-accent';
 
+/** To, co stoi po PRAWEJ stronie nazwy: chip agenta albo podpis rodzaju kroku.
+ *
+ * NAZWA JEST TREŚCIĄ, RESZTA TEGO WIERSZA JEST METADANĄ, i do 2026-08-31 kafelek rozstrzygał
+ * to odwrotnie. Zgłoszenie właściciela ze zrzutu: kroki „Reaserch…" i „Arc…", ucięte na
+ * kafelku 246 px, przy metrach pustego płótna obok. Zmierzone w chromium na tym samym pliku:
+ * wiersz ma 186 px użytecznych (246 minus padding karty, uchwyt i dwa odstępy), chip agenta
+ * `ai-systems-architect` był `shrink-0` i brał z nich 147, a na nazwę „Research" — która chce
+ * 61 px — zostawało 39. Czyli nie „ciasno": treść ustępowała metadanej co do zasady, bo tak
+ * była napisana klasa.
+ *
+ * TRZY DROGI BYŁY NA STOLE i dwie odpadły z mierzalnego powodu.
+ *   Kafelek MÓGŁ UROSNĄĆ — ale 246 px to liczba z makiety, a 34 px, które dałoby DESIGN §6,
+ *   nie starcza nawet na tę jedną nazwę; rosnąć musiałby o połowę, a wtedy `tidy.ts` układa
+ *   inne kolumny i cały ekran przestaje być tym ekranem.
+ *   Nazwa MOGŁA ŁAMAĆ SIĘ NA DWIE LINIE — ale kafelek ma sufit CZTERECH linii tekstu
+ *   (ARCHITECTURE §7) i wykorzystuje dziś wszystkie cztery: nazwa, dwie linie treści, stopka.
+ *   Druga linia nazwy musiałaby odebrać linię temu, co krok ma zrobić.
+ *
+ * Zostaje: USTĘPUJE METADANA. `max-w-1/2` jest tu całą naprawą i jest twardą obietnicą —
+ * cokolwiek stoi po prawej, nazwa dostaje nie mniej niż połowę wiersza. Bez tej granicy sam
+ * `truncate` niczego nie zmienia: `flex-1` na nazwie ma bazę 0, więc chip o naturalnej
+ * szerokości i tak zabiera swoje najpierw.
+ *
+ * POŁOWA, A NIE MNIEJ, I TO JEST LICZBA ZMIERZONA. Po prawej stronie nazwy stoją DWIE różne
+ * rzeczy i tylko jedna z nich może ustąpić. Chip agenta niesie tekst zmiennej długości
+ * i jest metadaną — kiedy się urwie, kostka tożsamości dalej mówi, który to agent, a panel
+ * kroku nazywa go w całości. Podpis rodzaju (`asks you`, `runs a check`, `leaves it running`)
+ * jest zamkniętą listą trzech napisów i JEDYNĄ rzeczą, po której z płótna widać, czym ten
+ * kafelek różni się od sąsiada — urwany kasuje rozróżnienie, dla którego pętla sprawdzająca
+ * w ogóle ma sens. Najdłuższy z tej trójki mierzy w chromium 81 px, a połowa wiersza to 93,
+ * więc ta granica mieści wszystkie trzy z zapasem 12 px i tnie wyłącznie chip. Zejście niżej
+ * (`max-w-2/5`, czyli 74 px) daje nazwie więcej, ale zaczyna ucinać „leaves it running" —
+ * pilnuje tego kryterium w `e2e/tests/the-canvas-reads-as-a-board.spec.ts`, zmierzone
+ * mutacją na `max-w-1/4`: „wants 81 px and was given 55". */
+const ASIDE = 'min-w-0 max-w-1/2 shrink truncate';
+
 /** Kostka tożsamości agenta → nazwa klasy tła.
  *
  * `Agent.color` jest polem, które formularz agenta zapisuje od T-11, a do 2026-08-18 NIC w całym
@@ -162,20 +198,23 @@ export function StepTile({
           ⠿
         </span>
         <b className="min-w-0 flex-1 truncate text-heading text-ink">{step.name}</b>
-        {step.kind === 'checkpoint' ? <span className="label shrink-0">asks you</span> : null}
+        {step.kind === 'checkpoint' ? <span className={`label ${ASIDE}`}>asks you</span> : null}
         {/* Ten podpis jest jedynym miejscem, w którym z płótna widać RÓŻNICĘ między tym kafelkiem
             a krokiem „sprawdź": tamten czeka na koniec komendy, ten idzie dalej i zostawia ją
             żywą. Bez niego dwa kafelki z wierszem powłoki wyglądają identycznie. */}
-        {step.kind === 'serve' ? <span className="label shrink-0">leaves it running</span> : null}
+        {step.kind === 'serve' ? <span className={`label ${ASIDE}`}>leaves it running</span> : null}
         {/* Druga połowa tej samej różnicy. Ten kafelek CZEKA na koniec komendy i sam orzeka
             wynik — z tego, czy komenda wróciła bez błędu, i z tego, czy w wyjściu stoi wzorzec.
             Bez tego podpisu dwa kafelki z wierszem powłoki wyglądają na płótnie identycznie,
             a różnią się jedyną rzeczą, przez którą pętla weryfikacyjna w ogóle ma sens. */}
-        {step.kind === 'check' ? <span className="label shrink-0">runs a check</span> : null}
+        {step.kind === 'check' ? <span className={`label ${ASIDE}`}>runs a check</span> : null}
         {agent === undefined ? null : (
-          <span className="value flex shrink-0 items-center gap-1 text-label">
-            <i className={`block size-2.75 ${IDENTITY[agent.color]}`} />
-            {agent.name}
+          <span className={`value flex items-center gap-1 text-label ${ASIDE}`}>
+            {/* KOSTKA NIGDY NIE USTĘPUJE. Kiedy miejsca zabraknie, ustępuje nazwa agenta —
+                ale kolor tożsamości zostaje, więc z płótna dalej widać, KTÓRY to agent,
+                nawet gdy z jego imienia widać połowę. */}
+            <i className={`block size-2.75 shrink-0 ${IDENTITY[agent.color]}`} />
+            <span className="truncate">{agent.name}</span>
           </span>
         )}
       </div>

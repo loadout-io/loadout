@@ -18,7 +18,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Note } from '../../../state/workflows';
-import { RunBar } from './problems';
+import { ThingsToFix } from './problems';
 
 const noop = (): void => undefined;
 
@@ -42,7 +42,7 @@ const FLOOD: Note[] = [...Array.from({ length: 12 }, (_, at) => warning(at)), BL
 
 /** Markup tak, jak czyta go człowiek: React zapisuje cudzysłowy jako encje. */
 function bar(notes: Note[]): string {
-  return renderToStaticMarkup(<RunBar notes={notes} onRun={noop} onFocusNote={noop} />)
+  return renderToStaticMarkup(<ThingsToFix notes={notes} onFocusNote={noop} />)
     .replace(/&quot;/g, '"')
     .replace(/&#x27;/g, "'");
 }

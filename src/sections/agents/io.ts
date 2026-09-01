@@ -21,9 +21,79 @@ import type { Agent } from '../../state/agents';
 import type { Definition } from '../../state/library';
 import { definitionsOf, healthyOnly } from '../../state/library';
 
-/** Wszyscy zapisani agenci, po jednym na plik w bibliotece. */
-export function listDefinitions(): Promise<Definition<Agent>[]> {
-  return invoke<Definition<Agent>[]>('list_agents');
+/**
+ * Czym uzupelniamy agenta, ktoremu za granica zabraklo klucza — 2026-08-31 wieczorem.
+ *
+ * KAZDA z tych wartosci jest ta sama, ktora `blankAgent` w `./index.tsx` daje nowej roli, i to
+ * nie jest przypadek: to sa te same odpowiedzi na te same pytania. Najwezszy dostep do plikow,
+ * bo prawo do zmieniania plikow ma dawac czlowiek; `look-only` jest tu wiec wartoscia bezpieczna,
+ * a nie wygodna.
+ *
+ * NIE SA TO DANE — sa to wartosci, ktorych brak przewraca ekran. Agent z pustym `model` zapisze
+ * sie na dysk z pustym `model`, i to jest widoczne w polu, ktore czlowiek moze wypelnic. Agent
+ * bez `model` w OGOLE wywraca render.
+ */
+const FILLED = {
+  schema: 1,
+  name: '',
+  summary: '',
+  color: 'slate',
+  instructions: '',
+  runsWith: 'claude-code',
+  model: '',
+  thinking: 'balanced',
+  fileAccess: 'look-only',
+  giveUpAfterMinutes: 30,
+  tools: 'everything',
+  reachesTheWeb: true,
+  skills: [],
+  connections: [],
+  writeResultsTo: '',
+} as const satisfies Omit<Agent, 'id'>;
+
+/**
+ * Agent, ktoremu za granica zabraklo klucza, dostaje wartosc zamiast `undefined`.
+ *
+ * WADA, ZMIERZONA 2026-08-31 rano: `roleWords(agent.instructions)` przewracalo CALY ekran
+ * Agents (`TypeError: Cannot read properties of undefined (reading 'replace')`), a granica
+ * bledu zamieniala go w pusty prostokat — czyli ekran, ktory dla czlowieka wyglada na „nic tu
+ * nie ma", a naprawde sie wywrocil.
+ *
+ * TA SAMA WADA WROCILA TEGO SAMEGO DNIA WIECZOREM, i to jest powod, dla ktorego ta funkcja
+ * uzupelnia dzis CALY ksztalt, a nie jedno pole. Do wieczora ekran wstawal jako sciana kafelkow,
+ * wiec `AgentForm` montowal sie WYLACZNIE po kliknieciu; od zmiany ukladu rola stoi w ciele
+ * ekranu od pierwszej klatki, wiec formularz czyta pierwszego agenta ZAWSZE. Zmierzone
+ * w prawdziwym chromium podczas biegu e2e:
+ *
+ *   TypeError: Cannot read properties of undefined (reading 'trim')
+ *     at AgentForm (src/sections/agents/agent-form.tsx) — `value.model.trim()`
+ *
+ * Naprawa jest TUTAJ, a nie u czytelnikow pol: gdyby kazdy bronil sie sam, nastepny by
+ * zapomnial i ta sama wada wrocilaby tym samym wejsciem po raz trzeci (niezmiennik 13).
+ * Jedna droga, ktora zapisani agenci wchodza do aplikacji, jest jednym miejscem na jej prostowanie.
+ *
+ * ZLACZENIE JEST W TE STRONE, w ktora jest: `{ ...FILLED, ...one }` zostawia KAZDA wartosc,
+ * ktora naprawde przyszla — takze `''` i `false` — a uzupelnia wylacznie brakujace klucze.
+ * Odwrotna kolejnosc nadpisywalaby dysk naszymi domyslnymi i byla trzecia wersja tej wady.
+ */
+function whole(one: Definition<Agent> | Agent): Definition<Agent> | Agent {
+  /* DWA KSZTALTY, NIE JEDEN. `DefinitionListing` dopuszcza obok opakowanej definicji takze
+   * GOLA wartosc — tak odpowiadaja wstrzykiwane atrapy i tak odpowiada granica e2e. Wersja
+   * pytajaca wylacznie o `kind === 'healthy'` przepuszczala gola wartosc nietknieta, wiec
+   * naprawa dzialala w vitest i NIE dzialala w przegladarce: ekran Agents dalej padal. */
+  if (!('kind' in one)) return { ...FILLED, ...one };
+  if (one.kind !== 'healthy') return one;
+  return { ...one, value: { ...FILLED, ...one.value } };
+}
+
+/**
+ * Wszyscy zapisani agenci, po jednym na plik w bibliotece — i kazdy w PELNYM ksztalcie.
+ *
+ * Powod, dwie wady i kierunek zlaczenia stoja przy [`whole`] wyzej.
+ */
+export async function listDefinitions(): Promise<Definition<Agent>[]> {
+  const listed = await invoke<(Definition<Agent> | Agent)[]>('list_agents');
+  return listed.map(whole) as Definition<Agent>[];
 }
 
 /** Callery poza ekranem Agents potrzebują tylko zdrowych zapisanych agentów. */

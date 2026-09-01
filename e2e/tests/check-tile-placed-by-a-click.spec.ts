@@ -1,5 +1,4 @@
-/* Kafelek „sprawdź" staje na płótnie po PRAWDZIWYM kliknięciu, i po drugim kliknięciu daje się
- * wypełnić.
+/* Kafelek „sprawdź" staje na płótnie po PRAWDZIWYCH kliknięciach, i daje się wypełnić.
  *
  * PO CO TO, skoro trzy kryteria obok mierzą te same funkcje. Bo one mierzą FUNKCJE. Ten plik
  * niczego nie renderuje ręcznie i nie woła ani jednej funkcji stanu: otwiera aplikację, wchodzi
@@ -74,7 +73,7 @@ const CANVAS_TILE = 'main [data-step]';
 /** Pole komendy w panelu sprawdzenia — jedyna rzecz, dla której ten kafelek istnieje. */
 const COMMAND_FIELD = 'main #check-command';
 /** Zdanie, którym ekran odpowiada, kiedy NIC nie jest zaznaczone. */
-const NOTHING_PICKED = 'Pick a step to see what it was given.';
+const NOTHING_PICKED = 'Pick a step to set up what it does.';
 
 /** Ile czekamy na to, co ma przyjść po kliknięciu. Odpowiedź wraca w tej samej karcie. */
 const APPEARS = 6_000;
@@ -98,7 +97,7 @@ afterAll(async () => {
   await closeEverything();
 }, 30_000);
 
-describe('a person puts a check on the canvas with one click and fills it in with another', () => {
+describe('a person reaches a check from the canvas and fills it in', () => {
   it('draws the new tile, says what it is, and opens its command field when clicked', async () => {
     const app = await openApp({ replies: SCENE });
     try {
@@ -126,8 +125,15 @@ describe('a person puts a check on the canvas with one click and fills it in wit
           'afterwards would say nothing about the click.',
       ).toBe(0);
 
-      /* ── jedyna kontrolka, która stawia sprawdzenie ────────────────────────────────────── */
-      const add = page.getByRole('button', { name: /run a check/i });
+      /* ── jedyna droga, która stawia sprawdzenie ────────────────────────────────────────────
+       *
+       * DWA KLIKNIĘCIA, NIE JEDNO — 2026-08-31. Do tego dnia stał tu własny przycisk
+       * `＋ Run a check`, jeden z sześciu równorzędnych w dolnym rzędzie płótna; dziś jest
+       * jedno `＋ Add`, a rodzaje kroku są pozycjami listy pogrupowanej wedle celu. Kryterium
+       * mierzy DALEJ TO SAMO — czy człowiek ma z płótna drogę do postawienia sprawdzenia —
+       * bo pytanie brzmiało „czy jest jak", a nie „czy jednym naciśnięciem". */
+      await page.locator('main [data-add-open]').click();
+      const add = page.getByRole('menuitem', { name: /runs a check/i });
       expect(
         await add.count(),
         'the canvas offers no way to put a check on it. Rust has had this kind of step in full ' +

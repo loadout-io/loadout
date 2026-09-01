@@ -16,19 +16,31 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
 import { SECTIONS } from '../sections';
 
-/** Kolejność i podpisy są z ARCHITECTURE.md §3 i decyzji D5. Jedno słowo, tryb rozkazujący. */
+/**
+ * Kolejność i podpisy. Jedno słowo, tryb rozkazujący (decyzja D5).
+ *
+ * KOLEJNOŚĆ ZMIENIONA 2026-08-31 i to jest zmiana produktu, nie porządków w pliku. Stało tu
+ * `run, workflows, agents, …`, czyli od końca drogi do jej początku: człowiek, który otwiera
+ * aplikację pierwszy raz, czytał jako pierwszą pozycję jedyną rzecz, której zrobić nie może —
+ * bez agenta nie ma workflow, a bez workflow nie ma czego uruchomić.
+ *
+ * WYROCZNIĄ TEJ KOLEJNOŚCI JEST MAKIETA, nie ta tablica: `shell-matches-mockup.test.tsx` czyta
+ * `<nav class="nav">` z `docs/mockup/index.html` w tym samym biegu i porównuje etykiety wiersz
+ * po wierszu. Ten punkt pilnuje czego innego — że rejestr niesie SIEDEM pozycji, te i tylko te,
+ * i że nikt nie zgubił żadnej po drodze. Tablica jest wypisana NA SZTYWNO z premedytacją: pętla
+ * po `SECTIONS` sprawdzałaby rejestr samym sobą, a scalenie gubiące sekcję przeszłoby bez śladu.
+ *
+ * (Wiersz `knowledge` jest jeden zamiast dwóch od 2026-08-31: Skills i Memory zeszły się, bo obie
+ * odpowiadały na jedno pytanie człowieka — „co ten model wie o mojej pracy" — i kazały mu
+ * wybierać dwa razy.)
+ */
 const EXPECTED = [
-  { id: 'run', label: 'Run' },
-  { id: 'workflows', label: 'Workflows' },
   { id: 'agents', label: 'Agents' },
-  /* JEDEN WIERSZ ZAMIAST DWÓCH od 2026-08-31: Skills i Memory zeszły się w Knowledge, bo obie
-     odpowiadały na jedno pytanie człowieka („co ten model wie o mojej pracy") i kazały mu
-     wybierać dwa razy. Ta tablica jest wypisana NA SZTYWNO z premedytacją — pętla po `SECTIONS`
-     sprawdzałaby rejestr samym sobą, a scalenie, które gubi sekcję po drodze, przeszłoby wtedy
-     bez śladu. */
+  { id: 'workflows', label: 'Workflows' },
+  { id: 'run', label: 'Run' },
+  { id: 'triggers', label: 'Triggers' },
   { id: 'knowledge', label: 'Knowledge' },
   { id: 'lab', label: 'Lab' },
-  { id: 'triggers', label: 'Triggers' },
   { id: 'settings', label: 'Settings' },
 ] as const;
 

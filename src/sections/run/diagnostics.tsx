@@ -71,9 +71,9 @@ export function Diagnostics({ folder }: DiagnosticsProps): ReactElement {
     result === 'copied' ? DIAGNOSTICS_COPIED : result === 'failed' ? DIAGNOSTICS_FAILED : null;
 
   return (
-    <div data-diagnostics className="flex min-w-0 items-center gap-2">
+    <div data-diagnostics className="flex shrink-0 items-center gap-2">
       {sentence === null ? null : (
-        <p data-diagnostics-said aria-live="polite" className="lead fade-in truncate">
+        <p data-diagnostics-said aria-live="polite" className="lead fade-in min-w-0 truncate">
           {sentence}
         </p>
       )}
@@ -87,10 +87,16 @@ export function Diagnostics({ folder }: DiagnosticsProps): ReactElement {
         }
         disabled={here.folder === null || result === 'copying'}
         onClick={copy}
-        /* `.btn` z `theme.css`: obrys `--line-strong`, wypelnienie `--raised`, 32 px z DESIGN §6.
-           Recznie spisana wersja stala tu na 28 px i sama gasila sie `disabled:opacity-40` —
-           czyli opisywala przycisk drugi raz, w miejscu, w ktorym nikt tego opisu nie szuka. */
-        className="btn"
+        /* `.btn-quiet` z `theme.css` — DEMOCJA Z 2026-08-31, nie kosmetyka.
+           Recznie spisana wersja stala tu kiedys na 28 px; `.btn` naprawil rozmiar i zostawil
+           WAGE: kopiowanie diagnostyki wygladalo w rzedzie paska dokladnie tak samo, jak wybor
+           lidera i pole zadania, i stalo przed nimi wszystkimi. To jest czynnosc RZADKA — sięga
+           po nia czlowiek, ktory zglasza usterke — a rzad kontrolek jednej wagi znaczy, ze nikt
+           nie rozstrzygnal, co jest wazne (DESIGN §1: trzy poziomy glosnosci). Na tym ekranie
+           czynnosc glowna jest jedna i jest nia `Run`.
+           `shrink-0`, bo pasek nie sciska juz rzedu na sile (`./strip/strip.tsx`): ustepuja
+           napisy, nigdy kontrolki. */
+        className="btn-quiet shrink-0"
       >
         {result === 'copying' ? 'Copying…' : 'Copy diagnostics'}
       </button>

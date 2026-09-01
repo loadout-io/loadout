@@ -54,7 +54,7 @@
  * tutaj nie istnieje. Ten sam zapis stoi w `src/sections/workflows/index.tsx`.
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { MouseEvent, ReactElement } from 'react';
+import type { MouseEvent, ReactElement, ReactNode } from 'react';
 
 import { why } from '../../ipc/why';
 import { sectionEntry } from '../../ui/sections';
@@ -74,7 +74,7 @@ import { Entry } from './entry/entry';
 import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName } from './folders';
-import { theOneThatIsGoing } from './history-command';
+import { openOneRun, theOneThatIsGoing } from './history-command';
 import {
   answerTheLead,
   listRuns,
@@ -94,7 +94,8 @@ import {
   subscribeToBudget,
 } from './limits/chosen';
 import { waitingWhere } from './limits/waiting';
-import { toChoices } from './choices';
+import type { Choice } from './choices';
+import { WORKFLOW_LABEL, offerFor, toChoices, whoChoseIt, willRun } from './choices';
 import type { Named } from './run-command';
 import { startFromLine, workflowNames } from './run-command';
 import { list as listWorkflows } from '../workflows/io';
@@ -110,6 +111,11 @@ import type { AgentFacts } from './rail/roster';
 import { agentStatusOf, roster } from './rail/roster';
 import type { RailCard } from './rail/card';
 import { sayAfterRunningAgain, StartedThings } from './rail/rail';
+/* CO CZŁOWIEK URUCHOMIŁ KOMENDĄ — czytane TUTAJ, choć rysuje to komponent wyżej, bo o układ
+ * obszaru pracy pyta ten ekran: pierwszy kafelek `/start` wraca do kolumny kroków i ta kolumna
+ * musi wtedy istnieć. Jeden magazyn, dwóch czytelników, zero drugiej listy (niezmiennik 13). */
+import { startedThings, subscribeToStarted } from './rail/processes';
+import { AfterRun } from './graph/after-run';
 import { RunGraph } from './graph/graph';
 import { StepStream } from './graph/drawer';
 import type { GraphStep, Plan as RunPlan } from './graph/model';
@@ -121,11 +127,22 @@ import {
 } from './graph/opened';
 import { AgentScreen } from './session/mount';
 import { openAgent } from './session/open';
-import { FirstRun, firstRunSteps, somethingIsLeft } from './first-run';
+import { FirstRun, firstRunSteps, somethingIsLeft, welcomeIsTheWholeScreen } from './first-run';
+import { ReadyToRun } from './ready';
+import {
+  lastRunIn,
+  pickWorkflow,
+  rememberAgents,
+  rememberRuns,
+  rememberWorkflows,
+  subscribeToWhatIsReady,
+  whatIsReady,
+} from './whats-ready';
 import { Start } from './start';
 import { ReflectionToggle } from './reflection/toggle';
 import { reflectionForRequestedRun, rememberReflectionChoice } from './requested';
-import { spendFor, stripFor } from './strip/model';
+import { headlineFor } from './strip/headline';
+import { RunHead } from './strip/head';
 import { Strip } from './strip/strip';
 import { CloseConfirm } from './tabs/picker';
 import { TabBar } from './tabs/tab-bar';
@@ -134,17 +151,60 @@ import { TabBar } from './tabs/tab-bar';
 const SCREEN_ROWS = 'auto auto minmax(0,1fr)';
 
 /**
- * Szerokość drugiej kolumny w pikselach — 268 z reguły `.work` w makiecie.
+ * Szerokość kolumny planu w pikselach — 322 z reguły `.work` w makiecie.
  *
  * Liczba stoi TUTAJ od 2026-08-31, bo do tego dnia trzymał ją komponent, który tę kolumnę
- * wypełniał (`rail/rail.tsx`, `RAIL_WIDTH`), a tamta kolumna zniknęła. Drugiego literału `268`
- * w repo nie ma i mieć nie może: makieta jest wyrocznią i czyta ją `run-matches-mockup.test.tsx`
- * w tym samym biegu (niezmiennik 13).
+ * wypełniał (`rail/rail.tsx`, `RAIL_WIDTH`), a tamta kolumna zniknęła. Drugiego literału tej
+ * szerokości w repo nie ma i mieć nie może: makieta jest wyrocznią i czyta ją
+ * `run-matches-mockup.test.tsx` w tym samym biegu (niezmiennik 13).
+ *
+ * 2026-08-31 — BYŁO 268 PO PRAWEJ, JEST 376 PO LEWEJ. Obie zmiany są jedną zmianą i obie
+ * przyjechały z makiety: kolumna planu przestała być paskiem obok pracy i stała się ŚCIEŻKĄ,
+ * po której czyta się bieg — a ścieżka z kartami kroków nie mieści się w 268 px (nazwa kroku
+ * kończyła się wielokropkiem przy każdym kroku nazwanym pełnym zdaniem). Miejsce po lewej
+ * bierze się z tego samego: ekran czyta się od lewej, a pierwsze pytanie brzmi „na czym stoi
+ * ten bieg", nie „co przed chwilą powiedział agent".
  */
-const PLAN_WIDTH = 268;
+/* 2026-09-01 — 376 -> 322 px, na zgloszenie wlasciciela („a sama sekcje tez moz byc troche
+ * wezsza"). Zmiescilo sie, bo tego samego dnia z tej kolumny zeszla RYNNA ZNACZNIKOW: 18 px
+ * samej rynny plus 9 px przerwy do karty, a kafelek oddal jeszcze 6 px marginesu. Kolumna
+ * wezsza o 54 px oddaje je strumieniowi, w ktorym czyta sie proze agentow. */
+const PLAN_WIDTH = 322;
 
-/** Reguła `.work` z makiety: strumień bierze resztę, obraz planu swoje 268 px. */
-const WORK_COLUMNS = `minmax(0,1fr) ${String(PLAN_WIDTH)}px`;
+/** Reguła `.work` z makiety: ścieżka kroków bierze swoje 322 px, strumień resztę. */
+const WORK_COLUMNS = `${String(PLAN_WIDTH)}px minmax(0,1fr)`;
+
+/**
+ * Dwa rzędy obszaru pracy: nagłówek biegu, a pod nim dwie kolumny.
+ *
+ * NAGŁÓWEK BIERZE OBIE KOLUMNY, dokładnie jak `.rhead` w makiecie — pas na całą szerokość nad
+ * ścieżką kroków i strumieniem. Powód, dla którego stoi WEWNĄTRZ `[data-work]`, a nie nad nim,
+ * stoi w całości w `./strip/head.tsx`: makieta wydaje w tym miejscu 222 px nad pierwszą treścią
+ * przy suficie 96 px z `docs/ARCHITECTURE.md` §7, a tożsamość biegu jest treścią tego ekranu,
+ * nie jego ramą. Rozbieżność zgłoszona właścicielowi z liczbami.
+ *
+ * PIERWSZY RZĄD ISTNIEJE ZAWSZE, także pusty, i to nie jest ozdoba: w siatce bez nazwanych
+ * obszarów rząd bierze się z KOLEJNOŚCI dzieci, więc nagłówek znikający z drzewa wpycha ścieżkę
+ * kroków do rzędu `auto`, a strumień do rzędu z resztą wysokości — czyli oddaje całą wysokość
+ * kolumnie planu i zero strumieniowi. Pusty pojemnik mierzy zero pikseli i trzyma tę kolejność.
+ */
+const WORK_ROWS = 'auto minmax(0,1fr)';
+
+/**
+ * Jeden tor — cała tafla obszaru pracy dla jednego dziecka.
+ *
+ * STOI W OBU OSIACH PIERWSZEGO OTWARCIA, bo w obu mówi to samo i prawdę: ta siatka ma wtedy
+ * jedno dziecko, jedną kolumnę i jeden rząd. Dlaczego pierwsze otwarcie w ogóle dostaje jeden
+ * tor zamiast dwóch, stoi przy `welcomeIsTheWholeScreen` (`./first-run.tsx`).
+ *
+ * SZEROKOŚĆ ROBI RÓŻNICĘ, WYSOKOŚĆ DZIŚ NIE — i to jest zmierzone, nie założone. Podmiana toru
+ * kolumn na `WORK_COLUMNS` wsadza powitanie w 376 px obok 800 px czerni i pada na kryterium
+ * w `e2e/tests/the-first-open-fills-the-window.spec.ts`. Podmiana rzędów na `WORK_ROWS` nie
+ * zmienia ani jednego piksela, bo kolumna strumienia niesie `min-h-0` i rząd `auto` rozciąga się
+ * wtedy na całą wysokość tak samo jak `1fr`. Rzędy zostają zapisane wprost mimo to: układ ma
+ * mówić, ile rzędów ma, a nie polegać na cudzej klasie w dziecku.
+ */
+const WHOLE_SURFACE = 'minmax(0,1fr)';
 
 /** Reguła `.feedcol` z makiety: historia przewija się, odpowiedź Loadouta i wiersz wejścia
  * stoją na dole. */
@@ -265,6 +325,15 @@ function planFor(
 }
 
 /**
+ * Strefa TERAZ dla obrazu, w którym nikt jeszcze nie pracuje.
+ *
+ * STAŁA, nie `{ rows: [], thinking: null }` wpisane w wyrażenie: `planFor` bierze tę strefę
+ * przez `useMemo`, a świeży obiekt przy każdym renderze przeliczałby cały plan bez powodu —
+ * czyli przerysowywał płótno React Flow za każdym drgnięciem jakiegokolwiek innego pola.
+ */
+const NOBODY_IS_WORKING: NowZone = { rows: [], thinking: null };
+
+/**
  * Kiedy wraca limit dostawcy — albo `null`, kiedy bieg wysyła.
  *
  * Pauza jest stanem, którego nie ma w żadnym polu magazynu: niesie ją linia `problem` z pola
@@ -277,6 +346,268 @@ function pausedUntil(lines: readonly FeedLine[]): number | null {
   const last = lines.at(-1);
   if (last === undefined || last.kind !== 'problem') return null;
   return last.resetsAt;
+}
+
+/**
+ * HANDLER WYBORU WORKFLOW RAZEM ZE ŚLADEM PO NIM — jeden obiekt, więc jednego bez drugiego nie
+ * da się na kontrolce zostawić.
+ *
+ * DLACZEGO ŚLAD W OGÓLE ISTNIEJE. To repo nie ma jsdom, a `renderToStaticMarkup` nie zapisuje
+ * handlerów w markupie: kontrolka z handlerem i kontrolka bez niego dają CO DO BAJTA ten sam
+ * napis. Sam atrybut byłby więc obietnicą, którą kryterium czyta ZAMIAST mechanizmu — a kontrolka
+ * przyjmująca decyzję i wyrzucająca ją to dokładnie ta wada, którą to zadanie zamyka
+ * (niezmiennik 16). Skoro oba pola jadą jednym obiektem, atrybut nie ma jak przeżyć skasowania
+ * handlera.
+ *
+ * EKSPORTOWANY, żeby kryterium mogło ten handler ZAWOŁAĆ i zobaczyć, że nośnik naprawdę się po
+ * nim zmienia — kliknięcia w tym repo zawołać się nie da, więc to jest najbliższa prawdzie
+ * rzecz, jaką da się sprawdzić bez okna. Prawdziwym kliknięciem sądzi to chromium z `e2e/`.
+ */
+/* ZNAK, ZE WYBOR JEST ZYWY. Do 2026-09-01 niosl razem z nim `onChange` kontrolki `<select>`;
+ * kontrolka jest dzis wlasna lista, wiec pick robi `onClick` pozycji, a to zostaje samym
+ * znakiem. Kryterium pyta o niego, zeby kontrolka bez handlera nie przeszla jako kontrolka
+ * (niezmiennik 16). */
+export const CHOICE_IS_LIVE = { 'data-workflow-choice-live': 'yes' } as const;
+
+interface WhichWorkflowProps {
+  /** Wszystko, co ekran wyczytał z katalogu workflow — także pliki bez ani jednego kroku. */
+  readonly choices: readonly Choice[];
+  /** Nazwa pliku wskazana przez człowieka, albo `null`, kiedy nikt jeszcze nie wskazywał. */
+  readonly chosen: string | null;
+  /** Czy bieg idzie. Wtedy tej decyzji nie da się już zmienić i kontrolki nie ma. */
+  readonly running: boolean;
+  /** Workflow, który naprawdę ruszy — ta sama odpowiedź, którą ma nagłówek i przycisk Start. */
+  readonly nextUp: Choice | null;
+}
+
+/**
+ * Tyle, ile potrzebuje sama lista.
+ *
+ * `nextUp` bez `null`: pozycja zaznaczona jest tu WARUNKIEM istnienia kontrolki, a nie jej
+ * polem — lista, która nie ma czego pokazać jako wybrane, nie ma prawa się narysować. Rozstrzyga
+ * to [`choiceIn`] jednym warunkiem, więc ten komponent nie powtarza go u siebie.
+ */
+interface WorkflowChooserProps {
+  readonly choices: readonly Choice[];
+  readonly nextUp: Choice;
+}
+
+/** Tyle, ile potrzebuje zdanie o tym, kto wybrał: co leży w katalogu i co wskazał człowiek. */
+interface WhoChoseItProps {
+  readonly choices: readonly Choice[];
+  readonly chosen: string | null;
+}
+
+/**
+ * KTÓRY WORKFLOW RUSZY — wybór widoczny i zmienialny, W nagłówku, który go ogłasza.
+ *
+ * ── DLACZEGO TUTAJ, A NIE W PASKU LOADOUTU (zmierzone, nie ustalone gustem) ───────────────────
+ *
+ * Lista wyboru workflow stała w pasku do 2026-08-20 i oddała swoje miejsce liderowi. Wrócić tam
+ * nie może z dwóch policzonych powodów. Pierwszy: rząd kontrolek paska jest pełny CO DO PIKSELA
+ * przy oknie 1512 px — siedem kontrolek, a pole zadania zjechało do 128 px właśnie po to, żeby
+ * nazwa sekcji i sufit wydatku zmieściły się w kadrze (`./start.tsx`, akapit przy polu zadania).
+ * Ósma kontrolka wypycha stamtąd cudzą treść. Drugi: `docs/ARCHITECTURE.md` §7 daje 96 px chrome
+ * nad pierwszą treścią, a widok domyślny wydaje 93 (8 + 1 + 32 + 52) — trzy piksele nie są
+ * miejscem na kontrolkę, a nowy rząd paska kosztowałby ich kilkadziesiąt.
+ *
+ * Nagłówek biegu jest TREŚCIĄ, nie chrome, i cały ten rachunek stoi w `./strip/head.tsx`. Jest
+ * też jedynym miejscem, w którym ekran już dziś ogłasza, co ruszy („READY TO RUN · Deep
+ * research"), więc odpowiedź na to ogłoszenie należy dokładnie tam, gdzie ono padło.
+ *
+ * ── 2026-09-01: TYTUŁ NAGŁÓWKA *JEST* TĄ KONTROLKĄ ──────────────────────────────────────────
+ *
+ * ZGŁOSZENIE: nazwa workflow stała na tym ekranie TRZY RAZY — jako tytuł nagłówka, jako napis
+ * na kontrolce startu („Run Murmur-1", `./start.tsx`) i jako zaznaczona pozycja tej listy,
+ * o wiersz WYŻEJ od tytułu, który ją powtarzał. Jeden fakt, trzy nośniki (niezmiennik 13).
+ * Trzy miejsca na jedną odpowiedź to trzy miejsca, w których da się jej zaprzeczyć — i tak
+ * właśnie wyglądała wada, którą właściciel sfotografował: nagłówek ogłaszał jeden workflow,
+ * przycisk obok nazywał drugi.
+ *
+ * KTÓRY NOŚNIK ZOSTAŁ, I DLACZEGO WŁAŚNIE TEN. Zostaje TYTUŁ, a kontrolka wyboru jest nim
+ * — jednym elementem, nie dwoma zgodnymi. Rachunek jest taki:
+ *
+ *   NAPIS NA PRZYCISKU STARTU nie może być tym jedynym miejscem. Przycisk stoi w pasku
+ *   loadoutu, czyli w chrome, i nie ma jak powiedzieć DWÓCH pozostałych rzeczy, których ta
+ *   nazwa wymaga: że to był wybór i że da się go zmienić. Rzędu paska nie da się o to
+ *   poszerzyć — jest pełny co do piksela przy oknie 1512 px, a `docs/ARCHITECTURE.md` §7
+ *   zostawia 3 z 96 pikseli chrome (8 + 1 + 32 + 52 = 93). Przycisk mówi więc, CO ROBI
+ *   naciśnięcie („Run workflow"), a nie co ono uruchomi.
+ *
+ *   TYTUŁ nie może zniknąć: nagłówek bez nazwy nie rysuje się wcale (`./strip/head.tsx`),
+ *   więc zabrałby ze sobą stan biegu, metadaną i wydatek. Jest też jedynym miejscem, w którym
+ *   ekran ogłasza, co jest gotowe — i jedynym stopniem pisma, w którym widać to z drugiego
+ *   końca pokoju.
+ *
+ *   LISTA nie może pokazywać innego napisu niż zaznaczona pozycja — kontrolka wyboru, która
+ *   nie pokazuje wybranego, jest zagadką. Dopóki tytuł i lista są dwoma elementami, ta sama
+ *   nazwa stoi w obu.
+ *
+ * Zostaje więc jedno rozwiązanie, w którym nazwa stoi RAZ: tytuł i lista to ten sam element.
+ * Człowiek czyta nazwę tam, gdzie ekran ją ogłasza, i zmienia ją tam, gdzie ją przeczytał —
+ * bez wchodzenia w inną sekcję i bez szukania drugiej kontrolki. Zdanie „kto to wybrał" idzie
+ * do wiersza nadoczka (`RunHeadProps.said`), bo odpowiada na inne pytanie i nie powtarza nazwy.
+ *
+ * GRANICA, POWIEDZIANA WPROST. Nazwa żyje jeszcze w PODPOWIEDZI kontrolki startu („Starts a new
+ * run of the complete X workflow from the beginning", `./start.tsx`). To nie jest czwarty
+ * nośnik na ekranie: podpowiedź jest niewidoczna, dopóki się na nią nie wskaże, liczona jest
+ * z tego samego `Choice`, którego `path` ten przycisk wysyła — więc nie ma jak nazwać innego
+ * workflow niż ten, który ruszy — i odpowiada na pytanie „co zrobi naciśnięcie", a nie „co jest
+ * gotowe". Gdyby właściciel chciał ją zdjąć, zdanie o NOWYM biegu od początku (a nie o wznowieniu
+ * rozmowy z liderem, zgłoszenie z 2026-08-21) musi przeżyć w innym miejscu.
+ *
+ * ── CZEGO TU NIE MA ──────────────────────────────────────────────────────────────────────────
+ *
+ * KONTROLKI W TRAKCIE BIEGU. Który workflow rusza, czyta się RAZ, przy starcie; kontrolka
+ * przyjmująca tę decyzję w połowie biegu obiecywałaby zmianę, której nie da się wykonać
+ * (niezmiennik 16) — ten sam powód, dla którego pole zadania i oba limity obok gasną. Tytuł
+ * jest wtedy zwykłym napisem i nazywa bieg, który idzie.
+ *
+ * `<label>` WOKÓŁ ZDANIA. Tekst `<label>` staje się nazwą dostępną kontrolki, więc zdanie „kto
+ * to wybrał" wpisane w `<label>` przemianowałoby wybór workflow na siebie. Nazwa jedzie przez
+ * `aria-label` z `./choices.ts`, zdanie stoi wierszem wyżej jako zwykły napis.
+ *
+ * WŁASNEJ KRESKI I WŁASNEGO PASA: nagłówek ma je już (`px-[18px]` i `border-b`), a rząd, który
+ * dokłada swoje wewnątrz cudzego, rysuje ramkę zamiast wiersza.
+ */
+function WhichWorkflow({ choices, nextUp }: WorkflowChooserProps): ReactElement {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+
+  /* ZAMKNIJ, KIEDY CZLOWIEK PATRZY GDZIE INDZIEJ. Bez tego lista zostaje otwarta po kliknieciu
+     w cokolwiek obok i zaslania kroki — a jest to jedyna rzecz na tym ekranie, ktora cokolwiek
+     zaslania. Escape i klik poza pudelkiem robia to samo, bo to jedno zamkniecie. */
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (event: globalThis.MouseEvent): void => {
+      if (!(event.target instanceof Node) || box.current?.contains(event.target) !== true) {
+        setOpen(false);
+      }
+    };
+    const key = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', key);
+    };
+  }, [open]);
+
+  return (
+    /* WLASNA LISTA ZAMIAST `<select>`, i to nie jest ozdoba — zgloszenie wlasciciela 2026-09-01,
+       powtorzone dwa razy: „czcionka totalnie za duza".
+
+       Lista rozwijana `<select>` jest MENU SYSTEMU, nie naszym elementem. Dziedziczy stopien po
+       kontrolce, a kontrolka niesie `text-title` (22 px), bo zamknieta JEST tytulem ekranu.
+       Probowalem najtansza droga — `font-size` wprost na `<option>` — i macOS ja zignorowal
+       (zmierzone na jego zrzucie po wdrozeniu). Zostaje wlasna lista: nasz element, nasz stopien.
+
+       NAZWA DALEJ STOI RAZ na ekranie: przycisk pokazuje wybrana, a lista pozostale. Kiedy jest
+       zamknieta, w drzewie nie ma jej wcale (`open ? ... : null`) — nie chowamy jej arkuszem,
+       bo rzecz schowana arkuszem dalej czyta czytnik ekranu. */
+    <span ref={box} className="relative inline-flex max-w-full items-center">
+      <button
+        type="button"
+        data-workflow-choice
+        {...CHOICE_IS_LIVE}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={WORKFLOW_LABEL}
+        onClick={() => {
+          setOpen((was) => !was);
+        }}
+        className="-ml-2 flex max-w-full cursor-pointer items-center gap-2 truncate rounded-md border-0 bg-transparent py-1 pr-2 pl-2 font-ui text-title text-ink outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-accent-edge"
+      >
+        <span className="truncate">{nextUp.name}</span>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="size-4 shrink-0 text-muted"
+        >
+          <path d="m4.4 6.4 3.6 3.6 3.6-3.6" />
+        </svg>
+      </button>
+
+      {/* LISTA STOI W DRZEWIE ZAWSZE, schowana atrybutem `hidden`, a nie warunkiem w JSX.
+          `hidden` to `display:none`, wiec czytnik ekranu tez ja pomija — nie jest to rzecz
+          schowana arkuszem, ktora dalej sie oglasza. Zawsze w drzewie, bo „czy kontrolka
+          oferuje to, co naprawde lezy w katalogu" jest faktem o kazdym pliku, a nie tylko
+          o tym jednym, ktory akurat wybrano. */}
+      <ul
+        hidden={!open}
+        data-workflow-choice-list
+        role="listbox"
+        aria-label={WORKFLOW_LABEL}
+        className="pane absolute top-full left-0 z-20 mt-1 max-h-[320px] min-w-[260px] overflow-y-auto rounded-md p-1"
+      >
+        {choices.map((one) => (
+          /* WSZYSTKO, CO LEZY W KATALOGU, takze pliki bez krokow — te jako niewybieralne,
+               z powodem w napisie. Powod i granica stoja przy `offerFor` w `./choices.ts`. */
+          <li key={one.path}>
+            <button
+              type="button"
+              role="option"
+              data-choice-path={one.path}
+              aria-selected={one.path === nextUp.path}
+              disabled={one.steps.length === 0}
+              onClick={() => {
+                pickWorkflow(one.path);
+                setOpen(false);
+              }}
+              className="row w-full justify-start px-2 text-left text-ui aria-[selected=true]:text-accent"
+            >
+              {offerFor(one)}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </span>
+  );
+}
+
+/**
+ * KTO WYBRAŁ TEN WORKFLOW — jedno zdanie, trzy stany świata, i to jest cała odpowiedź na
+ * zgłoszenie właściciela („czemu mi się ten deep reaserch pojawia, przecież nie wybrałem żadnego
+ * workflow"). Treść liczy `./choices.ts`, bo to polityka, a nie wygląd.
+ *
+ * NIE POWTARZA NAZWY i nie ma prawa jej powtórzyć: nazwa stoi w tytule, wiersz niżej, i to jest
+ * jedyne miejsce, w którym stoi (niezmiennik 13). To zdanie mówi wyłącznie, CZYJA to była
+ * decyzja.
+ */
+function WhoChoseIt({ choices, chosen }: WhoChoseItProps): ReactElement {
+  return (
+    <p data-workflow-choice-said className="lead min-w-0 truncate">
+      {whoChoseIt(choices, chosen)}
+    </p>
+  );
+}
+
+/**
+ * Oba sloty nagłówka wypełnione RAZEM albo wcale — bo odpowiadają na jedno pytanie.
+ *
+ * JEDNO WYRAŻENIE, NIE DWA WARUNKI PRZY DWÓCH SLOTACH: „czy jest jeszcze o czym decydować"
+ * rozstrzyga się w jednym miejscu, więc nie da się zostawić na ekranie zdania „Loadout picked
+ * this one for you — change it here" nad tytułem, którego już nie da się zmienić.
+ *
+ * Kiedy nie ma czego uruchomić, nie ma też o czym decydować — a nagłówek nad tym i tak się nie
+ * rysuje (`./strip/head.tsx`), więc lista wisiałaby pod niczym (DESIGN §6).
+ */
+function choiceIn({ choices, chosen, running, nextUp }: WhichWorkflowProps): {
+  readonly chooser: ReactNode;
+  readonly said: ReactNode;
+} {
+  if (running || nextUp === null) return { chooser: null, said: null };
+  return {
+    chooser: <WhichWorkflow choices={choices} nextUp={nextUp} />,
+    said: <WhoChoseIt choices={choices} chosen={chosen} />,
+  };
 }
 
 export default function Run(): ReactElement {
@@ -329,17 +660,131 @@ export default function Run(): ReactElement {
    * postawiona w tym mianowniku jest liczbą, której ten bieg nigdy nie dostał. */
   const budgetUsd = useSyncExternalStore(subscribeToBudget, budgetOfTheRun, budgetOfTheRun);
 
-  const strip = useMemo(
-    () => stripFor(run.workflow, run.steps, spendFor(run.lines, budgetUsd)),
-    [budgetUsd, run.lines, run.steps, run.workflow],
-  );
+  /**
+   * CO LEŻY W KATALOGU WORKFLOW — pozycje listy, nie same nazwy, i to jest zmiana z 2026-08-31.
+   *
+   * Do tego dnia ten ekran zapamiętywał wyłącznie NAZWY (`workflowNames`), bo tyle potrzebowała
+   * podpowiedź pod `/run`. Pozycja niesie oprócz nazwy KROKI, ich POZYCJE i STRZAŁKI z pliku —
+   * czyli dokładnie to, z czego rysuje się obraz planu. Bez nich obraz nie miał czego pokazać,
+   * dopóki bieg nie ruszył, i sygnatura tego produktu była dla świeżego okna niewidzialna.
+   */
+  useEffect(() => {
+    let alive = true;
+    listWorkflows()
+      .then((entries) => {
+        if (alive) rememberWorkflows(toChoices(entries));
+      })
+      .catch((error: unknown) => {
+        /* ZDANIE MÓWI TEN, KTO CZYTAŁ — od 2026-08-31, bo od tego dnia czyta tylko ten efekt.
+         * Do tego dnia stało tu milczenie z dopiskiem „powie to kontrolka startu", a tamta
+         * kontrolka miała własny odczyt tego samego katalogu; odkąd go nie ma, milczenie tutaj
+         * byłoby ciszą po jedynej próbie. Wyjęcie zdania z odmowy mieszka w `src/ipc/why.ts`:
+         * Tauri odrzuca NAPISEM, nie `Error`, więc warunek `instanceof Error` byłby tu zawsze
+         * fałszywy. Do strumienia, tą samą drogą, co odmowa startu (`sayWhatDidNotStart`). */
+        if (alive) sayWhatDidNotStart(why(error, 'Loadout could not read the workflows folder.'));
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  /* CO TEN EKRAN WIE Z DYSKU — jedna migawka, tą samą drogą, co pozostałe magazyny. Powód, dla
+   * którego te trzy fakty mieszkają poza komponentem, stoi w całości w `./whats-ready.ts`. */
+  const ready = useSyncExternalStore(subscribeToWhatIsReady, whatIsReady, whatIsReady);
+  const choices = ready.choices;
+  const lastRun = lastRunIn(ready, folder);
+  const namesToRun = useMemo<readonly Named[]>(() => workflowNames(choices), [choices]);
+
+  /**
+   * KTÓRY WORKFLOW RUSZY, KIEDY CZŁOWIEK NACIŚNIE `Run` — ta sama funkcja nad tym samym
+   * nośnikiem, o które pyta kontrolka startu (`./start.tsx`, `willRun(choices, ready.chosen)`).
+   *
+   * FUNKCJA, A NIE DRUGI WYBÓR. Do 2026-08-31 ten akapit obiecywał dokładnie to, a obietnica
+   * była nieprawdziwa: obie strony wołały wprawdzie tę samą funkcję, ale każda nad WŁASNYM
+   * odczytem katalogu — ten ekran nad `./whats-ready.ts`, kontrolka nad swoim `useState`.
+   * Zmierzone w prawdziwym chromium: dwa niezależne `list_workflows` na jedno wejście w sekcję,
+   * a w scenie z różnymi odpowiedziami nagłówek i przycisk nazywały dwa RÓŻNE pliki naraz,
+   * po pełnym ustaniu okna. Jedno źródło znosi tę klasę rozjazdu (niezmiennik 13).
+   */
+  const nextUp = useMemo(() => willRun(choices, ready.chosen), [choices, ready.chosen]);
+
   const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
-  /* CO RYSUJE PRAWA KOLUMNA. Jedno wyrażenie, bo jeden obraz: kroki, kto na nich stoi i co robi
-   * teraz. Do 2026-08-31 te trzy fakty stały na ekranie w trzech miejscach naraz. */
-  const plan = useMemo(
-    () => planFor(run.steps, run.links, cards, view.now, view.pinned),
-    [run.steps, run.links, cards, view.now, view.pinned],
+  /**
+   * CO RYSUJE PRAWA KOLUMNA. Jedno wyrażenie, bo jeden obraz: kroki, kto na nich stoi i co robi
+   * teraz. Do 2026-08-31 te trzy fakty stały na ekranie w trzech miejscach naraz.
+   *
+   * ── OBRAZ STOI TAM, ZANIM COKOLWIEK RUSZY (2026-08-31, druga zmiana tego dnia) ────────────
+   *
+   * ZMIERZONE na zrzucie prawdziwego okna 1512×950 (`e2e/harness.ts`): graf biegu — sygnatura
+   * całego produktu — pojawiał się WYŁĄCZNIE w trakcie biegu, bo jedynym jego źródłem był
+   * `run.steps`, a ten jest pusty, dopóki `Start` nie wróci. Człowiek, który otworzył
+   * aplikację z gotowym folderem, agentem i workflow, nie miał skąd wiedzieć, że ten produkt
+   * w ogóle RYSUJE pracę: prawa kolumna była pustym prostokątem 268 px, a lewa — 1010 px czerni.
+   *
+   * KIEDY MAGAZYN BIEGU MILCZY, RYSUJEMY PLAN, KTÓRY RUSZY. Kroki, ich pozycje i strzałki
+   * przyjeżdżają z PLIKU workflow (`./choices.ts`, `toChoices`), więc obraz jest legalny
+   * (niezmiennik 17): ani jedna współrzędna i ani jedna strzałka nie jest wymyślona tutaj.
+   * Wybór pliku nie jest wyborem tego ekranu — jest tą samą funkcją, którą pyta o niego
+   * przycisk (`nextUp` wyżej), więc obraz i napis na przycisku mówią o jednym workflow.
+   *
+   * STAN KAŻDEGO KROKU TO `waiting`, bo taki jest: `planOf` stawia `pending`, a `agentStatusOf`
+   * przekłada to na kafelek z obrysem, nie wypełniony. Blok wypełniony obiecuje, że krok się
+   * udał [DESIGN §2] — a tutaj nic się jeszcze nie wydarzyło i obraz nie ma prawa mówić inaczej.
+   *
+   * PYTANIE I KARTY AGENTÓW NIE WCHODZĄ DO PODGLĄDU. Przypięte pytanie w tej chwili może
+   * pochodzić wyłącznie od lidera — bieg nie idzie, więc żaden krok nie pyta — a przypisane do
+   * kroku z pliku byłoby pytaniem postawionym przy kimś, kto go nie zadał (niezmiennik 17).
+   * Karty są puste z tego samego powodu: kafelek agenta istnieje wtedy i tylko wtedy, gdy agent
+   * coś nadał.
+   *
+   * MAGAZYN BIJE PLIK, ZAWSZE. Warunek pyta o `run.steps`, czyli o to, czy bieg ma kroki —
+   * pierwszy krok wpisany przez `nowRunning` zdejmuje podgląd w tym samym renderze, w którym
+   * wchodzi prawdziwy plan.
+   */
+  const plan = useMemo(() => {
+    const live = planFor(run.steps, run.links, cards, view.now, view.pinned);
+    if (live.steps.length > 0 || nextUp === null) return live;
+    return planFor(nextUp.steps, nextUp.links ?? null, [], NOBODY_IS_WORKING, null);
+  }, [run.steps, run.links, cards, view.now, view.pinned, nextUp]);
+  /**
+   * CO NAGŁÓWEK EKRANU MÓWI O TYM BIEGU — jedno wyrażenie, policzone bez okna
+   * (`./strip/headline.ts`), bo to repo nie ma jsdom i wszystko, co da się rozstrzygnąć modelem,
+   * ma być rozstrzygnięte modelem (niezmiennik 15).
+   *
+   * KROKI BIERZE STĄD, SKĄD OBRAZ: z magazynu biegu, a kiedy ten milczy — z pliku workflow, który
+   * ruszy (`nextUp`). To jest ten sam warunek, co przy `plan` wyżej, i musi być ten sam: nagłówek
+   * liczący kroki z samego magazynu mówiłby „Ready to run" nad czterema kafelkami, które widać,
+   * i milczałby o ich liczbie (niezmiennik 13).
+   *
+   * `run.folder ?? folder` — bieg zna swój folder, bo okno samo go wysłało do `run_workflow`;
+   * kiedy nic nie biegnie, workspace jest tym, na którym stoi karta. `folderName` skraca ścieżkę
+   * do nazwy, czyli do tego samego napisu, który nosi karta — pełna ścieżka w metadanej nagłówka
+   * wypchnęłaby resztę wiersza (DESIGN §1).
+   */
+  const headline = useMemo(
+    () =>
+      headlineFor({
+        workflow: run.workflow,
+        nextUp: nextUp?.name ?? '',
+        steps: run.steps.length > 0 ? run.steps : (nextUp?.steps ?? []),
+        lines: run.lines,
+        droppedBefore: run.droppedBefore,
+        workspace: (run.folder ?? folder) === null ? null : folderName(run.folder ?? folder ?? ''),
+        agents: run.agents.length,
+        budgetUsd,
+      }),
+    [
+      run.workflow,
+      run.steps,
+      run.lines,
+      run.droppedBefore,
+      run.folder,
+      run.agents,
+      folder,
+      nextUp,
+      budgetUsd,
+    ],
   );
+
   /* GDZIE STOI KARTA PYTANIA — jedno wyrażenie, policzone z TEGO SAMEGO planu, który obraz
    * rysuje. Dwa warunki, jeden po każdej stronie ekranu, rozjechałyby się przy pierwszym
    * pytaniu, którego nie da się przypisać do kroku: karta zniknęłaby wtedy z obu miejsc naraz,
@@ -456,6 +901,10 @@ export default function Run(): ReactElement {
   }, [onTop, cards.length]);
   const running = run.workflow !== '';
 
+  /* KTÓRY WORKFLOW RUSZY, W NAGŁÓWKU — nazwa jako tytuł i lista jako ten sam element, a pod nim
+   * zdanie o tym, kto go wybrał. Oba sloty liczy jedno wyrażenie, powód przy [`choiceIn`]. */
+  const choice = choiceIn({ choices, chosen: ready.chosen, running, nextUp });
+
   /* WEJŚCIE W TEGO, KTO ROBI TEN KROK — i to jest jedyna droga do ekranu jednego agenta, odkąd
    * prawa kolumna przestała być listą kafelków. Bez niej `openAgent`, cała `session/` i komenda
    * `rerun_step` byłyby mechanizmem z kompletem testów i zerem produkcyjnych wołających, czyli
@@ -541,8 +990,14 @@ export default function Run(): ReactElement {
     if (useRun.getState().workflow !== '') return undefined;
     listRuns(folder)
       .then(async (rows) => {
+        if (!alive) return;
+        /* HISTORIA TEGO FOLDERU WCHODZI DO PAMIĘCI EKRANU PRZY OKAZJI, i to jest ta sama
+         * odpowiedź, nie drugi odczyt: karta ostatniego biegu w kolumnie strumienia i pytanie
+         * „czy coś tu idzie" są dwoma pytaniami do JEDNEJ listy. Drugie `list_runs` przy tym
+         * samym montażu dałoby dwie listy z dwóch chwil (niezmiennik 13). */
+        rememberRuns(folder, rows);
         const going = theOneThatIsGoing(rows);
-        if (!alive || going === null) return;
+        if (going === null) return;
         if (runFor(folder).getState().workflow !== '') return;
         const opened = await readRun(folder, going.folder);
         if (!alive || runFor(folder).getState().workflow !== '') return;
@@ -578,31 +1033,14 @@ export default function Run(): ReactElement {
    * Skutek dla przewodnika jest wtedy najostrożniejszy z możliwych — krok zostaje niezrobiony,
    * czyli ekran dalej pokazuje drogę zamiast odhaczać coś, czego nie zobaczył.
    */
-  const [agentsSaved, setAgentsSaved] = useState(0);
   useEffect(() => {
     let alive = true;
     listAgents()
       .then((saved) => {
-        if (alive) setAgentsSaved(saved.length);
+        if (alive) rememberAgents(saved.length);
       })
       .catch(() => {
         /* Patrz akapit wyżej. */
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const [namesToRun, setNamesToRun] = useState<readonly Named[]>([]);
-  useEffect(() => {
-    let alive = true;
-    listWorkflows()
-      .then((entries) => {
-        if (alive) setNamesToRun(workflowNames(toChoices(entries)));
-      })
-      .catch(() => {
-        /* Świadomie bez zdania na ekranie: o nieczytelnym katalogu mówi już kontrolka startu
-         * (`start.tsx`), a dwa zdania o jednym fakcie to dwa miejsca prawdy. */
       });
     return () => {
       alive = false;
@@ -625,14 +1063,34 @@ export default function Run(): ReactElement {
     () =>
       firstRunSteps({
         workspaces: scopes.all.length,
-        agents: agentsSaved,
+        agents: ready.agents,
         /* Liczymy workflow, które DA SIĘ URUCHOMIĆ: `workflowNames` odsiewa pliki bez ani
          * jednego kroku, a workflow bez kroków nie jest krokiem zrobionym — Start odmówiłby
          * mu zdaniem „There are no steps yet.". */
         workflows: namesToRun.length,
       }),
-    [scopes.all.length, agentsSaved, namesToRun.length],
+    [scopes.all.length, ready.agents, namesToRun.length],
   );
+
+  /* Rzeczy uruchomione komendą — jedna z czterech liczb, które decydują o układzie niżej. */
+  const started = useSyncExternalStore(subscribeToStarted, startedThings, startedThings);
+
+  /**
+   * CZY POWITANIE JEST TYM EKRANEM — i wtedy dostaje całą taflę zamiast toru `1fr`.
+   *
+   * Odpowiedź liczy `./first-run.tsx` i tam stoi cały jej powód. Tutaj są wyłącznie cztery
+   * liczby, po jednej z każdego miejsca, które umie coś do obszaru pracy włożyć: obraz planu,
+   * rzeczy uruchomione komendą i dwie połowy strumienia. `view.history` i `view.now.rows` to
+   * ten sam warunek, którym `./feed/feed.tsx` (`nothingYet`) wybiera między przewodnikiem
+   * a wierszami — musi być ten sam, bo inaczej układ zdejmowałby kolumnę kroków w chwili,
+   * w której strumień już rysuje bieg.
+   */
+  const welcomeIsTheScreen = welcomeIsTheWholeScreen(setUpSoFar, {
+    steps: plan.steps.length,
+    started: started.length,
+    lines: view.history.length,
+    live: view.now.rows.length,
+  });
 
   /**
    * `/open` z wiersza wejścia: pyta o folder i dokłada go jako ZAKRES.
@@ -891,10 +1349,17 @@ export default function Run(): ReactElement {
        * zanim doliczylo sie cokolwiek innego. Zmierzone na zywym oknie: 284 px.
        *
        * Rozstrzygniecie jest tym, ktore proponuje tamten paragraf: nazwa sekcji wchodzi
-       * W pasek loadoutu (`strip/strip.tsx`, stopien `.strip .title` z makiety). `<h1>` dalej
+       * W pasek loadoutu (`strip/strip.tsx`, stopien `.strip .title` z makiety). NAGLOWEK dalej
        * istnieje w drzewie — wymaga go `e2e/tests/sections-mount.spec.ts`, bo bez naglowka
        * „cos sie zamontowalo" nie odpowiada na pytanie, na ktorej sekcji stoisz — tylko nie
-       * kosztuje juz osobnego rzedu. */}
+       * kosztuje juz osobnego rzedu.
+       *
+       * OD 2026-08-31 JEST TO `<h2>`, a `<h1>` tego ekranu nosi nazwe BIEGU (`strip/head.tsx`):
+       * stopien pisma i poziom naglowka mowia wreszcie to samo, bo do tego dnia `h1` mierzyla
+       * 15 px, a stojaca pod nia `h2` z nazwa biegu — 34 px. Sadzi to
+       * `strip/the-eye-and-the-outline-agree.test.tsx`. Kryterium z przegladarki czyta
+       * `main h1, main h2, … main h6`, wiec zejscie o jeden poziom go nie rusza — zmierzone
+       * w chromium, 5 z 5 zielonych. */}
       <div className="grid min-h-0 flex-1" style={{ gridTemplateRows: SCREEN_ROWS }}>
         <TabBar
           tabs={shown}
@@ -929,7 +1394,6 @@ export default function Run(): ReactElement {
                 Napis „Run" wpisany tutaj rozjechalby sie z nawigacja przy pierwszej zmianie
                 brzmienia (niezmiennik 13). */}
           <Strip
-            strip={strip}
             heading={sectionEntry('run').label}
             /* KONTROLKI BIEGU STOJĄ W PASKU, w jego prawej grupie — powód (zmierzone 189 px
                  chrome przy sufcie 96) stoi przy `StripProps.controls`. Zdanie o tym, czego nie
@@ -937,16 +1401,20 @@ export default function Run(): ReactElement {
                  miejsca na „co powiedział Loadout" to dwa zdania sprzeczające się o to samo
                  (niezmiennik 13). */
             controls={
-              <div className="flex min-w-0 items-center gap-2">
+              /* `min-w-0` ZDJETE 2026-08-31 — patrz `./strip/strip.tsx`: rzad ma sie zatrzymac
+                 na swojej tresci i dopiero WTEDY oddac sprawe przewijaniu paska. Bez tego
+                 kurczyl sie ponizej niej, a kontrolki z `shrink-0` malowaly sie na sobie. */
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 {/* Diagnostyka należy do aktywnego workspace i stoi przy czynnościach tego
                     ekranu. W fazie `before` komponent jest pustym szkieletem: prawdziwy mount
                     istnieje, a kryterium pada na braku kontrolki, nie brakującym imporcie. */}
                 <Diagnostics folder={folder} />
-                <ReflectionToggle
-                  enabled={reflectionEnabled}
-                  disabled={running}
-                  onChange={setReflectionEnabled}
-                />
+                {/* CZEGO TU JUŻ NIE MA: „Learn from this run". Zeszło 2026-09-01 do stopy
+                    kolumny planu i cały rachunek — 1108 px danych wobec 1562 chcianych, z czego
+                    454 px niedoboru to były DWA NAPISY tej jednej kontrolki — stoi przy
+                    [`ReflectionToggle`] w `./reflection/toggle.tsx`. Krótko: zdanie „Left on, it
+                    keeps…" miało w tym rzędzie ZERO pikseli szerokości, a rząd mieścił się
+                    WYŁĄCZNIE dlatego, że je zjadł. */}
                 <Start
                   running={running}
                   reflectionEnabled={reflectionEnabled}
@@ -976,7 +1444,146 @@ export default function Run(): ReactElement {
           />
         </div>
 
-        <div data-work className="grid min-h-0" style={{ gridTemplateColumns: WORK_COLUMNS }}>
+        <div
+          data-work
+          className="grid min-h-0"
+          /* JEDNA TAFLA ALBO SIATKA PRACY, i rozstrzyga to `welcomeIsTheScreen` wyżej.
+             Powitanie postawione w torze `1fr` tej siatki potrzebowało 1118 px, dostawało 802
+             i przelewało nadmiar aż do `main` — cały powód stoi przy [`welcomeIsTheWholeScreen`],
+             a co robi każdy z dwóch torów, stoi przy [`WHOLE_SURFACE`]. */
+          style={
+            welcomeIsTheScreen
+              ? { gridTemplateColumns: WHOLE_SURFACE, gridTemplateRows: WHOLE_SURFACE }
+              : { gridTemplateColumns: WORK_COLUMNS, gridTemplateRows: WORK_ROWS }
+          }
+        >
+          {/* NAGŁÓWEK BIEGU — `.rhead` z makiety, na całą szerokość obszaru pracy. W siatce pracy
+              pojemnik stoi zawsze, także pusty: rząd bierze się z KOLEJNOŚCI dzieci, więc pojemnik
+              znikający z drzewa przesuwa obie kolumny o rząd wyżej (powód w całości przy
+              [`WORK_ROWS`]). Sam nagłówek znika, kiedy nie ma czego nazwać (`./strip/head.tsx`).
+
+              NA PIERWSZYM OTWARCIU NIE MA ANI POJEMNIKA, ANI NAGŁÓWKA, i nic się przez to nie
+              przesuwa: ta siatka ma wtedy JEDEN rząd i jedno dziecko. Bieg, którego nie ma
+              i którego nie ma z czego zacząć, nie ma nazwy. */}
+          {welcomeIsTheScreen ? null : (
+            <div style={{ gridColumn: '1 / -1' }}>
+              <RunHead
+                headline={headline}
+                /* WYBÓR JEDZIE W TYTUŁ NAGŁÓWKA, a zdanie o tym, kto wybrał — wiersz wyżej.
+                   Cały powód (nazwa stojąca na tym ekranie trzy razy) stoi przy
+                   [`WhichWorkflow`]. Slotami, bo co leży w katalogu i kto to wybrał, wie TEN
+                   ekran; nagłówek to rysuje. */
+                chooser={choice.chooser}
+                said={choice.said}
+              />
+            </div>
+          )}
+
+          {/* ŚCIEŻKA BIEGU — PIERWSZA kolumna widoku pracy, i to jest zmiana z 2026-08-31,
+              nie przestawienie mebli. Ekran czyta się od lewej, a pierwsze pytanie człowieka,
+              który patrzy na pracujących agentów, brzmi „na czym ten bieg stoi", nie „co przed
+              chwilą ktoś powiedział". Miejsce i szerokość przyjeżdżają z reguły `.work`
+              w makiecie i tam są sądzone (`./run-matches-mockup.test.tsx`).
+
+              Kroki, strzałki i pozycje przyjeżdżają z pliku workflow, więc obraz jest legalny
+              (reguła 17); kiedy ich nie ma — a plan jednego kroku, który okno składa dla
+              wpisanego pytania, ich nie ma i mieć nie może — `RunGraph` MILCZY o kształcie
+              i pokazuje kroki jako ŚCIEŻKĘ: znacznik przy każdym z nich i linia, która je łączy
+              (`./graph/path.tsx`). Milczenie o kształcie nie jest milczeniem o pracy.
+
+              GRUPA „STARTED" STOI NAD OBRAZEM, bo rzecz uruchomiona komendą nie jest agentem:
+              nie ma kroku w planie i nie ma czego na tym obrazie narysować (`rail/processes.ts`).
+              Znika razem z ostatnią rzeczą, która jeszcze biegnie.
+
+              CAŁEJ TEJ KOLUMNY NIE MA NA PIERWSZYM OTWARCIU, i to jest naprawa, nie oszczędność
+              miejsca: pusty pojemnik szeroki na 376 px zabierał je powitaniu, a powitanie miało
+              wtedy 1118 px treści na 802 px toru. Wraca w tej samej klatce, w której wraca
+              pierwszy krok, pierwszy kafelek `/start` albo pierwszy wiersz strumienia. */}
+          {welcomeIsTheScreen ? null : (
+            <div
+              data-plan-column
+              /* KOLUMNA W PIONIE, NIE SIATKA O STAŁEJ LICZBIE RZĘDÓW: grupa „Started" i nagłówek
+               ZNIKAJĄ, kiedy nie mają czego pokazać, a siatka o trzech rzędach oddałaby wtedy
+               obrazowi rząd `auto` zamiast reszty wysokości — czyli płótno wysokie na zero.
+               `min-h-0` na obu piętrach, żeby przewijał się środek, a nie cała strona. */
+              /* `border-r`, nie `border-l`: kolumna stoi od 2026-08-31 po LEWEJ, więc linia
+               dzieląca ją od strumienia jest jej prawą krawędzią. Krawędź po niewłaściwej
+               stronie rysuje ramkę wokół okna zamiast szwu między dwiema kolumnami. */
+              className="glass flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-line"
+            >
+              <StartedThings />
+              {/* Nadoczko sekcji, wiec stopien `text-eyebrow` — on jeden nosi wersaliki (DESIGN §4).
+                ZERO KROKÓW TO ZERO NAGŁÓWKA (niezmiennik 17, DESIGN §6): nagłówek nad pustką
+                obiecuje listę, na którą nic nigdy nie wejdzie. */}
+              {/* 2026-08-31 — WARUNEK PYTA O `plan`, NIE O `run.steps`. Obraz rysuje od tego dnia
+                także plan, który dopiero ruszy (patrz akapit przy [`plan`]), a nagłówek
+                policzony z magazynu biegu znikałby wtedy nad pełnym płótnem — czyli mówiłby
+                „nic tu nie ma" o czterech kafelkach, które widać. */}
+              {plan.steps.length === 0 ? null : (
+                <h2 className="shrink-0 px-[14px] pt-3 pb-[9px] font-mono text-eyebrow text-muted">
+                  Steps
+                </h2>
+              )}
+              <div className="grid min-h-0 flex-1">
+                {/* ODPOWIEDŹ JEDZIE TĄ SAMĄ FUNKCJĄ, CO Z DOŁU STRUMIENIA — jeden tor, dwa
+                  możliwe miejsca karty. Druga droga do odblokowania biegu byłaby drugim
+                  miejscem, z którego da się go puścić (niezmiennik 13). */}
+                {/* CO SIĘ STANIE, KIEDY OSTATNI KROK ZZIELENIEJE — POD ostatnim krokiem, bo
+                  odpowiada na pytanie, które rodzi się dopiero po przeczytaniu ścieżki. Jedzie
+                  propsem, bo gdzie kończą się kroki, wie rysunek, a nie ten ekran: postawione
+                  tutaj, pod obszarem wysokim na całą kolumnę, stało od ostatniego kroku o pół
+                  ekranu pustki. Jedno miejsce w drzewie, jeden mount (niezmiennik 13). */}
+                <RunGraph
+                  plan={plan}
+                  onOpen={openTheWorker}
+                  onAnswer={answerQuestion}
+                  footer={<AfterRun plan={plan} />}
+                />
+              </div>
+              {/* SZUFLADA POD OBRAZEM — to, co powiedział jeden krok, bez zdejmowania z oczu
+                pozostałych. Wchodzi po kliknięciu w kafelek i schodzi na Escape albo na
+                `Close`; obie drogi wołają tę samą funkcję (`./graph/opened.ts`).
+
+                ZOSTAJE PO ZEJŚCIU BIEGU, i to jest decyzja, nie przeoczenie: to jest transkrypt,
+                czyli zapis tego, co się stało, a nie kontrolka opisująca żywy bieg. Transkrypt
+                biegu, który właśnie zszedł, jest jedyną rzeczą, po którą człowiek na ten ekran
+                wraca (`./feed/model.ts`, akapit przy `runEnded`). */}
+              {showingStep === null ? null : (
+                <StepStream
+                  step={showingStep}
+                  view={view}
+                  onToggle={runFeed.toggle}
+                  onClose={closeStepStream}
+                  {...(showingStep.who === undefined
+                    ? {}
+                    : {
+                        onOpenAgent: () => {
+                          openAgent(showingStep.name);
+                        },
+                      })}
+                />
+              )}
+
+              {/* CZEGO LOADOUT NAUCZY SIĘ Z TEGO BIEGU — u stopy kolumny, poza wycinkiem, który
+                  przewijają kroki. Dlaczego to zeszło z paska loadoutu i dlaczego wylądowało
+                  DOKŁADNIE tutaj, stoi w całości przy [`ReflectionToggle`]
+                  (`./reflection/toggle.tsx`) — z pomiarem, którego to przeniesienie jest
+                  wnioskiem. Krótko: to jest fakt o KOŃCU biegu, jak karta obok („when the last
+                  step turns green"), a zdanie, które go tłumaczy, mieści się tu w całości, bo
+                  kolumna ma 376 px i wolno mu się zawinąć.
+
+                  POZA `tail`em ŚCIEŻKI, choć tamta karta jedzie właśnie nim: karta jest zdaniem
+                  o ostatnim kroku i ma stać pod nim, a to jest KONTROLKA ustawiana przed
+                  startem. W planie o trzydziestu dwóch krokach ogon ścieżki leży poniżej kadru
+                  i dałoby się do niej dojść wyłącznie przewinięciem (niezmiennik 16). */}
+              <ReflectionToggle
+                enabled={reflectionEnabled}
+                disabled={running}
+                onChange={setReflectionEnabled}
+              />
+            </div>
+          )}
+
           <div
             data-stream-column
             /* Kliknięcie w tę kolumnę oddaje kursor wierszowi wejścia — powód i dwa wyjątki
@@ -1003,9 +1610,37 @@ export default function Run(): ReactElement {
                  patrzy oko — i tylko dopóki cokolwiek zostało do zrobienia. Strumień wybiera
                  CHWILĘ (historia jest pusta), ekran wybiera TREŚĆ; żadne z nich nie zna
                  połowy drugiego. */
-              {...(somethingIsLeft(setUpSoFar)
-                ? { guide: <FirstRun steps={setUpSoFar} onAddWorkspace={openFolder} /> }
-                : {})}
+              {...(somethingIsLeft(setUpSoFar) || !running
+                ? {
+                    guide: somethingIsLeft(setUpSoFar) ? (
+                      <FirstRun steps={setUpSoFar} onAddWorkspace={openFolder} />
+                    ) : (
+                      /* KOMPLET USTAWIONY — I TO NADAL NIE JEST POWÓD, ŻEBY MÓWIĆ „nothing here".
+                       *
+                       * Do 2026-08-31 ekran oddawał wtedy strumieniowi jego własne zdanie o braku
+                       * wierszy, czyli komunikat o braku danych, którego DESIGN §6 zabrania wprost.
+                       * Odpowiedź, która tu należy, jest o dwa piętra konkretniejsza i cała stoi
+                       * w `./ready.tsx`: ostatni bieg tego folderu, a kiedy nie było żadnego —
+                       * jedno zdanie w trybie rozkazującym, nazywające kontrolkę, która go zacznie.
+                       *
+                       * WEJŚCIE JEDZIE TĄ SAMĄ FUNKCJĄ, CO WIERSZ PANELU HISTORII (`openOneRun`),
+                       * więc do zapisanego biegu prowadzi jedna droga, nie dwie (niezmiennik 13).
+                       * Odmowa lądowania w panelu jest po tamtej stronie i mówi tam o sobie sama. */
+                      <ReadyToRun
+                        lastRun={lastRun}
+                        onOpenLastRun={() => {
+                          void openOneRun(folder, lastRun?.folder ?? '');
+                        }}
+                      />
+                    ),
+                  }
+                : /* BIEG IDZIE, A LINII JESZCZE NIE MA — i wtedy ekran NIE opowiada o biegu
+                     poprzednim. Karta „Last run" postawiona nad biegiem, który właśnie ruszył,
+                     jest zdaniem o przeszłości w miejscu, w które człowiek patrzy na
+                     teraźniejszość; obraz obok pokazuje już kroki TEGO biegu. Strumień mówi
+                     wtedy swoje własne zdanie o wierszach, których nie ma — i to jest dokładnie
+                     tyle, ile w tej chwili wiadomo. */
+                  {})}
             />
             {/* ODPOWIEDŹ TEGO EKRANU — o folderze i o zatrzymaniu wywołanym z wiersza wejścia.
                 Stoi NAD wierszem wejścia, bo dotyczy tego, co człowiek właśnie w nim napisał;
@@ -1052,64 +1687,6 @@ export default function Run(): ReactElement {
               /* Uchwyt do pola, żeby kliknięcie w tę kolumnę mogło oddać mu kursor. */
               fieldRef={field}
             />
-          </div>
-
-          {/* OBRAZ PLANU — druga kolumna widoku pracy, ta sama, w której do 2026-08-31 stała
-              lista agentów. Kroki, strzałki i pozycje przyjeżdżają z pliku workflow, więc obraz
-              jest legalny (reguła 17); kiedy ich nie ma — a plan jednego kroku, który okno
-              składa dla wpisanego pytania, ich nie ma i mieć nie może — `RunGraph` MILCZY
-              o kształcie i pokazuje listę kroków. Milczenie o kształcie nie jest milczeniem
-              o pracy.
-
-              GRUPA „STARTED" STOI NAD OBRAZEM, bo rzecz uruchomiona komendą nie jest agentem:
-              nie ma kroku w planie i nie ma czego na tym obrazie narysować (`rail/processes.ts`).
-              Znika razem z ostatnią rzeczą, która jeszcze biegnie. */}
-          <div
-            data-plan-column
-            /* KOLUMNA W PIONIE, NIE SIATKA O STAŁEJ LICZBIE RZĘDÓW: grupa „Started" i nagłówek
-               ZNIKAJĄ, kiedy nie mają czego pokazać, a siatka o trzech rzędach oddałaby wtedy
-               obrazowi rząd `auto` zamiast reszty wysokości — czyli płótno wysokie na zero.
-               `min-h-0` na obu piętrach, żeby przewijał się środek, a nie cała strona. */
-            className="glass flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-line"
-          >
-            <StartedThings />
-            {/* Nadoczko sekcji, wiec stopien `text-eyebrow` — on jeden nosi wersaliki (DESIGN §4).
-                ZERO KROKÓW TO ZERO NAGŁÓWKA (niezmiennik 17, DESIGN §6): nagłówek nad pustką
-                obiecuje listę, na którą nic nigdy nie wejdzie. */}
-            {run.steps.length === 0 ? null : (
-              <h2 className="shrink-0 px-[14px] pt-3 pb-[9px] font-mono text-eyebrow text-muted">
-                Steps
-              </h2>
-            )}
-            <div className="grid min-h-0 flex-1">
-              {/* ODPOWIEDŹ JEDZIE TĄ SAMĄ FUNKCJĄ, CO Z DOŁU STRUMIENIA — jeden tor, dwa
-                  możliwe miejsca karty. Druga droga do odblokowania biegu byłaby drugim
-                  miejscem, z którego da się go puścić (niezmiennik 13). */}
-              <RunGraph plan={plan} onOpen={openTheWorker} onAnswer={answerQuestion} />
-            </div>
-            {/* SZUFLADA POD OBRAZEM — to, co powiedział jeden krok, bez zdejmowania z oczu
-                pozostałych. Wchodzi po kliknięciu w kafelek i schodzi na Escape albo na
-                `Close`; obie drogi wołają tę samą funkcję (`./graph/opened.ts`).
-
-                ZOSTAJE PO ZEJŚCIU BIEGU, i to jest decyzja, nie przeoczenie: to jest transkrypt,
-                czyli zapis tego, co się stało, a nie kontrolka opisująca żywy bieg. Transkrypt
-                biegu, który właśnie zszedł, jest jedyną rzeczą, po którą człowiek na ten ekran
-                wraca (`./feed/model.ts`, akapit przy `runEnded`). */}
-            {showingStep === null ? null : (
-              <StepStream
-                step={showingStep}
-                view={view}
-                onToggle={runFeed.toggle}
-                onClose={closeStepStream}
-                {...(showingStep.who === undefined
-                  ? {}
-                  : {
-                      onOpenAgent: () => {
-                        openAgent(showingStep.name);
-                      },
-                    })}
-              />
-            )}
           </div>
         </div>
       </div>

@@ -115,3 +115,76 @@ export function choiceFor(choices: readonly Choice[], path: string): Choice | nu
 export function firstRunnable(choices: readonly Choice[]): Choice | null {
   return choices.find((choice) => choice.steps.length > 0) ?? null;
 }
+
+/**
+ * Nazwa kontrolki wyboru workflow.
+ *
+ * EKSPORTOWANA, żeby kryterium mogło ją CZYTAĆ, a nie przepisywać — ten sam powód, dla którego
+ * `LEAD_LABEL` mieszka w `../run/lead.ts`, a `TASK_LABEL` w `./start.tsx`. Napis przepisany do
+ * testu przestaje pilnować czegokolwiek w dniu, w którym ktoś zmieni brzmienie na ekranie
+ * i nie tknie kryterium.
+ *
+ * NIE JEST W `<label>`. Tekst `<label>` staje się NAZWĄ DOSTĘPNĄ kontrolki, więc zdanie
+ * obok wyboru wpisane w `<label>` przemianowałoby go na siebie. Zdanie stoi w zwykłym napisie,
+ * a nazwa jedzie przez `aria-label`.
+ */
+export const WORKFLOW_LABEL = 'Which workflow Run starts';
+
+/**
+ * KTÓRY WORKFLOW RUSZY — jedyna odpowiedź na to pytanie w całej aplikacji.
+ *
+ * `picked` to nazwa pliku, którą WSKAZAŁ CZŁOWIEK, albo `null`, kiedy nikt jeszcze nie wskazywał.
+ * Wskazanie bije politykę: dopóki ten plik leży w katalogu, to on rusza, także wtedy, gdy nie ma
+ * ani jednego kroku — bo odmowa Rusta na plik, który człowiek wybrał świadomie, jest odpowiedzią
+ * na jego decyzję, a podmiana na inny plik byłaby uruchomieniem czegoś, o co nie prosił.
+ *
+ * `null` po drugiej stronie znaczy „katalog zmienił się między odczytem a kliknięciem" i wtedy
+ * wraca [`firstRunnable`] — plik jest prawdą (niezmiennik 4), a wskazanie na nieistniejący plik
+ * nie jest wskazaniem.
+ *
+ * DLACZEGO TO JEST FUNKCJA, A NIE POLE W MAGAZYNIE. Trzy miejsca na ekranie mówią o tej samej
+ * rzeczy — nagłówek biegu, obraz planu i przycisk startu — i do 2026-08-31 dwa z nich pytały
+ * o nią DWA RAZY, każde z własnego odczytu katalogu. Zmierzone w prawdziwym chromium: po
+ * powrocie na sekcję Run wychodzą dwa niezależne `list_workflows`, a w scenie, w której granica
+ * odpowiada na każde z nich inną listą, ekran po pełnym ustaniu pokazuje w nagłówku jeden plik,
+ * a na przycisku drugi. Jedna funkcja nad jednym nośnikiem nie ma jak się rozjechać
+ * (niezmiennik 13).
+ */
+export function willRun(choices: readonly Choice[], picked: string | null): Choice | null {
+  const wanted = picked === null ? null : choiceFor(choices, picked);
+  return wanted ?? firstRunnable(choices);
+}
+
+/**
+ * Jak ta pozycja nazywa się na liście wyboru.
+ *
+ * Sama nazwa, a przy pliku BEZ KROKÓW także powód, dla którego nie da się go stąd puścić. Rust
+ * odmawia mu zdaniem „There are no steps yet.", więc pozycja wyglądająca dokładnie jak pozostałe
+ * jest zaproszeniem do odmowy (niezmiennik 16). Plik zostaje na liście, bo leży w katalogu:
+ * lista, która go po cichu pomija, jest listą, na której człowiek go nie znajdzie.
+ */
+export function offerFor(choice: Choice): string {
+  return choice.steps.length === 0 ? choice.name + ' — no steps yet' : choice.name;
+}
+
+/**
+ * KTO WYBRAŁ TEN WORKFLOW — jedno zdanie pod nagłówkiem biegu.
+ *
+ * ZGŁOSZENIE WŁAŚCICIELA, 2026-08-31: „czemu mi się ten deep reaserch pojawia, przecież nie
+ * wybrałem żadnego workflow". Ekran ogłaszał „READY TO RUN" nad plikiem wybranym przez
+ * [`firstRunnable`] i nie mówił ani słowa o tym, że to był wybór — a decyzja podjęta za
+ * człowieka, bez śladu, że była decyzją, czyta się jak jedyna możliwość.
+ *
+ * TRZY ZDANIA, BO TO SĄ TRZY RÓŻNE STANY ŚWIATA i żaden nie brzmi jak pozostałe: człowiek
+ * wskazał sam; nie wskazywał, a było z czego wybierać; nie wskazywał, bo nie było z czego.
+ * Jedno zdanie na trzy stany kłamałoby w dwóch z nich.
+ *
+ * Zdanie stoi zawsze, także po wyborze — region, który znika po pierwszej zmianie, przesuwa
+ * pod sobą nagłówek i obraz planu.
+ */
+export function whoChoseIt(choices: readonly Choice[], picked: string | null): string {
+  if (picked !== null && choiceFor(choices, picked) !== null) return 'You picked this one.';
+  const runnable = choices.filter((choice) => choice.steps.length > 0).length;
+  if (runnable > 1) return 'Loadout picked this one for you — change it here.';
+  return 'The only workflow with steps in this folder.';
+}

@@ -55,7 +55,81 @@ const PATHS: Readonly<Record<string, readonly ReactElement[]>> = {
   settings: [<path key="s" d="M3 4.5 H13 M3 8 H13 M3 11.5 H9" />],
 };
 
-export function NavIcon({ section }: { readonly section: string }): ReactElement | null {
+/* Trzy glify, ktore nie naleza do zadnej sekcji, wiec nie stoja w mapie wyzej: kladka, lupa
+ * i kartka z odcieta kolumna.
+ *
+ * Kladka nie jest ikona miejsca — jest ZDANIEM o stanie pozycji („tego nie da sie jeszcze
+ * uzyc") i stoi obok zdania, ktore mowi czego brakuje. Lupa jest kontrolka. Wrzucone do `PATHS`
+ * byly by dwiema pozycjami udajacymi sekcje w mapie, ktorej cala tresc brzmi „jeden glif na
+ * sekcje" — a `icon-grammar.test.tsx` liczy te mape z rejestru. */
+function Glyph({ children }: { readonly children: readonly ReactElement[] }): ReactElement {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-[13px] shrink-0"
+    >
+      {children}
+    </svg>
+  );
+}
+
+/** Kladka: pozycja, ktorej nie ma jeszcze czym wypelnic. */
+export function LockGlyph(): ReactElement {
+  return (
+    <Glyph>
+      {[
+        <rect key="b" x="3.2" y="7" width="9.6" height="6.4" rx="1.6" />,
+        <path key="s" d="M5.6 7 V4.8 A2.4 2.4 0 0 1 10.4 4.8 V7" />,
+      ]}
+    </Glyph>
+  );
+}
+
+/**
+ * Kartka z odcieta lewa kolumna: kontrolka, ktora zwija i rozwija boczne menu.
+ *
+ * To jest ten sam znak, ktorym zwija panel dom (`../meetnotes`, wiersz „Collapse sidebar" na
+ * dole panelu) i kazda aplikacja, w ktorej czlowiek ten gest juz zna. Nie stoi w `PATHS`, bo nie
+ * jest ikona MIEJSCA — jest kontrolka, tak samo jak lupa obok; wrzucona tam byla by osma
+ * pozycja udajaca sekcje w mapie, ktorej cala tresc brzmi „jeden glif na sekcje".
+ *
+ * Ani okregu, ani `<line>`: to nie jest ani zbior, ani graf, wiec nie obiecuje relacji, ktorej
+ * nie ma (niezmiennik 17). Prostokat i kreska w srodku sa RYSUNKIEM UKLADU, nie zaleznosci.
+ */
+export function PanelGlyph(): ReactElement {
+  return (
+    <Glyph>
+      {[
+        <rect key="b" x="2.2" y="3" width="11.6" height="10" rx="2" />,
+        <path key="d" d="M6.4 3 V13" />,
+      ]}
+    </Glyph>
+  );
+}
+
+/** Lupa: jedyna droga do szukania, ktora nie jest klawiszem. */
+export function SearchGlyph(): ReactElement {
+  return (
+    <Glyph>
+      {[<circle key="o" cx="7.1" cy="7.1" r="4.1" />, <path key="h" d="M10.2 10.2 L13.4 13.4" />]}
+    </Glyph>
+  );
+}
+
+export function NavIcon({
+  section,
+  big = false,
+}: {
+  readonly section: string;
+  /** Glif w waskiej kolumnie stoi sam, bez etykiety obok, wiec jest o dwa piksele wiekszy. */
+  readonly big?: boolean;
+}): ReactElement | null {
   const parts = PATHS[section];
   if (parts === undefined) return null;
   return (
@@ -67,7 +141,7 @@ export function NavIcon({ section }: { readonly section: string }): ReactElement
       strokeWidth="1.6"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="size-4"
+      className={big ? 'size-[18px]' : 'size-4'}
     >
       {parts}
     </svg>

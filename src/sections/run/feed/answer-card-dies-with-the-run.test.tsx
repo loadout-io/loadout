@@ -46,8 +46,16 @@ const OPTION = 'Yes, keep the old one behind a switch.';
 /** Drugie pytanie, z następnego biegu. Inna treść, żeby żadna asercja nie trafiła jej mimochodem. */
 const LATER_QUESTION = 'Which header row is the real one?';
 
-/** Nazwa karty na ekranie [DESIGN §3: kolor `--attend` odpowiada na „co czeka na MOJĄ decyzję"]. */
-const HEADING = 'Needs your answer';
+/**
+ * Nadoczko karty na ekranie — zdanie, które CZŁOWIEK czyta nad pytaniem.
+ *
+ * 2026-08-31 — BRZMIENIE ZMIENIŁO SIĘ Z „Needs your answer" NA NAZWANIE TEGO, KTO CZEKA, i to
+ * nie jest osłabienie tej asercji, tylko ten sam napis o jedno pytanie dalej. Bieg tego produktu
+ * prowadzi kilku agentów naraz, więc „ktoś czeka na odpowiedź" zostawiało człowieka szukającego,
+ * KTÓRY z nich stanął — a stali za nim wszyscy pozostali. Zdanie jest składane tak samo jak
+ * na ekranie (podpis z `Question.agent` + stała), więc wpisana literówka nadal pali ten plik.
+ */
+const HEADING = FORGE + ' is waiting for you';
 
 /** Przycisk wysyłki karty. */
 const SEND = 'Send';
@@ -110,7 +118,12 @@ function answerCard(view: FeedView): readonly string[] {
   const names = buttonNames(markup);
   const parts: string[] = [];
   if (markup.includes(HEADING)) parts.push('the heading');
-  if (names.includes(OPTION)) parts.push('the option button');
+  /* PRZYCISK NIESIE DWIE RZECZY, więc sądzimy obie: treść opcji znak w znak i numer, którym
+     odpowiada jej klawisz (`./choice.ts`). Do 2026-08-31 kontrolka była samą pastylką z tekstem
+     opcji; porównanie z całą nazwą przycisku żądałoby dziś, żeby numeru na niej NIE było. */
+  if (names.some((name) => name.includes('1') && name.includes(OPTION))) {
+    parts.push('the option button');
+  }
   if (markup.includes(ANSWER_PROMPT)) parts.push('the answer field');
   if (names.includes(SEND)) parts.push('the send button');
   return parts;

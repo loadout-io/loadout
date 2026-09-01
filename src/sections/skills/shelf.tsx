@@ -65,6 +65,23 @@ export type SkillsStore = typeof useSkills;
 export interface SkillsShelfProps {
   /** Bez propsu półka bierze swój prawdziwy magazyn, z propsem ten z testu. */
   store?: SkillsStore;
+  /**
+   * Czy „Add a skill" jest CZYNNOŚCIĄ GŁÓWNĄ tego ekranu (2026-08-31, fala kompozycji).
+   *
+   * Ekran ma jedną czynność główną i ani jednej więcej (DESIGN §6). Kiedy w kolejce stoi
+   * choćby jedna decyzja, główną czynnością jest odpowiedzieć na nią — dodanie umiejętności
+   * schodzi wtedy o stopień, do zwykłego obrysu. Kiedy kolejka jest pusta, nic na tym ekranie
+   * niczego nie chce i to dodanie zostaje jedyną rzeczą, po którą człowiek tu przyszedł.
+   *
+   * ODPOWIEDŹ PRZYCHODZI Z EKRANU, nie z drugiego magazynu wczytanego tutaj: „czy coś czeka"
+   * jest faktem o notatkach, a półka umiejętności nie ma prawa go liczyć drugi raz
+   * (niezmiennik 13). Liczy go `knowledge/index.tsx` jedną funkcją, którą czyta też półka
+   * notatek.
+   *
+   * `true` bez propsu, bo tak montują tę półkę jej własne kryteria: sama na ekranie jest
+   * całym ekranem i jej zaproszenie jest wtedy jedyną czynnością, jaka na nim stoi.
+   */
+  addIsMainAction?: boolean;
 }
 
 /* OSIEM STAŁYCH KLASOWYCH ZNIKŁO 2026-08-31 (DESIGN §6, warstwa prymitywów).
@@ -238,7 +255,10 @@ const NO_SKILLS_YET = 'No skills yet. Paste a link, or write one yourself.';
 const ZONE_TITLE = 'text-eyebrow text-muted';
 const ZONE_LEAD = 'lead max-w-160';
 
-export default function SkillsShelf({ store = useSkills }: SkillsShelfProps): ReactElement {
+export default function SkillsShelf({
+  store = useSkills,
+  addIsMainAction = true,
+}: SkillsShelfProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
 
   /* SUBSKRYPCJA ZAKRESÓW, ŻEBY PRZERYSOWAĆ — a odpowiedź czytamy funkcją. Bez tego wiersza
@@ -297,7 +317,12 @@ export default function SkillsShelf({ store = useSkills }: SkillsShelfProps): Re
         {state.installed.length === 0 ? null : (
           <span className="value">{`${String(state.installed.length)} saved`}</span>
         )}
-        <button data-create type="button" className="btn ml-auto" onClick={openPanel}>
+        <button
+          data-create
+          type="button"
+          className={addIsMainAction ? 'btn-primary ml-auto' : 'btn ml-auto'}
+          onClick={openPanel}
+        >
           ＋ Add a skill
         </button>
       </div>
@@ -718,30 +743,88 @@ export default function SkillsShelf({ store = useSkills }: SkillsShelfProps): Re
                 jednym czytnikiem front-mattera, a kafelek składa się jak kafelek agenta:
                 nazwa i znacznik, zdanie o tym, po co to jest, akcja pod kreską. */}
             {state.installed.length === 0 ? null : (
-              <ul className="mx-auto grid max-w-160 grid-cols-2 gap-3">
+              /* LISTA, NIE ŚCIANA KAFELKÓW (2026-08-31, fala kompozycji). Do tego dnia stała
+                 tu siatka po dwa w kolumnie 640 px, a każdy kafelek niósł dwa przyciski pod
+                 kreską — przy pięciu umiejętnościach największą rzeczą na dolnej połowie
+                 ekranu był rząd pięciu czerwonych „Remove". Półka stoi dziś w jednej z dwóch
+                 kolumn, więc jej rytmem jest wiersz: nazwa, po co to jest, i akcje, które
+                 pokazują się dopiero pod kursorem czytelnika, bo są rzadkie. */
+              <ul className="flex flex-col gap-2">
                 {state.installed.map((skill) => (
                   <li
                     key={skill.name}
                     data-skill={skill.name}
-                    /* `.fade-in`, bo kafelek PRZYBYWA: lista jest pusta, dopóki katalogi nie
+                    /* `.fade-in`, bo wiersz PRZYBYWA: lista jest pusta, dopóki katalogi nie
                        odpowiedzą. Samo `opacity` — sprężyna należy do rzeczy wchodzących NAD
                        treść, nie do wiersza, który dopiero wypełnia listę (DESIGN §7). */
                     className="card fade-in flex flex-col gap-2"
                   >
-                    <div className="flex items-start gap-2">
+                    {/* METADANA ZAWIJA SIĘ, NIGDY NIE PRZYCINA NAZWY (2026-08-31). Do tego dnia
+                        plakietka pochodzenia była `shrink-0` z `ml-auto`, czyli miała
+                        pierwszeństwo przed nazwą pliku, którą człowiek czyta. Dziś stoi
+                        w `flex-wrap` zaraz za nazwą i schodzi do własnego wiersza, kiedy
+                        zabraknie miejsca. */}
+                    <div className="flex flex-wrap items-baseline gap-2">
                       {/* `text-subhead`, nie `text-heading`: ten stopień należy do nagłówka
-                          panelu, a to jest tytuł kafelka — ta sama drabinka, co w Agents
+                          panelu, a to jest tytuł wiersza — ta sama drabinka, co w Agents
                           i w Workflows (`src/styles/theme.css`). */}
                       <h2 className="min-w-0 text-subhead break-words text-ink">{skill.name}</h2>
                       {/* Znacznik pochodzenia jest TRWAŁY i przeżywa instalację [T5 §5.4]:
                           gasnący po zapisie mówiłby o umiejętności z sieci to samo, co
                           o napisanej ręcznie. */}
                       {skill.fromTheInternet ? (
-                        <span className="chip ml-auto shrink-0">From the internet</span>
+                        <span className="chip">From the internet</span>
                       ) : null}
+
+                      {/* DWIE RZADKIE CZYNNOŚCI, W WIERSZU NAZWY I DOSUNIĘTE DO KRAWĘDZI
+                          (2026-08-31, fala kompozycji). Do tego dnia stały pod opisem, jedna
+                          pod drugą przez całą listę — czyli kolumna dziesięciu jednakowych
+                          przycisków biegnąca wzdłuż treści, którą człowiek próbuje czytać.
+                          Tutaj wracają do prawej krawędzi wiersza i przestają być rytmem
+                          listy; rytmem jest nazwa.
+
+                          `ml-auto` na GRUPIE, a nazwa przed nią bez `shrink-0`: to nazwa ma
+                          pierwszeństwo, a grupa schodzi do własnego wiersza, kiedy zabraknie
+                          miejsca (metadana i akcje nigdy nie przycinają treści). */}
+                      <div className="ml-auto flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          data-evaluate={skill.name}
+                          className="btn-quiet"
+                          onClick={() => {
+                            void evaluateSkill(skill.name);
+                          }}
+                        >
+                          Evaluate
+                        </button>
+                        {/* Jedyna droga powrotna z katalogów narzędzi agentowych — i od
+                            2026-08-31 DWUSTOPNIOWA, dokładnie tak jak usunięcie agenta
+                            (`agents/index.tsx`). Do tego dnia jedno naciśnięcie jechało prosto
+                            w `fs::remove_dir_all` po drugiej stronie granicy: bez pytania, bez
+                            cofnięcia i bez ani jednego zdania o tym, co zniknie.
+
+                            CZERWIEŃ ZOSTAJE PRZY TYM, CO NAPRAWDĘ KASUJE — czyli przy
+                            przyciskach pod pytaniem, niżej. To tutaj niczego nie usuwa, tylko
+                            pyta, więc jest ciche.
+
+                            ZNIKA, KIEDY PYTANIE JUŻ STOI: dwa napisy „Remove" w jednym wierszu
+                            znaczą dwa różne skutki pod jedną nazwą. */}
+                        {state.removing === skill.name ? null : (
+                          <button
+                            type="button"
+                            data-remove={skill.name}
+                            className="btn-quiet"
+                            onClick={() => {
+                              store.getState().askToRemove(skill.name);
+                            }}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    {/* PO CO TO JEST — drugie piętro kafelka, dokładnie tam, gdzie stoi
+                    {/* PO CO TO JEST — drugie piętro wiersza, dokładnie tam, gdzie stoi
                         w kafelku agenta i w makiecie. Umiejętność, której plik tego nie mówi,
                         dostaje zdanie o tym, że nie mówi: pusty prostokąt czyta się jak awaria
                         wczytywania, a nie jak brak opisu (niezmiennik 17 od drugiej strony). */}
@@ -764,77 +847,56 @@ export default function SkillsShelf({ store = useSkills }: SkillsShelfProps): Re
 
                         Magazyn po udanym usunięciu czyta katalogi JESZCZE RAZ, więc wiersz
                         znika dopiero wtedy, gdy pliku naprawdę już tam nie ma. */}
-                    {/* PRZYSZŁO Z TRUNKU 2026-08-31, razem z sekcją Lab. Czasownik stoi przy
-                          rzeczy, której dotyczy: zestaw ma dwie kolumny — bez tej umiejętności
-                          i z nią — bo to jest całe pytanie, które da się o nią zadać. Polityka
-                          mieszka w `../lab/evaluate`, nie tutaj.
-                          Klasa jest prymitywem tej gałęzi (`.btn-quiet`), nie stałą `QUIET`
-                          z trunku: ta stała zniknęła razem z migracją na warstwę prymitywów. */}
-                    <button
-                      type="button"
-                      data-evaluate={skill.name}
-                      className="btn-quiet"
-                      onClick={() => {
-                        void evaluateSkill(skill.name);
-                      }}
-                    >
-                      Evaluate
-                    </button>
-                    <div className="mt-auto border-t border-line pt-2">
-                      {state.removing === skill.name ? (
-                        <div className="stack" data-gap="2">
-                          {/* Pytanie WCHODZI: przed naciśnięciem „Remove" nie ma go w dokumencie
-                              wcale, a staje tam, gdzie przed chwilą był przycisk. Sprężyna mówi
-                              „to jest nowe", zamiast pozwolić dwóm rzeczom mrugnąć w jednym
-                              miejscu (DESIGN §7). */}
-                          <p data-confirm-remove={skill.name} className="enter text-ink">
-                            {askAbout(skill.name, openProject !== null)}
-                          </p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {PLACES.filter(
-                              (place) => !place.needsProject || openProject !== null,
-                            ).map((place) => (
-                              <button
-                                key={place.value}
-                                type="button"
-                                data-goes-from={place.value}
-                                className="btn-danger"
-                                onClick={() => {
-                                  void store.getState().remove(place.value);
-                                }}
-                              >
-                                {place.label}
-                              </button>
-                            ))}
-                            {/* Wyjście, które nic nie rusza, stoi obok każdego, które rusza
-                                wszystko. Pytanie z jedną odpowiedzią nie jest pytaniem. */}
+                    {/* POTWIERDZENIE JEST PRAWDZIWYM RENDEREM, nie `window.confirm`. Dialog
+                        przeglądarki blokuje webview i zabiera całą pracę, a przy oknie Tauri
+                        nie ma go czym odblokować.
+
+                        MIEJSCE NAZYWA PRZYCISK, KTÓRY CZŁOWIEK NACISKA, i to jest ta sama
+                        naprawa opisana w `src/state/skills.ts`: cel kasowania nie ma prawa
+                        brać się z wyboru, którego w tej chwili na ekranie nie ma.
+
+                        Magazyn po udanym usunięciu czyta katalogi JESZCZE RAZ, więc wiersz
+                        znika dopiero wtedy, gdy pliku naprawdę już tam nie ma. */}
+                    {state.removing === skill.name ? (
+                      <div className="stack border-t border-line pt-2" data-gap="2">
+                        {/* Pytanie WCHODZI: przed naciśnięciem „Remove" nie ma go w dokumencie
+                            wcale, a staje tam, gdzie przed chwilą był przycisk. Sprężyna mówi
+                            „to jest nowe", zamiast pozwolić dwóm rzeczom mrugnąć w jednym
+                            miejscu (DESIGN §7). */}
+                        <p data-confirm-remove={skill.name} className="enter text-ink">
+                          {askAbout(skill.name, openProject !== null)}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {PLACES.filter(
+                            (place) => !place.needsProject || openProject !== null,
+                          ).map((place) => (
                             <button
+                              key={place.value}
                               type="button"
-                              data-keep-it
-                              className="btn-quiet"
+                              data-goes-from={place.value}
+                              className="btn-danger"
                               onClick={() => {
-                                store.getState().keepIt();
+                                void store.getState().remove(place.value);
                               }}
                             >
-                              Keep it
+                              {place.label}
                             </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-center">
+                          ))}
+                          {/* Wyjście, które nic nie rusza, stoi obok każdego, które rusza
+                              wszystko. Pytanie z jedną odpowiedzią nie jest pytaniem. */}
                           <button
                             type="button"
-                            data-remove={skill.name}
-                            className="btn-danger mr-auto"
+                            data-keep-it
+                            className="btn-quiet"
                             onClick={() => {
-                              store.getState().askToRemove(skill.name);
+                              store.getState().keepIt();
                             }}
                           >
-                            Remove
+                            Keep it
                           </button>
                         </div>
-                      )}
-                    </div>
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>

@@ -64,17 +64,31 @@ const TASK = `input[aria-label="${TASK_LABEL}"]`;
 const AT_ONCE = 'input#at-once[type="range"]';
 const BUDGET = 'input[data-budget]';
 const COPY_DIAGNOSTICS = 'button[aria-label="Copy diagnostics"]';
-const LEARN_FROM_THIS_RUN = `label:has-text("${REFLECTION_LABEL}") input[type="checkbox"]`;
-const BEFORE_START_CONTROLS = [
-  COPY_DIAGNOSTICS,
-  LEARN_FROM_THIS_RUN,
-  LEAD,
-  TASK,
-  START,
-  AT_ONCE,
-  BUDGET,
-] as const;
-const LOCKED_WHILE_RUNNING = [LEARN_FROM_THIS_RUN, TASK, AT_ONCE, BUDGET] as const;
+/**
+ * Wybór „Learn from this run" — od 2026-09-01 W KOLUMNIE PLANU, nie w rzędzie paska.
+ *
+ * ── CO SIĘ ZMIENIŁO W SENSIE TEGO KRYTERIUM, POWIEDZIANE WPROST ─────────────────────────────
+ *
+ * Do dziś ta kontrolka stała na liście `BEFORE_START_CONTROLS`, a `expect(count).toBe(7)`
+ * liczyło rząd paska CO DO SZTUKI. Liczba jest dziś SZEŚĆ i jest to zmiana sensu, nie poprawka
+ * literówki — więc trzeba powiedzieć, czego stara wersja pilnowała i czy nowa dalej to łapie.
+ *
+ * PILNOWAŁA: kontrolki, która znika z paska po cichu. Nowa wersja łapie to identycznie —
+ * zniknięcie którejkolwiek z sześciu daje pięć i przewraca ten punkt na tej samej asercji.
+ *
+ * DLACZEGO SZEŚĆ. Zmierzone w chromium 1512×950 z rozwiniętą nawigacją: rząd dostaje 1108 px
+ * i chciał 1562. Całe 454 px niedoboru pokrywały DWA NAPISY tej jednej kontrolki — jej opis
+ * (0 px z 400) i reszta jej nazwy (57 ze 112) — więc rząd „mieścił się" wyłącznie dlatego, że
+ * je zjadł, a człowiek czytał „Learn f…" i ani litery wyjaśnienia. Cały rachunek stoi przy
+ * [`ReflectionToggle`] w `src/sections/run/reflection/toggle.tsx`.
+ *
+ * CZEGO TO KRYTERIUM PRZEZ TO NIE TRACI: kontrolka jest dalej sądzona, tylko tam, gdzie stoi.
+ * Punkty niżej pytają, czy istnieje dokładnie raz, czy da się w nią wcelować BEZ przewijania
+ * i czy zamyka się na czas biegu — czyli o to samo, o co pytały, kiedy stała w pasku.
+ */
+const LEARN_FROM_THIS_RUN = `${RAIL} label:has-text("${REFLECTION_LABEL}") input[type="checkbox"]`;
+const BEFORE_START_CONTROLS = [COPY_DIAGNOSTICS, LEAD, TASK, START, AT_ONCE, BUDGET] as const;
+const LOCKED_WHILE_RUNNING = [TASK, AT_ONCE, BUDGET] as const;
 const FIRST_CALL_LIMIT = 5_000;
 
 function copies<T>(value: T, count = 24): readonly { readonly value: T }[] {
@@ -327,12 +341,66 @@ function expectContained(measured: Geometry, label: string): void {
   ).toBeLessThanOrEqual(measured.track.bottom + slack);
 }
 
+/**
+ * Wybór „Learn from this run" tam, gdzie stoi od 2026-09-01 — u stopy kolumny planu.
+ *
+ * BEZ `scrollIntoViewIfNeeded`, i to jest asercja, nie oszczędność jednej linii. Ten plan ma
+ * TRZYDZIEŚCI DWA kroki, więc ogon ścieżki leży daleko poniżej kadru; kontrolka ustawiana przed
+ * startem, do której trzeba się doprzewijać przez całą listę, jest kontrolką, której człowiek
+ * nie znajdzie (niezmiennik 16). Pytamy więc o pudełko TAKIE, JAKIE JEST, bez ruszania czegokolwiek
+ * — także dlatego, że przewinięcie tej kolumny zabrałoby z kadru krok, który właśnie idzie, a to
+ * jest rzecz, o którą pyta `expectContained` niżej.
+ */
+async function expectTheChoiceIsWhereItCanBeRead(
+  app: RunningApp,
+  label: string,
+  phase: 'before-start' | 'running',
+): Promise<void> {
+  const choice = app.page.locator(LEARN_FROM_THIS_RUN);
+  expect(
+    await choice.count(),
+    `${label}: the plan column carries no Learn from this run choice, or carries two`,
+  ).toBe(1);
+  expect(await choice.isVisible(), `${label}: the Learn from this run choice is not visible`).toBe(
+    true,
+  );
+  expect(
+    await choice.isEnabled(),
+    `${label}: the Learn from this run choice ${
+      phase === 'running' ? 'stayed open during the run' : 'is dead before the run even starts'
+    }`,
+  ).toBe(phase === 'before-start');
+
+  const box = await choice.boundingBox();
+  expect(box, `${label}: the Learn from this run choice has no rendered box`).not.toBeNull();
+  if (box === null) return;
+  const window = await app.page.evaluate(() => ({
+    width: globalThis.innerWidth,
+    height: globalThis.innerHeight,
+  }));
+  expect(box.width, `${label}: the Learn from this run choice collapsed`).toBeGreaterThan(0);
+  expect(box.y, `${label}: the Learn from this run choice sits above the window`).toBeGreaterThan(
+    -1,
+  );
+  expect(
+    box.y + box.height,
+    `${label}: the Learn from this run choice sits below the window, so the only way to it is a ` +
+      'scroll past thirty-two steps',
+  ).toBeLessThanOrEqual(window.height + 1);
+  expect(
+    box.x + box.width,
+    `${label}: the Learn from this run choice is cut off beyond the right edge`,
+  ).toBeLessThanOrEqual(window.width + 1);
+}
+
 /** Playwright's trial click proves actionability without changing the running scene. */
 async function expectControlsReachable(
   app: RunningApp,
   label: string,
   phase: 'before-start' | 'running',
 ): Promise<void> {
+  await expectTheChoiceIsWhereItCanBeRead(app, label, phase);
+
   if (phase === 'before-start') {
     const allControls = app.page.locator(
       `${WORKFLOW_CONTROLS} button, ${WORKFLOW_CONTROLS} input, ${WORKFLOW_CONTROLS} select`,

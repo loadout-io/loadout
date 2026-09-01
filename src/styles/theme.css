@@ -123,6 +123,26 @@
   --color-human: #9d7bff;
   --color-human-soft: rgba(157, 123, 255, 0.14);
   --color-human-edge: rgba(157, 123, 255, 0.5);
+  /* ok = SKONCZONE I DOBRE. Piaty stan, dolozony 2026-08-31 razem z makieta, ktora
+   * wlasciciel wybral. Naglowek nad ta rodzina mowi „cztery i ani jeden wiecej" i to
+   * zdanie bylo prawdziwe, dopoki „krok sie udal" nie mial wlasnego koloru: makieta
+   * maluje na zielono ptaszek zakonczonego kroku, laczke miedzy dwoma zrobionymi
+   * krokami i liczbe `214 pass` obok `2 fail`. Bez tego tokenu kazde z tych trzech
+   * miejsc bierze albo szary (czyli „nic sie nie stalo"), albo literal w komponencie
+   * — a `checks/tokens.sh` zamyka literal, i slusznie. Wartosc 1:1 z makiety. */
+  --color-ok: #5ce1a6;
+  --color-ok-soft: rgba(92, 225, 166, 0.14);
+  --color-ok-edge: rgba(92, 225, 166, 0.5);
+
+  /* ── tozsamosc, czlon nasycony ────────────────────────────────────── */
+  /* sky = pierwszy agent w kazdym biegu (w makiecie: Scout). NIE jest stanem i nigdy
+   * nie maluje wiersza — patrz regula formy w DESIGN §3: od 2026-08-31 tozsamosc
+   * i stan rozdziela FORMA, nie nasycenie. Token stoi tu, bo makieta uzywa go na
+   * kazdym ekranie (twarz agenta, kropka przy nazwie w strumieniu, kolor chipa
+   * filtru), a piec przygaszonych `--color-id-*` nie ma czym tego narysowac. */
+  --color-sky: #62d0ff;
+  --color-sky-soft: rgba(98, 208, 255, 0.14);
+  --color-sky-edge: rgba(98, 208, 255, 0.5);
 
   /* ── aliasy starych nazw. Zyja, bo trzy powierzchnie jeszcze ich wolaja ─ */
   /* Niezmiennik 25 zastosowany do CSS: nowa nazwa dochodzi, stara wskazuje na nia.
@@ -166,10 +186,55 @@
 
   /* ── drabinka typograficzna ───────────────────────────────────────── */
   /* Waga 500 nie istnieje. Poniżej 11px nie istnieje.                   */
-  --text-title: 20px;
+
+  /* ── GORNE TRZY STOPNIE. 2026-08-31. ───────────────────────────────
+   *
+   * ZMIERZONA PRZYCZYNA, nie preferencja. Do dzisiaj najwiekszym stopniem w calej
+   * aplikacji byl `--text-title` = 20 px, wiec zakres drabinki wynosil 11 -> 20 px
+   * (1,8x). Dom (../meetnotes) ma ciagly zakres 9 -> 30 px i okolo 50 stopni;
+   * makieta, ktora wlasciciel wybral, uzywa 40 px na tytul ekranu i 34 px na tytul
+   * drugiego rzedu. Przy suficie 20 px zaden ekran NIE MOZE miec bohatera: mozna
+   * zrobic rzecz grubsza albo szersza, nigdy wieksza — i wtedy kazda proba hierarchii
+   * konczy sie szarym prostokatem obok szarego prostokata. To jest zapisana przyczyna
+   * numer jeden, dla ktorej dwie poprzednie przebudowy wyszly nudne.
+   *
+   * WARTOSCI SA Z MAKIETY, nie z glowy: `h1` = 40, `h1.sm` = 34, `h2` = 22
+   * (docs/mockup/index.html, reguly `h1`, `h1.sm`, `h2`).
+   *
+   * `--text-title` ZMIENIA WARTOSC (20 -> 22) i NIE zmienia nazwy. Nazwa skasowana pod
+   * dwunastoma wolajacymi zostawia elementy bez ani jednej reguly — awarie, ktora nie
+   * rzuca wyjatku. Zmienia sie za to jej ROLA: tytulem EKRANU jest teraz `--text-display`,
+   * a `--text-title` jest tytulem KARTY, panelu i okna dialogowego, czyli `h2` makiety.
+   * Piec miejsc wola dzis `text-title` na czyms, co ekranem nie jest — spis stoi
+   * w DESIGN §4 pod „Migracja gornych stopni". */
+  --text-display: 40px;
+  --text-display--line-height: 1.04;
+  --text-display--letter-spacing: -0.025em;
+  --text-display--font-weight: 700;
+
+  --text-hero: 34px;
+  --text-hero--line-height: 1.08;
+  --text-hero--letter-spacing: -0.022em;
+  --text-hero--font-weight: 700;
+
+  --text-title: 22px;
   --text-title--line-height: 1.2;
-  --text-title--letter-spacing: -0.02em;
+  --text-title--letter-spacing: -0.015em;
   --text-title--font-weight: 600;
+
+  /* Jedno zdanie, na ktorym bieg sie zatrzymal, i etykieta duzego przycisku.
+   * Makieta: `.ask .q` (17px) i `.btn.big` (17px). Miedzy 22 a 15 nie bylo nic,
+   * wiec pytanie do czlowieka mialo do wyboru „tytul karty" albo „naglowek". */
+  --text-question: 17px;
+  --text-question--line-height: 1.4;
+  --text-question--font-weight: 600;
+
+  /* Zdanie POD tytulem ekranu. Makieta: `.sub` — 15px, waga 400, interlinia 1.5.
+   * `--text-heading` ma ten sam rozmiar i wage 600, wiec nie da sie nim napisac
+   * akapitu: 15/600 to naglowek, a to jest proza. */
+  --text-lede: 15px;
+  --text-lede--line-height: 1.5;
+  --text-lede--font-weight: 400;
 
   --text-heading: 15px;
   --text-heading--line-height: 1.3;
@@ -195,9 +260,13 @@
   --text-label--line-height: 1.2;
   --text-label--font-weight: 600;
 
+  /* ROZSTRZELENIE 0.06 -> 0.16em, 2026-08-31. Wartosc z makiety (`.eyebrow`, `.grp-h`,
+   * `.rule` — wszystkie 0.16em). Nadoczko przy 0.06em czyta sie jak zwykla etykieta
+   * napisana wersalikami; dopiero rozstrzelone przestaje konkurowac z tytulem pod soba
+   * i zaczyna byc tym, czym jest — adresem miejsca, w ktorym stoisz. */
   --text-eyebrow: 11px;
   --text-eyebrow--line-height: 1.2;
-  --text-eyebrow--letter-spacing: 0.06em;
+  --text-eyebrow--letter-spacing: 0.16em;
   --text-eyebrow--font-weight: 600;
 
   --text-mono: 12px;
@@ -283,6 +352,10 @@
    * jedna deklaracja jest jedynym powodem, dla ktorego wypelnienie akcentem wyglada jak
    * material, a nie jak plama. Nie ma prawa trafic na nic innego niz `.btn-primary`. */
   --shadow-accent: 0 4px 14px rgba(110, 118, 255, 0.22);
+  /* BLASK POD IKONA SEKCJI, NA KTOREJ STOISZ — zwiniete menu, 2026-09-01.
+     Zerowe przesuniecie, wiec jest to BLASK, nie uniesienie: `only-the-nav-floats`
+     przepuszcza tylko taki, a jedyna rzecza, ktora w tym oknie plywa, zostaje kartka menu. */
+  --shadow-glyph: 0 0 12px rgba(110, 118, 255, 0.32);
 
   /* ── szkło ────────────────────────────────────────────────────────── */
   --glass-blur: 30px;
@@ -501,8 +574,19 @@
    * `utilities`; regula dopisana do TEJ SAMEJ warstwy trafia w wyniku PO nich i przy rownej
    * specyficznosci wygrywa z kazda klasa narzedziowa — czyli `normal-case` napisane
    * w komponencie nie dalo by sie zniesc nigdzie. `components` stoi nizej. */
+  /* BARWA NADOCZKA, dolozona 2026-08-31. Makieta stawia nadoczko w AKCENCIE
+   * (`.eyebrow{color:var(--acc)}`), a stan biegu przestawia je na `--live`
+   * (`.eyebrow.now`). To jest jedyne miejsce, w ktorym akcent nie jest kontrolka —
+   * uzasadnienie i granica stoja w DESIGN §3 pod „Akcent jako ATRAMENT nadoczka".
+   *
+   * Barwa siedzi na stopniu, a nie w komponentach, z tego samego powodu co wersaliki:
+   * inaczej trzeba by ja dopisywac recznie przy kazdym uzyciu i nie byloby jej przy
+   * zadnym. Warstwa `components` stoi nizej niz `utilities`, wiec `text-live`,
+   * `text-muted` i kazda inna klasa barwy dalej wygrywa — tam, gdzie nadoczko ma
+   * mowic co innego niz „jestes tutaj". */
   .text-eyebrow {
     text-transform: uppercase;
+    color: var(--color-accent);
   }
 
   /* ── MATERIAŁ. Trzy klasy, jedna reguła nadrzędna. 2026-08-19, T-46. ──────────────────────

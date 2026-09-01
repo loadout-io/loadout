@@ -65,8 +65,9 @@ fn shipped_ceiling_usd() -> f64 {
 
 /// Co Loadout robi domyślnie, na drucie.
 ///
-/// Dwa pola, bo dwa wybory — i tak ma zostać, dopóki nie zajdzie potrzeba trzeciego. Struktura
-/// „na przyszłość" jest tu tym samym długiem, co migracja schematu „na przyszłość" (AGENTS.md §4).
+/// Trzy pola, bo trzy wybory — i tak ma zostać, dopóki nie zajdzie potrzeba czwartego. Struktura
+/// „na przyszłość" jest tu tym samym długiem, co migracja schematu „na przyszłość" (AGENTS.md §4);
+/// trzecie pole doszło 2026-08-31, kiedy tryb bocznego menu naprawdę zaczął być wyborem.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsWire {
@@ -86,6 +87,22 @@ pub struct SettingsWire {
     /// nadal wolno, ale wyłącznie jednym jawnym ruchem w oknie, o którym ekran mówi na głos.
     #[serde(default = "shipped_ceiling_usd")]
     pub default_budget_usd: f64,
+    /// Czy boczne menu stoi zwinięte do samych ikon.
+    ///
+    /// 2026-08-31 — TRZECI WYBÓR TEGO PLIKU, i to jest zmiana produktu, nie porządków. Do tego
+    /// dnia nawigacja miała DWIE kontrolki na tę samą pracę stojące obok siebie: wąską kolumnę
+    /// glifów i listę wierszy, obie wołające to samo przejście. Zostaje jedna nawigacja
+    /// o dwóch trybach, a który z nich jest otwarty, jest wyborem człowieka — więc ma przeżyć
+    /// zamknięcie okna, tak samo jak wskazanie lidera. Bez tego pola człowiek zwijałby menu
+    /// przy każdym uruchomieniu, czyli dokładnie ta czynność powtarzana, którą 2026-08-29
+    /// skasował domyślny lider.
+    ///
+    /// `serde(default)` z tego samego powodu, co przy polach wyżej: plik zapisany przez
+    /// wcześniejszą wersję Loadouta nie ma tego klucza, a brakujące pole nie ma prawa wywalić
+    /// odczytu całej biblioteki (niezmiennik 5). `false` znaczy „rozwinięte", czyli tryb,
+    /// w którym widać wszystko — bezpieczna odpowiedź dla kogoś, kto nigdy nie wybierał.
+    #[serde(default)]
+    pub nav_collapsed: bool,
 }
 
 /// Świeża biblioteka: nikt nie prowadzi, a bieg ma sufit, którego nikt nie musiał wpisywać.
@@ -97,6 +114,7 @@ impl Default for SettingsWire {
         Self {
             default_lead: String::new(),
             default_budget_usd: SHIPPED_CEILING_USD,
+            nav_collapsed: false,
         }
     }
 }
@@ -175,6 +193,7 @@ pub fn save_settings_inner(
     home: &Path,
     default_lead: &str,
     default_budget_usd: f64,
+    nav_collapsed: bool,
 ) -> Result<SettingsWire, SettingsError> {
     if !default_budget_usd.is_finite() || default_budget_usd < SMALLEST_CEILING_USD {
         return Err(SettingsError::NotAnAmount(default_budget_usd));
@@ -182,6 +201,11 @@ pub fn save_settings_inner(
     let settings = SettingsWire {
         default_lead: default_lead.trim().to_owned(),
         default_budget_usd,
+        // Tryb menu NIE JEST sadzony: zwiniete i rozwiniete sa oba poprawnymi odpowiedziami,
+        // a odmowa nie mialaby czego bronic. Kwota obok ma swoja podloge, bo pomylka w niej
+        // kosztuje pieniadze; tu najgorsze, co moze sie stac, to menu w trybie, ktorego
+        // czlowiek nie chcial — i naprawia to jeden klawisz.
+        nav_collapsed,
     };
     write(home, &settings)?;
     Ok(settings)

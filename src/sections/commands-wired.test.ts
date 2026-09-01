@@ -148,6 +148,9 @@ const AUTHORED: Authored = {
   whatToDo: 'Read the change first, then say in one paragraph what to fix.',
 };
 
+/** Tryb bocznego menu, który człowiek wybrał. `true` — patrz komentarz przy wierszu Settings. */
+const NAV_COLLAPSED = true;
+
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
 const TRIGGER_DRAFT: triggers.TriggerDraft = {
   source: 'linear',
@@ -705,7 +708,11 @@ const WIRES: readonly Wire[] = [
    * `save_settings` niesie od dziś także domyślny sufit wydatku biegu, bo plik jest jeden:
    * wywołanie z samym wskazaniem lidera nadpisywałoby kwotę tym, co akurat miało okno. Klucz
    * jest sądzony osobno, przeciwko `ipc.rs` — brak `defaultBudgetUsd` po którejkolwiek stronie
-   * nie daje mniejszego wywołania, daje odrzucone. */
+   * nie daje mniejszego wywołania, daje odrzucone.
+   *
+   * 2026-08-31 — TRZECIA WARTOŚĆ W TYM SAMYM ZAPISIE, dopisana, nic nie usunięte. Tryb bocznego
+   * menu jest wyborem człowieka i mieszka w tym samym pliku, co dwa poprzednie; `true`, czyli
+   * NIE domyślne, bo wartość domyślna przechodziłaby także dla krawędzi, która ten klucz gubi. */
   {
     where: 'settings',
     what: 'readSettings',
@@ -717,9 +724,15 @@ const WIRES: readonly Wire[] = [
     where: 'settings',
     what: 'saveSettings',
     command: 'save_settings',
-    given: [{ defaultLead: AGENT_ID, defaultBudgetUsd: DEFAULT_BUDGET_USD }],
+    given: [
+      { defaultLead: AGENT_ID, defaultBudgetUsd: DEFAULT_BUDGET_USD, navCollapsed: NAV_COLLAPSED },
+    ],
     call: () =>
-      settings.saveSettings({ defaultLead: AGENT_ID, defaultBudgetUsd: DEFAULT_BUDGET_USD }),
+      settings.saveSettings({
+        defaultLead: AGENT_ID,
+        defaultBudgetUsd: DEFAULT_BUDGET_USD,
+        navCollapsed: NAV_COLLAPSED,
+      }),
   },
   /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.
    * Dopisana, nic nie usunięte i żaden istniejący wiersz nie przepisany — mandat tego zadania

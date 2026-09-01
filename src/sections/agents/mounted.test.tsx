@@ -17,13 +17,28 @@
  * (`claude-code`, `codex`) na ekranie nie istnieją (niezmiennik 14), więc porównujemy
  * z brzmieniami z `agent-form.tsx`.
  *
- * KONTRAKT NA MARKUP. Każda karta agenta niesie `data-agent` z jego identyfikatorem, a kawałek
- * markupu karty to wszystko od tego znacznika do znacznika następnej karty — ta sama technika,
- * co `zone()` w `src/sections/memory/mounted.test.tsx`. Pytanie o vendora zadajemy KARCIE, nie
- * dokumentowi, bo „gdzieś w dokumencie jest Claude Code i gdzieś jest Codex" przechodzi także
- * na ekranie, który przypisał etykiety na odwrót albo obie doczepił do jednego agenta —
- * a to jest dokładnie ta pomyłka, przed którą ta asercja ma bronić. Dlatego każda karta
- * dostaje też swoją nazwę: bez tego kawałek nie jest z niczym związany.
+ * GDZIE STOI VENDOR — ZMIENIŁO SIĘ 2026-08-31 WIECZOREM, i to jest zmiana MIEJSCA, nie siły.
+ * Do tego wieczora ekran wstawał jako ściana kafelków, a wiersz metadanej na każdym kafelku
+ * niósł „Claude Code · opus · Balanced · Work freely · gives up after 20m" — czyli pięć faktów,
+ * z których każdy jest POLEM formularza. Ściana zniknęła na zlecenie właściciela („a i to
+ * powinno byc domyslnie, wyjeb ten widok tu"), a razem z nią ten wiersz: mówił po raz drugi to,
+ * co dziś stoi w kontrolce dwadzieścia pikseli obok (niezmiennik 13).
+ *
+ * Pytanie tego kryterium NIE ZMALAŁO. Brzmiało „czy KAŻDY agent dostaje swojego vendora, a nie
+ * jednej etykiety dla wszystkich", i brzmi tak dalej — tylko zadane jest tam, gdzie ten fakt
+ * teraz mieszka: w ARKUSZU otwartej roli. Ekran otwiera się na pierwszej roli, więc pierwszą
+ * połowę czyta się bez żadnego szwu; drugą podajemy przez `opened`, bo `renderToStaticMarkup`
+ * nigdy nie odpala `onClick`, więc przełączenie roli klikiem jest w tym repo niesprawdzalne
+ * (ten sam powód i ten sam szew, co w `library-is-reachable.test.tsx`).
+ *
+ * SŁABĄ WERSJĄ jest `expect(markup).toContain('Claude Code')` nad całym dokumentem: przechodzi
+ * także na ekranie, który przypisał etykiety na odwrót albo obie doczepił do jednego agenta.
+ * Dlatego każda połowa pyta ARKUSZ o obie nazwy naraz — o jedną, że jest, o drugą, że jej nie
+ * ma — i dlatego arkusz musi przy tym nieść nazwę roli, której dotyczy.
+ *
+ * KONTRAKT NA MARKUP. Każdy wiersz spisu niesie `data-agent` z identyfikatorem agenta, którego
+ * otwiera, a arkusz otwartej roli to wszystko od `<aside` do końca dokumentu — arkusz jest
+ * ostatnią powierzchnią tego ekranu, więc to wystarcza i nie wymaga liczenia zagnieżdżeń.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -40,12 +55,10 @@ function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-/** Kawałek markupu od znacznika tej karty do znacznika następnej. */
-function card(markup: string, id: string): string {
-  const start = markup.indexOf('data-agent="' + id + '"');
-  if (start < 0) return '';
-  const next = markup.slice(start + 1).search(/data-agent="/);
-  return next < 0 ? markup.slice(start) : markup.slice(start, start + 1 + next);
+/** Arkusz otwartej roli: od otwierającego `<aside` do końca dokumentu. */
+function sheetOf(markup: string): string {
+  const at = markup.indexOf('<aside');
+  return at < 0 ? '' : markup.slice(at);
 }
 
 function agent(id: string, name: string, runsWith: Vendor, model: string): Agent {
@@ -143,52 +156,47 @@ describe('the agents section mounts for real and keeps inviting when it is empty
     ).toContain(sectionEntry('agents').empty);
   });
 
-  it('shows both agents with the vendor each one runs on, and the same one way to add', async () => {
-    const store = createAgentsStore(
-      ioWith([
-        agent('a-1', 'Orion', 'claude-code', 'opus'),
-        agent('a-2', 'Needle', 'codex', 'gpt-5.6-sol'),
-      ]),
-    );
+  it('shows both agents by name and gives the one it opens its own vendor', async () => {
+    const orion = agent('a-1', 'Orion', 'claude-code', 'opus');
+    const needle = agent('a-2', 'Needle', 'codex', 'gpt-5.6-sol');
+    const store = createAgentsStore(ioWith([orion, needle]));
     await store.getState().load();
 
     const markup = renderToStaticMarkup(<AgentsScreen store={store} />);
 
     expect(markup, 'the first agent the store holds has to reach the document').toContain('Orion');
-    expect(markup, 'and the second one too, not just the first').toContain('Needle');
     expect(
       markup,
-      'each agent carries the vendor it runs on. The two seeded agents run on different ones ' +
+      'and the second one too, not just the first. Every saved role is in the index by name, ' +
+        'whichever one happens to be open',
+    ).toContain('Needle');
+
+    /* PIERWSZA POŁOWA: bez żadnego szwu. Ekran otwiera się na pierwszej roli, więc to jest
+     * dokładnie ten dokument, który człowiek dostaje po wejściu na sekcję. */
+    const first = sheetOf(markup);
+    expect(
+      first,
+      'a role has to be standing in the body before anybody clicks. The screen used to open as ' +
+        'a wall of cards and this surface only existed behind a click',
+    ).toContain('Orion');
+    expect(
+      first,
+      'and it names the vendor THAT role runs on. The two seeded agents run on different ones ' +
         'on purpose: a screen that prints one label for everybody passes a list of names and ' +
         'falls over here',
     ).toContain('Claude Code');
-    expect(markup, 'and the other agent names the other vendor').toContain('Codex');
-
-    /* Ta sama para etykiet, tym razem zadana KAŻDEJ KARCIE OSOBNO. Dwie asercje wyżej mówią
-     * tylko, że oba brzmienia są gdzieś w dokumencie — a to przechodzi również wtedy, gdy ekran
-     * zamienił je miejscami albo doczepił obie do jednego agenta. */
-    const orion = card(markup, 'a-1');
-    const needle = card(markup, 'a-2');
-
     expect(
-      orion,
-      'the card carrying data-agent="a-1" is the one the store seeded as Orion; without this ' +
-        'the slice below is not tied to any particular agent',
-    ).toContain('Orion');
-    expect(
-      orion,
-      'and Orion runs on Claude Code, so that label belongs INSIDE that card — not merely ' +
-        'somewhere in the document',
-    ).toContain('Claude Code');
-    expect(
-      orion,
-      'the other vendor has no business in that card. A screen that swapped the two labels keeps ' +
-        'both of them in the document and passes every assertion above',
+      first,
+      'the other vendor has no business in that sheet. A screen that swapped the two labels ' +
+        'keeps both of them in the document and passes an assertion made over the whole markup',
     ).not.toContain('Codex');
-    expect(needle, 'and the second card is the one the store seeded as Needle').toContain('Needle');
-    expect(needle, 'Needle runs on the other vendor, inside its own card').toContain('Codex');
+
+    /* DRUGA POŁOWA, i to jest ta, która pada na zamianie etykiet miejscami. */
+    const second = sheetOf(renderToStaticMarkup(<AgentsScreen store={store} opened={needle} />));
+    expect(second, 'picking the other role puts THAT role in the body').toContain('Needle');
+    expect(second, 'Needle runs on the other vendor, inside its own sheet').toContain('Codex');
     expect(
-      needle,
+      second,
       'and Claude Code has no business there — this is the half that fails on a swap',
     ).not.toContain('Claude Code');
 

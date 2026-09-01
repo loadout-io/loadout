@@ -8,7 +8,7 @@
  * NIEZMIENNIK 29 W PRAKTYCE. Słabą wersją tego kryterium jest sprawdzenie funkcji magazynu:
  * `applyFix` może działać bez zarzutu, a przycisku może nie być na ekranie ALBO może nie mieć
  * handlera — i to jest dokładnie ta klasa wady, dla której to repo powstało. Dlatego niżej
- * mierzone są obie połowy osobno: markup renderowany przez `RunBar` (czy człowiek to widzi)
+ * mierzone są obie połowy osobno: markup renderowany przez `ThingsToFix` (czy człowiek to widzi)
  * i skutek `applyFix` na magazynie (czy kliknięcie cokolwiek zmienia).
  *
  * DRUGĄ SŁABĄ WERSJĄ jest przycisk z napisem „Fix". Przechodzi ją implementacja, która zmienia
@@ -20,7 +20,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../../../state/agents';
 import type { Fix, Note, WorkflowFile } from '../../../state/workflows';
 import { createWorkflowStore } from '../../../state/workflows';
-import { RunBar } from './problems';
+import { ThingsToFix } from './problems';
 
 function noop(): void {
   /* sterowany pasek: w statycznym renderze nic tego nie woła */
@@ -83,9 +83,8 @@ function fixButton(html: string): { attributes: string; label: string } | null {
 
 function bar(notes: Note[], onApplyFix?: (fix: Fix) => void): string {
   return renderToStaticMarkup(
-    createElement(RunBar, {
+    createElement(ThingsToFix, {
       notes,
-      onRun: noop,
       onFocusNote: noop,
       ...(onApplyFix === undefined ? {} : { onApplyFix }),
     }),

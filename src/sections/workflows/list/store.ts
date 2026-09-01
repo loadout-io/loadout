@@ -89,6 +89,21 @@ export interface WorkflowListActions {
   requestDelete: (id: string) => void;
   cancelDelete: () => void;
   confirmDelete: () => Promise<void>;
+  /**
+   * Czyta katalog od nowa.
+   *
+   * 2026-08-31 — STOI TU, A NIE TYLKO W [`WorkflowListState`], i to jest cała naprawa czarnego
+   * ekranu ze zgłoszenia właściciela. Kiedy katalogu nie dało się przeczytać, ekran pokazywał
+   * dwa zdania i ANI JEDNEJ kontrolki: człowiek, który właśnie nadał aplikacji dostęp w
+   * Ustawieniach systemowych, nie miał czym poprosić o drugi odczyt. Jedyną drogą było wyjście
+   * z sekcji i powrót — bo dopiero wtedy efekt w `../index.tsx` woła `load()` — czego ekran
+   * nie mówił nigdzie i czego nie da się zgadnąć.
+   *
+   * WYMAGANA, nie opcjonalna, z tego samego powodu, co `onRun` w `./workflow-list.tsx`: wołający,
+   * który tego nie poda, zabiera z odmowy jedyne wyjście i nie dowiaduje się o tym z żadnego
+   * błędu kompilacji.
+   */
+  load: () => Promise<void>;
 }
 
 /** Co ten magazyn wie o KATALOGU — trzy stany, nie dwa.
@@ -120,7 +135,6 @@ export interface WorkflowListState extends WorkflowListActions {
   refusal: string | null;
   /** O co pytamy. `null` znaczy, że o nic — pytanie ma jedno miejsce (niezmiennik 13). */
   pendingDeleteId: string | null;
-  load: () => Promise<void>;
 }
 
 /* ── Nazwa pliku ───────────────────────────────────────────────────────────────────────────

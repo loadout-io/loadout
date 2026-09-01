@@ -52,10 +52,10 @@ function agent(): Agent {
   };
 }
 
-/** Atrapa, w której dysk odmawia zapisu, a odczyt zwraca tego jednego agenta. */
-function refusing(): AgentsIo {
+/** Atrapa, w której dysk odmawia zapisu, a odczyt zwraca to, co jej podano. */
+function refusing(listed: readonly Agent[] = [agent()]): AgentsIo {
   return {
-    list: () => Promise.resolve([agent()]),
+    list: () => Promise.resolve([...listed]),
     newId: () => Promise.resolve('a-new'),
     save: () => Promise.reject(SAID),
     remove: () => Promise.resolve(),
@@ -135,8 +135,19 @@ describe('a refused save says so next to the button that asked for it', () => {
     expect(occurrences(markup, SAID), 'and the reason is said exactly once').toBe(1);
   });
 
-  it('control: with no panel open the sentence goes back under the header', async () => {
-    const store = createAgentsStore(refusing());
+  /* KONTROLA MÓWI DZIŚ O PUSTEJ BIBLIOTECE, i to jest ta sama kontrola, tylko postawiona na
+   * jedynym stanie, w którym „nic nie jest otwarte" dalej istnieje — 2026-08-31 wieczorem.
+   *
+   * Do tego wieczora ekran wstawał jako ściana kafelków i arkusz montował się dopiero po
+   * kliknięciu, więc „nic nie otwarte" był stanem domyślnym. Właściciel kazał tamten widok
+   * usunąć („a i to powinno byc domyslnie, wyjeb ten widok tu"), a od tej zmiany na
+   * NIEPUSTEJ bibliotece rola stoi w ciele ekranu ZAWSZE — czyli reguła „panel otwarty →
+   * zdanie w panelu" pokrywa wtedy cały ekran i pytać o pasek nie ma o czym.
+   *
+   * Kontrola nie zmalała: dalej odpowiada na dokładnie to samo pytanie, przed którym stoi
+   * („czy ten ekran w ogóle jeszcze pokazuje odmowy"), i dalej pada, gdy pasek zniknie. */
+  it('control: with no role standing the sentence goes back under the header', async () => {
+    const store = createAgentsStore(refusing([]));
     await store.getState().load();
     await store.getState().save(agent());
 
@@ -148,8 +159,12 @@ describe('a refused save says so next to the button that asked for it', () => {
         'stopped showing refusals altogether',
     ).toContain(SAID);
     expect(
+      panelOf(markup),
+      'the folder answered with nothing, so there is no role in the body and no sheet at all',
+    ).toBe('');
+    expect(
       outsideThePanel(markup),
-      'with nothing open, the section bar is where it belongs — it is the only place there is',
+      'with nothing standing, the section bar is where it belongs — it is the only place there is',
     ).toContain(SAID);
   });
 });

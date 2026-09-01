@@ -117,7 +117,7 @@ export function Budget({
   disabled = null,
 }: BudgetProps): ReactElement {
   return (
-    <div className="flex min-w-0 shrink-0 items-center gap-2">
+    <div className="flex shrink-0 items-center gap-2">
       <label className="label min-w-0 truncate" htmlFor={FIELD_ID}>
         {BUDGET_LABEL}
       </label>

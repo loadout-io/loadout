@@ -12,11 +12,14 @@
  * nazywa po imieniu, i dokładnie to, co przydarzyło się `rail/{roster,card,colour,say}.ts`
  * przez trzydzieści zadań. Renderujemy więc `<Run />` i pytamy JEGO markup.
  *
- * DLACZEGO PIERWSZY PLAN NIE MA POZYCJI. To repo nie ma jsdom, a React Flow mierzy kafelki
- * dopiero w przeglądarce: pod `renderToStaticMarkup` oddaje ramę płótna z PUSTYMI pojemnikami.
- * Droga, po której człowiek widzi kafelki w tym środowisku, to lista — czyli plan bez układu,
- * ten sam, który okno składa dla wpisanego pytania. Że plan Z układem dostaje płótno, a nie
- * listę, sądzi osobno ostatni punkt, na obecności ramy.
+ * DLACZEGO SĄ TU DWA PLANY, JEDEN Z POZYCJAMI I JEDEN BEZ. 2026-08-31 płótno React Flow zeszło
+ * z ekranu biegu w całości (`./graph/graph.tsx`, nagłówek): kroki rysują się od dziś jako jedna
+ * pionowa ścieżka, niezależnie od tego, czy plik mówi, gdzie stoi który krok. Do tego dnia
+ * ścieżkę dostawał WYŁĄCZNIE plan bez zapisanych pozycji — czyli plan, który okno składa samo
+ * dla wpisanego pytania — a każdy prawdziwy workflow pozycje ma, więc w produkcie zawsze wypadało
+ * płótno: kafelki wysokie na 40 px i karta pytania szeroka na ~120 px (zmierzone na zrzucie okna
+ * 1512×950). Oba plany stoją tu więc po to, żeby powiedzieć, że obraz jest JEDEN, i po to, żeby
+ * regresja przywracająca warunek padła natychmiast.
  *
  * WARTOŚCI OCZEKIWANE LICZY `roster()` I MODEL STRUMIENIA, nie autor testu. Zdanie kafelka
  * i barwa kwadratu są tu wynikiem tych samych funkcji, które woła ekran — wpisane z palca
@@ -67,6 +70,11 @@ const drawn = renderToStaticMarkup(<Run />);
 /** To, co React Flow zawsze stawia wokół płótna. Nie ma go — nie ma płótna. */
 const CANVAS = 'react-flow__pane';
 
+/** Klucze kroków w kolejności, w jakiej stoją w markupie. */
+function stepsIn(markup: string): readonly string[] {
+  return [...markup.matchAll(/data-step="([^"]*)"/g)].map((hit) => hit[1] ?? '');
+}
+
 /** Markup jednego kafelka: od jego znacznika do znacznika następnego. */
 function tileOf(markup: string, id: string): string {
   const opens = markup.indexOf('data-step="' + id + '"');
@@ -81,25 +89,39 @@ function textOf(piece: string): string {
   return piece.replace(/<[^>]*>/g, '');
 }
 
+/**
+ * To samo, ale ze ZNACZNIKIEM ZAMIENIONYM NA ODSTĘP — i to jest różnica mierzalna, nie gust.
+ *
+ * `textOf` skleja sąsiednie węzły tekstowe w jeden wyraz („Build" + „working" = „Buildworking"),
+ * więc szukanie pojedynczego SŁOWA z granicą wyrazu nie znajduje w nim niczego. Punkt o stanie
+ * kroku pyta właśnie o jedno słowo, więc czyta kartę tak, jak czyta ją człowiek: z przerwą tam,
+ * gdzie na ekranie jest przerwa.
+ */
+function wordsOf(piece: string): string {
+  return piece.replace(/<[^>]*>/g, ' ');
+}
+
 /** Nazwa tokenu barwy z pierwszej deklaracji `var(--…)` w tym kawałku markupu. */
 function colourIn(piece: string): string {
   return /var\((--[a-z0-9-]+)\)/.exec(piece)?.[1] ?? '';
 }
 
 describe('the plan is on the run screen', () => {
-  it('carries one card per step of the run', () => {
+  it('carries one card per step of the run, whatever the file says about places', () => {
     expect(
       LAID_OUT.length,
       'the seeded run has to have steps, otherwise every comparison below runs on nothing',
     ).toBe(2);
-    for (const step of LAID_OUT) {
-      expect(
-        listed,
-        'the run screen shows nothing for step ' +
-          step.name +
-          '. The plan is the one thing this screen is about, and a drawing nobody mounts is ' +
-          'the failure this repository exists for.',
-      ).toContain('data-step="' + step.id + '"');
+    for (const markup of [listed, drawn]) {
+      for (const step of LAID_OUT) {
+        expect(
+          markup,
+          'the run screen shows nothing for step ' +
+            step.name +
+            '. The plan is the one thing this screen is about, and a drawing nobody mounts is ' +
+            'the failure this repository exists for.',
+        ).toContain('data-step="' + step.id + '"');
+      }
     }
   });
 
@@ -153,16 +175,61 @@ describe('the plan is on the run screen', () => {
     ).not.toContain('data-blocks');
   });
 
-  it('draws the picture when the file says where every step stands', () => {
+  it('draws one path, in the order of the file, for the plan that carries places too', () => {
+    expect(
+      stepsIn(drawn),
+      'the two steps carry a place and the file joins them, and the screen answers with a ' +
+        'different picture than it gives the same run without places. There is one run and one ' +
+        'answer to "what is this work": the steps top to bottom, in the order the file lists ' +
+        'them. Reordering them states, in the only language this picture has, an order nobody ' +
+        'wrote down (rule 17).',
+    ).toEqual(LAID_OUT.map((step) => step.id));
     expect(
       drawn,
-      'both steps carry a place and the file joins them, so there is a real shape to show — ' +
-        'and a screen that lists them anyway leaves the drawing unreachable in the product',
-    ).toContain(CANVAS);
+      'the file says where every step stands and the run screen answers with the canvas. ' +
+        'Measured 2026-08-31 in a 1512x950 window: tiles 40 px tall, unreadable, and a question ' +
+        'card ~120 px wide. Every real workflow carries places, so this was the picture a person ' +
+        'actually got — while the point about the path of steps stayed green over a plan the ' +
+        'product never draws. The canvas belongs to the workflow editor.',
+    ).not.toContain(CANVAS);
     expect(
       listed,
-      'nothing in the first plan says where a step stands, so a picture would have to invent ' +
-        'it (rule 17), and the list is the honest answer',
+      'the same run without places is drawn on a canvas, which would have to invent them (rule 17)',
     ).not.toContain(CANVAS);
+  });
+
+  it('says on each card which step it runs after, because the picture draws no arrows', () => {
+    expect(
+      textOf(tileOf(drawn, 's_check')),
+      'the file joins the two steps and the card of the second one never says what it comes ' +
+        'after. This picture draws no arrows at all, so the relation the file states has to ' +
+        'arrive in words on the card or it does not arrive on the screen at all.',
+    ).toContain('after ' + BUILD);
+    expect(
+      textOf(tileOf(drawn, 's_build')),
+      'the step the run starts with says nothing about what it waits for, so a person reading ' +
+        'the top of the picture cannot tell it is the top',
+    ).toContain('first step');
+  });
+
+  it('tells the state of one step apart from another on the screen, not only in the data', () => {
+    const WORD = /\b(?:working|waiting|needs you|done|failed|stopped)\b/;
+    const building = WORD.exec(wordsOf(tileOf(drawn, 's_build')))?.[0] ?? '';
+    const checking = WORD.exec(wordsOf(tileOf(drawn, 's_check')))?.[0] ?? '';
+
+    expect(
+      building,
+      'the card of the step that is running says nowhere, in words a person can read, what ' +
+        'state it is in. Shape and colour alone leave out everybody who does not separate two ' +
+        'dimmed hues, and a name for the screen reader answers blindness, not colour vision.',
+    ).not.toBe('');
+    expect(checking, 'the card of the step that failed carries no state in words').not.toBe('');
+    expect(
+      checking,
+      'the step that is running and the step that failed read the same word ("' +
+        building +
+        '"), so the one question a person brings to this screen — which of these is happening ' +
+        'now and which went wrong — has no answer on it.',
+    ).not.toBe(building);
   });
 });

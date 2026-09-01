@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import { createLabStore } from '../../state/lab';
-import { modelOf, nextColumn, withModel, withName } from './columns';
+import { isDirty, modelOf, nextColumn, typedOf, withModel, withName, withTyped } from './columns';
 import type { EvalBoard, EvalVariant, LabIo } from './io';
 import LabScreen from './index';
 
@@ -142,6 +142,44 @@ describe('a column', () => {
   it('keeps the old name rather than leaving a column with none', () => {
     expect(withName(ONE, '  ').name).toBe('Without');
     expect(withName(ONE, ' With ').name).toBe('With');
+  });
+
+  it('says out loud when a typed value has not reached the disk', () => {
+    /* ZMIERZONE NA ZYWYM EKRANIE 2026-08-31. Pola byly niekontrolowane i zapisywaly sie
+     * wylacznie przy `onBlur`, wiec wpisany model zyl w DOM i nigdzie indziej — a ekran nie
+     * odroznial go niczym od zapisanego. Wlasciciel wpisal `Test`, zobaczyl go w polu i mial
+     * wszelkie prawo sadzic, ze ustawil model; plik nie zmienil sie ani razu. */
+    expect(isDirty(ONE, undefined), 'a row nobody touched has nothing to save').toBe(false);
+    expect(
+      isDirty(ONE, { name: ONE.name, model: 'opus' }),
+      'a typed value the disk has not seen has to be tellable from a saved one',
+    ).toBe(true);
+    expect(
+      isDirty(ONE, { name: ONE.name, model: modelOf(ONE) }),
+      'typing a value back to what it already was is not an unsaved change',
+    ).toBe(false);
+  });
+
+  it('shows the field what was typed, and the saved value until something is', () => {
+    expect(typedOf(ONE, undefined)).toEqual({ name: 'Without', model: '' });
+    expect(typedOf(ONE, { name: 'With', model: 'opus' })).toEqual({ name: 'With', model: 'opus' });
+  });
+
+  it('carries both halves of the row into the one thing that is saved', () => {
+    expect(withTyped(ONE, { name: 'On opus', model: 'opus' })).toEqual({
+      ...ONE,
+      name: 'On opus',
+      overrides: { model: 'opus' },
+    });
+  });
+
+  it('offers Save only where there is something unsaved', () => {
+    const clean = screen([ONE]);
+    expect(
+      clean.includes('data-lab-save-column'),
+      'a Save button standing there with nothing to save is a control that spends its life ' +
+        'with nothing to do',
+    ).toBe(false);
   });
 
   it('sends the change to the disk with the revision it read', async () => {

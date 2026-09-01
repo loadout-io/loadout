@@ -235,3 +235,71 @@ export function measureOf(step: GraphStep, plan: Plan): Measure {
 
   return { waits, handsOn: plan.links.some((link) => link.from === step.id) };
 }
+
+/**
+ * POZIOM każdego kroku, liczony ze strzałek — czyli jedyna liczba, którą wolno postawić przy
+ * kroku na ekranie.
+ *
+ * Krok, na który nie wskazuje ani jedna strzałka, stoi na poziomie 1. Każdy inny stoi o jeden
+ * niżej od NAJDALSZEGO ze swoich poprzedników. Dwa kroki na jednym poziomie nie mają między sobą
+ * kolejności i mogą ruszyć razem.
+ *
+ * CO TO NAPRAWIA, ZMIERZONE 2026-08-31 (zgłoszenie właściciela: „w sumie te numerki kłamią bo
+ * kilka może iść na raz cnie"). Kolumna kroków numerowała je POZYCJĄ W TABLICY (`path.tsx`,
+ * `at + 1`) i nie patrzyła na strzałki ani razu. Dwa kroki wiszące na tym samym poprzedniku
+ * dostawały przez to „2" i „3" — czyli obietnicę, że jeden idzie przed drugim. W pliku tej
+ * relacji nie ma, a bieg puszcza oba naraz: `engine::scheduler` wypuszcza w pierwszym obrocie
+ * WSZYSTKIE kroki o zerowym stopniu wejściowym, a semafor ogranicza tylko, ile z nich naprawdę
+ * ruszy w tej chwili. Numer był więc relacją, której w danych nie ma (niezmiennik 17).
+ *
+ * SUFIT „ILE NARAZ" NIE MA Z TĄ LICZBĄ NIC WSPÓLNEGO i nie ma prawa mieć. Poziom mówi, co WOLNO
+ * puścić razem; suwak „How many agents at once?" mówi, ile Loadout naprawdę uruchomi. Wpisanie
+ * sufitu w tę liczbę byłoby nowym kłamstwem w miejsce starego — ekran odpowiada tu na pytanie
+ * o zależności, nie o przepustowość.
+ *
+ * DROGA POWROTNA NIE JEST KOLEJNOŚCIĄ i dlatego wypada. Strzałka z `max_turns` znaczy „spróbuj
+ * jeszcze raz" (`state/workflows.ts`, `Link`): wraca do kroku, który już był, i domyka koło
+ * z rozmysłu. Policzona jako „potem" robi z grafu cykl, a w cyklu poziom przestaje istnieć.
+ * Rust czyta ją dokładnie tak samo — `workflow::check` liczy koło wyłącznie na strzałkach bez
+ * powrotów, a `workflow::unroll` rozwija pętlę na literalne rundy, zanim planista zobaczy graf.
+ *
+ * STRZAŁKA BEZ OBU KOŃCÓW W PLANIE TEŻ WYPADA. Ten sam warunek, co w [`arrowsOf`] i z tego
+ * samego powodu: krok, którego człowiek nie widzi, nie ma prawa przesuwać numeru krokowi,
+ * którego widzi.
+ *
+ * DLACZEGO ODPRĘŻANIE W PĘTLI, A NIE OBCHÓD W GŁĄB. Obchód rekurencyjny nad danymi z drutu
+ * zapętla się na cyklu, którego walidator nie widział — a plan przyjeżdża tu z okna i „nigdy nie
+ * wywalaj biegu na nieznanym zdarzeniu" (niezmiennik 5) obowiązuje także rysującego. Liczba
+ * przebiegów jest ograniczona liczbą kroków, więc łańcuch dowolnej długości zdąży się ustawić,
+ * a graf, który mimo wszystko przyjechał z kołem, kończy się skończonymi liczbami zamiast
+ * zawieszonym oknem.
+ */
+export function levelsOf(plan: Plan): ReadonlyMap<string, number> {
+  const standing = new Set(plan.steps.map((step) => step.id));
+  const parents = new Map<string, string[]>();
+  for (const link of plan.links) {
+    if (link.max_turns !== undefined) continue;
+    if (!standing.has(link.from) || !standing.has(link.to)) continue;
+    const mine = parents.get(link.to);
+    if (mine === undefined) parents.set(link.to, [link.from]);
+    else mine.push(link.from);
+  }
+
+  const level = new Map(plan.steps.map((step) => [step.id, 1]));
+  for (let pass = 0; pass < plan.steps.length; pass += 1) {
+    let moved = false;
+    for (const step of plan.steps) {
+      const mine = level.get(step.id) ?? 1;
+      let want = mine;
+      for (const parent of parents.get(step.id) ?? []) {
+        want = Math.max(want, (level.get(parent) ?? 1) + 1);
+      }
+      if (want > mine) {
+        level.set(step.id, want);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return level;
+}

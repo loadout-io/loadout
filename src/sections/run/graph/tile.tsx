@@ -40,9 +40,10 @@
  * do dziś stał sam glif. To nie jest też drugi dom jednego faktu: kolumny agentów, która mówiła
  * to samo, już nie ma, więc miejsce jest dokładnie jedno (niezmiennik 13).
  */
-import type { ReactElement } from 'react';
+import type { CSSProperties, ReactElement } from 'react';
 import type { AgentStatus } from '../rail/card';
-import type { GraphStep, Plan } from './model';
+import { initialsOf } from '../feed/who';
+import type { GraphStep, Plan, Who } from './model';
 import { measureOf } from './model';
 
 export interface RunTileProps {
@@ -63,12 +64,30 @@ export interface RunTileProps {
    * a przycisk, który otwiera pusty ekran, jest kontrolką bez skutku z dodatkowym krokiem.
    */
   onOpen?: () => void;
+  /**
+   * Gdzie ta karta stoi w siatce, którą rozkłada wołający — albo brak, kiedy sama się układa.
+   *
+   * 2026-08-31 — DOSZŁO RAZEM ZE ŚCIEŻKĄ KROKÓW (`./path.tsx`). Kolumna planu jest od dziś
+   * siatką dwukolumnową: znaczniki po lewej, karty po prawej, wiersze jawne. Karta MUSI dostać
+   * swoje miejsce od tej siatki, a nie od opakowania, bo cudze kryteria liczą kafelki jako
+   * BEZPOŚREDNIE dzieci listy (`e2e/tests/t161-long-workflow-stays-inside-run.spec.ts`,
+   * `:scope > [data-step]`) — `<div>` na krok schowałby przed nimi każdy z nich naraz.
+   *
+   * Wyłącznie miejsce w siatce: barwy, obrysu ani stopnia tędy nie podaje nikt i podawać nie
+   * ma prawa — forma stanu mieszka w `TONE` wyżej i tam jest sądzona.
+   */
+  style?: CSSProperties;
 }
 
 /* Karta z makiety (`.node`), bez szerokości: na płótnie narzuca ją komponent węzła (246 px,
  * kolumny), a na liście kafelek wypełnia swój wiersz. Szerokość wpisana tutaj robiłaby z listy
  * kolumnę wąskich pudełek przy szerokim oknie. */
-const CARD = 'card grid gap-[3px] bg-raised text-body';
+/* KAFELEK KROKU JEST CIASNIEJSZY NIZ DOMOWA KARTA — zgloszenie wlasciciela 2026-09-01:
+ * „troche zmniejsz te kafelki, dzieki temu bedzie wiecej space na terminal nasz". `.card` daje
+ * 12 px marginesu wewnetrznego i jest wspolna dla calego produktu; kolumna krokow to dziesiec
+ * takich kart jedna pod druga, wiec kazdy piksel liczy sie tam dziesiec razy. `p-[9px]` nadpisuje
+ * sam ten wymiar i nie rusza ani obrysu, ani promienia, ani tla — reszta karty zostaje domowa. */
+const CARD = 'card grid gap-[2px] bg-raised p-[9px] text-body';
 
 /**
  * Sześć stanów, sześć kompletów klas — `Record`, nie `switch` z gałęzią domyślną.
@@ -145,6 +164,59 @@ function StateChip({ status }: { status: AgentStatus }): ReactElement {
 }
 
 /**
+ * Napis, którym ta twarz się podpisuje — czyli nazwa, KTÓRĄ TEN ZNAK IDENTYFIKUJE.
+ *
+ * DWIE ODPOWIEDZI, BO PLAN ZERUJE NAZWĘ WYKONAWCY, kiedy agent nazywa się tak jak krok
+ * (`../index.tsx`, `planFor`) — a w prawdziwym biegu nazywa się tak ZAWSZE, bo podpis agenta
+ * w strumieniu JEST nazwą kroku (`commands/run.rs` woła `forward(…, step.name)`). Zmierzone
+ * 2026-08-31 w chromium na pełnej drodze produktu: `who.name` przyjechało puste na obu
+ * krokach, o których strumień cokolwiek powiedział, więc twarz stała pusta.
+ *
+ * Pusty napis znaczy więc „ten agent nazywa się tak jak ten krok", nigdy „nie wiemy, kto to" —
+ * i dlatego odpowiedzią jest nazwa kroku, a nie znak zapytania. To nie jest zgadywanie: barwa
+ * tej twarzy powstaje z DOKŁADNIE tego samego napisu (`identityToken(card.id)`, a `card.id`
+ * jest podpisem ze strumienia, czyli nazwą kroku), więc litery i kolor mówią o jednym napisie.
+ * Litery wyliczone z czegokolwiek innego rozjechałyby się z barwą obok nich.
+ */
+function signedBy(step: GraphStep, who: Who): string {
+  return who.name === '' ? step.name : who.name;
+}
+
+/**
+ * Twarz agenta — reguła `.face` z makiety, w rozmiarze, w jakim stoi ona na karcie kroku
+ * (`--fs:22px`): bok 22 px, miękki narożnik, podkład i obrys z barwy TOŻSAMOŚCI tego agenta,
+ * a w środku jego inicjały.
+ *
+ * DLACZEGO NIE SAM KWADRACIK. Do 2026-08-31 stał tu prostokąt 11 px bez ani jednego znaku
+ * w środku, więc jedynym nośnikiem „kto to robi" była BARWA — a pięć tokenów `--color-id-*`
+ * to pięć przygaszonych odcieni różniących się o kilkanaście stopni. Osoba, która ich nie
+ * rozdziela, nie dostawała z tego wiersza nic. To ten sam brak, na który ten katalog odpowiedział
+ * już raz, dostawiając SŁOWO do chipa stanu (`./the-state-of-a-step-is-a-word.test.tsx`) —
+ * i odpowiedź jest ta sama: znak, nie kolejny odcień.
+ *
+ * `aria-hidden`, bo inicjały są SKRÓTEM napisu, który na tej karcie i tak stoi w całości —
+ * raz jako nazwa wykonawcy obok, a kiedy tej nie ma, jako nazwa kroku w nagłówku. Czytnik ekranu
+ * przeczytałby „Re Reproduce". Barwa idzie przez `color-mix` na tokenie, nigdy literałem
+ * [DESIGN §9].
+ */
+function Face({ signature, who }: { signature: string; who: Who }): ReactElement {
+  const colour = `var(${who.square})`;
+  return (
+    <span
+      aria-hidden
+      className="grid size-[22px] shrink-0 place-items-center rounded-sm font-mono text-meta font-bold"
+      style={{
+        color: colour,
+        background: `color-mix(in srgb, ${colour} 16%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${colour} 38%, transparent)`,
+      }}
+    >
+      {initialsOf(signature)}
+    </span>
+  );
+}
+
+/**
  * Jedna linia tekstu kafelka.
  *
  * `data-card-line` niosą wszystkie cztery i tylko one — po tym atrybucie liczy się sufit
@@ -171,7 +243,7 @@ function CardLine({
   );
 }
 
-export function RunTile({ step, plan, onOpen }: RunTileProps): ReactElement {
+export function RunTile({ step, plan, onOpen, style }: RunTileProps): ReactElement {
   const measure = measureOf(step, plan);
   /* `data-step` PRZED klasami, i to nie jest kosmetyka: kryterium tnie markup listy na
      kafelki po tym atrybucie, a atrybut zapisany po `class` zostawia w cudzym wycinku
@@ -188,21 +260,19 @@ export function RunTile({ step, plan, onOpen }: RunTileProps): ReactElement {
         <StateChip status={step.status} />
       </div>
 
-      {/* KTO GO ROBI. Kwadrat jest TOŻSAMOŚCIĄ i nigdy stanem — ten sam kolor, który ten agent
+      {/* KTO GO ROBI. Twarz jest TOŻSAMOŚCIĄ i nigdy stanem — ten sam kolor, który ten agent
           ma w liście obok (DESIGN §3, „Tożsamość ≠ stan"). Nazwę tokenu podaje wołający, bo
           przydziela ją `../rail/colour.ts`; drugie odwzorowanie tutaj mogłoby rozstrzygnąć
-          inaczej i pokazać przy kroku innego agenta niż lista. */}
+          inaczej i pokazać przy kroku innego agenta niż lista.
+
+          Kształt wiersza jest z makiety, reguła `.sbox .who`: odstęp 8 px, krój do CZYTANIA,
+          barwa `--body`. Krój maszynowy w stopniu etykiety, który stał tu do 2026-08-31, jest
+          w tej aplikacji krojem WARTOŚCI WYLICZONEJ (`.value`, ostatnia linia tej samej karty)
+          — a imię nie jest pomiarem. */}
       {step.who === undefined ? null : (
-        <span className="flex min-w-0 items-center gap-1">
-          <i
-            aria-hidden
-            className="block size-2.75 shrink-0"
-            style={{ background: `var(${step.who.square})` }}
-          />
-          <CardLine
-            text={step.who.name}
-            className="min-w-0 truncate font-mono text-label text-muted"
-          />
+        <span className="flex min-w-0 items-center gap-2">
+          <Face signature={signedBy(step, step.who)} who={step.who} />
+          <CardLine text={step.who.name} className="min-w-0 truncate text-note text-body" />
         </span>
       )}
 
@@ -221,7 +291,7 @@ export function RunTile({ step, plan, onOpen }: RunTileProps): ReactElement {
 
   if (onOpen === undefined) {
     return (
-      <div data-step={step.id} className={skin}>
+      <div data-step={step.id} className={skin} {...(style === undefined ? {} : { style })}>
         {body}
       </div>
     );
@@ -231,7 +301,13 @@ export function RunTile({ step, plan, onOpen }: RunTileProps): ReactElement {
      bo wszystkie trzy odpowiadają na jedno pytanie („pokaż mi, kto to robi”). `text-left`, bo
      przycisk domyślnie centruje tekst, a kafelek czyta się od lewej. */
   return (
-    <button type="button" data-step={step.id} onClick={onOpen} className={`${skin} text-left`}>
+    <button
+      type="button"
+      data-step={step.id}
+      onClick={onOpen}
+      className={`${skin} text-left`}
+      {...(style === undefined ? {} : { style })}
+    >
       {body}
     </button>
   );

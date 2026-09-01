@@ -2448,18 +2448,28 @@ pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Zapisuje oba domyślne wybory i oddaje to, co ma teraz plik.
+/// Zapisuje wszystkie trzy domyślne wybory i oddaje to, co ma teraz plik.
 ///
 /// 2026-08-29 — DWA ARGUMENTY, JEDNO WYWOŁANIE, bo plik jest jeden. Zapis niosący samo wskazanie
 /// lidera nadpisywałby sufit tym, co akurat miało okno, a zapis niosący samą kwotę robiłby to
 /// samo liderowi (`commands::settings::save_settings_inner`).
+///
+/// 2026-08-31 — TRZECI ARGUMENT, tą samą drogą i z tego samego powodu: tryb bocznego menu jest
+/// wyborem człowieka, a nie stanem okna, więc mieszka w tym samym pliku i jedzie tym samym
+/// wywołaniem.
 #[tauri::command]
 pub fn save_settings(
     default_lead: &str,
     default_budget_usd: f64,
+    nav_collapsed: bool,
 ) -> Result<commands::settings::SettingsWire, String> {
-    commands::settings::save_settings_inner(&crate::loadout_dir(), default_lead, default_budget_usd)
-        .map_err(|error| error.to_string())
+    commands::settings::save_settings_inner(
+        &crate::loadout_dir(),
+        default_lead,
+        default_budget_usd,
+        nav_collapsed,
+    )
+    .map_err(|error| error.to_string())
 }
 
 // ── TRZY KOMENDY BIEGU ─────────────────────────────────────────────────────────────────────

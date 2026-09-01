@@ -32,10 +32,27 @@ export interface CellView {
   readonly spend: string;
 }
 
+/** Jedna rzecz, której ten wiersz żąda: podpis i treść. */
+export interface AsksFor {
+  readonly label: string;
+  readonly value: string;
+}
+
 /** Jeden wiersz tabeli. */
 export interface RowView {
   readonly caseId: string;
   readonly name: string;
+  /**
+   * Czego ten wiersz żąda — do przeczytania z tabeli, bez otwierania pliku zestawu.
+   *
+   * Do 2026-08-31 `task`, `expect`, `command` i `proof` leżały w modelu i NIE MIAŁY DROGI NA
+   * EKRAN: wiersz był `<th>` z samą nazwą, bez handlera i bez `title`. Człowiek patrzył na
+   * `✗` i nie miał jak sprawdzić, czego właściwie ta komórka chciała.
+   *
+   * WYŁĄCZNIE POLA, KTÓRE COŚ MÓWIĄ (niezmiennik 17). Przypadek bez komendy nie dostaje wiersza
+   * „Command: —"; kreska w miejscu wartości jest kształtem faktu, którego nie ma.
+   */
+  readonly asks: readonly AsksFor[];
   readonly cells: readonly CellView[];
 }
 
@@ -43,6 +60,11 @@ export interface RowView {
 export interface TableView {
   readonly columns: readonly { readonly id: string; readonly name: string }[];
   readonly rows: readonly RowView[];
+}
+
+/** `1 case`, `3 cases` — liczebnik przy rzeczowniku, w jednym miejscu na całą sekcję. */
+export function count(how: number, one: string, many: string): string {
+  return String(how) + ' ' + (how === 1 ? one : many);
 }
 
 /**
@@ -65,6 +87,85 @@ export function runningCases(set: EvalSet): readonly EvalCase[] {
 /** Kandydatki czekające na człowieka. */
 export function suggestedCases(set: EvalSet): readonly EvalCase[] {
   return set.cases.filter((one) => one.status === 'suggested');
+}
+
+/**
+ * Ile komórek zamawia ten zestaw dzisiaj: wiersze razy kolumny.
+ *
+ * Z ZESTAWU, nie z przebiegu, bo pytanie pada wtedy, gdy przebiegu jeszcze nie ma — w chwili
+ * naciśnięcia `Run`. Obie liczby stoją w pliku zestawu, więc żadna z nich nie jest zmyślona.
+ */
+export function howManyCells(set: EvalSet): number {
+  return runningCases(set).length * set.variants.length;
+}
+
+/**
+ * Ile komórek tego przebiegu NIKT nie zmierzył.
+ *
+ * ARYTMETYKA NA ODPOWIEDZI RUSTA, nie druga odpowiedź na to samo pytanie. `judged` liczy
+ * `lab::results` na plikach biegu, a `cells` jest całą macierzą, którą stamtąd dostaliśmy —
+ * więc różnica jest tym, co Rust już powiedział, tylko wypowiedzianym wprost. Policzenie tego
+ * po `outcome` w oknie byłoby drugim licznikiem, który rozjedzie się po pierwszej zmianie tamtej
+ * strony i nikt tego nie zauważy, bo obie liczby wyglądają jak liczba.
+ */
+export function notMeasured(run: PastEval): number {
+  return Math.max(0, run.cells.length - run.judged);
+}
+
+/**
+ * Zdanie o tym, jak skończył się CAŁY przebieg — albo pusty napis, gdy nie ma czego mówić.
+ *
+ * # Po co to istnieje: „0 of 3 passed" nad sześcioma wierszami
+ *
+ * Zmierzone na zrzucie właściciela 2026-08-31. Aplikacja zginęła w połowie biegu, uzgodnienie
+ * wpisało trzem pracującym krokom `failed`, `lab::results` nie ma `failed` na liście stanów
+ * nieosądzonych — i Loadout policzył WŁASNE ZAMKNIĘCIE jako trzy porażki agenta, po czym
+ * wystawił za to zero procent. Liczba była prawdziwa wobec swojej definicji i bezużyteczna
+ * wobec pytania, które człowiek zadał.
+ *
+ * NOŚNIK BYŁ NA MIEJSCU OD POCZĄTKU i nie miał ani jednego czytelnika: `PastEval.state` niesie
+ * słowo o całym biegu, a odzyskiwanie po awarii wpisuje tam `interrupted`. Tłumaczenie tego
+ * słowa na zdanie należy do okna (niezmiennik 14), więc stoi tutaj, a nie po tamtej stronie.
+ *
+ * CZEGO TO NIE ROBI: nie zmienia wyniku ani jednej komórki. Kto przeszedł, rozstrzyga Rust;
+ * to zdanie mówi tylko, czy przebieg, który tak policzono, w ogóle dobiegł końca.
+ */
+export function howItEnded(run: PastEval): string {
+  switch (run.state) {
+    case 'interrupted':
+      return (
+        'Loadout closed while this run was still going, so it never finished. ' +
+        'Press Run to measure the whole set again.'
+      );
+    case 'cancelled':
+      return 'You stopped this run before it finished. Press Run to measure the whole set again.';
+    case 'running':
+    case 'paused':
+      return 'This run is still going. Pick this set again on the left to see how far it got.';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Czego ten przypadek żąda, w kolejności czytania i bez pól, których nie ma.
+ *
+ * `expect` schodzi do jednego wiersza, bo jego rolą jest powiedzieć, CO ma paść w odpowiedzi —
+ * a nie odtworzyć kształt pliku. Oczekiwanie bez `contains` mówi wyłącznie „to pole ma być"
+ * i tak też się je pisze.
+ */
+export function whatItAsks(one: EvalCase): readonly AsksFor[] {
+  const said = one.expect
+    .map((want) => (want.contains.trim() === '' ? want.field : want.field + ': ' + want.contains))
+    .filter((line) => line.trim() !== '')
+    .join(' · ');
+  return [
+    { label: 'Asks the agent to', value: one.task.trim() },
+    { label: 'And to answer with', value: said },
+    { label: 'Then runs', value: one.command.trim() },
+    { label: 'And looks for', value: one.proof.trim() },
+    { label: 'Drafted from', value: one.because.trim() },
+  ].filter((row) => row.value !== '');
 }
 
 /**
@@ -104,6 +205,7 @@ export function tableFor(set: EvalSet, run: PastEval | null): TableView {
     rows: runningCases(set).map((one) => ({
       caseId: one.id,
       name: one.name,
+      asks: whatItAsks(one),
       cells: set.variants.map((variant) => {
         const cell = found.get(keyOf(one.id, variant.id)) ?? null;
         const outcome: CellOutcome = cell?.outcome ?? 'not-judged';
@@ -131,6 +233,12 @@ export function scoreOf(board: EvalBoard): string {
   const [newest] = board.runs;
   if (newest === undefined) return 'Not run yet';
   const parts = [String(newest.passed) + ' of ' + String(newest.judged) + ' passed'];
+  /* ILE KOMÓREK NIKT NIE ZMIERZYŁ — obok wyniku, nie zamiast niego. Bez tego członu „0 of 3"
+   * nad sześcioma wierszami czyta się jako rozmiar tego, co widać, a trzy kropki obok trzech
+   * krzyżyków jako „nic tam nie ma". Człon znika, kiedy zmierzono wszystko: zero pisane wprost
+   * jest liczbą, która niczego nie dodaje, a zabiera miejsce w wierszu czytanym jednym rzutem. */
+  const missed = notMeasured(newest);
+  if (missed > 0) parts.push(String(missed) + ' not measured');
   const movement = board.movement;
   if (movement !== null && (movement.gained > 0 || movement.lost > 0)) {
     const said: string[] = [];
@@ -156,4 +264,21 @@ export function trendOf(runs: readonly PastEval[]): readonly number[] {
     .reverse()
     .filter((run) => run.judged > 0)
     .map((run) => run.passed / run.judged);
+}
+
+/**
+ * Co jest teraz jedyną rzeczą do zrobienia — i co ma nieść akcent.
+ *
+ * # Zmierzone na człowieku, 2026-08-31
+ *
+ * Właściciel trzy razy pod rząd napisał „nie kumam, jak to działa", stojąc nad ekranem,
+ * który mówił mu wprost, co nacisnąć. Zdanie było, tylko akcent leżał na `Run` — dużym,
+ * kolorowym i **wygaszonym** — a jedyna możliwa czynność stała obok jako cichy obrys.
+ *
+ * Ekran krzyczał o rzeczy niemożliwej i szeptał o jedynej możliwej. To ta sama rodzina, co
+ * cała reszta wad tej sekcji: kontrolka mówiąca co innego, niż jest prawdą — tylko wyrażona
+ * wagą, a nie słowem.
+ */
+export function theNextMoveIs(cannotRun: string | null): 'write-cases' | 'run' {
+  return cannotRun === null ? 'run' : 'write-cases';
 }

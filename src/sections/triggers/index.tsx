@@ -36,11 +36,28 @@ export interface TriggerEditorController {
 
 export interface TriggerCreateControlProps {
   readonly onCreate: () => void;
+  /**
+   * Czy ta kontrolka ma w tej chwili ustąpić głośnością innej.
+   *
+   * 2026-08-31: „jedna czynność główna na ekran" jest regułą kompozycji, a nie opisem tej
+   * kontrolki — więc odpowiedź na nią zależy od tego, co jeszcze stoi na ekranie. Przy otwartym
+   * panelu czynnością główną jest Save w panelu; dwa akcenty naraz znaczą, że nikt nie
+   * rozstrzygnął, co jest ważne. Domyślnie `false`, bo lista bez panelu ma tu swój akcent.
+   */
+  readonly quiet?: boolean;
 }
 
-export function DefaultCreateControl({ onCreate }: TriggerCreateControlProps): ReactElement {
+export function DefaultCreateControl({
+  onCreate,
+  quiet = false,
+}: TriggerCreateControlProps): ReactElement {
   return (
-    <button data-create-trigger type="button" className="btn-primary" onClick={onCreate}>
+    <button
+      data-create-trigger
+      type="button"
+      className={quiet ? 'btn' : 'btn-primary'}
+      onClick={onCreate}
+    >
       Create trigger
     </button>
   );
@@ -235,7 +252,9 @@ export default function TriggersScreen({
         <h1 className="text-title text-ink">Triggers</h1>
         {state.triggers.length === 0 ? null : (
           <div className="ml-auto">
-            <CreateControl onCreate={openCreate} />
+            {/* CICHNIE, KIEDY PANEL JEST OTWARTY. Powód w całości stoi przy
+                [`TriggerCreateControlProps.quiet`]: akcent na ekranie jest jeden. */}
+            <CreateControl onCreate={openCreate} quiet={opened !== null} />
           </div>
         )}
       </header>
@@ -260,7 +279,13 @@ export default function TriggersScreen({
               <CreateControl onCreate={openCreate} />
             </div>
           ) : (
-            <ul className="overflow-hidden rounded-md border border-line bg-panel">
+            /* SIATKA, NIE KOLUMNA — 2026-08-31. Zmierzone na zrzucie 1512×950: trzy triggery
+               w jednej kolumnie zajmowały 135 px z 860 px ciała ekranu i zostawiały pod sobą
+               cały ekran pustki, a jednocześnie marnowały 1000 px szerokości. Karta obok karty
+               oddaje tę szerokość treści (reguła: treść się ROZKŁADA), a pojemnik ma wtedy
+               wysokość TREŚCI, nie okna. Dwie kolumny dopiero od `lg`, bo w wąskim oknie karta
+               po 300 px łamałaby nazwę workflow na cztery wiersze. */
+            <ul className="grid gap-3 lg:grid-cols-2">
               {state.triggers.map((trigger) => (
                 <Row
                   key={trigger.slug}

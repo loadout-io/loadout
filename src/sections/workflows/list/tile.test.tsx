@@ -89,6 +89,11 @@ function undescribed(): WorkflowFile {
  * że kafelek OTWIERA, sądzi kryterium o liście, nie to o treści karty. */
 const noop = (): void => undefined;
 
+/* Trzy pozostałe handlery kafelka, wymagane od 2026-08-31 (`Run`, `Duplicate`, `Delete` stoją
+ * dziś w stopce karty). Tak samo jak `onOpen`: nic ich tu nie woła, bo ten plik sądzi TREŚĆ
+ * karty, a nie to, dokąd prowadzą jej przyciski. */
+const handlers = { onRun: noop, onDuplicate: noop, onDelete: noop };
+
 /** To, co czyta człowiek: bez znaczników, z rozwiniętymi encjami, bez nadmiarowych odstępów. */
 function visibleText(markup: string): string {
   return markup
@@ -108,7 +113,7 @@ const RUN_HISTORY = /used|min|never|—|not reported/i;
 describe('a workflow tile shows what is in the file and leaves no empty cells', () => {
   it('counts the steps, and counts the agents as the different ones among them', () => {
     const markup = renderToStaticMarkup(
-      <WorkflowTile place="project" wf={research()} onOpen={noop} />,
+      <WorkflowTile place="project" wf={research()} onOpen={noop} {...handlers} />,
     );
     const text = visibleText(markup);
 
@@ -129,7 +134,9 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
 
   it('says 1 step and 1 agent, not 1 steps and 1 agents', () => {
     const text = visibleText(
-      renderToStaticMarkup(<WorkflowTile place="project" wf={quickFix()} onOpen={noop} />),
+      renderToStaticMarkup(
+        <WorkflowTile place="project" wf={quickFix()} onOpen={noop} {...handlers} />,
+      ),
     );
 
     expect(text, 'one step').toContain('1 step');
@@ -144,7 +151,7 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
 
   it('leaves the description out entirely when the file has none', () => {
     const markup = renderToStaticMarkup(
-      <WorkflowTile place="project" wf={undescribed()} onOpen={noop} />,
+      <WorkflowTile place="project" wf={undescribed()} onOpen={noop} {...handlers} />,
     );
 
     /* Element, nie akapit: kafelek jest od 2026-08-18 `<button>`, a `<p>` w przycisku nie jest
@@ -162,7 +169,7 @@ describe('a workflow tile shows what is in the file and leaves no empty cells', 
   it('shows nothing about how often or how long, because there are no runs to read yet', () => {
     for (const workflow of [research(), quickFix(), undescribed()]) {
       const markup = renderToStaticMarkup(
-        <WorkflowTile place="project" wf={workflow} onOpen={noop} />,
+        <WorkflowTile place="project" wf={workflow} onOpen={noop} {...handlers} />,
       );
 
       expect(

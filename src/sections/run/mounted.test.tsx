@@ -21,6 +21,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { App } from '../../App';
+import { useRun } from '../../state/run';
 import { sectionEntry } from '../../ui/sections';
 
 /**
@@ -38,6 +39,21 @@ const REGIONS = ['data-strip', 'data-feed', 'data-plan-column'];
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
+
+/**
+ * Jeden krok w magazynie biegu — i to NIE jest to wstrzyknięcie, którego ten plik odmawia.
+ *
+ * Odmawia mapy ekranów, bo mapa podana z testu zamienia pytanie „czy powłoka znajduje plik
+ * sekcji" w pytanie o własną atrapę. Krok biegu nie odpowiada na nic z tego: powłoka dalej ma
+ * znaleźć `src/sections/run/index.tsx` sama i sama go zamontować.
+ *
+ * DLACZEGO OD 2026-08-31 JEST POTRZEBNY. Ekran Run bez ani jednego kroku, agenta i workflow
+ * rysuje pierwsze otwarcie — jedną taflę powitania, bez kolumny kroków (`./first-run.tsx`,
+ * `welcomeIsTheWholeScreen`). Trzeci region z listy niżej istnieje wtedy i tylko wtedy, gdy
+ * jest co w nim postawić, więc scena bez kroku pytałaby o region, którego ten ekran świadomie
+ * nie ma — a to jest pytanie o pierwsze otwarcie, nie o montowanie sekcji.
+ */
+useRun.setState({ steps: [{ id: 's_build', name: 'Build', state: 'running' }] });
 
 function markup(): string {
   return renderToStaticMarkup(<App section="run" />);

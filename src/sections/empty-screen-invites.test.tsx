@@ -39,12 +39,17 @@ import { createWorkflowListStore } from './workflows/list/store';
  * i malala, a nazwa zostawala. 2026-08-31 Skills i Memory zeszly sie w Knowledge, wiec sekcji
  * jest szesc. Wypisane na sztywno — petla po rejestrze sadzilaby rejestr samym soba. */
 const FIVE = [
-  'run',
-  'workflows',
+  /* KOLEJNOŚĆ ZA REJESTREM, 2026-08-31: droga zaczyna się od Agents, bo workflow to agenci
+     w rzędzie, a bez rzędu nie ma czego uruchomić. Wyrocznią kolejności jest makieta
+     (`shell-matches-mockup.test.tsx`); ta lista stoi na sztywno, bo pętla po rejestrze
+     sądziłaby rejestr samym sobą. */
   'agents',
+  'workflows',
+  'run',
+  'triggers',
+  /* Jeden identyfikator zamiast dwóch od 2026-08-31: Skills i Memory zeszły się w Knowledge. */
   'knowledge',
   'lab',
-  'triggers',
   'settings',
 ] as const satisfies readonly Section[];
 

@@ -105,7 +105,12 @@ export function AtOnce({
      * kontrolce (liczba i suwak), więc jego stała obecność kosztowała ~20 px na zawsze za
      * informację, którą czyta się raz. Ostrzeżenie o pamięci ZOSTAJE widoczne, bo mówi o
      * konkretnym ryzyku TERAZ — i nadal nie zajmuje miejsca, dopóki nie jest prawdą. */
-    <div className="flex min-w-0 items-center gap-2">
+    /* `min-w-0` ZDJETE 2026-08-31: nalezy do NAPISU, ktory sie skraca, nie do rzedu, ktory
+     trzyma kontrolki o stalej szerokosci. Na rzedzie znosi ochrone `min-width: auto`, wiec
+     rzad kurczy sie PONIZEJ swojej tresci, a dzieci z `shrink-0` wychodza poza niego
+     i maluja sie na sasiedzie. Zmierzone na zrzucie 1512 px: „Copy diagnosti[ptaszek]”
+     i suwak narysowany w poprzek napisu „Spend at most”. */
+    <div className="flex items-center gap-2">
       {/* PEŁNE PYTANIE ZOSTAJE W DRZEWIE, a skraca się CSS-em. Skrócenie napisu do „At once"
        * mieściło się w pasku i kasowało własność, której pilnuje kryterium `at-once.test.tsx`:
        * etykieta ma być pytaniem, jakie zadałby człowiek (DESIGN §8). Ucięcie wielokropkiem jest

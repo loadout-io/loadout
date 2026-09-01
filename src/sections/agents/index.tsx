@@ -1,5 +1,37 @@
-/* Ekran sekcji Agents: nagłówek, jedna ścieżka dodawania i lista agentów — kafelek za kafelkiem
- * jak w makiecie (`docs/mockup/index.html`, `data-screen="agents"`).
+/* Ekran sekcji Agents: nagłówek, spis ról po lewej i CAŁA otwarta rola po prawej. Pusta
+ * biblioteka dalej jest zaproszeniem z makiety (`docs/mockup/index.html`, `data-screen="agents"`).
+ *
+ * CO SIĘ ZMIENIŁO 2026-08-31 WIECZOREM I DLACZEGO — drugie zgłoszenie właściciela, dwa zrzuty
+ * i jedno zdanie: „a i to powinno byc domyslnie, wyjeb ten widok tu".
+ *
+ * Do tego wieczora ekran wstawał jako ŚCIANA KAFELKÓW na całą szerokość, kafelek na agenta,
+ * cztery wiersze każdy. Układ, który naprawdę daje się czytać — spis nazw po lewej i cała rola
+ * po prawej — istniał od rana i stał ZA KLIKNIĘCIEM: montował się dopiero, gdy człowiek trafił
+ * w kafelek. Arytmetyka jego własnej biblioteki przewróciła tamten widok:
+ *
+ *   - dwadzieścia dziewięć ról razy cztery wiersze to kilometry przewijania, a w oknie mieści
+ *     się sześć pozycji;
+ *   - kafelek niósł PIERWSZE 150 ZNAKÓW instrukcji, czyli mniej więcej jedno zdanie z dwudziestu.
+ *     Żeby dowiedzieć się, czym rola jest, dalej trzeba było ją otworzyć — po kolei, dwadzieścia
+ *     dziewięć razy;
+ *   - a te same 150 znaków było na kafelku razem z pięcioma faktami o modelu, z których każdy
+ *     jest POLEM FORMULARZA stojącego obok (niezmiennik 13).
+ *
+ * TRZY ROZSTRZYGNIĘCIA, KTÓRYCH ZLECENIE NIE PODAŁO, i ich powody:
+ *
+ *   1. PRAWA KOLUMNA NIGDY NIE JEST PUSTĄ DZIURĄ, bo zawsze stoi w niej rola: przy wejściu
+ *      pierwsza z listy (`standing` niżej). „Nic nie wybrano" nie jest stanem, który ten ekran
+ *      umie pokazać — a to jest jedyna wersja, w której nie trzeba wymyślać treści zastępczej.
+ *      Wybór pierwszej pozycji jest przy tym jedynym wyborem, którego nie trzeba tłumaczyć:
+ *      jest powtarzalny, nie zależy od historii i pokrywa się z tym, na czym stoi oko.
+ *   2. `＋ Create` PRZEPROWADZA SIĘ DO SPISU, na miejsce, w którym stało `All agents`. Tamten
+ *      przycisk wracał DO ŚCIANY KAFELKÓW, czyli do widoku, którego już nie ma — kontrolka bez
+ *      celu jest kontrolką bez skutku (niezmiennik 16). Jest cicha, nie akcentowana, bo przy
+ *      otwartej roli jedyną czynnością główną tego ekranu jest `Save` (DESIGN §6).
+ *   3. `Cancel` STOI TYLKO WTEDY, GDY JEST CO ANULOWAĆ. Arkusz czyta rolę wprost z magazynu,
+ *      dopóki człowiek czegoś w niej nie zmieni; dopiero wtedy powstaje szkic i pojawia się
+ *      przycisk, który ma go czym cofnąć. `Cancel` nad niezmienioną rolą byłby przyciskiem,
+ *      po którym nie dzieje się nic.
  *
  * DLACZEGO PRZYCISK ODSŁANIA FORMULARZ, A NIE TWORZY PLIKU OD RAZU. `＋ Create` na liście
  * workflow tworzy plik natychmiast, bo pusty workflow jest poprawny — pusty AGENT nie jest:
@@ -32,13 +64,13 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { Agent, AgentsIo, Color, FileAccess, Thinking } from '../../state/agents';
+import type { Agent, AgentsIo, Color } from '../../state/agents';
 import { createAgentsStore } from '../../state/agents';
 import { problemSays } from '../../state/library';
 import { askedAgent, subscribeToAsked, takeAskedAgent } from '../../ui/palette/asked';
 import { evaluateAgent } from '../lab/evaluate';
 import { ImportSetup } from '../import';
-import { AgentForm, VENDORS } from './agent-form';
+import { AgentForm } from './agent-form';
 import * as Disk from './io';
 import { readUsage, usageSays, usedIn } from './usage';
 
@@ -107,13 +139,6 @@ const DISK: AgentsIo = { ...Disk, list: Disk.listDefinitions };
  * komponentu gubiłby zawartość ekranu przy każdym przemontowaniu. */
 const OWN_STORE = createAgentsStore(DISK);
 
-/* Brzmienia vendorów czytane z JEDNEJ tabeli — tej, którą ma formularz. Do 2026-08-18 stała
- * tu druga kopia i jej własny komentarz nazywał to długiem: „naprawa jest jednoliniowa
- * i należy do właściciela tamtego pliku: `export const VENDORS`". Ta linia jest napisana. */
-const VENDOR_SAYS: Readonly<Record<string, string>> = Object.fromEntries(
-  VENDORS.map((option) => [option.value, option.label]),
-);
-
 /* Pięć przygaszonych tokenów tożsamości, `--id-1`…`--id-5` (DESIGN §3). Kolejność jest ta sama,
  * co w unii `Color` w `src/state/agents.ts`, i tak samo jak w makiecie: `clay` to `--id-3`,
  * dokładnie jak kwadrat Forge'a (`docs/mockup/index.html`, sekcja `agents`).
@@ -159,20 +184,14 @@ export function nextIdentity(now: Color): Color {
   return IDENTITY[(at + 1) % IDENTITY.length] ?? 'slate';
 }
 
-/* Brzmienia z tabeli „We say / We never say" [T4 §8.1]. Nazwa z drutu (`look-only`) nie ma
- * prawa dojechać na ekran (niezmiennik 14). */
-const FILE_ACCESS_SAYS: Readonly<Record<FileAccess, string>> = {
-  'look-only': 'Look only',
-  'ask-first': 'Ask first',
-  'work-freely': 'Work freely',
-};
-
-const THINKING_SAYS: Readonly<Record<Thinking, string>> = {
-  quick: 'Quick',
-  balanced: 'Balanced',
-  deep: 'Deep',
-  deepest: 'Deepest',
-};
+/* PIĘĆ BRZMIEŃ O MODELU ZESZŁO Z TEGO PLIKU 2026-08-31 WIECZOREM, i to jest usunięcie drugiej
+ * kopii, nie usunięcie treści. Stały tu tabele `FILE_ACCESS_SAYS` i `THINKING_SAYS` oraz
+ * `VENDOR_SAYS` czytane z `VENDORS`, wyłącznie po to, żeby złożyć wiersz
+ * „Claude Code · opus · Balanced · Work freely · gives up after 20m" na kafelku listy. Każdy
+ * z tych pięciu faktów jest POLEM formularza, który od tej zmiany stoi w tym samym kadrze,
+ * o dwadzieścia pikseli obok — więc wiersz mówił po raz drugi to, co czyta się w kontrolce
+ * (niezmiennik 13), i to głośniej niż nazwę, którą napisał człowiek. Brzmienia z tabeli
+ * „We say / We never say" [T4 §8.1] mieszkają dziś w jednym miejscu: w `agent-form.tsx`. */
 
 /* KONTROLKI BIORĄ ROLĘ Z ARKUSZA, NIE OPIS Z TEGO PLIKU. 2026-08-31, DESIGN §6.
  *
@@ -275,10 +294,24 @@ function deletingSays(
   return `Delete ${name}? It is ${usageSays(count)}, and their steps will have nothing to run.`;
 }
 
-/** `gives up after 20m`, a przy zerze prawda: limitu nie ma [T4 §4.3, reguła 1]. */
-function giveUpSays(minutes: number): string {
-  return minutes <= 0 ? 'no time limit' : `gives up after ${String(minutes)}m`;
-}
+/* CZTERY FUNKCJE ZESZŁY STĄD 2026-08-31 WIECZOREM RAZEM ZE ŚCIANĄ KAFELKÓW, i każda dlatego,
+ * że była odpowiedzią na pytanie, którego kafelek już nie zadaje:
+ *
+ *   `giveUpSays` i `factsSay`  składały wiersz pięciu faktów o modelu. Wszystkie pięć są dziś
+ *                              polami formularza stojącego w tym samym kadrze — powód przy
+ *                              tabelach brzmień wyżej.
+ *   `WORDS` i `roleWords`      ucinały instrukcje do 150 znaków, bo tyle mieściło się w jednej
+ *                              linii kafelka. Prawa kolumna pokazuje je W CAŁOŚCI, w polu,
+ *                              które można podnieść przyciskiem `Taller` — więc przycinanie
+ *                              w danych przestało być oszczędnością i zostało samą stratą.
+ *   `cascade`                  rozkładała wejście osiemnastu kafelków po 24 ms. Spis nazw wchodzi
+ *                              razem z ekranem i nic w nim nie „przybywa" po kolei; kaskada nad
+ *                              wierszem, na który nikt nie czeka, jest wyłącznie czekaniem.
+ *
+ * `usageSays` i `usedIn` ZOSTAJĄ i mają dziś dwóch wołających w tym pliku: wiersz `used in …`
+ * w nagłówku otwartej roli i pytanie przed usunięciem, dwa wiersze pod nim. To jest ta sama
+ * liczba w dwóch zdaniach o TEJ SAMEJ roli, a nie dwa źródła prawdy — druga strona tego faktu
+ * stoi przy `deletingSays` wyżej. */
 
 export default function AgentsScreen({
   store = OWN_STORE,
@@ -287,11 +320,19 @@ export default function AgentsScreen({
   confirming,
 }: AgentsScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
-  /* Co jest OTWARTE w panelu — nowy szkic albo kopia zapisanego agenta. `null` znaczy, że nic
-   * (niezmiennik 13). Stan jest lokalny, bo dotyczy ekranu, a nie tego, co leży na dysku.
+  /* KTÓRĄ ROLĘ TRZYMA PRAWA KOLUMNA — sam identyfikator, nie kopia agenta.
    *
-   * Panel dostaje KOPIĘ, nie agenta z listy: edycja mutująca wiersz magazynu pokazywałaby na
-   * liście zmiany, których jeszcze nikt nie zapisał, a `Cancel` nie miałby do czego wrócić. */
+   * `null` znaczy „człowiek jeszcze żadnej nie wskazał" i wtedy stoi pierwsza z listy (patrz
+   * `standing` niżej). Pusty napis znaczy NOWĄ rolę, dokładnie tak samo jak puste `id` znaczy
+   * ją dla `store.save` — jedna umowa, nie druga.
+   *
+   * Identyfikator, a nie obiekt: rola wskazana ręką ma się przerysowywać, kiedy magazyn ją
+   * zmieni (zapis, kopia, klik w kwadrat tożsamości). Kopia zamrożona w stanie ekranu
+   * pokazywałaby wersję sprzed tamtej zmiany i byłaby drugim zdaniem o tym, co leży na dysku
+   * (niezmiennik 4). */
+  const [picked, setPicked] = useState<string | null>(opened === undefined ? null : opened.id);
+  /* Co człowiek w tej roli ZMIENIŁ i jeszcze nie zapisał. `null` znaczy „nic" — i to jest
+   * różnica, która decyduje o tym, czy `Cancel` w ogóle stoi na ekranie. */
   const [draft, setDraft] = useState<Agent | null>(opened ?? null);
   const [expanded, setExpanded] = useState(false);
   /* O co pytamy przed usunięciem. `null` znaczy, że o nic — jedno miejsce na to pytanie. */
@@ -333,25 +374,56 @@ export default function AgentsScreen({
     };
   }, [usageProp]);
 
-  /* Jedna funkcja na całą sekcję i to jest cały sens niezmiennika 16: przycisk w nagłówku
-   * i przycisk w zaproszeniu są dwoma wejściami do JEDNEJ ścieżki. Drugie kliknięcie nie
-   * kasuje tego, co człowiek zdążył wpisać. */
+  /**
+   * KTÓRA ROLA STOI W CIELE EKRANU — jedna odpowiedź, trzy źródła, policzona w jednym miejscu.
+   *
+   * Kolejność nie jest gustem, tylko listą pytań od najmocniejszego do najsłabszego:
+   *
+   *   1. szkic         — człowiek coś w niej zmienił, więc widzi swoje litery, nie dysk;
+   *   2. wskazana ręką — kliknął ten wiersz spisu, albo zapisał ją i `save` wpisało tu
+   *      identyfikator, który przyjął dysk (dla NOWEJ roli wybija go mennica po stronie Rusta
+   *      i ekran nie zna go inaczej niż przez `justSaved` — powód w `src/state/agents.ts`);
+   *   3. pierwsza z listy — wejście na sekcję. To jest to rozstrzygnięcie, którego zlecenie nie
+   *      podało: prawa kolumna nigdy nie jest pustą dziurą, bo zawsze stoi w niej rola.
+   *
+   * `justSaved` NIE JEST W TYM ŁAŃCUCHU, i to jest wybór: magazyn kasuje to pole na wejściu do
+   * KAŻDEJ czynności, więc klik w kwadrat tożsamości innego wiersza przerzucałby arkusz na tamtą
+   * rolę w połowie zapisu. Wskazanie przepisujemy stamtąd RAZ, w chwili udanego zapisu, i od tej
+   * chwili trzyma je ten stan.
+   *
+   * `structuredClone`, a nie wiersz magazynu wprost: formularz buduje następną wartość przez
+   * `{ ...value, pole }`, więc bez kopii `skills`, `connections` i `vendorOptions` byłyby TYMI
+   * SAMYMI tablicami, co w magazynie — a wtedy pierwsza zmiana listy w arkuszu przepisywałaby
+   * po cichu agenta na dysku. Ta sama pułapka, którą opisuje `duplicate` w `src/state/agents.ts`.
+   */
+  const fromLibrary = (id: string | null): Agent | undefined =>
+    id === null || id === '' ? undefined : state.agents.find((agent) => agent.id === id);
+
+  const chosen = fromLibrary(picked) ?? state.agents[0];
+  const standing: Agent | null = draft ?? (chosen === undefined ? null : structuredClone(chosen));
+
+  /* Jedna funkcja na całą sekcję i to jest cały sens niezmiennika 16: przycisk w spisie
+   * i przycisk w zaproszeniu są dwoma wejściami do JEDNEJ ścieżki. */
   const startDraft = (): void => {
-    setDraft((open) => open ?? blankAgent(state.agents.length));
+    /* Drugie kliknięcie w `＋ Create` NIE kasuje tego, co człowiek zdążył wpisać w nowej roli.
+     * Kliknięcie przy otwartej roli ZAPISANEJ zaczyna nową — bo o to właśnie prosi, a szkic
+     * tamtej roli nie ma prawa wjechać pod nagłówek „New agent". */
+    setDraft((open) => (open !== null && open.id === '' ? open : blankAgent(state.agents.length)));
+    setPicked('');
     setExpanded(false);
     setPendingDelete(null);
     /* Odmowa sprzed chwili dotyczyła CZEGOŚ INNEGO niż to, co człowiek właśnie otwiera —
-     * a od 2026-08-31 zdanie przy otwartym panelu stoi pod jego przyciskiem `Save`, więc
+     * a od 2026-08-31 zdanie przy otwartej roli stoi pod jej przyciskiem `Save`, więc
      * zostawione tam czytałoby się jak odpowiedź na kliknięcie, którego jeszcze nie było. */
     store.getState().dismiss();
   };
 
-  /* Otwiera ZAPISANEGO agenta. Kopia przez `structuredClone`, nie `{ ...agent }`: płytka kopia
-   * współdzieliłaby `skills`, `connections` i `vendorOptions` z wierszem magazynu, więc pierwsza
-   * zmiana listy w panelu przepisywałaby po cichu agenta na liście — ta sama pułapka, którą
-   * opisuje `duplicate` w `src/state/agents.ts`. */
+  /* Otwiera ZAPISANEGO agenta: zapamiętuje, który to, i porzuca szkic poprzedniego. Kopii tu
+   * nie robimy, bo arkusz czyta rolę z magazynu, dopóki człowiek czegoś w niej nie zmieni —
+   * kopia powstaje w `standing` wyżej i to ona jedzie do formularza. */
   const open = (agent: Agent): void => {
-    setDraft(structuredClone(agent));
+    setPicked(agent.id);
+    setDraft(null);
     setExpanded(false);
     setPendingDelete(null);
     /* Ten sam powód, co przy `startDraft`. */
@@ -403,32 +475,47 @@ export default function AgentsScreen({
      * z dysku — a jedno i drugie na tej liście stoi. */
   }, [asked, state.agents, state.library]);
 
-  /* KLIK W KWADRAT NA KAFELKU ZMIENIA TOKEN TOŻSAMOŚCI — 2026-08-31.
+  /* KLIK W KWADRAT W SPISIE ZMIENIA TOKEN TOŻSAMOŚCI — 2026-08-31.
    *
    * `Colour` wypadł z formularza, bo nie wymagał ani jednej decyzji i stał nad `Instructions`.
    * To jest miejsce, do którego ta decyzja poszła: nie znika, tylko przestaje pytać. Jedzie
    * TĄ SAMĄ krawędzią do dysku, co Save (`store.save`), więc odmowa ma gdzie wylądować
-   * i ląduje — pod nagłówkiem sekcji, dokładnie tak jak każda inna odmowa przy zamkniętym
-   * panelu (`refusalGoes` niżej).
+   * i ląduje (`refusalGoes` niżej).
    *
-   * Kopia przez `structuredClone` z tego samego powodu, co przy `open`: obiekt z listy niesie
-   * `skills`, `connections` i `vendorOptions`, a mutowanie wiersza magazynu w miejscu pokazuje
-   * na ekranie zmianę, której nikt nie zapisał. */
+   * Kopia przez `structuredClone`: obiekt z listy niesie `skills`, `connections`
+   * i `vendorOptions`, a mutowanie wiersza magazynu w miejscu pokazuje na ekranie zmianę,
+   * której nikt nie zapisał.
+   *
+   * SZKIC TEJ SAMEJ ROLI DOSTAJE BARWĘ RAZEM Z DYSKIEM — 2026-08-31 wieczorem. Do tej zmiany
+   * kwadraty stały na kafelkach, a kafelki znikały pod otwartym panelem, więc te dwa miejsca
+   * nie mogły być na ekranie naraz. Dziś mogą: spis stoi obok arkusza przez cały czas. Bez tej
+   * linii klik w kwadrat otwartej roli zmieniałby barwę na dysku, a najbliższy `Save` odsyłałby
+   * tam barwę sprzed kliknięcia — czyli cofał czynność, o której nikt nie powiedział, że się
+   * nie udała. */
   const repaint = (agent: Agent): void => {
+    const colour = nextIdentity(agent.color);
     const next = structuredClone(agent);
-    next.color = nextIdentity(agent.color);
+    next.color = colour;
+    setDraft((open) => (open !== null && open.id === agent.id ? { ...open, color: colour } : open));
     void store.getState().save(next);
   };
 
   const save = (agent: Agent): void => {
-    /* Panel zamyka się TYLKO wtedy, gdy dysk potwierdził. Nieudany zapis zostawia go otwartym
-     * z tym, co człowiek wpisał, a zdanie odmowy stoi w magazynie i jest wyrenderowane niżej
-     * (niezmiennik 4: ekran zgadza się z tym, co naprawdę leży na dysku). */
+    /* SZKIC ZNIKA TYLKO WTEDY, GDY DYSK POTWIERDZIŁ — a rola zostaje w kadrze. Nieudany zapis
+     * zostawia szkic z tym, co człowiek wpisał, a zdanie odmowy stoi w magazynie i jest
+     * wyrenderowane niżej (niezmiennik 4: ekran zgadza się z tym, co naprawdę leży na dysku).
+     *
+     * Udany zapis kasuje SZKIC i przepisuje WSKAZANIE z `justSaved`, i to nie jest zamknięcie
+     * arkusza: rola zostaje w kadrze. Dla nowej roli identyfikator wybija mennica po stronie
+     * Rusta i to pole jest jedynym miejscem, z którego ekran może go poznać — bez tej linii
+     * udany zapis nowej roli odsyłałby na pierwszą z listy. */
     void store
       .getState()
       .save(agent)
       .then((saved) => {
-        if (saved) setDraft(null);
+        if (!saved) return;
+        setDraft(null);
+        setPicked(store.getState().justSaved);
       });
   };
 
@@ -463,18 +550,24 @@ export default function AgentsScreen({
    * Miejsce nie bierze się z RODZAJU czynności, bo `refusal` jest jednym polem na całą sekcję
    * z rozmysłu (`src/state/agents.ts`) i drugie pole znaczyłoby drugie miejsce, w którym ktoś
    * zapomni je skasować. Bierze się z faktu, który już stoi na ekranie: wszystkie trzy
-   * kontrolki, które przy otwartym panelu mogą dostać odmowę — Save, Duplicate, Delete — są
-   * przyciskami W TYM PANELU. Przy zamkniętym panelu jedyną czynnością jest odczyt biblioteki.
+   * kontrolki, które przy otwartej roli mogą dostać odmowę — Save, Duplicate, Delete — są
+   * przyciskami W TYM ARKUSZU. Kiedy żadna rola nie stoi, jedyną czynnością jest odczyt
+   * biblioteki, więc zdanie wraca pod nagłówek.
    *
-   * `body` bije `panel`, bo katalog, którego nie da się przeczytać, jest największym faktem na
-   * tym ekranie i należy do środka, a nie do wąskiej kolumny obok. */
+   * WARUNEK ZMIENIŁ SIĘ Z `draft` NA `standing` 2026-08-31 wieczorem, i to jest ta sama reguła
+   * powiedziana o nowym układzie: pytanie brzmi „czy na ekranie stoi rola z przyciskami", a nie
+   * „czy człowiek już coś w niej zmienił". Zostawione na `draft` odesłałoby odmowę odczytu barwy
+   * z kwadratu w spisie pod nagłówek, dwie kolumny od miejsca, w które człowiek patrzy.
+   *
+   * `body` bije arkusz, bo katalog, którego nie da się przeczytać, jest największym faktem na
+   * tym ekranie — a wtedy nie stoi w nim żadna rola, więc te dwa wyjścia i tak się nie spotykają. */
   const refusalGoes: 'nowhere' | 'body' | 'panel' | 'bar' =
     state.refusal === null
       ? 'nowhere'
-      : shows === 'unreadable'
-        ? 'body'
-        : draft !== null
-          ? 'panel'
+      : standing !== null
+        ? 'panel'
+        : shows === 'unreadable'
+          ? 'body'
           : 'bar';
 
   return (
@@ -485,6 +578,19 @@ export default function AgentsScreen({
       <header className="screen-head glass">
         <h1 className="text-title text-ink">Agents</h1>
 
+        {/* NAGŁÓWEK ZOSTAJE PRZY BIBLIOTECE, A ＋ CREATE SCHODZI DO SPISU — 2026-08-31 wieczorem.
+         *
+         * Do tego wieczora te kontrolki znikały przy otwartym panelu, bo DESIGN §6 daje ekranowi
+         * dokładnie JEDNĄ czynność główną, a `＋ Create` w akcencie tutaj i `Save` w akcencie
+         * tam były dwiema. Od kiedy rola stoi w ciele ekranu ZAWSZE, ta sama reguła znaczy coś
+         * innego: znikanie zabrałoby obie kontrolki na dobre, czyli sekcja straciłaby jedyną
+         * drogę do zrobienia nowego agenta. `＋ Create` przeprowadza się więc na górę spisu,
+         * do miejsca po `All agents`, i jest CICHY — jedyną czynnością główną zostaje `Save`.
+         *
+         * `Import setup` zostaje w nagłówku i stoi zawsze: to jest czynność BIBLIOTEKI, a nie
+         * tej jednej roli, i jest drogą wejścia dla człowieka, który nie ma jeszcze ani jednego
+         * agenta. Licznik żyje tylko wtedy, gdy jest co liczyć — `0 saved` obok
+         * `No agents yet.` to ten sam fakt w dwóch miejscach (niezmiennik 13). */}
         <button
           type="button"
           className="btn-quiet ml-auto"
@@ -495,11 +601,6 @@ export default function AgentsScreen({
           Import setup
         </button>
 
-        {/* Licznik i przycisk w nagłówku żyją tylko wtedy, gdy jest co liczyć. Przy zerze to
-            samo mówi zaproszenie niżej, a `0 saved` obok `No agents yet.` to ten sam fakt
-            w dwóch miejscach (niezmiennik 13) — i druga kontrolka dodawania na ekranie,
-            na którym DESIGN §6 przewiduje dokładnie jedną. Ten sam układ ma wylądowana lista
-            workflow. */}
         {shows !== 'library' ? null : (
           <>
             {state.agents.length === 0 ? null : (
@@ -511,9 +612,6 @@ export default function AgentsScreen({
                 data-tone="fail"
               >{`${String(state.problems.length)} need attention`}</span>
             )}
-            <button data-create type="button" className="btn-primary" onClick={startDraft}>
-              ＋ Create
-            </button>
           </>
         )}
       </header>
@@ -545,132 +643,100 @@ export default function AgentsScreen({
       )}
 
       <div className="flex min-h-0 flex-1">
-        {/* `flex-1` obok `.screen-body`, bo ten jeden przewijany obszar stoi w rzędzie razem
-            z panelem: prymityw daje `flex: 1 1 auto`, a przy podstawie liczonej z treści siatka
-            kafelków ściskałaby panel poniżej jego szerokości. Podstawa zerowa zostawia go
-            w spokoju — i tak ten obszar zachowywał się przed migracją. */}
-        <div className="screen-body flex-1">
-          {shows === 'reading' ? (
-            /* CZY TO TRWA — pierwsza z trzech rzeczy, na które ruch ma prawo odpowiadać
-               (DESIGN §7). Kropki, nie krążek: krążek nie mówi ani co trwa, ani ile zostało.
-               Zdanie niesie treść, kropki niosą „jeszcze idzie", więc są `aria-hidden`. */
-            <div className="flex h-full flex-col items-center justify-center gap-3">
-              <p className="text-ink">Reading the agents you have saved…</p>
-              <span data-reading className="thinking text-muted">
-                <span aria-hidden />
-                <span aria-hidden />
-                <span aria-hidden />
-              </span>
-            </div>
-          ) : shows === 'unreadable' ? (
-            /* NIE UDAŁO SIĘ PRZECZYTAĆ — trzeci stan, ten, który do 2026-08-31 czytał się na
-               ekranie dokładnie jak pusty katalog. Zaproszenia tu nie ma z rozmysłu: „＋ Create"
-               pod zdaniem o katalogu, którego nie da się przeczytać, jest zachętą do pisania
-               w ciemno. Wracamy do niego wejściem na sekcję, bo `load()` biegnie wtedy od nowa. */
-            <div
-              data-refusal
-              role="alert"
-              className="fade-in flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
+        {/* SPIS RÓL PO LEWEJ, CAŁA ROLA PO PRAWEJ — I TAK EKRAN SIĘ OTWIERA, bez klikania.
+            2026-08-31 wieczorem, zlecenie właściciela.
+
+            Do tego wieczora ten układ istniał, ale stał ZA kliknięciem: domyślnie ekran wstawał
+            jako ściana kafelków na całą szerokość. Zmierzone na bibliotece właściciela: 29 ról
+            po cztery wiersze każda, sześć pozycji w oknie, 150 znaków promptu na kafelek. Żeby
+            dowiedzieć się, czym rola jest, trzeba ją było otworzyć — dwadzieścia dziewięć razy.
+
+            Dziś rola bierze ciało ekranu od razu, a biblioteka jest spisem nazw po lewej. Spis
+            nie jest ozdobą: to jest CAŁA biblioteka, przełączanie kosztuje jedno kliknięcie,
+            a nazwa, na której stoisz, jest widoczna razem z pozostałymi.
+
+            SPIS ZNIKA, KIEDY NIE MA CZEGO SPISYWAĆ. Pierwsza rola powstaje na pustej bibliotece
+            (`＋ Create` w zaproszeniu), a kolumna z niczym w środku jest miejscem zabranym treści.
+
+            `flex-none` BIJE `flex: 1 1 auto` Z PRYMITYWU, i to jest cała różnica między spisem
+            a drugą pustką: `.screen-body` rośnie z definicji, więc sam `w-64` zostawiał kolumnę
+            z sześcioma nazwami rozciągniętą na 735 px obok arkusza, który miał się rozciągnąć.
+            Zmierzone na zrzucie, nie wydedukowane. */}
+        {shows !== 'library' ? null : (
+          <div data-agent-index className="screen-body w-64 flex-none border-r border-line">
+            {/* JEDYNA DROGA DO NOWEJ ROLI, i stoi tam, gdzie stało `All agents`. Tamten przycisk
+                wracał DO ŚCIANY KAFELKÓW — do widoku, którego już nie ma — więc zniknął razem
+                z nią, a nie zamiast niego. Cichy, bo czynnością główną tego ekranu jest `Save`
+                w arkuszu obok (DESIGN §6: dokładnie jedna). */}
+            <button
+              data-create
+              type="button"
+              className="btn-quiet mb-3 w-full"
+              onClick={startDraft}
             >
-              <span className="mark">◇</span>
-              {/* `text-fail` klasą, nie `data-tone`: ton maluje `.lead` i `.value`, a to zdanie
-                  jest tu zdaniem pierwszoplanowym i żadnej z tych ról nie nosi — atrybut nie
-                  zmieniłby ani jednego piksela (2026-08-31). */}
-              <p className="text-fail">{state.refusal}</p>
-              <p className="lead">
-                Nothing is lost. Open that folder, put it right, and come back to this section.
-              </p>
-            </div>
-          ) : shows === 'empty' ? (
-            <div className="flex h-full flex-col items-center justify-center gap-3">
-              <span className="mark">◇</span>
-              {/* `data-empty` siedzi na elemencie, który niesie SAMO zdanie — nie na ramce
-                  z zaproszeniem. Tak samo robi `src/App.tsx` i z tego samego powodu: treścią
-                  tak oznaczonego elementu ma być zdanie, a nie „◇ zdanie ＋ Create". */}
-              <p data-empty className="text-ink">
-                No agents yet.
-              </p>
-              <p className="lead">Add one, and a step in any workflow can be handed to it.</p>
-              <button data-create type="button" className="btn-primary" onClick={startDraft}>
-                ＋ Create
-              </button>
-            </div>
-          ) : (
-            <ul className="grid grid-cols-2 gap-3">
+              ＋ Create
+            </button>
+            <ul className="stack" data-gap="1">
               {state.agents.map((agent) => (
                 /* `relative`, bo kwadrat tożsamości stoi OBOK przycisku otwierającego, a nie
                    w nim: przycisk w przycisku nie jest poprawnym dokumentem, przeglądarka
                    rozrywa go przy budowaniu drzewa i wewnętrzny przestaje odpowiadać na
-                   kliknięcia. Nakładka trzyma oba w tym samym rogu kafelka i zostawia CAŁY
-                   kafelek klikalny (2026-08-31). */
+                   kliknięcia. Nakładka trzyma oba w tym samym wierszu i zostawia CAŁY wiersz
+                   klikalny. */
                 <li key={agent.id} className="relative">
-                  {/* KAFELEK JEST PRZYCISKIEM, tak jak w makiecie (`<button class="tile">`).
-                      Do 2026-08-18 był `<li>` bez handlera i zapisany agent zostawał na liście
-                      na zawsze: panel montował się wyłącznie dla nowego szkicu, więc literówki
-                      w instrukcjach nie dało się poprawić z okna. */}
-                  {/* `.card[data-interactive]` niesie pojemnik i wszystkie cztery stany naraz:
-                      myjkę obrysu pod kursorem, wciśnięcie, pierścień skupienia i kursor. Do
-                      2026-08-31 stał tu sam `hover:` i kafelek nie odpowiadał ani na klawiaturę,
-                      ani na naciśnięcie — kliknięcie, po którym nic nie drgnie, czyta się jak
-                      kliknięcie, które nie doszło.
+                  {/* WIERSZ JEST PRZYCISKIEM, i to on niesie `data-agent`: od tej zmiany to jest
+                      kontrolka, którą człowiek otwiera rolę. Do 2026-08-18 kafelek był `<li>`
+                      bez handlera i zapisany agent zostawał na liście na zawsze, z każdą
+                      literówką w instrukcjach.
 
-                      `.fade-in`, bo kafelek PRZYBYWA: lista jest pusta, dopóki dysk nie odpowie.
-                      Samo `opacity`, bez sprężyny — sprężyna należy do rzeczy, które wchodzą NAD
-                      to, co już jest (panel, karta pytania), a nie do wiersza, który dopiero
-                      wypełnia listę (DESIGN §7). */}
+                      `aria-current`, bo `.row` maluje z niego pozycję bieżącą (theme.css) —
+                      spis, który nie mówi, którą rolę trzymasz otwartą, każe jej szukać wzrokiem
+                      po każdym kliknięciu.
+
+                      `pl-9` robi miejsce kwadratowi, który leży NA wierszu, a nie w jego treści:
+                      8 px do lewej krawędzi kwadratu plus 22 px kwadratu. */}
                   <button
                     data-agent={agent.id}
                     data-just-saved={state.justSaved === agent.id ? '' : undefined}
                     type="button"
-                    data-interactive=""
-                    className="card fade-in flex w-full flex-col gap-2 text-left"
+                    aria-current={
+                      standing !== null && agent.id === standing.id ? 'true' : undefined
+                    }
+                    className="row w-full pl-9"
                     onClick={() => {
                       open(agent);
                     }}
                   >
-                    {/* `pl-8` robi miejsce kwadratowi, który leży NA kafelku, a nie w tym
-                        rzędzie: 22 px kwadratu plus odstęp, licząc od wypełnienia karty. */}
-                    <div className="flex items-center gap-2 pl-8">
-                      <h2 className="text-subhead text-ink">{agent.name}</h2>
-                      {/* Na czym ten agent biegnie i którym modelem. Obaj vendorzy są pierwszej
-                          kategorii (D3), więc etykieta stoi przy KAŻDYM agencie, a nie tylko
-                          przy tym, który odstaje od domyślnego. */}
-                      <span className="chip shrink-0">{`${VENDOR_SAYS[agent.runsWith] ?? agent.runsWith} · ${agent.model}`}</span>
-                      <span className="chip shrink-0">{THINKING_SAYS[agent.thinking]}</span>
-                      {/* CO WŁAŚNIE ZASZŁO — 2026-08-31, zgłoszenie właściciela. Do tego dnia
-                          udany `Save` dawał dokładnie ten sam widok, co `Cancel` (panel znika
-                          i tyle), a `Duplicate` nie zmieniał ani jednego widocznego piksela.
-                          Ta plakietka jest jedyną różnicą i wchodzi SPRĘŻYNĄ, bo pojawia się nad
-                          tym, co już stoi na ekranie (DESIGN §7).
+                    <span className="min-w-0 truncate">{agent.name}</span>
+                    {/* CO WŁAŚNIE ZASZŁO — 2026-08-31, zgłoszenie właściciela. Do tego dnia udany
+                        `Save` dawał dokładnie ten sam widok, co `Cancel`, a `Duplicate` nie
+                        zmieniał ani jednego widocznego piksela. Ta plakietka jest jedyną
+                        różnicą i wchodzi SPRĘŻYNĄ, bo pojawia się nad tym, co już stoi na
+                        ekranie (DESIGN §7).
 
-                          SŁOWO, nie sam obrys: „Saved" mówi, CO się stało, a barwa mówi tylko
-                          „coś tu". Akcent, nie kolor stanu — to nie jest ani „teraz", ani
-                          „zepsute", tylko wskazanie miejsca, w którym zaszła zmiana (DESIGN §3).
-                          Znika przy następnej czynności; kasuje ją magazyn na wejściu do każdej
-                          z nich (`justSaved` w `src/state/agents.ts`). */}
-                      {state.justSaved === agent.id ? (
-                        <span className="chip enter shrink-0" data-tone="accent">
-                          Saved
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="lead">{agent.summary}</p>
-                    <div className="flex gap-3 border-t border-line pt-2 font-mono text-meta text-muted">
-                      <span>{FILE_ACCESS_SAYS[agent.fileAccess]}</span>
-                      <span>{giveUpSays(agent.giveUpAfterMinutes)}</span>
-                      {/* Trzeci wiersz makiety rysuje się TYLKO wtedy, gdy katalog workflow
-                          został naprawdę przeczytany — patrz `usage` wyżej i `usage.ts`. */}
-                      {usage === null ? null : <span>{usageSays(usedIn(usage, agent.id))}</span>}
-                    </div>
+                        SŁOWO, nie sam obrys: „Saved" mówi, CO się stało, a barwa mówi tylko
+                        „coś tu". Akcent, nie kolor stanu — to nie jest ani „teraz", ani
+                        „zepsute", tylko wskazanie miejsca, w którym zaszła zmiana (DESIGN §3).
+                        Znika przy następnej czynności; kasuje ją magazyn na wejściu do każdej
+                        z nich (`justSaved` w `src/state/agents.ts`). */}
+                    {state.justSaved === agent.id ? (
+                      <span className="chip enter ml-auto shrink-0" data-tone="accent">
+                        Saved
+                      </span>
+                    ) : null}
                   </button>
-                  {/* KWADRAT JEST KONTROLKĄ, i jest jedynym miejscem, w którym token tożsamości
+                  {/* KWADRAT JEST KONTROLKĄ, i jest jedynym miejscem, w którym barwa tożsamości
                       da się jeszcze zmienić — `Colour` wypadł z formularza (`agent-form.tsx`).
-                      Nazwa mówiona na głos, bo cała treść tego przycisku to jedna litera. */}
+                      Nazwa mówiona na głos, bo cała treść tego przycisku to jedna litera.
+
+                      `inset-y-0 my-auto` zamiast liczby od góry: wysokość wiersza bierze się
+                      z drabinki stopni, a nie z żadnej stałej w tym pliku, więc kwadrat, który
+                      ma zostać wyśrodkowany po zmianie stopnia, nie może mieć wpisanego odstępu. */}
                   <button
                     data-identity={agent.color}
                     type="button"
                     aria-label={`Change the colour of ${agent.name}`}
-                    className={`${SQID} ${ID_COLOUR[agent.color]} absolute left-3 top-3`}
+                    className={`${SQID} ${ID_COLOUR[agent.color]} absolute inset-y-0 left-2 my-auto`}
                     onClick={() => {
                       repaint(agent);
                     }}
@@ -679,6 +745,8 @@ export default function AgentsScreen({
                   </button>
                 </li>
               ))}
+              {/* WADLIWY PLIK ZOSTAJE W SPISIE i nie jest kontrolką: nie da się go otworzyć
+                  w arkuszu obok, bo nie dał się przeczytać. Zdanie mówi, co z nim zrobić. */}
               {state.problems.map((problem) => (
                 <li
                   key={problem.fileName}
@@ -691,17 +759,91 @@ export default function AgentsScreen({
                 </li>
               ))}
             </ul>
-          )}
-        </div>
+          </div>
+        )}
 
-        {draft === null ? null : (
-          /* PANEL WCHODZI SPRĘŻYNĄ, bo pojawia się NAD tym, co już stoi na ekranie: lista
-             zostaje, a obok niej wjeżdża powierzchnia, której przed kliknięciem nie było.
-             Element pojawiający się skokiem czyta się jak przeskok widoku — oko nie wie, czy
-             patrzy na to samo miejsce (DESIGN §7). Jeden region na to zdarzenie.
+        {/* CIAŁO EKRANU: rola, albo jedno z czterech zdań o tym, dlaczego roli nie ma.
+            `standing` bije wszystkie cztery, bo pierwsza rola powstaje na PUSTEJ bibliotece —
+            i wtedy zaproszenie ustępuje jej miejsca, zamiast stać obok niej. */}
+        {standing !== null ? null : (
+          <div className="screen-body flex-1">
+            {shows === 'reading' ? (
+              /* CZY TO TRWA — pierwsza z trzech rzeczy, na które ruch ma prawo odpowiadać
+               (DESIGN §7). Kropki, nie krążek: krążek nie mówi ani co trwa, ani ile zostało.
+               Zdanie niesie treść, kropki niosą „jeszcze idzie", więc są `aria-hidden`. */
+              <div className="flex h-full flex-col items-center justify-center gap-3">
+                <p className="text-ink">Reading the agents you have saved…</p>
+                <span data-reading className="thinking text-muted">
+                  <span aria-hidden />
+                  <span aria-hidden />
+                  <span aria-hidden />
+                </span>
+              </div>
+            ) : shows === 'unreadable' ? (
+              /* NIE UDAŁO SIĘ PRZECZYTAĆ — trzeci stan, ten, który do 2026-08-31 czytał się na
+               ekranie dokładnie jak pusty katalog. Zaproszenia tu nie ma z rozmysłu: „＋ Create"
+               pod zdaniem o katalogu, którego nie da się przeczytać, jest zachętą do pisania
+               w ciemno. Wracamy do niego wejściem na sekcję, bo `load()` biegnie wtedy od nowa. */
+              <div
+                data-refusal
+                role="alert"
+                className="fade-in flex h-full flex-col items-center justify-center gap-3 px-4 text-center"
+              >
+                <span className="mark">◇</span>
+                {/* `text-fail` klasą, nie `data-tone`: ton maluje `.lead` i `.value`, a to zdanie
+                  jest tu zdaniem pierwszoplanowym i żadnej z tych ról nie nosi — atrybut nie
+                  zmieniłby ani jednego piksela (2026-08-31). */}
+                <p className="text-fail">{state.refusal}</p>
+                <p className="lead">
+                  Nothing is lost. Open that folder, put it right, and come back to this section.
+                </p>
+              </div>
+            ) : shows === 'empty' ? (
+              /* PUSTA BIBLIOTEKA ZOSTAJE DOKŁADNIE TAKA, JAKA BYŁA, i to jest rozstrzygnięcie
+                 właściciela z tego samego zlecenia: tego stanu nie tykamy. */
+              <div className="flex h-full flex-col items-center justify-center gap-3">
+                <span className="mark">◇</span>
+                {/* `data-empty` siedzi na elemencie, który niesie SAMO zdanie — nie na ramce
+                  z zaproszeniem. Tak samo robi `src/App.tsx` i z tego samego powodu: treścią
+                  tak oznaczonego elementu ma być zdanie, a nie „◇ zdanie ＋ Create". */}
+                <p data-empty className="text-ink">
+                  No agents yet.
+                </p>
+                <p className="lead">Add one, and a step in any workflow can be handed to it.</p>
+                <button data-create type="button" className="btn-primary" onClick={startDraft}>
+                  ＋ Create
+                </button>
+              </div>
+            ) : (
+              /* SAME WADLIWE PLIKI, ANI JEDNEJ ROLI DO OTWARCIA. Bez tej gałęzi prawa kolumna
+                 byłaby pustym prostokątem obok spisu, w którym każdy wiersz mówi, że się nie
+                 udał — czyli ekranem, który wygląda na zepsuty dwa razy. Zaproszenia tu nie ma:
+                 `＋ Create` stoi na górze spisu i jest jedno na cały ekran (niezmiennik 13). */
+              <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
+                <span className="mark">◇</span>
+                <p className="text-ink">Nothing here can be opened yet.</p>
+                <p className="lead">
+                  Every file beside this one needs a hand before Loadout can read it. Put them
+                  right, or write a new agent.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
-             `.glass` zamiast `bg-panel`: panel jest chrome, a nie kartką z treścią. Obrys lewej
-             krawędzi zostaje klejem układu — panel przylega do krawędzi okna, więc `.pane`
+        {standing === null ? null : (
+          /* ARKUSZ WCHODZI Z EKRANEM, NIE NAD NIM — 2026-08-31 wieczorem. Do tego wieczora
+             powierzchnia wjeżdżała sprężyną (`.enter`), bo pojawiała się nad listą, której
+             przed kliknięciem nie zasłaniała. Dziś stoi tam od pierwszej klatki, więc nie
+             PRZYCHODZI i nic tu nie ma prawa skakać: zostaje samo `opacity` (DESIGN §7).
+
+             `key` po roli, którą trzyma, i to nie jest optymalizacja: bez niego przełączenie na
+             inną rolę zostawiłoby otwarte `Taller`, `Runs with` i `Advanced` z poprzedniej —
+             czyli formularz, który pamięta cudze rozwinięcia. Przy okazji `.fade-in` odgrywa
+             się przy każdym przełączeniu i mówi oku, że treść pod spodem jest już inna.
+
+             `.glass` zamiast `bg-panel`: arkusz jest chrome, a nie kartką z treścią. Obrys lewej
+             krawędzi zostaje klejem układu — arkusz przylega do krawędzi okna, więc `.pane`
              z obrysem dookoła i promieniem rysowałby ramkę wiszącą w powietrzu.
 
              KLAMRY WOKÓŁ TEGO KOMENTARZA BYŁYBY BŁĘDEM SKŁADNI, 2026-08-31. Komentarz owinięty
@@ -709,148 +851,219 @@ export default function AgentsScreen({
              Tutaj jesteśmy już wewnątrz wyrażenia (po `? null : (`), więc klamra otwierałaby
              drugie wyrażenie i esbuild mówi `Expected ")" but found "className"`. Ta wersja,
              bez klamer, jest zwykłym komentarzem JS i jest poprawna w obu kontekstach. */
-          <aside className="enter glass min-h-0 w-83 overflow-auto border-l border-line p-4">
-            <div className="flex items-center gap-2 pb-3">
-              <h2 className="text-heading text-ink">
-                {draft.id === '' ? 'New agent' : draft.name}
+          <aside
+            key={standing.id === '' ? 'new-agent' : standing.id}
+            data-role-sheet
+            /* SZEROKOŚĆ BIERZE Z CIAŁA EKRANU, NIE ZE STAŁEJ. Do 2026-08-31 stało tu `w-83`,
+               czyli 332 px, i to była cała wina za wrażenie „wąska rura obok szerokiej pustki":
+               dziewięć wierszy w 332 px jest wyższe niż okno, więc `Save` stał pod krawędzią,
+               a pole instrukcji — jedyna rzecz, która JEST rolą — dostawało w tej rurze 150 px
+               przy 546 px niewykorzystanej wysokości obok.
+
+               `flex flex-col` plus `min-h-0`, bo to jest połowa, która wpuszcza wysokość do
+               środka: formularz niżej rozciąga swój wiersz instrukcji dokładnie o tyle, ile tu
+               zostanie. Bez kolumny elastycznej `flex-1` w formularzu nie miałoby czego dzielić. */
+            className="fade-in glass flex min-h-0 flex-1 flex-col overflow-auto border-l border-line p-4"
+          >
+            {/* Nagłówek arkusza trzyma SIĘ TEJ SAMEJ kolumny, co pola pod nim: `Cancel` odbity
+                do krawędzi powierzchni stałby 240 px za ostatnim polem i nie należałby wzrokiem
+                do niczego (2026-08-31, zmierzone na zrzucie). */}
+            <div className="flex w-full max-w-192 shrink-0 items-baseline gap-3 pb-3">
+              {/* NAZWA NIE USTĘPUJE NIKOMU. Do 2026-08-31 to metadana miała `shrink-0`, więc
+                  ucinana była nazwa, żeby zmieścił się model, którego nikt nie wybierał. Treść
+                  pisana przez człowieka ustępuje tylko treści pisanej przez człowieka. */}
+              <h2 className="shrink-0 text-heading text-ink">
+                {standing.id === '' ? 'New agent' : standing.name}
               </h2>
-              <button
-                type="button"
-                className="btn-quiet ml-auto"
-                onClick={() => {
-                  setDraft(null);
-                  setPendingDelete(null);
-                  /* Zamknięcie panelu jest porzuceniem tej edycji, więc porzucamy też zdanie
-                   * o niej. Zostawione, wskoczyłoby pod nagłówek sekcji (`refusalGoes`) już po
-                   * tym, jak człowiek odpowiedział na nie `Cancel` — czyli odpowiedź na pytanie,
-                   * które właśnie zostało zamknięte (2026-08-31). */
-                  store.getState().dismiss();
-                }}
-              >
-                Cancel
-              </button>
+
+              {/* ILE WORKFLOW STRACI TĘ ROLĘ — jeden fakt, jedno miejsce, i to jest miejsce nad
+                  przyciskiem, który go potrzebuje: pytanie przed `Delete` niżej pyta TĄ SAMĄ
+                  liczbą (`deletingSays`). Do 2026-08-31 wieczorem wiersz stał na kafelku listy,
+                  czyli o dwie kolumny od pytania, które z niego korzysta.
+
+                  `null` w `usage` znaczy „katalogu workflow NIE UDAŁO SIĘ przeczytać" i wtedy
+                  tego wiersza nie ma wcale — zero wypisane z nieodbytego odczytu jest zdaniem
+                  nieprawdziwym, a nie ostrożnym (niezmiennik 17). Nowa rola nie ma jeszcze
+                  identyfikatora, więc nie ma jej też kto liczyć.
+
+                  `min-w-0 truncate` bez `shrink-0`: to metadana skraca się pierwsza. */}
+              {usage === null || standing.id === '' ? null : (
+                <span data-facts className="min-w-0 truncate font-mono text-meta text-muted">
+                  {usageSays(usedIn(usage, standing.id))}
+                </span>
+              )}
+
+              {/* `Cancel` STOI TYLKO WTEDY, GDY JEST CO ANULOWAĆ — 2026-08-31 wieczorem.
+                  Arkusz czyta rolę wprost z magazynu, dopóki człowiek czegoś w niej nie zmieni,
+                  więc do pierwszej litery nie ma szkicu, który dałoby się cofnąć: przycisk
+                  stojący tu wcześniej byłby kontrolką bez skutku (niezmiennik 16). Do tej
+                  zmiany znaczył „zamknij panel i wróć do kafelków" — a kafelków już nie ma. */}
+              {draft === null ? null : (
+                <button
+                  type="button"
+                  className="btn-quiet ml-auto"
+                  onClick={() => {
+                    /* Porzucenie szkicu ZAPISANEJ roli zostawia ją na ekranie i przywraca jej
+                     * wersję z dysku; porzucenie NOWEJ zdejmuje też wskazanie, bo pusty
+                     * identyfikator nie wskazuje na nic, co dałoby się otworzyć. */
+                    if (standing.id === '') setPicked(null);
+                    setDraft(null);
+                    setPendingDelete(null);
+                    /* Porzucenie edycji jest porzuceniem też zdania o niej. Zostawione,
+                     * wskoczyłoby pod nagłówek sekcji (`refusalGoes`) już po tym, jak człowiek
+                     * odpowiedział na nie `Cancel` — czyli odpowiedź na pytanie, które właśnie
+                     * zostało zamknięte (2026-08-31). */
+                    store.getState().dismiss();
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
 
-            <AgentForm
-              value={draft}
-              expanded={expanded}
-              onChange={setDraft}
-              onToggleMore={() => {
-                setExpanded((wasOpen) => !wasOpen);
-              }}
-              onSave={() => {
-                save(draft);
-              }}
-            />
+            {/* KOLUMNA CZYTANIA WEWNĄTRZ SZEROKIEJ POWIERZCHNI — 2026-08-31.
+                Arkusz bierze całą pozostałą szerokość ciała ekranu, ale formularz jest listą
+                wierszy, a jednowierszowe pole `Name` na tysiąc pikseli nie jest ani czytelne,
+                ani szybsze do wypełnienia. Szerokość dostaje więc TREŚĆ arkusza, a nie każde
+                pole z osobna: 768 px to ta sama miara, którą ma kolumna czytania w Knowledge.
+                `flex-1 min-h-0` przewleka wysokość dalej, do wiersza instrukcji. */}
+            <div className="flex min-h-0 w-full max-w-192 flex-1 flex-col">
+              <AgentForm
+                value={standing}
+                expanded={expanded}
+                onChange={setDraft}
+                onToggleMore={() => {
+                  setExpanded((wasOpen) => !wasOpen);
+                }}
+                onSave={() => {
+                  save(standing);
+                }}
+              />
 
-            {/* ZDANIE DYSKU POD PRZYCISKIEM, KTÓRY JE WYWOŁAŁ. `AgentForm` kończy się przyciskiem
+              {/* ZDANIE DYSKU POD PRZYCISKIEM, KTÓRY JE WYWOŁAŁ. `AgentForm` kończy się przyciskiem
                 `Save`, więc to jest wiersz bezpośrednio pod nim — i to samo miejsce obsługuje
                 `Duplicate` i `Delete` niżej, bo one też są przyciskami tego panelu.
 
                 `.enter`, nie `.fade-in`: ta powierzchnia PRZYCHODZI w miejsce, w którym przed
                 kliknięciem nie było niczego, i jest odpowiedzią na gest, a nie tłem do
                 przeczytania (DESIGN §7). */}
-            {refusalGoes !== 'panel' ? null : (
-              <p
-                data-refusal
-                role="alert"
-                /* PASEK BŁĘDU, nie chip: `border-b` plus wypełnienie `-soft`, bez promienia
+              {refusalGoes !== 'panel' ? null : (
+                <p
+                  data-refusal
+                  role="alert"
+                  /* PASEK BŁĘDU, nie chip: `border-b` plus wypełnienie `-soft`, bez promienia
                    (DESIGN §6). Pełny obrys z wypełnieniem znaczy w tym języku pigułkę, a zdanie
-                   na trzy wiersze pigułką nie jest. `-mx-4`, żeby dobiegł do krawędzi panelu —
-                   `p-4` należy do panelu, a pasek jest pasmem przez całą jego szerokość. */
-                className="enter -mx-4 mt-2 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
-              >
-                {state.refusal}
-              </p>
-            )}
+                   na trzy wiersze pigułką nie jest. Bez ujemnego marginesu: ten
+                   pasek stoi w kolumnie czytania, bo od 2026-08-31 arkusz jest szerszy niż zdanie:
+                   pasmo na tysiąc pikseli pod dwuwyrazową odmową czyta się jak awaria okna. */
+                  className="enter mt-2 shrink-0 border-b border-fail-edge bg-fail-soft px-3 py-2 text-body text-fail"
+                >
+                  {state.refusal}
+                </p>
+              )}
 
-            {/* Kopiowanie i usuwanie dotyczą agenta, który JUŻ leży na dysku, więc dla nowego
+              {/* Kopiowanie i usuwanie dotyczą agenta, który JUŻ leży na dysku, więc dla nowego
                 szkicu tych kontrolek nie ma. Przycisk, który miałby usunąć plik, którego nie ma,
                 jest kontrolką bez skutku (niezmiennik 16). */}
-            {draft.id === '' ? null : (
-              <div className="stack mt-3 border-t border-line pt-3" data-gap="2">
-                {pendingDelete === draft.id ? (
-                  /* POTWIERDZENIE JEST RENDEREM, nie `window.confirm`. Dialog przeglądarki
+              {standing.id === '' ? null : (
+                <div className="stack mt-3 shrink-0 border-t border-line pt-3" data-gap="2">
+                  {pendingDelete === standing.id ? (
+                    /* POTWIERDZENIE JEST RENDEREM, nie `window.confirm`. Dialog przeglądarki
                      blokuje webview i zabiera całą sesję — przy oknie Tauri nie ma go czym
                      odblokować. Zdanie nazywa agenta, bo „Are you sure?" nie mówi, o co pytamy,
                      a panel bywa otwarty od kilku minut. */
-                  <>
-                    {/* Pytanie WCHODZI: przed naciśnięciem Delete nie ma go w dokumencie
+                    <>
+                      {/* Pytanie WCHODZI: przed naciśnięciem Delete nie ma go w dokumencie
                         wcale, a staje tam, gdzie przed chwilą były dwa przyciski. Sprężyna mówi
                         „to jest nowe", zamiast pozwolić dwóm różnym rzeczom mrugnąć w jednym
                         miejscu. Drugiego regionu to zdarzenie nie rusza (ARCHITECTURE §7). */}
-                    <p data-confirm-delete className="enter text-ink">
-                      {deletingSays(draft.name, usage, draft.id)}
-                    </p>
+                      <p data-confirm-delete className="enter text-ink">
+                        {deletingSays(standing.name, usage, standing.id)}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          data-delete-confirm
+                          type="button"
+                          className={DANGER}
+                          onClick={() => {
+                            const doomed = standing.id;
+                            setPendingDelete(null);
+                            setDraft(null);
+                            /* Wskazanie schodzi razem z plikiem: zostawione, wskazywałoby na
+                             * rolę, której już nie ma, i `standing` odesłałby na pierwszą
+                             * z listy dopiero przez `undefined`. Mówimy to wprost. */
+                            setPicked(null);
+                            void store.getState().delete(doomed);
+                          }}
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-quiet"
+                          onClick={() => {
+                            setPendingDelete(null);
+                          }}
+                        >
+                          Keep it
+                        </button>
+                      </div>
+                    </>
+                  ) : (
                     <div className="flex items-center gap-2">
-                      <button
-                        data-delete-confirm
-                        type="button"
-                        className={DANGER}
-                        onClick={() => {
-                          const doomed = draft.id;
-                          setPendingDelete(null);
-                          setDraft(null);
-                          void store.getState().delete(doomed);
-                        }}
-                      >
-                        Delete
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-quiet"
-                        onClick={() => {
-                          setPendingDelete(null);
-                        }}
-                      >
-                        Keep it
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    {/* 2026-08-31 — CZASOWNIK „EVALUATE" STOI TAM, GDZIE STOI AGENT, a nie
+                      {/* 2026-08-31 — CZASOWNIK „EVALUATE" STOI TAM, GDZIE STOI AGENT, a nie
                         w osobnej sekcji, do której trzeba by go wpisać z pamięci. Zakłada
                         zestaw dla TEGO agenta i przechodzi do Labu: jedno kliknięcie, jedno
                         miejsce, w którym widać wynik. Przejścia nie robi ten przycisk sam —
                         robi je magazyn sekcji, ten sam, którym idzie każde inne przejście
                         (niezmiennik 13). */}
-                    <button
-                      data-evaluate
-                      type="button"
-                      /* Prymityw tej gałęzi zamiast stałej `QUIET` z trunku: ta stała zniknęła
+                      <button
+                        data-evaluate
+                        type="button"
+                        /* Prymityw tej gałęzi zamiast stałej `QUIET` z trunku: ta stała zniknęła
                          razem z warstwą prymitywów (Fala 1), a przycisk przyjechał z Lab. */
-                      className="btn-quiet"
-                      onClick={() => {
-                        void evaluateAgent(draft.id, draft.name);
-                      }}
-                    >
-                      Evaluate
-                    </button>
-                    <button
-                      data-duplicate
-                      type="button"
-                      className="btn-quiet"
-                      onClick={() => {
-                        void store.getState().duplicate(draft.id);
-                      }}
-                    >
-                      Duplicate
-                    </button>
-                    <button
-                      data-delete
-                      type="button"
-                      className={`ml-auto ${DANGER}`}
-                      onClick={() => {
-                        setPendingDelete(draft.id);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+                        className="btn-quiet"
+                        onClick={() => {
+                          void evaluateAgent(standing.id, standing.name);
+                        }}
+                      >
+                        Evaluate
+                      </button>
+                      <button
+                        data-duplicate
+                        type="button"
+                        className="btn-quiet"
+                        onClick={() => {
+                          /* Kopia otwiera się w arkuszu, bo pierwsze, co się z nią robi, to
+                           * nadaje jej własną nazwę. Identyfikator wybiła mennica, więc ekran
+                           * zna go tylko przez `justSaved` — i tylko wtedy, gdy zapis doszedł:
+                           * po odmowie wskazanie zostaje tam, gdzie było. */
+                          void store
+                            .getState()
+                            .duplicate(standing.id)
+                            .then(() => {
+                              const minted = store.getState().justSaved;
+                              if (minted !== null) setPicked(minted);
+                            });
+                        }}
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        data-delete
+                        type="button"
+                        className={`ml-auto ${DANGER}`}
+                        onClick={() => {
+                          setPendingDelete(standing.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </aside>
         )}
       </div>

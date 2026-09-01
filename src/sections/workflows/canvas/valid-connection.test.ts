@@ -34,12 +34,12 @@
  * Trzecia część kryterium zostaje bez zmian: koło nie produkuje ani jednego zdania na ekranie.
  * Toast „cannot create cycle" był tu regresją i dalej nią jest.
  */
-import { createElement } from 'react';
+import { Fragment, createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { AgentStep, WorkflowFile } from '../../../state/workflows';
 import { TURNS_BY_DEFAULT, isValidConnection, onConnect } from './connect';
-import { RunBar } from './problems';
+import { RunButton, ThingsToFix } from './problems';
 
 function step(id: string, name: string, y: number): AgentStep {
   return {
@@ -95,9 +95,20 @@ function buttonAttributes(html: string, label: string): string | null {
   return null;
 }
 
-/** Pasek nad przyciskiem Run, wyrenderowany z uwag, których w tym pliku nigdy nie ma. */
+/** Uwagi i przycisk Run, wyrenderowane z listy uwag, której w tym pliku nigdy nie ma.
+ *
+ * Dwa komponenty od 2026-08-31, wcześniej jeden (`RunBar`): lista uwag stoi dziś pod plakietką
+ * w nagłówku edytora, a przycisk na końcu tego samego nagłówka. Pytanie tego kryterium się nie
+ * zmieniło — czy zamknięcie okręgu strzałką powiedziało cokolwiek i czy zgasiło Run. */
 function bar(): string {
-  return renderToStaticMarkup(createElement(RunBar, { notes: [], onRun: noop, onFocusNote: noop }));
+  return renderToStaticMarkup(
+    createElement(
+      Fragment,
+      null,
+      createElement(ThingsToFix, { notes: [], onFocusNote: noop }),
+      createElement(RunButton, { notes: [], onRun: noop }),
+    ),
+  );
 }
 
 describe('an arrow that would close a circle lands as a way back, and says nothing about it', () => {

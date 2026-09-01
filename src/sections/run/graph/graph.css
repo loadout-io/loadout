@@ -54,3 +54,21 @@
 .loadout-run-canvas .react-flow__handle {
   opacity: 0;
 }
+
+/* KÓŁKO KROKU, KTÓRY PRACUJE — POŚWIATA, i to jest naprawa martwej klasy, nie ozdoba.
+ *
+ * ZMIERZONE 2026-08-31: `path.tsx` nadawał znacznikowi klasę `loadout-pip-now` od dnia, w którym
+ * ścieżka powstała, a w całym `src/` nie było ani jednej reguły o tej nazwie. Kółko kroku
+ * pracującego wyglądało więc dokładnie tak, jak każde inne wypełnione — czyli nazwa klasy
+ * obiecywała formę, której nikt nie narysował.
+ *
+ * WARTOŚĆ Z MAKIETY (`docs/mockup/index.html`, `.pip[data-now]`: `box-shadow:0 0 16px
+ * rgba(255,122,92,.45)`). Barwa jedzie tokenem, bo hex w kodzie jest zakazany [DESIGN §9]:
+ * `--color-live-edge` to ta sama barwa przy 0.5 krycia.
+ *
+ * STOI W ARKUSZU, A NIE W KLASIE NARZĘDZIOWEJ, z tego samego powodu, co poświata karty wyżej:
+ * cień w tej barwie nie ma tokenu, a czwarty `--shadow-*` byłby zmianą w `theme.css` dla
+ * jednego miejsca w aplikacji. */
+.loadout-pip-now {
+  box-shadow: 0 0 16px var(--color-live-edge);
+}

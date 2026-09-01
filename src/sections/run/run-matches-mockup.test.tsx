@@ -1,17 +1,17 @@
 /* AC-1 dla T-39: układ ekranu Run jest układem z makiety, i to MAKIETA jest wyrocznią.
  *
  * DLACZEGO WARTOŚCI OCZEKIWANE SĄ CZYTANE, A NIE WPISANE. Słabą wersją tego kryterium jest
- * `expect(markup).toContain('268px')`. Przechodzi ona w dwóch przypadkach, w których układ jest
- * zepsuty: gdy `268px` stoi gdziekolwiek w markupie — także jako wysokość czegoś zupełnie
+ * `expect(markup).toContain('376px')`. Przechodzi ona w dwóch przypadkach, w których układ jest
+ * zepsuty: gdy ta liczba stoi gdziekolwiek w markupie — także jako wysokość czegoś zupełnie
  * innego — i gdy makieta zmieni się na 300, a ekran nie. Odróżnia je to, że oczekiwana wartość
  * jest **czytana z `docs/mockup/index.html` w tym samym biegu testu**: kiedy pliki się rozjadą,
  * test pada, i to jest jego jedyne zadanie. Ten sam zabieg stoi w
  * `src/ui/shell/shell-matches-mockup.test.tsx` na regule `.app`.
  *
- * PORÓWNUJEMY CAŁĄ DEKLARACJĘ, NIE SAMĄ LICZBĘ. `.work` mówi `minmax(0,1fr) 268px`, i to
+ * PORÓWNUJEMY CAŁĄ DEKLARACJĘ, NIE SAMĄ LICZBĘ. `.work` mówi `376px minmax(0,1fr)`, i to
  * `minmax(0,1fr)` jest połową sensu: bez niego szeroki wiersz strumienia rozpycha kolumnę
- * zamiast się przewijać, a lista agentów zjeżdża z ekranu. Asercja na samej liczbie
- * przepuściłaby `1fr 268px`. Tak samo `.feedcol`: `minmax(0,1fr) auto auto` znaczy „historia
+ * zamiast się przewijać, a ścieżka kroków zjeżdża z ekranu. Asercja na samej liczbie
+ * przepuściłaby `376px 1fr`. Tak samo `.feedcol`: `minmax(0,1fr) auto auto` znaczy „historia
  * bierze resztę, TERAZ i wiersz wejścia mają wysokość swojej treści" — `auto auto auto`
  * wygląda identycznie przy pustym biegu i rozjeżdża się przy pierwszej setce linii.
  *
@@ -20,8 +20,9 @@
  * na to, że coś realnie znalazł, i na to, że ma spodziewaną liczbę członów.
  *
  * KOLEJNOŚĆ KOLUMN JEST CZĘŚCIĄ UKŁADU, nie stylem: w siatce dwukolumnowej pierwsze dziecko
- * bierze pierwszą kolumnę, więc lista agentów wyrenderowana przed kolumną strumienia stanęłaby
- * po lewej i miałaby 268 px zamiast reszty ekranu — przy identycznej deklaracji siatki.
+ * bierze pierwszą kolumnę, więc kolumna wyrenderowana nie w tej kolejności, co w makiecie,
+ * dostaje cudzą szerokość — przy identycznej deklaracji siatki. Od 2026-08-31 kolejność też
+ * jest CZYTANA z makiety, nie wpisana; powód stoi przy tamtym punkcie.
  *
  * Pliki czytamy przez `existsSync(p) ? readFileSync(p) : ''`, żeby test padał na asercji
  * o treści, nigdy na otwarciu pliku (AGENTS.md §2a p. 5).
@@ -31,6 +32,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { useRun } from '../../state/run';
 import Run from './index';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -70,6 +72,20 @@ function gridOf(markup: string, attribute: string, property_: string): string {
 }
 
 const html = fileText(MOCKUP);
+
+/* SCENA MUSI MIEĆ CO POSTAWIĆ W OBSZARZE PRACY — poprawka wyroczni z 2026-08-31, nie ustępstwo.
+ *
+ * Ten plik pyta o SIATKĘ widoku pracy: dwie kolumny, ich szerokości i ich kolejność. Do dziś
+ * czytał ją z `renderToStaticMarkup(<Run />)` na PUSTYCH magazynach — a to jest od dziś ekran
+ * pierwszego otwarcia, czyli jedna tafla powitania bez kolumny kroków (`./first-run.tsx`,
+ * `welcomeIsTheWholeScreen`). Trzy punkty niżej były więc zielone na scenie, na której siatki
+ * pracy nie ma i mieć nie ma prawa: zieleń odziedziczona po czasach, gdy obie kolumny stały
+ * tam ZAWSZE, także puste, także wtedy, gdy przelewały ekran w bok.
+ *
+ * JEDEN KROK W MAGAZYNIE BIEGU to najmniejsza scena, w której ten ekran jest tym ekranem,
+ * o który ten plik pyta. Nie jest to atrapa układu: kolumny, ich szerokości i kolejność rysuje
+ * dalej `./index.tsx`, a wartości oczekiwane dalej przyjeżdżają z makiety. */
+useRun.setState({ steps: [{ id: 's_build', name: 'Build', state: 'running' }] });
 const markup = renderToStaticMarkup(<Run />);
 
 describe('the run screen is the layout the mockup draws, read from the mockup', () => {
@@ -84,7 +100,7 @@ describe('the run screen is the layout the mockup draws, read from the mockup', 
     ).not.toBe('');
     expect(
       wanted.split(' ').length,
-      'the mockup has to declare TWO columns for the agents list to stand beside the stream ' +
+      'the mockup has to declare TWO columns for the path of steps to stand beside the stream ' +
         'rather than under it. It declares: ' +
         wanted,
     ).toBe(2);
@@ -93,7 +109,7 @@ describe('the run screen is the layout the mockup draws, read from the mockup', 
     expect(
       rendered,
       'the run screen renders no work area declaring grid-template-columns, so nothing says ' +
-        'the agents list stands beside the stream. Markup starts: ' +
+        'the path of steps stands beside the stream. Markup starts: ' +
         markup.slice(0, 200),
     ).not.toBe('');
 
@@ -140,7 +156,25 @@ describe('the run screen is the layout the mockup draws, read from the mockup', 
     ).toBe(wanted);
   });
 
-  it('renders the stream column before the agents list, so it takes the first column', () => {
+  it('puts the two columns in the order the mockup puts them, read from the mockup', () => {
+    /* 2026-08-31 — KOLEJNOŚĆ TEŻ JEST CZYTANA, i to jest ta sama poprawka, którą nagłówek tego
+       pliku opisuje dla szerokości. Do dziś stało tu „strumień musi być pierwszy" WPISANE
+       z palca — czyli jedyna wartość w całym pliku, której nie brała wyrocznia. Makieta
+       przestawiła kolumny (`.work` mówi dziś `376px minmax(0,1fr)`, a ścieżka kroków stoi
+       w niej pierwsza) i ten punkt zaczął żądać układu, którego makieta już nie rysuje —
+       przy zielonej reszcie pliku. Czytamy więc jej znacznik `.work` i pytamy, który z dwóch
+       bloków stoi w nim wcześniej. */
+    const work = html.slice(Math.max(html.indexOf('class="work"'), 0));
+    const railFirst = work.indexOf('class="rail"');
+    const feedFirst = work.indexOf('class="feedcol"');
+
+    expect(
+      Math.min(railFirst, feedFirst),
+      'neither the plan column nor the stream column was found inside the `.work` block of ' +
+        'docs/mockup/index.html, so the comparison below would run on two -1s and pass on ' +
+        'nothing.',
+    ).toBeGreaterThan(0);
+
     const streamAt = markup.indexOf('data-stream-column');
     const planAt = markup.indexOf('data-plan-column');
 
@@ -149,10 +183,15 @@ describe('the run screen is the layout the mockup draws, read from the mockup', 
       0,
     );
     expect(
-      streamAt,
-      'the stream column has to come first in the markup, because in a two-column grid the ' +
-        'first child takes the first column. Rendered the other way round the agents list gets ' +
-        'the free space and the stream gets 268 px — with the grid declaration still correct.',
-    ).toBeLessThan(planAt);
+      planAt < streamAt,
+      'the screen and the mockup disagree about WHICH column comes first. In a two-column grid ' +
+        'the child order is the column order, so getting it backwards hands the fixed width to ' +
+        'the column that needs the free space — with the grid declaration still correct. The ' +
+        'mockup draws the plan column ' +
+        (railFirst < feedFirst ? 'first' : 'second') +
+        ', and the screen draws it ' +
+        (planAt < streamAt ? 'first' : 'second') +
+        '.',
+    ).toBe(railFirst < feedFirst);
   });
 });

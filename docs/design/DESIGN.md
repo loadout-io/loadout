@@ -235,13 +235,21 @@ fakty, więc mają dwa tokeny (niezmiennik 13).
 **Akcent nigdy nie wypełnia chrome.** Bierze go focus, przycisk podstawowy i aktywny glif —
 i na tym koniec. Aktywny wiersz menu jest neutralny; barwę dostaje wyłącznie jego glif.
 
-### Stan — cztery i ani jeden więcej
+### Stan — pięć i ani jeden więcej
+
+> **Było cztery do 2026-08-31.** Piąty (`--ok`) wchodzi razem z makietą, którą wybrał
+> właściciel, i wchodzi z powodu, nie z upodobania: „krok się udał" nie miał własnej barwy,
+> więc ptaszek zakończonego kroku, łączka między dwoma zrobionymi krokami i liczba `214 pass`
+> obok `2 fail` brały albo szary — czyli „nic się nie stało" — albo literał w komponencie.
+> Kolor, którego system nie ma, nie znika z ekranu: wraca jako literał, a `checks/tokens.sh`
+> zamyka literały i słusznie.
 
 | Token | Hex | Znaczy | Pytanie, na które odpowiada |
 |---|---|---|---|
 | `--live` | `#ff7a5c` | **teraz** | co się dzieje w tej chwili? |
 | `--attend` | `#f5b14c` | **ty** | co czeka na moją decyzję? |
 | `--fail` | `#ff6b6b` | **zepsute** | co poszło źle? |
+| `--ok` | `#5ce1a6` | **skończone i dobre** | co już się udało? |
 | `--human` | `#9d7bff` | **człowiek** | co zrobiła osoba, nie maszyna? |
 
 Wash i edge dla każdego — tło chipa i jego obrys:
@@ -251,6 +259,7 @@ Wash i edge dla każdego — tło chipa i jego obrys:
 | `--live-soft` | `rgba(255, 122, 92, 0.16)` | `--live-edge` | `rgba(255, 122, 92, 0.5)` |
 | `--attend-soft` | `rgba(245, 177, 76, 0.14)` | `--attend-edge` | `rgba(245, 177, 76, 0.5)` |
 | `--fail-soft` | `rgba(255, 107, 107, 0.14)` | `--fail-edge` | `rgba(255, 107, 107, 0.5)` |
+| `--ok-soft` | `rgba(92, 225, 166, 0.14)` | `--ok-edge` | `rgba(92, 225, 166, 0.5)` |
 | `--human-soft` | `rgba(157, 123, 255, 0.14)` | `--human-edge` | `rgba(157, 123, 255, 0.5)` |
 
 `--live` w domu nazywa się tak samo i pilnuje nagrywania; u nas pilnuje pracującego agenta.
@@ -264,21 +273,84 @@ wierszach — czego dom nigdy nie musi pokazać. Rozstrzyga to forma, nie barwa:
 - `--live` występuje **wyłącznie** jako: podkład aktywnego wiersza strefy „teraz", jego obrys,
   aktywny segment paska loadoutu, pulsująca kropka, kropka karty w tle.
 - `--fail` występuje **wyłącznie** jako: glif `✕`, obrys chipa, lewa krawędź bloku błędu.
+- `--ok` występuje **wyłącznie** jako: glif `✓` zakończonego kroku, łączka między dwoma
+  zrobionymi krokami, liczba, która przeszła (`214 pass`), kropka „śledzę na bieżąco".
+  Nigdy jako podkład wiersza — inaczej ekran po udanym biegu jest zielony na całej wysokości
+  i nic już nie znaczy.
 
-Rozłączność tych dwóch słowników form jest **sprawdzana statycznie**, nie oceniana okiem.
+Rozłączność tych słowników form jest **sprawdzana statycznie**, nie oceniana okiem.
+
+### Akcent jako ATRAMENT nadoczka
+
+Reguła nad tą sekcją mówi: **akcent znaczy „to jest interaktywne" i nic więcej.** Od 2026-08-31
+ma dokładnie **jeden** wyjątek, i jest on wypisany tutaj zamiast rosnąć po cichu w komponentach.
+
+**Nadoczko sekcji jest pisane akcentem.** `--text-eyebrow` niesie `color: var(--color-accent)`
+w warstwie `components` (`src/styles/theme.css`), tak jak niesie wersaliki.
+
+Dlaczego to nie jest zniesienie reguły:
+
+- Akcent dalej **nie wypełnia** niczego, co nie jest kontrolką. To jest atrament na 11 px,
+  nie powierzchnia.
+- Nadoczko odpowiada na pytanie **„gdzie jestem"** — jest adresem, a nie ozdobą. W domu
+  (`../meetnotes`) nad każdym tytułem ekranu stoi dokładnie to samo: `SHARED WORK` nad `Tasks`.
+- Wyjątek jest **znoszalny**: reguła stoi w warstwie `components`, więc `text-live`, `text-muted`
+  i każda inna klasa barwy dalej wygrywa. Makieta korzysta z tego od razu — nadoczko biegu
+  jest w `--live`, bo mówi „teraz", a nie „jesteś tutaj".
+
+Granica: **jedno nadoczko na ekran**. Drugie w tym samym widoku znaczy, że ekran ma dwa tytuły.
+
+### Blask nie jest głębią
+
+Do 2026-08-31 ten dokument miał jedno zdanie o cieniach — „wyłącznie pod tym, co pływa" —
+i jeden egzekutor, który czyta **każdą** deklarację `box-shadow` bez `inset`
+(`src/ui/shell/only-the-nav-floats.test.ts`). Zdanie było za wąskie o całą klasę zjawisk,
+i to zmierzone: dom ma 379 deklaracji `box-shadow`, my mieliśmy 15.
+
+Rozróżnienie, które ten dokument robi od dziś:
+
+| | Zapis | Co mówi | Kto go ma |
+|---|---|---|---|
+| **Podniesienie** | niezerowe przesunięcie, kolor czarny | „to leży NAD stroną" | wyłącznie `.pane` (nawigacja), modal, menu, podpowiedź |
+| **Blask** | `0 0 <promień> <barwa tokenu>` | „to świeci" — żywy krok, kropka biegu, twarz agenta, przycisk podstawowy | dowolny element, który **niesie stan albo tożsamość** |
+
+Blask nie ma kierunku, więc nie udaje światła z góry i nie buduje warstw. Ma **barwę tokenu
+stanu albo tożsamości** i gaśnie razem z nim — zielony ptaszek świeci na `--ok`, kropka biegu
+na `--live`. Blask w kolorze neutralnym jest zakazany: byłby podniesieniem napisanym inaczej.
+
+> **Dług zapisany, nie naprawiony po cichu.** `only-the-nav-floats.test.ts` egzekwuje starsze,
+> węższe zdanie i **nie odróżnia blasku od podniesienia**: filtruje wyłącznie człony `inset`.
+> Po tej zmianie sądzi regułę, której ten dokument już nie stawia. Naprawa jest jednolinijkowa
+> i należy do właściciela tamtego pliku: `liftingShadows()` ma odrzucać także człon, którego
+> oba przesunięcia są zerowe. Do tego czasu punkt „lifts NOTHING else" jest czerwony na
+> makiecie, która jest zgodna z tym dokumentem — i to jest ta czerwień, o której AGENTS.md
+> każe **powiedzieć**, a nie ją uciszyć zmianą sprawdzenia.
 
 ### Tożsamość ≠ stan
 
-Agenci mają swoje kolory, żeby szyna dała się skanować wzrokiem. Ale kolor agenta **nigdy nie
-może być pomylony z kolorem stanu** — inaczej pomarańczowy agent i „czeka na twoją decyzję"
-znaczą to samo. Rozdział jest po nasyceniu.
+Agenci mają swoje kolory, żeby lista agentów dała się skanować wzrokiem. Ale kolor agenta
+**nigdy nie może być pomylony z kolorem stanu** — inaczej pomarańczowy agent i „czeka na twoją
+decyzję" znaczą to samo.
 
-| | Nasycenie | Tokeny |
+**Rozdział szedł po nasyceniu do 2026-08-31. Od dziś idzie po FORMIE**, i to jest zmiana, którą
+wymusiła wybrana makieta: rysuje ona agenta jako świecącą twarz w barwie nasyconej (Scout jest
+błękitny, Builder akcentowy, Needle w `--live`), bo pięć przygaszonych szarości nie da się
+odróżnić z drugiego końca ekranu — a właśnie po to ten kolor istnieje.
+
+| | Forma | Tokeny |
 |---|---|---|
-| **Stan** | nasycone | `--live` `--attend` `--fail` `--human` |
-| **Tożsamość** | przygaszone, zbliżona jasność | `--id-1 #6f8496` `--id-2 #7f7597` `--id-3 #94886b` `--id-4 #6b9285` `--id-5 #96707d` |
+| **Stan** | podkład wiersza, obrys, pasek, słowo | `--live` `--attend` `--fail` `--ok` `--human` |
+| **Tożsamość** | **wyłącznie** twarz agenta (kwadrat z inicjałem), kropka przy jego nazwie w strumieniu, chip filtru | `--sky #62d0ff` `--accent` `--live` `--human` `--ok`, oraz przygaszone `--id-1 #6f8496` `--id-2 #7f7597` `--id-3 #94886b` `--id-4 #6b9285` `--id-5 #96707d` |
 
-Agent dostaje kwadrat 22px w swoim przygaszonym kolorze, z inicjałem w `--ink`.
+Wash i edge dla członu nasyconego — tło chipa filtru i jego obrys:
+
+| Token | Hex | Token | Hex |
+|---|---|---|---|
+| `--sky-soft` | `rgba(98, 208, 255, 0.14)` | `--sky-edge` | `rgba(98, 208, 255, 0.5)` |
+
+Kontrola, która to trzyma: **tożsamość nigdy nie maluje powierzchni ani obrysu wiersza.**
+Agent w kolorze `--live` i krok, który trwa, są rozróżnialne, bo pierwszy jest zawsze
+kwadratem 26–34 px z inicjałem, a drugi zawsze podkładem i obrysem całego wiersza.
 Stan agenta jest **słowem** w kolorze nasyconym, nigdy kolorem kwadratu.
 
 > Kolory tożsamości są **nasze** i nie mają odpowiednika w domu: tamtejsze `--graph-*` są
@@ -300,7 +372,8 @@ a wtedy definicje wypadły z arkusza. **Wołanie którejkolwiek z nich jest dzi�
 attend, fail, human, accent), a akcent po prostu ma tę samą wartość, co jego pierścień skupienia.
 
 Zakazane: gradienty dekoracyjne, drugi kolor marki, kolor jako ozdoba, barwione szkło,
-piąty kolor stanu, cień pod czymś, co nie pływa.
+**szósty** kolor stanu, **podniesienie** pod czymś, co nie pływa (blask — patrz wyżej — nie jest
+podniesieniem), blask w kolorze neutralnym.
 
 ---
 
@@ -328,14 +401,18 @@ Oba kroje są **zmiennymi plikami `.woff2` w repo** (`src/styles/fonts/`), te sa
 
 | Token | Rodzina | Rozmiar | Waga | Interlinia | Tracking | Użycie |
 |---|---|---|---|---|---|---|
-| `--t-title` | ui | 20px | 600 | 1.2 | -0.02em | tytuł ekranu, jeden na widok |
-| `--t-heading` | ui | 15px | 600 | 1.3 | -0.01em | nagłówek sekcji, tytuł karty |
+| `--t-display` | ui | 40px | 700 | 1.04 | -0.025em | **tytuł ekranu, jeden na widok** |
+| `--t-hero` | ui | 34px | 700 | 1.08 | -0.022em | tytuł drugiego rzędu, powitanie, wielka liczba |
+| `--t-title` | ui | 22px | 600 | 1.2 | -0.015em | tytuł karty, panelu i okna dialogowego |
+| `--t-question` | ui | 17px | 600 | 1.4 | 0 | pytanie, na którym bieg stanął; etykieta dużego przycisku |
+| `--t-heading` | ui | 15px | 600 | 1.3 | -0.01em | nagłówek sekcji |
+| `--t-lede` | ui | 15px | 400 | 1.5 | 0 | zdanie POD tytułem ekranu |
 | `--t-subhead` | ui | 14px | 600 | 1.3 | 0 | tytuł kafelka na liście |
 | `--t-body` | ui | 13px | 400 | 1.5 | 0 | zdania i opisy |
 | `--t-ui` | ui | 13px | 600 | 1.2 | 0 | przyciski, aktywne etykiety |
 | `--t-note` | ui | 12px | 400 | 1.45 | 0 | drugie zdanie, podpowiedź pod polem |
 | `--t-label` | ui | 11px | 600 | 1.2 | 0 | **etykieta pola, zdaniowo** |
-| `--t-eyebrow` | ui | 11px | 600 | 1.2 | 0.06em | **nadoczko sekcji, WERSALIKI** |
+| `--t-eyebrow` | ui | 11px | 600 | 1.2 | 0.16em | **nadoczko sekcji, WERSALIKI, w akcencie** |
 | `--t-meta` | ui | 11px | 400 | 1.2 | 0 | wartość maszynowa w drugim planie |
 | `--t-mono` | mono | 12px | 400 | 1.45 | 0 | wartości maszynowe |
 | `--t-mono-strong` | mono | 12px | 700 | 1.2 | 0.06em | identyfikator, nazwa agenta |
@@ -343,6 +420,40 @@ Oba kroje są **zmiennymi plikami `.woff2` w repo** (`src/styles/fonts/`), te sa
 
 Waga 500 nie istnieje. Drabinka to 400 / 600 / 700.
 Rozmiary poniżej 11px nie istnieją. Jeśli coś nie mieści się w 11px, jest niepotrzebne.
+
+### Sufit 40px, i dlaczego to jest naprawa, nie ozdoba
+
+Do 2026-08-31 najwyższym stopniem był `--t-title` = **20px**, czyli cała drabinka mieściła się
+w zakresie 11 → 20px (1,8×). Dom (`../meetnotes`, ten sam system i ta sama paleta) ma zakres
+9 → 30px i około pięćdziesięciu stopni. **Przy suficie 20px żaden ekran nie może mieć bohatera:**
+da się zrobić rzecz grubszą albo szerszą, nigdy większą — a wtedy każda próba hierarchii kończy
+się szarym prostokątem obok szarego prostokąta. To jest zapisana przyczyna, dla której dwie
+poprzednie przebudowy interfejsu wyszły nudne, i jest to pomiar, nie opinia.
+
+Wartości trzech górnych stopni są **z makiety**, nie z głowy: `h1` = 40, `h1.sm` = 34, `h2` = 22.
+
+**Rodzeństwo nie znaczy „mniejszy".** Decyzja D1 wiąże nas z domem paletą, rodziną krojów
+i materiałem — nie skalą w dół.
+
+#### Migracja górnych stopni
+
+`--t-title` **zmienia wartość** (20 → 22) i **nie zmienia nazwy**: nazwa skasowana pod dwunastoma
+wołającymi zostawia elementy bez ani jednej reguły CSS, czyli awarię, która nie rzuca wyjątku
+(niezmiennik 25). Zmienia się jej **rola**: tytułem ekranu jest teraz `--t-display`.
+
+Siedem wołań `text-title` to `<h1>` sekcji i one przechodzą na `text-display`. Pięć pozostałych
+stoi na czymś, co ekranem nie jest, i przechodzi na `text-title` w nowym znaczeniu albo niżej:
+
+| Plik | Co to jest | Dokąd |
+|---|---|---|
+| `src/sections/workflows/list/tile.tsx` | nazwa workflow na kafelku w siatce | `text-title` (22px) |
+| `src/sections/run/past/panel.tsx` | dwa nagłówki w wysuwanym panelu | `text-title` (22px) |
+| `src/sections/run/session/session.tsx` | nazwa agenta na karcie biegu | `text-title` (22px) |
+| `src/sections/workflows/editor.tsx` | pole z nazwą workflow (tytuł edytowalny) | `text-display` (40px) |
+| `src/sections/settings/index.tsx` | liczba wyrównana do prawej | `text-value`/`text-mono-strong` |
+
+Do czasu tej migracji te pięć miejsc rysuje się o 2px większe niż dotąd — i **ani jedno
+kryterium nie sądzi tam rozmiaru**, więc migracja jest widoczna okiem, a nie bramką.
 
 `font-variant-numeric: tabular-nums` obowiązuje wszędzie, gdzie cyfry stoją w kolumnie.
 
@@ -401,12 +512,28 @@ Cel dotykowy nie dotyczy — to aplikacja desktopowa sterowana myszą i klawiatu
 ```
 okno (róg rysuje macOS)
 └─ odstęp 8px, aurora + --bg
-   ├─ nawigacja  208px · --radius-lg · szkło · PŁYWA (jedyny cień w aplikacji)
+   ├─ nawigacja  308px · --radius-lg · szkło · PŁYWA (jedyny cień w aplikacji)
+   │   ├─ 48px   kolumna glifów — zostaje, kiedy lista się zwęzi
+   │   └─ reszta lista pozycji POGRUPOWANA pod nadoczkami MAKE / RUN / KNOW
    └─ treść      --radius-md · nieprzejrzysta · obrys --line
-      ├─ karty   32px · szkło
-      ├─ pasek   52px · szkło
+      ├─ pasek   52px · szkło · szukajka ⌘K + stan biegu — nad KAŻDYM ekranem
+      ├─ karty   32px · workspace'y (tylko ekran biegu)
       └─ praca
 ```
+
+**Nawigacja urosła z 208 do 308 px i jest DWUPOZIOMOWA** (2026-08-31). To jest zmiana produktu,
+nie stylu, i ma zapisaną przyczynę: siedem sekcji stało w jednej płaskiej liście o **równej
+wadze**, więc nic nie mówiło, od czego zacząć — a to jest połowa zdania „UX jest nieoczywisty".
+Lista jest teraz pogrupowana (`MAKE` / `RUN` / `KNOW`, `Settings` w stopce), a pozycja, która nie
+ma jeszcze sensu, jest **przygaszona i mówi czego jej brakuje** („Make an agent first — a workflow
+is agents in a row"), zamiast wyglądać na równorzędną i prowadzić do pustego ekranu. Wąska kolumna
+glifów zostaje niezależnie od listy: to jedyny element, który nie znika przy żadnej szerokości.
+
+**Pasek loadoutu przeniósł się nad wszystkie ekrany.** Do 2026-08-31 stał wyłącznie na ekranie
+biegu, więc bieg był niewidoczny z każdego innego miejsca w aplikacji. Niesie dziś trzy rzeczy:
+szukajkę `⌘K` (jedno pole sięga wszystkiego po nazwie), stan biegu albo postęp pierwszego
+uruchomienia, i podpis człowieka. Wysokość 52 px się **nie zmieniła** — budżet chrome z §7 jest
+wydany dokładnie tak samo (8 + 1 + 32 + 52 = 93 przy suficie 96).
 
 **Aurora mieszka wewnątrz okna**, nie na pulpicie: statyczna winieta przy lewej krawędzi, pod
 kartkami. To rozwiązanie z systemu, z którego wzięliśmy wartości, i ma konsekwencję, która
@@ -936,7 +1063,10 @@ Komponent nie trafia do repo, dopóki:
 - [ ] wygląda poprawnie przy szerokości okna 1100px (najwęższe wspierane)
 - [ ] nie używa `--accent` do niczego poza interakcją — „teraz" to `--live`
 - [ ] `--live` i `--fail` nie dzielą w nim ani jednej formy
-- [ ] nie dodaje piątego koloru semantycznego
+- [ ] nie dodaje **szóstego** koloru semantycznego (jest ich pięć: `--live` `--attend` `--fail`
+      `--ok` `--human`)
+- [ ] jego `box-shadow` jest albo **blaskiem** (`0 0 …`, w barwie tokenu stanu lub tożsamości),
+      albo go nie ma — podniesienie z niezerowym przesunięciem należy do rzeczy, które pływają
 - [ ] `prefers-reduced-motion` go nie psuje
 - [ ] żaden tekst w nim nie jest w mono, jeśli nie jest wartością maszynową
 - [ ] nie woła nazwy zastępczej: `rounded-sq`, `rounded-dot`, `*-wash` — żadna z nich nie istnieje
@@ -954,3 +1084,47 @@ Komponent nie trafia do repo, dopóki:
       albo `.working`) — a po jej końcu ekran nie jest **bardziej pusty** niż przed kliknięciem
 - [ ] `--ease-spring` stoi wyłącznie na wejściu elementu, nigdy na hoverze ani na przejściu
 - [ ] w skrócie `animation` stoi `--duration`, nigdy `--transition`: ten drugi wnosi cichą zwłokę
+
+---
+
+## 10. Co zmieniła przebudowa z 2026-08-31 i dlaczego
+
+Właściciel odrzucił dwie poprzednie próby przebudowy interfejsu słowami „nudne" i „UX totalnie
+nieoczywisty", a potem wybrał konkretny kierunek i powiedział o nim **„1 do 1 jak z projektem"**.
+`docs/mockup/index.html` jest od tej chwili tym projektem. Ten rozdział jest spisem tego, co
+z niego wynikło — po to, żeby żadna z tych zmian nie wyglądała później na czyjeś upodobanie.
+
+**Paleta się NIE zmieniła.** D1 stoi: te same wartości co `../meetnotes`, ta sama rodzina krojów,
+ten sam materiał. Doszły dwa kolory, których projekt używa, a system nie miał czym narysować
+(`--ok`, `--sky`) — i ani jeden z nich nie jest nową barwą marki.
+
+| Co | Było | Jest | Dlaczego |
+|---|---|---|---|
+| Sufit typografii | 20px | **40px** | przy 20px żaden ekran nie może mieć bohatera — §4 |
+| Tytuł ekranu | `--t-title` 20px | `--t-display` 40px, nad nim nadoczko | dom pisze tytuł ekranu w 36–40px i stawia nad nim nadoczko |
+| Nadoczko | 11px, tracking 0.06em, bez barwy | 11px, tracking **0.16em**, w **akcencie** | przy 0.06em bez barwy czyta się jak etykieta, nie jak adres — §3 |
+| Kolory stanu | cztery | **pięć** (`--ok`) | „krok się udał" brał szary, czyli „nic się nie stało" |
+| Tożsamość agenta | tylko przygaszone `--id-*` | także nasycone, rozdzielone **formą** | pięciu szarości nie odróżnisz z drugiego końca ekranu — §3 |
+| Cień | jedna reguła: tylko to, co pływa | **blask** ≠ **podniesienie** | dom ma 379 `box-shadow`, my mieliśmy 15 — §3 |
+| Nawigacja | 208px, płaska lista siedmiu równych pozycji | 308px, kolumna glifów + lista **pogrupowana**, pozycja bez sensu **mówi czego jej brakuje** | siedem równych drzwi to połowa zdania „nie wiem, od czego zacząć" — §5 |
+| Pasek loadoutu | tylko na ekranie biegu | nad **każdym** ekranem, z szukajką `⌘K` | bieg był niewidoczny z każdego innego miejsca; wysokość 52px bez zmian |
+| Kolumny ekranu biegu | strumień z lewej, lista agentów 268px z prawej | **plan 376px z lewej**, strumień z prawej | plan sprawdza się wzrokiem co kilka sekund i chce stałego miejsca; strumień się czyta i chce szerokości |
+| Pusty ekran | „Your work will show up here." | zaproszenie: co da się uruchomić, jednym klawiszem, plus wiersz wejścia | siedem odmian zdania „coś się tu kiedyś pojawi" i ani jedno nie mówiło, co nacisnąć |
+
+### Cztery kryteria, które ta zmiana przewraca — i to jest ich robota
+
+Makieta jest wyrocznią wyglądu, więc kiedy zmienia się projekt, kryteria porównujące ją z kodem
+**mają** zapalić się na czerwono: to jest dokładnie ten sygnał, po który je napisano. Żadne z nich
+nie zostało tknięte. Każde wymaga zmiany po stronie kodu, poza blokiem OWNS tego zadania:
+
+1. `src/ui/shell/shell-matches-mockup.test.tsx` — `NAV_WIDTH` w `src/ui/shell/titlebar.tsx`
+   ma być **308**, nie 208.
+2. `src/ui/shell/shell-matches-mockup.test.tsx` — kolejność `SECTIONS` w `src/ui/sections.tsx`
+   ma być kolejnością makiety: Agents, Workflows, Run, Triggers, Knowledge, Lab, Settings.
+   Zbiór etykiet się nie zmienia, wyłącznie porządek i grupy.
+3. `src/sections/run/run-matches-mockup.test.tsx` — siatka `data-work` ma brzmieć
+   `376px minmax(0,1fr)`, a plan ma stać w PIERWSZEJ kolumnie. Trzeci punkt tego pliku
+   („stream column before the agents list") opiera się na przesłance, która przestała być
+   prawdziwa, i musi się odwrócić razem z kolumnami.
+4. `src/ui/shell/only-the-nav-floats.test.ts` — patrz „Blask nie jest głębią" w §3: filtr
+   `liftingShadows()` odrzuca dziś wyłącznie człony `inset`, więc liczy blask jako podniesienie.

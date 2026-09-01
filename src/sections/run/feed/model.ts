@@ -66,6 +66,21 @@ export interface NowZone {
 export interface HistoryRow {
   /** Identyfikator wiersza: identyfikator PIERWSZEJ linii grupy. */
   readonly id: number;
+  /**
+   * Kiedy ta linia napłynęła, w milisekundach — ten sam stempel, który granica nadaje wierszowi
+   * z drutu (`../../../state/run.ts`, `Stamped.at`).
+   *
+   * 2026-08-31 — DOPISANE, BO ZEGAR WIERSZA NIE MIAŁ DROGI NA EKRAN. Makieta strumienia podpisuje
+   * KAŻDĄ wypowiedź godziną (`14:00:44`), a widok nie miał jej skąd wziąć: stempel dojeżdżał do
+   * modelu, model liczył z niego okno sklejania i tam go zostawiał. Napisanie godziny w
+   * komponencie z `Date.now()` byłoby czasem RENDERU, nie czasem zdarzenia — czyli liczbą, która
+   * zmienia się przy każdym przerysowaniu i nie mówi nic o biegu (niezmiennik 17).
+   *
+   * WIERSZ SKLEJONY TRZYMA STEMPEL PIERWSZEJ LINII, tak samo jak trzyma jej identyfikator: to
+   * jest chwila, w której ta czynność się ZACZĘŁA, i to ją podpisuje wiersz mówiący o całej
+   * grupie.
+   */
+  readonly at: number;
   readonly kind: Kind;
   readonly agent: string;
   /** Tekst po angielsku z zamkniętej tabeli; licznik jest zawsze w środku [T2 ryzyko 3]. */
@@ -456,6 +471,9 @@ export function rowFor(line: FeedLine): HistoryRow {
   const behind = 'count' in line ? line.count : 1;
   return {
     id: line.id,
+    /* PRZEWÓZ STEMPLA, nie odczyt zegara: czas zdarzenia jest tym, co powiedziała granica, a nie
+     * tym, co pokazuje zegar w chwili rysowania. */
+    at: line.at,
     kind: line.kind,
     agent: line.agent,
     label: labelFor(line, behind),

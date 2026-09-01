@@ -23,6 +23,30 @@
  * w stanie rozjeżdża się przy pierwszym usunięciu i nikt tego nie zauważa, bo ekran dalej
  * wygląda poprawnie.
  *
+ * ── 2026-08-31, KOMPOZYCJA: EKRAN MA JEDNEGO BOHATERA ────────────────────────────────────
+ *
+ * Zmierzone na zrzucie z produktu: 55% wysokości ekranu było pustką pod kartami, a największą
+ * rzeczą na nim był rząd jednakowych szarych przycisków. Siatka miała sześć identycznych
+ * kafelków i ani jednego miejsca, na którym oko miałoby się zatrzymać.
+ *
+ * Trzy rzeczy zmieniły się razem i żadna z nich nie działa bez pozostałych:
+ *
+ *   BOHATER. Dokładnie jedna karta jest największa i bierze obie kolumny — ta, którą człowiek
+ *   uruchamiał NAJPÓŹNIEJ (`theOneToRunNext` niżej). To ona, i tylko ona, niesie jedyną na
+ *   ekranie czynność główną (`.btn-primary`) i tylko ona pokazuje nazwy swoich kroków.
+ *
+ *   `＋ Create` SCHODZI Z PIERWSZEGO GŁOSU, kiedy jest już co uruchamiać. Czynność główna jest
+ *   jedna na ekran, a na liście workflow jest nią uruchomienie, nie założenie siódmego pliku.
+ *   W pustym stanie `Create` zostaje `.btn-primary`, bo wtedy naprawdę nie ma nic innego do
+ *   zrobienia — jedna zasada, dwie różne odpowiedzi.
+ *
+ *   PORZĄDKI WCHODZĄ DO KARTY. `Duplicate` i `Delete` stały POD kartą, poza jej ramką, przy
+ *   każdej pozycji; dziś leżą w stopce karty i widać je pod kursorem albo pod ogniskiem
+ *   klawiatury. Szczegół i powód, dla którego to `opacity`, a nie `hidden` — w `./tile.tsx`.
+ *
+ * Czego tu ŚWIADOMIE NIE MA: kafelków ze statystykami, których nikt nie zamawiał, i trzeciej
+ * kolumny. Przy sześciu plikach trzecia kolumna robi z kart wizytówki i DOKŁADA pustki.
+ *
  * DLACZEGO PUSTY STAN NIE UŻYWA `src/ui/primitives/empty-state.tsx`. Tamten przyjmuje jedno
  * zdanie i nie ma miejsca na przycisk — powstał w T-01, kiedy nie było jeszcze czego tworzyć,
  * i jego własny nagłówek to zapowiada. DESIGN §6 wymaga tu dwóch zdań i JEDNEGO przycisku
@@ -35,11 +59,21 @@ import type { DefinitionProblem } from '../../../state/library';
 import { problemSays } from '../../../state/library';
 import type { Library, WorkflowEntry, WorkflowListActions } from './store';
 import { newWorkflowName } from './store';
+import type { RunsBehindIt } from './history';
+import { lastOneRun } from './history';
 import { WorkflowTile } from './tile';
 
 export interface WorkflowListProps {
   workflows: readonly WorkflowEntry[];
   problems?: readonly DefinitionProblem[];
+  /**
+   * Co każdy workflow ma za sobą, ułożone pod jego nazwą (`./history.ts`).
+   *
+   * Domyślnie PUSTA mapa, bo komponent jest sterowany: wołający, który o biegach nie mówi,
+   * mówi „nie wiem nic", a nie „nie było ich". Skutek na ekranie jest ten sam — karta milczy
+   * o historii — i to jest właściwa odpowiedź na obie te niewiedze.
+   */
+  runs?: ReadonlyMap<string, RunsBehindIt>;
   /**
    * Co wiadomo o katalogu — patrz [`Library`]. Domyślnie `read`, bo komponent jest STEROWANY
    * i wołający, który o tym nie mówi, mówi „mam już odpowiedź".
@@ -56,6 +90,15 @@ export interface WorkflowListProps {
    * prowadzi ani jedno kliknięcie — a taki komponent ma testy i nie ma użytkowników.
    */
   onOpen: (path: string) => void;
+  /**
+   * Uruchomienie workflow spod tej ścieżki.
+   *
+   * WYMAGANY, tak samo jak `onOpen`, i to nie jest surowość dla surowości: `Run` jest od
+   * 2026-08-31 czynnością główną tego ekranu, a props opcjonalny znaczy, że wołający może ją
+   * zgubić bez jednego błędu kompilacji — czyli że ekran wraca do stanu, w którym uruchomienie
+   * workflow wymaga wejścia do edytora, i nikt się o tym nie dowie.
+   */
+  onRun: (path: string) => void;
 }
 
 /* 2026-08-31 — CZTERY STAŁE Z KLASAMI ZNIKŁY. Stały tu `PRIMARY`, `SECONDARY`, `QUIET`
@@ -65,14 +108,38 @@ export interface WorkflowListProps {
  * nie miała. Kopia decyzji w komponencie jest tym, przez co ten przycisk miał w repo pięć
  * zapisów jednej wysokości; nazwa ma jeden. */
 
+/**
+ * Ta jedna pozycja, którą ekran stawia największą — albo `null`, kiedy nie ma czego stawiać.
+ *
+ * 2026-08-31, ZASADA NADRZĘDNA KOMPOZYCJI: ekran ma jednego bohatera i jest nim to, po co
+ * człowiek tu przyszedł. Na liście workflow to jest workflow, który zaraz uruchomi — a ten
+ * da się wskazać, a nie zgadnąć: to ten, który uruchamiał NAJPÓŹNIEJ. Dopóki nie uruchomił
+ * żadnego, pierwsze miejsce bierze pierwsza czytelna pozycja, bo „zacznij tutaj" jest
+ * uczciwszą odpowiedzią niż sześć jednakowych kart.
+ *
+ * Pozycji, której nie da się przeczytać, nie stawiamy nigdy: karta bohatera niesie `Run`,
+ * a plik bez kroków nie ma czego uruchomić.
+ */
+function theOneToRunNext(
+  workflows: readonly WorkflowEntry[],
+  runs: ReadonlyMap<string, RunsBehindIt>,
+): WorkflowEntry | null {
+  const readable = workflows.filter((entry) => Array.isArray(entry.workflow?.steps));
+  const latest = lastOneRun(runs);
+  const ran = latest === null ? undefined : readable.find((one) => one.workflow.name === latest);
+  return ran ?? readable[0] ?? null;
+}
+
 export function WorkflowList({
   workflows,
   problems = [],
+  runs = new Map<string, RunsBehindIt>(),
   library = 'read',
   refusal = null,
   pendingDeleteId,
   actions,
   onOpen,
+  onRun,
 }: WorkflowListProps): ReactElement {
   /* JEDNA funkcja tworząca na cały ekran, i to jest cały sens niezmiennika 16: przycisk
    * w pustym stanie i przycisk w nagłówku są dwoma wejściami do jednego przepływu. Drugi
@@ -93,6 +160,71 @@ export function WorkflowList({
       ? undefined
       : workflows.find((entry) => entry.workflow.id === pendingDeleteId);
   const hasAnything = workflows.length > 0 || problems.length > 0;
+
+  /* Bohater ekranu i cała reszta. Kolejność reszty zostaje TAKA, JAKA PRZYSZŁA (magazyn sortuje
+   * po nazwie): lista, która przestawia się sama po każdym biegu, jest listą, w której nie da
+   * się zapamiętać, gdzie co leży. Wyjęta jest dokładnie jedna pozycja. */
+  const hero = theOneToRunNext(workflows, runs);
+  const rest = hero === null ? workflows : workflows.filter((one) => one.path !== hero.path);
+
+  /* JEDNA POZYCJA LISTY, dwa możliwe kształty. Ta funkcja istnieje, żeby bohater i cała reszta
+   * powstawały z TEGO SAMEGO kodu: dwa osobne zapisy tej samej karty rozjeżdżają się przy
+   * pierwszej zmianie i tylko jeden z nich dostaje poprawkę.
+   *
+   * PLIK, KTÓREGO NIE DA SIĘ PRZECZYTAĆ, DOSTAJE ZDANIE — nie wywraca listy. Zmierzone
+   * w przeglądarce 2026-08-18: „TypeError: Cannot read properties of undefined (reading
+   * 'description')" w `tile.tsx`. Sygnatura mówi `workflow: WorkflowFile`, ale po drugiej
+   * stronie granicy nie ma typów, jest JSON — a jeden zepsuty plik zabierał CAŁĄ sekcję.
+   * Bez `Open` i bez `Run`, bo nie ma czego otworzyć ani uruchomić (niezmiennik 16); `Delete`
+   * zostaje, bo działa na ścieżce, nie na treści, i jest jedynym sposobem, żeby ten plik
+   * z listy zszedł. */
+  const entryOnTheList = (entry: WorkflowEntry, first: boolean): ReactElement =>
+    Array.isArray(entry.workflow?.steps) ? (
+      <WorkflowTile
+        key={entry.path}
+        wf={entry.workflow}
+        place={entry.place}
+        runs={runs.get(entry.workflow.name)}
+        first={first}
+        onOpen={() => {
+          onOpen(entry.path);
+        }}
+        onRun={() => {
+          onRun(entry.path);
+        }}
+        onDuplicate={() => {
+          void actions.duplicate(entry.workflow.id);
+        }}
+        onDelete={() => {
+          actions.requestDelete(entry.workflow.id);
+        }}
+      />
+    ) : (
+      <li
+        key={entry.path}
+        data-unreadable={entry.path}
+        data-tone="fail"
+        className="card enter flex flex-col gap-2 p-0"
+      >
+        <div className="flex flex-col gap-2 p-3">
+          <p className="text-subhead text-ink">{entry.path}</p>
+          <p className="lead">
+            This file is not a workflow Loadout can read. Open it and check it, or remove it here.
+          </p>
+        </div>
+        <div className="flex justify-end border-t border-t-line px-3 py-2">
+          <button
+            type="button"
+            className="btn-danger"
+            onClick={() => {
+              actions.requestDelete(entry.workflow.id);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      </li>
+    );
 
   /* CO POKAZUJE TEN EKRAN — jedna odpowiedź, cztery możliwe, policzona w jednym miejscu.
    *
@@ -127,12 +259,12 @@ export function WorkflowList({
             {problems.length === 0 ? null : (
               <span className="value" data-tone="fail">{`${problems.length} need attention`}</span>
             )}
-            <button
-              data-create
-              type="button"
-              className="btn-primary ml-auto"
-              onClick={createWorkflow}
-            >
+            {/* 2026-08-31 — `＋ Create` SCHODZI Z PIERWSZEGO GŁOSU, kiedy jest już co uruchamiać.
+                Głośności są trzy i czynność główna jest JEDNA na ekran; na liście workflow jest
+                nią uruchomienie tego, który leży na wierzchu, a nie założenie siódmego pliku.
+                W pustym stanie (niżej) `Create` zostaje `.btn-primary`, bo wtedy naprawdę nie ma
+                nic innego do zrobienia — ta sama zasada, dwie różne odpowiedzi. */}
+            <button data-create type="button" className="btn ml-auto" onClick={createWorkflow}>
               ＋ Create
             </button>
           </>
@@ -154,7 +286,42 @@ export function WorkflowList({
         ) : shows === 'unreadable' ? (
           /* NIE UDAŁO SIĘ PRZECZYTAĆ. Do 2026-08-31 ten stan nie istniał wcale: `load()` nie miał
              `catch`, więc odmowa ginęła w nieobsłużonej obietnicy, a ekran zapraszał do tworzenia
-             pliku w katalogu, którego nie da się przeczytać. Zaproszenia tu nie ma z rozmysłu. */
+             pliku w katalogu, którego nie da się przeczytać. Zaproszenia tu nie ma z rozmysłu.
+
+             ── 2026-08-31, DRUGIE ZGŁOSZENIE WŁAŚCICIELA: „rozjebałeś tę sekcję" ──────────────
+             Ten stan wjechał rano i tego samego wieczora zamienił całą sekcję w czarny prostokąt
+             z dwoma zdaniami. Zmierzone, zanim cokolwiek tu ruszyłem:
+
+               `~/.loadout/workflows/` trzyma PIĘĆ czytelnych plików, a `~/.loadout/loadout.log`
+               ma dziesiątki wierszy `Operation not permitted (os error 1)` na ścieżkach pod
+               `~/Desktop/...`. Ta sama powłoka, w której to mierzyłem, czyta te katalogi bez
+               problemu — odmawia się WYŁĄCZNIE aplikacji. To jest TCC, czyli zgoda systemu,
+               a nie zepsuty plik.
+
+             Wynikały z tego dwie osobne wady i obie mieszkały w tych kilkunastu liniach:
+
+             ZDANIE WYSYŁAŁO W ZŁE MIEJSCE. „Open that folder, put it right" mówi, że coś jest
+             nie tak z ZAWARTOŚCIĄ. Przy odmowie systemu w folderze nie ma czego poprawiać:
+             człowiek otwiera go w Finderze, widzi swoje pliki na miejscu i wraca do tego samego
+             ekranu. Naprawą jest przełącznik w Ustawieniach systemowych, a tego zdania nie da
+             się zgadnąć z „Operation not permitted".
+
+             DWÓCH PRZYCZYN NIE DA SIĘ TU ROZRÓŻNIĆ i to jest stan drutu, nie wybór tego pliku.
+             `list_workflows` odrzuca `Result<_, String>` (`src-tauri/src/ipc.rs`), czyli sam
+             NAPIS z `LoadError`. Kategorii nie ma: `DefinitionProblemKind` jedzie wyłącznie
+             PRZY PLIKU, a odmowa całego listowania nie niesie jej wcale. Zgadywanie przyczyny
+             z treści błędu byłoby parsowaniem cudzego komunikatu — więc zdanie niżej NAZYWA OBIE
+             możliwości zamiast wybierać jedną, i pod każdą z nich stoi ruch, który naprawdę
+             działa. Brak nośnika jest zgłoszony; do dnia, w którym powstanie, to jest maksimum
+             prawdy, jakie ten ekran ma.
+
+             KONTROLKA. Poprzednia wersja nie miała ani jednej: człowiek, który właśnie nadał
+             dostęp, nie miał czym poprosić o drugi odczyt. Jedyną drogą było wyjście z sekcji
+             i powrót, bo dopiero wtedy efekt w `../index.tsx` woła `load()`. `Try again` woła
+             DOKŁADNIE to samo `load()` — jeden odczyt katalogu, dwa wejścia (niezmiennik 16).
+             Jedna, nie trzy: „wybierz inny folder" mieszka w przełączniku zakresów i drugie
+             wejście do niego byłoby drugim miejscem, w którym mieszka odpowiedź na pytanie
+             „gdzie pracujemy" (niezmiennik 13). */
           <div
             data-refusal
             role="alert"
@@ -164,9 +331,24 @@ export function WorkflowList({
             {/* `text-fail` klasą, nie `data-tone`: ton maluje `.lead` i `.value`, a to zdanie
                 żadnej z tych ról nie nosi (2026-08-31). */}
             <p className="text-fail">{refusal}</p>
-            <p className="lead">
-              Nothing is lost. Open that folder, put it right, and come back to this section.
+            <p className="lead max-w-160">
+              Nothing is lost — every file is still on disk. A folder reads this way when Loadout
+              has not been given access to it, which you grant under System Settings ▸ Privacy &amp;
+              Security ▸ Files and Folders, or when the folder itself has been moved, renamed or
+              removed.
             </p>
+            {/* JEDYNA czynność główna na tym ekranie i jedyna, jaka ma tu sens: nic innego nie
+                da się stąd zrobić, dopóki katalog nie odpowie. */}
+            <button
+              data-retry
+              type="button"
+              className="btn-primary"
+              onClick={() => {
+                void actions.load();
+              }}
+            >
+              Try again
+            </button>
           </div>
         ) : shows === 'empty' ? (
           <div className="flex h-full flex-col items-center justify-center gap-3">
@@ -185,68 +367,12 @@ export function WorkflowList({
             </button>
           </div>
         ) : (
-          <ul className="grid grid-cols-2 gap-3">
-            {workflows.map((entry) => (
-              <li key={entry.path} className="flex flex-col gap-2">
-                {/* KAFELEK JEST OTWARCIEM (makieta: `<button class="tile" data-go="flows">`).
-                 * Do 2026-08-18 stał tu `<article>` i osobny przycisk `Open` pod kartą —
-                 * czyli trzy szare przyciski pod każdą pozycją i ani jednego miejsca, w które
-                 * kliknięcie robi to, czego człowiek się spodziewa. */}
-                {/* PLIK, KTÓREGO NIE DA SIĘ PRZECZYTAĆ, DOSTAJE ZDANIE — nie wywraca listy.
-                    Zmierzone w przeglądarce 2026-08-18: „TypeError: Cannot read properties of
-                    undefined (reading 'description')" w `tile.tsx`. Sygnatura mówi
-                    `workflow: WorkflowFile`, ale po drugiej stronie granicy nie ma typów, jest
-                    JSON — a jeden zepsuty plik w katalogu zabierał CAŁĄ sekcję.
-
-                    Zdanie, nie pominięcie: plik odfiltrowany w ciszy znika z ekranu, a człowiek
-                    widzi katalog, w którym „nie ma" workflow, który tam leży. Bez `Open`, bo nie
-                    ma czego otworzyć — kontrolka bez skutku jest gorsza niż jej brak
-                    (niezmiennik 16). Usunąć go dalej można: `Delete` stoi niżej i działa na
-                    ścieżce, nie na treści. */}
-                {Array.isArray(entry.workflow?.steps) ? (
-                  <WorkflowTile
-                    wf={entry.workflow}
-                    place={entry.place}
-                    onOpen={() => {
-                      onOpen(entry.path);
-                    }}
-                  />
-                ) : (
-                  <div data-unreadable={entry.path} data-tone="fail" className="card enter">
-                    <p className="text-heading text-ink">{entry.path}</p>
-                    <p className="lead">
-                      This file is not a workflow Loadout can read. Open it and check it, or remove
-                      it below.
-                    </p>
-                  </div>
-                )}
-
-                {/* Obie kontrolki mają handler i obie wołają magazyn. Kafelek ich nie zna —
-                 * akcje mieszkają tam, gdzie mieszka obiekt `actions`. Stoją POZA kafelkiem,
-                 * a nie w nim: przycisk w przycisku jest markupem, w którym przeglądarka sama
-                 * decyduje, które kliknięcie wygrało. */}
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="btn-quiet"
-                    onClick={() => {
-                      void actions.duplicate(entry.workflow.id);
-                    }}
-                  >
-                    Duplicate
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-quiet"
-                    onClick={() => {
-                      actions.requestDelete(entry.workflow.id);
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </li>
-            ))}
+          /* SIATKA MA POCZĄTEK, NIE ŚRODEK (`content-start`), i dwie kolumny, nie trzy: przy
+             sześciu plikach trzecia kolumna zamienia karty w wizytówki i dokłada pustki, zamiast
+             ją zabierać. Karta bohatera bierze obie kolumny. */
+          <ul className="grid content-start gap-3 sm:grid-cols-2">
+            {hero === null ? null : entryOnTheList(hero, true)}
+            {rest.map((entry) => entryOnTheList(entry, false))}
 
             {problems.map((problem) => (
               <li
@@ -264,7 +390,10 @@ export function WorkflowList({
              * co oba pozostałe wejścia — jeden przepływ, trzy wejścia (niezmiennik 16).
              * NIE nosi `data-tile`: `data-tile` znaczy „workflow, który leży na dysku", a licznik
              * tych znaczników jest tym, czym kryteria mierzą zawartość katalogu. */}
-            <li className="flex flex-col gap-2">
+            {/* `self-start` — POJEMNIK MA WYSOKOŚĆ TREŚCI, NIE WIERSZA. Bez tego kafelek
+                tworzenia rozciągał się na wysokość najwyższej karty w swoim wierszu i był
+                największym pustym prostokątem na ekranie (zmierzone na zrzucie 2026-08-31). */}
+            <li className="flex flex-col gap-2 self-start">
               <button
                 data-create
                 type="button"

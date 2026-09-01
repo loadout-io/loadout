@@ -15,6 +15,7 @@
  * (niezmiennik 13).
  */
 import type { ReactElement } from 'react';
+import { useSyncExternalStore } from 'react';
 import type { Section, SectionEntry } from './ui/sections';
 import { sectionEntry } from './ui/sections';
 import type { ScreenMap } from './ui/screens';
@@ -22,7 +23,8 @@ import { discoverScreens, isScreen } from './ui/screens';
 import { CommandPalette } from './ui/palette';
 import { ScreenBoundary } from './ui/shell/screen-boundary';
 import { useSectionStore } from './ui/shell/section-store';
-import { NAV_WIDTH, PANE_GAP, SideNav } from './ui/shell/titlebar';
+import { navIsCollapsed, subscribeToNavCollapsed } from './state/settings';
+import { NAV_NARROW, NAV_WIDTH, PANE_GAP, SideNav } from './ui/shell/titlebar';
 
 /* Odkrywanie biegnie RAZ, przy wczytaniu modułu, a nie przy każdym renderze: jego odpowiedź
  * zależy wyłącznie od tego, jakie pliki są w paczce, a to w trakcie życia okna nie zmienia się
@@ -41,6 +43,11 @@ export interface AppProps {
 
 export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
   const entry = sectionEntry(section);
+  /* SZEROKOŚĆ PIERWSZEJ KOLUMNY MA DWIE WARTOŚCI od 2026-08-31, bo nawigacja ma dwa tryby.
+   * Liczbę deklaruje TU siatka, a `SideNav` daje ją swojej kartce — obie biorą ją z tej samej
+   * stałej, więc nie ma jak zostawić kartki 64 px w kolumnie 308 px, czyli dziury na 244 px
+   * między menu a treścią. Obie wartości czyta z makiety `shell-matches-mockup.test.tsx`. */
+  const collapsed = useSyncExternalStore(subscribeToNavCollapsed, navIsCollapsed, navIsCollapsed);
   /* Wielka litera, bo to idzie do JSX jako znacznik. `isScreen`, a nie samo `!== undefined`:
    * pod mapą z dysku może leżeć cokolwiek, a wartość, która nie jest komponentem, ma kosztować
    * JEDNĄ sekcję — jej pusty ekran — a nie całe okno. To to samo pytanie, które przy odkrywaniu
@@ -58,7 +65,7 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
       <div
         className="aurora grid h-full bg-bg"
         style={{
-          gridTemplateColumns: `${String(NAV_WIDTH)}px minmax(0,1fr)`,
+          gridTemplateColumns: `${String(collapsed ? NAV_NARROW : NAV_WIDTH)}px minmax(0,1fr)`,
           /* KARTKI PŁYWAJĄ. Jeden stopień skali odstępów oddziela je od krawędzi okna i od
            siebie, a pod nimi widać aurorę — statyczną winietę przy lewej krawędzi, dzięki
            której szkło ZAWSZE ma co załamywać. To rozwiązanie domu i ma konsekwencję, która

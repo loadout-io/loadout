@@ -171,9 +171,16 @@ function readable(markup: string): string {
 /** Sama kolumna strumienia, wycięta z ekranu — reszta ekranu nie ma prawa tu odpowiadać. */
 function streamOf(markup: string): string {
   const opens = markup.indexOf('data-stream-column');
-  const closes = markup.indexOf('data-plan-column');
-  if (opens < 0 || closes < opens) return '';
-  return readable(markup.slice(opens, closes));
+  if (opens < 0) return '';
+  /* 2026-08-31 — KONIEC WYCINKA LICZY SIĘ OD POCZĄTKU KOLUMNY, nie od początku ekranu. Wersja
+   * biorąca `indexOf('data-plan-column')` na całym markupie zakładała, że kolumna planu stoi
+   * PO strumieniu; kolumny zamieniły się miejscami (makieta, reguła `.work`) i ta funkcja
+   * zaczęła oddawać pusty napis — czyli punkt niżej sądziłby nic, meldując o pustym ekranie.
+   * Kolejność kolumn należy do układu i jest sądzona w `./run-matches-mockup.test.tsx`; tutaj
+   * pytamy wyłącznie o to, co stoi W strumieniu. */
+  const rest = markup.slice(opens);
+  const closes = rest.indexOf('data-plan-column', 1);
+  return readable(closes < 0 ? rest : rest.slice(0, closes));
 }
 
 describe('a refused run leaves the sentence about the missing skill in its stream', () => {

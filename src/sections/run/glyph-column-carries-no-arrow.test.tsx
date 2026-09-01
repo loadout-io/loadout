@@ -37,6 +37,10 @@ const text = (path: string): string => (existsSync(path) ? readFileSync(path, 'u
 function row(kind: Kind): HistoryRow {
   return {
     id: 1,
+    /* Stempel chwili, w ktorej ta linia naplynela. Zero, bo to kryterium pyta o znak w pierwszej
+       kolumnie, a nie o zegar — ale pole jest obowiazkowe, bo wiersz strumienia podpisuje sie
+       godzina i pusty stempel byl polowa powodu, dla ktorego jej nie pokazywal. */
+    at: 0,
     kind,
     agent: 'Forge',
     label: 'Read 6 files',

@@ -38,6 +38,7 @@ import {
   subscribeToDefaultBudget,
   subscribeToDefaultLead,
 } from '../../state/settings';
+import { useSectionStore } from '../../ui/shell/section-store';
 import { list as savedAgents } from '../agents/io';
 import { BUDGET_HELP } from '../run/limits/budget';
 
@@ -130,10 +131,12 @@ export async function saveTheAmountOnce(one: AmountBeingSaved): Promise<void> {
   if (refusal === null) one.taken();
 }
 
-/** Zapisany agent, w tym, czego ten ekran od niego potrzebuje: wskazanie i widoczna nazwa. */
+/** Zapisany agent, w tym, czego ten ekran od niego potrzebuje: wskazanie, nazwa i rola. */
 interface Lead {
   readonly id: string;
   readonly name: string;
+  /** Zdanie o tym, co ten agent robi — prosto z jego pliku. Puste, kiedy nikt go nie napisał. */
+  readonly summary: string;
 }
 
 export default function SettingsScreen(): ReactElement {
@@ -173,7 +176,9 @@ export default function SettingsScreen(): ReactElement {
     savedAgents()
       .then((agents) => {
         if (!alive) return;
-        setLeads(agents.map((agent) => ({ id: agent.id, name: agent.name })));
+        setLeads(
+          agents.map((agent) => ({ id: agent.id, name: agent.name, summary: agent.summary })),
+        );
       })
       .catch((error: unknown) => {
         if (!alive) return;
@@ -194,6 +199,10 @@ export default function SettingsScreen(): ReactElement {
    * a kontrolka pokazuje wtedy zaproszenie zamiast pustego okienka. Agent skasowany w Agents
    * jest dokładnie tym przypadkiem i nie jest awarią. */
   const onTheList = leads.some((one) => one.id === chosen);
+  /* Rola wskazanego agenta, słowo w słowo z jego pliku. `null` znaczy „nie ma czego pokazać":
+   * albo wskazania nie ma na wczytanej liście, albo nikt tej roli nie napisał. */
+  const leadRole = leads.find((one) => one.id === chosen)?.summary.trim() ?? '';
+  const leadSummary = leadRole === '' ? null : leadRole;
 
   async function pick(id: string): Promise<void> {
     setSaid(await chooseDefaultLead(id));
@@ -226,7 +235,7 @@ export default function SettingsScreen(): ReactElement {
             a odmowa, która pojawia się skokiem, czyta się jak przeskok widoku (DESIGN §7).
             Jeden region na jedno zdarzenie — sufit z ARCHITECTURE §7 wynosi dwa. */}
         {said === null ? null : (
-          <p className="lead enter mb-3 max-w-160" data-tone="attend">
+          <p className="lead enter mb-3 max-w-200" data-tone="attend">
             {said}
           </p>
         )}
@@ -236,17 +245,68 @@ export default function SettingsScreen(): ReactElement {
             ograniczył, kosztuje pieniądze niezależnie od tego, czy jest kogo wskazać na
             prowadzącego, a do 2026-08-29 był to stan DOMYŚLNY. Zmierzone koszty prawdziwych
             biegów właściciela z fazy 8: od $11 do $67,78, a jeden bieg przerwał limit konta,
-            nie aplikacja. */}
-        <div className="card mb-4 max-w-160">
-          <label className="label block" htmlFor="default-budget-usd">
-            {DEFAULT_BUDGET_LABEL}
-          </label>
-          {/* JEDNO ZDANIE POD KONTROLKĄ, bo liczba bez granicy jest zagadką: mówi, KTÓRE biegi
+            nie aplikacja.
+
+            KONTROLKA PO LEWEJ, PROZA PO PRAWEJ — 2026-08-31, przebudowa kompozycji. BYŁO:
+            etykieta, dwa akapity prozy i dopiero pod nimi pole. Na zrzucie 1512×950 największą
+            rzeczą tej karty były trzy szare zdania, a kwota — jedyna rzecz, po którą człowiek tu
+            przyszedł — była najmniejsza. Zmierzone: 65% wysokości i 75% szerokości ekranu
+            zostawało puste, a proza zajmowała trzy razy więcej pikseli niż wartość.
+            Kolumny znoszą jedno i drugie: wartość stoi pierwsza i sama trzyma pion,
+            a proza dostaje szerokość, której i tak nikt nie używał. */}
+        <div className="card mb-3 grid max-w-200 gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] lg:items-center">
+          <div className="stack" data-gap="2">
+            <label className="label block" htmlFor="default-budget-usd">
+              {DEFAULT_BUDGET_LABEL}
+            </label>
+            {/* Kwota jest wartością maszynową, więc mono — reguła semantyczna z DESIGN §4.
+              Krój przyjeżdża TERAZ RAZEM ZE STOPNIEM w klasie `.field`, więc `font-mono`
+              dopisane obok zniknęło: deklarowało rodzinę drugi raz.
+              `min` i `step` są atrybutami kontrolki, nie zdaniem obok niej: napis „at least a
+              cent" pod polem niczego nie zatrzymuje.
+
+              STOPIEŃ TYTUŁU NA SAMEJ LICZBIE — 2026-08-31. To jest BOHATER tego ekranu: sufit,
+              który rządzi każdym biegiem, o którym nikt nie pomyślał. Rodzina zostaje mono
+              z `.field` (klasa narzędziowa niesie sam stopień), więc reguła semantyczna
+              z DESIGN §4 stoi bez zmiany — rośnie wyłącznie waga w kompozycji.
+
+              ZAPIS PO ODEJŚCIU Z POLA ALBO PO ENTERZE, nie po każdym znaku — powód w całości
+              stoi przy `spendAtMost`. Klawiatura i mysz dają tę samą drogę, bo człowiek kończy
+              pisać liczbę raz jednym, raz drugim. */}
+            <input
+              id="default-budget-usd"
+              aria-label={DEFAULT_BUDGET_LABEL}
+              aria-describedby={`${WHICH_RUNS} ${NOT_COUNTED}`}
+              type="number"
+              inputMode="decimal"
+              min={SMALLEST}
+              step={SMALLEST}
+              className="field w-40 text-title text-right"
+              value={typing ?? String(ceiling)}
+              onChange={(event) => {
+                /* NOWY KLAWISZ ZDEJMUJE ZAPADKĘ, więc następne zakończenie pisania ma prawo
+                 pojechać na dysk — także wtedy, gdy człowiek po odmowie wystukał dokładnie tę
+                 samą kwotę jeszcze raz. Bez tej linii zapadka z `saveTheAmountOnce` zamknęłaby
+                 pole na jedną kwotę do końca życia ekranu. */
+                lastSent.current = null;
+                setTyping(event.target.value);
+              }}
+              onBlur={() => {
+                void spendAtMost();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void spendAtMost();
+              }}
+            />
+          </div>
+
+          <div className="stack" data-gap="2">
+            {/* JEDNO ZDANIE OBOK KONTROLKI, bo liczba bez granicy jest zagadką: mówi, KTÓRE biegi
               ta kwota obejmuje i gdzie się ją nadpisuje na jeden raz. */}
-          <p id={WHICH_RUNS} className="lead mt-1 max-w-120">
-            Every run stops at this much unless you type another amount in the run strip.
-          </p>
-          {/* CZEGO TA KWOTA NIE OBEJMUJE — NA EKRANIE, NIE POD KURSOREM.
+            <p id={WHICH_RUNS} className="lead">
+              Every run stops at this much unless you type another amount in the run strip.
+            </p>
+            {/* CZEGO TA KWOTA NIE OBEJMUJE — NA EKRANIE, NIE POD KURSOREM.
               2026-08-31: do tego dnia zdanie stało wyłącznie w atrybucie `title` pola „Spend at
               most $" na pasku Run, czyli w dymku, który pojawia się po sekundzie trzymania myszy
               w bezruchu i nie istnieje ani dla klawiatury, ani dla czytnika ekranu, ani na
@@ -260,82 +320,83 @@ export default function SettingsScreen(): ReactElement {
               na nic. Na tym ekranie `attend` należy do zdania odmowy wyżej i ma tam zostać jedno.
               Napis mieszka w `run/limits/budget.tsx` razem z resztą słów sufitu wydatku, żeby
               kryterium mogło go CZYTAĆ, nie przepisywać (niezmiennik 13). */}
-          <p id={NOT_COUNTED} data-not-counted className="lead mt-1 max-w-120">
-            {BUDGET_HELP}
-          </p>
-          {/* Kwota jest wartością maszynową, więc mono — reguła semantyczna z DESIGN §4.
-              Krój przyjeżdża TERAZ RAZEM ZE STOPNIEM w klasie `.field`, więc `font-mono`
-              dopisane obok zniknęło: deklarowało rodzinę drugi raz.
-              `min` i `step` są atrybutami kontrolki, nie zdaniem obok niej: napis „at least a
-              cent" pod polem niczego nie zatrzymuje.
-
-              ZAPIS PO ODEJŚCIU Z POLA ALBO PO ENTERZE, nie po każdym znaku — powód w całości
-              stoi przy `spendAtMost`. Klawiatura i mysz dają tę samą drogę, bo człowiek kończy
-              pisać liczbę raz jednym, raz drugim. */}
-          <input
-            id="default-budget-usd"
-            aria-label={DEFAULT_BUDGET_LABEL}
-            aria-describedby={`${WHICH_RUNS} ${NOT_COUNTED}`}
-            type="number"
-            inputMode="decimal"
-            min={SMALLEST}
-            step={SMALLEST}
-            className="field mt-3 w-32 text-right"
-            value={typing ?? String(ceiling)}
-            onChange={(event) => {
-              /* NOWY KLAWISZ ZDEJMUJE ZAPADKĘ, więc następne zakończenie pisania ma prawo
-                 pojechać na dysk — także wtedy, gdy człowiek po odmowie wystukał dokładnie tę
-                 samą kwotę jeszcze raz. Bez tej linii zapadka z `saveTheAmountOnce` zamknęłaby
-                 pole na jedną kwotę do końca życia ekranu. */
-              lastSent.current = null;
-              setTyping(event.target.value);
-            }}
-            onBlur={() => {
-              void spendAtMost();
-            }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void spendAtMost();
-            }}
-          />
+            <p id={NOT_COUNTED} data-not-counted className="lead">
+              {BUDGET_HELP}
+            </p>
+          </div>
         </div>
 
         {leads.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-10">
-            <span className="mark">◇</span>
+          /* PUSTY WYBÓR LIDERA JEST WIERSZEM TEJ SAMEJ KOLUMNY, NIE CEREMONIĄ NA CAŁE OKNO.
+           *
+           * 2026-08-31. BYŁO: znak `◇` i dwa zdania wyśrodkowane na CAŁEJ szerokości ekranu,
+           * pod kartą wyrównaną do lewej — dwie rzeczy tej samej sekcji stały w dwóch różnych
+           * układach, a pusty wybór zabierał 200 px pionu na jedno zdanie. Ekran Settings NIE
+           * JEST pusty w tym stanie: sufit wydatku stoi wyżej i działa. Ceremonia pustego ekranu
+           * należy do ekranu, na którym naprawdę nie ma nic.
+           *
+           * KONTROLKA, KTÓRA TAM PROWADZI. Zdanie „Add one in Agents" mówiło człowiekowi, gdzie
+           * ma pójść, i zostawiało go z tym sam na sam — jedyną drogą było trafić w boczne menu.
+           * Przycisk obok tego zdania woła tę samą jedną drogę zmiany sekcji, którą wołają
+           * kafelki powłoki (`ui/shell/section-store.ts`), więc nie powstaje druga. */
+          <div className="card stack max-w-200" data-gap="2" data-tone="empty">
             <p data-empty className="text-ink">
               No agents saved yet.
             </p>
-            <p className="lead max-w-120 text-center">
-              Add one in Agents, then say here who should lead every run.
-            </p>
-          </div>
-        ) : (
-          <div className="card max-w-160">
-            <label className="label block" htmlFor="default-lead">
-              {DEFAULT_LEAD_LABEL}
-            </label>
-            {/* JEDNO ZDANIE POD KONTROLKĄ, bo wybór bez granicy jest obietnicą: ten wskazany
-                agent prowadzi rozmowę, dopóki człowiek nie wskaże innego na pasku Run — i to
-                wskazanie z paska NIE przepisuje tego wyboru. */}
-            <p className="lead mt-1 max-w-120">
-              This agent leads every run until you pick someone else in the run strip.
-            </p>
-            <select
-              id="default-lead"
-              aria-label={DEFAULT_LEAD_LABEL}
-              className="field mt-3"
-              value={onTheList ? chosen : ''}
-              onChange={(event) => {
-                void pick(event.target.value);
+            <p className="lead">Add one in Agents, then say here who should lead every run.</p>
+            <button
+              data-open-agents
+              type="button"
+              className="btn self-start"
+              onClick={() => {
+                useSectionStore.getState().go('agents');
               }}
             >
-              {onTheList ? null : <option value="">Pick a lead agent</option>}
-              {leads.map((one) => (
-                <option key={one.id} value={one.id}>
-                  {one.name}
-                </option>
-              ))}
-            </select>
+              Open Agents
+            </button>
+          </div>
+        ) : (
+          <div className="card grid max-w-200 gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] lg:items-center">
+            <div className="stack" data-gap="2">
+              <label className="label block" htmlFor="default-lead">
+                {DEFAULT_LEAD_LABEL}
+              </label>
+              <select
+                id="default-lead"
+                aria-label={DEFAULT_LEAD_LABEL}
+                className="field"
+                value={onTheList ? chosen : ''}
+                onChange={(event) => {
+                  void pick(event.target.value);
+                }}
+              >
+                {onTheList ? null : <option value="">Pick a lead agent</option>}
+                {leads.map((one) => (
+                  <option key={one.id} value={one.id}>
+                    {one.name}
+                  </option>
+                ))}
+              </select>
+              {/* KIM JEST TEN, KTÓREGO WYBRAŁEŚ — 2026-08-31, treść ROŚNIE, bo ma miejsce.
+                  Sama nazwa („Builder") po miesiącu nie mówi nic, a zdanie o roli stoi w tym
+                  samym pliku agenta, który ten ekran i tak już czyta. Napisu nie ma, dopóki
+                  wskazania nie ma na wczytanej liście: pusty wiersz jest gorszy niż jego brak.
+
+                  POD KONTROLKĄ, NIE PRZY PROZIE OBOK: to zdanie należy do WARTOŚCI, a nie do
+                  polityki. Postawione w tamtej kolumnie czytało się jak druga połowa zdania
+                  o pasku Run — dwie różne rzeczy w jednym akapicie. */}
+              {leadSummary === null ? null : (
+                <p data-lead-summary className="lead" data-tone="ink">
+                  {leadSummary}
+                </p>
+              )}
+            </div>
+            {/* JEDNO ZDANIE OBOK KONTROLKI, bo wybór bez granicy jest obietnicą: ten wskazany
+                agent prowadzi rozmowę, dopóki człowiek nie wskaże innego na pasku Run — i to
+                wskazanie z paska NIE przepisuje tego wyboru. */}
+            <p className="lead">
+              This agent leads every run until you pick someone else in the run strip.
+            </p>
           </div>
         )}
       </div>

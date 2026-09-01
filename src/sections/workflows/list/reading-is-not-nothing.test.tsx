@@ -61,6 +61,7 @@ function screenOf(store: ReturnType<typeof createWorkflowListStore>): string {
       pendingDeleteId={state.pendingDeleteId}
       actions={state}
       onOpen={() => undefined}
+      onRun={() => undefined}
     />,
   );
 }

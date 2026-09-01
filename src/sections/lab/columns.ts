@@ -70,3 +70,39 @@ export function modelOf(variant: EvalVariant): string {
   const value = variant.overrides.model;
   return typeof value === 'string' ? value : '';
 }
+
+/** Co człowiek wpisał w wiersz kolumny, zanim to gdziekolwiek poleciało. */
+export interface Typed {
+  readonly name: string;
+  readonly model: string;
+}
+
+/** Wartości, które ma pokazać wiersz: wpisane, a w ich braku — zapisane. */
+export function typedOf(variant: EvalVariant, edited: Typed | undefined): Typed {
+  return edited ?? { name: variant.name, model: modelOf(variant) };
+}
+
+/**
+ * Czy w tym wierszu stoi coś, czego dysk jeszcze nie widział.
+ *
+ * # Po co to w ogóle istnieje
+ *
+ * Zmierzone na żywym ekranie 2026-08-31. Pola zapisywały się **wyłącznie przy `onBlur`**
+ * i były niekontrolowane, więc wpisana wartość żyła w DOM i nigdzie indziej — a ekran nie
+ * odróżniał jej niczym od wartości zapisanej. Właściciel wpisał nazwę modelu, zobaczył ją
+ * w polu i miał wszelkie prawo sądzić, że ustawił model; plik na dysku nie zmienił się ani
+ * razu. Na macOS jest jeszcze gorzej niż w przeglądarce: przejście do innej aplikacji nie
+ * musi zabrać ognisku z pola, więc taka wartość potrafi wisieć niezapisana dowolnie długo.
+ *
+ * Kontrolka, która wygląda na wypełnioną i nie jest, to ta sama klasa wady, co przycisk bez
+ * handlera (niezmiennik 16) — tyle że kłamie ciszej.
+ */
+export function isDirty(variant: EvalVariant, edited: Typed | undefined): boolean {
+  if (edited === undefined) return false;
+  return edited.name !== variant.name || edited.model !== modelOf(variant);
+}
+
+/** Kolumna po naniesieniu tego, co człowiek wpisał. */
+export function withTyped(variant: EvalVariant, typed: Typed): EvalVariant {
+  return withModel(withName(variant, typed.name), typed.model);
+}

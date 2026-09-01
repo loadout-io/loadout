@@ -82,6 +82,24 @@ const ZONE_LEAD = 'lead max-w-160';
  * padding 12 px); zostaje sam klej układu, bo karta nie ustawia kierunku ani odstępu dzieci. */
 const PASSED_BOX = 'card flex flex-col gap-2';
 
+/**
+ * Notatki, które CZEKAJĄ na decyzję człowieka — jedna definicja na całą sekcję.
+ *
+ * EKSPORTOWANA, bo od 2026-08-31 czyta ją także ekran (`knowledge/index.tsx`): to on rozstrzyga,
+ * czy czynnością główną jest odpowiedzieć na kolejkę, czy dodać umiejętność. Policzona tam
+ * drugi raz byłaby drugą odpowiedzią na jedno pytanie (niezmiennik 13) i pierwszym miejscem,
+ * w którym ekran mógłby uznać kolejkę za pustą, kiedy półka rysuje ją pełną.
+ *
+ * Notatka biblioteczna o zakresie projektu jest tu WYŁĄCZONA celowo: ona czeka na przeniesienie,
+ * a nie na „tak", i ma własną strefę z własnym czasownikiem.
+ */
+export function waitingFrom(notes: readonly Note[]): Note[] {
+  return notes.filter(
+    (note) =>
+      note.status === 'suggested' && !(note.place === 'library' && note.scope === 'this-project'),
+  );
+}
+
 /** Nagłówek półki notatek — to samo słowo czyta kryterium i człowiek. */
 export const ALWAYS_ON = 'Always on';
 
@@ -109,6 +127,29 @@ const NOTHING_PASSED_YET =
   'Nothing yet. Agents leave these for each other as they finish steps, so the first workflow ' +
   'you run will fill this in.';
 
+/**
+ * Dwie półki obok siebie, przy jednej kresce — albo sama półka notatek, gdy drugiej nie ma.
+ *
+ * FUNKCJA, A NIE DRUGI KOMPONENT: to jest rozmieszczenie dwojga dzieci, nie rzecz z własnym
+ * stanem ani z własnym kryterium. Bez drugiej półki siatka o dwóch kolumnach zostawiłaby
+ * notatki w połowie szerokości i pustą kolumnę obok — czyli pojemnik, którego nic nie niesie,
+ * a taki nie ma prawa zajmować miejsca (DESIGN §6). Tak montują tę półkę jej własne kryteria.
+ *
+ * Kreska przerzuca się z góry na bok razem z kolumnami: w obu układach półki się dotykają, bo
+ * dotknięcie jest tu treścią, a nie ozdobą.
+ */
+function shelfPair(notes: ReactElement, skills: ReactNode): ReactElement {
+  if (skills === undefined) return notes;
+  return (
+    <div data-shelves className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-0">
+      {notes}
+      <div className="border-t border-line pt-6 md:border-t-0 md:border-l md:pt-0 md:pl-6">
+        {skills}
+      </div>
+    </div>
+  );
+}
+
 export default function NotesShelf({
   store = useMemory,
   nextShelf,
@@ -124,7 +165,7 @@ export default function NotesShelf({
   const current = state.notes.filter(
     (note) => !(note.place === 'library' && note.scope === 'this-project'),
   );
-  const waiting = current.filter((note) => note.status === 'suggested');
+  const waiting = waitingFrom(state.notes);
   const inUse = current.filter((note) => note.status === 'in-use');
 
   /* Obie akcje wołają magazyn, i tylko magazyn: to on rozmawia z dyskiem i to on decyduje,
@@ -159,7 +200,7 @@ export default function NotesShelf({
     state.pendingDiscard.id === note.id;
 
   return (
-    <div className="flex max-w-160 flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {/* Zdanie od magazynu: odmowa promocji albo zapisu. Bez tego jedyną odpowiedzią na
           kliknięcie jest cisza, a człowiek klika drugi raz i zgłasza błąd. */}
       {/* WEJŚCIE, bo to zdanie PRZYCHODZI — jest jedyną odpowiedzią na kliknięcie, po którym
@@ -177,8 +218,25 @@ export default function NotesShelf({
           rysowana: nagłówek nad niczym jest miejscem na ekranie oddanym za fakt, który
           już mówi jego brak. */}
       {waiting.length === 0 ? null : (
-        <section data-zone="suggested" data-gap="2" className="stack">
-          <h2 className={ZONE_TITLE}>Waiting for you</h2>
+        /* BOHATER TEGO EKRANU (2026-08-31, fala kompozycji). Kolejka decyzji jest jedyną rzeczą
+           w tej sekcji, która czegoś od człowieka CHCE — reszta jest stanem rzeczy. Do tego dnia
+           wyglądała dokładnie tak samo jak dwie półki pod nią: to samo nadoczko, ten sam wiersz,
+           ten sam cichy przycisk. Zmruż oczy nad zrzutem z 2026-08-31: największą rzeczą na
+           ekranie była lista notatek już w użyciu, czyli to, co jest zrobione.
+
+           `.pane`, bo to jedyna rzecz na tym ekranie, która PŁYWA (DESIGN §3): półki są treścią
+           leżącą na tle, a to jest karta położona NA nich. `.enter` sprężyną, bo kolejka
+           PRZYBYWA — pustej nie ma w dokumencie wcale.
+
+           Nagłówek jest o dwa stopnie wyżej niż nadoczka półek (`text-heading` wobec
+           `text-eyebrow`), bo trzy poziomy głośności zaczynają się od rozmiaru. */
+        <section data-zone="suggested" data-gap="3" className="stack pane enter p-4">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <h2 className="text-heading text-ink">Waiting for you</h2>
+            {/* Licznik mówi, ILE decyzji zostało — czego lista nie mówi, dopóki jej nie
+                przewiniesz. Ta sama forma, co licznik zapisanych umiejętności w półce obok. */}
+            <span className="value">{`${String(waiting.length)} to answer`}</span>
+          </div>
           <p className={ZONE_LEAD}>
             An agent suggested these. They stay out of every prompt until you say yes.
           </p>
@@ -186,10 +244,13 @@ export default function NotesShelf({
             {/* Handler „Discard" dostaje WYŁĄCZNIE ta strefa. Wiersz sam też pyta o stan
                 notatki, i to nie jest podwójna robota: wiersz broni się przed każdym
                 wołającym, a ekran mówi, w którym miejscu ta decyzja w ogóle istnieje. */}
-            {waiting.map((note) => (
+            {waiting.map((note, index) => (
               <NoteRow
                 key={`${note.place}:${note.id}`}
                 note={note}
+                /* CZOŁO KOLEJKI — jedyny wiersz na ekranie z czynnością główną. Powód stoi
+                   przy propsie `queue` w `note-row.tsx`. */
+                queue={index === 0 ? 'head' : 'behind'}
                 onUse={use}
                 onStopUse={stopUsing}
                 onDiscard={askDiscard}
@@ -225,28 +286,39 @@ export default function NotesShelf({
       {/* PIERWSZA POŁOWA RÓŻNICY, i dlatego ta strefa rysuje się TAKŻE PUSTA — inaczej niż
           „Waiting for you" nad nią. Nagłówek i zdanie pod nim są tu jedyną rzeczą, która mówi
           człowiekowi, czym notatka różni się od umiejętności; strefa znikająca przy zerze
-          zabiera to zdanie dokładnie wtedy, kiedy człowiek pierwszy raz tu wchodzi. */}
-      <section data-zone="in-use" data-gap="2" className="stack">
-        <h2 className={ZONE_TITLE}>{ALWAYS_ON}</h2>
-        <p className={ZONE_LEAD}>{ALWAYS_ON_LEAD}</p>
-        {inUse.length === 0 ? (
-          <p className={ZONE_LEAD}>{NONE_IN_USE}</p>
-        ) : (
-          <ul className="flex flex-col">
-            {inUse.map((note) => (
-              <NoteRow
-                key={`${note.place}:${note.id}`}
-                note={note}
-                onUse={use}
-                onStopUse={stopUsing}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
+          zabiera to zdanie dokładnie wtedy, kiedy człowiek pierwszy raz tu wchodzi.
 
-      {/* Druga półka wchodzi TUTAJ — powód stoi przy propsie `nextShelf`. */}
-      {nextShelf}
+          OBIE POŁOWY STOJĄ OBOK SIEBIE, NIE JEDNA POD DRUGĄ (2026-08-31, fala kompozycji).
+          Sąsiedztwo było i jest całym zyskiem scalenia — ale półka pod półką znaczy, że
+          człowiek czyta jedną, przewija, i dopiero potem widzi drugą, a różnicy nie da się
+          przeczytać z rzeczy, których nie widać naraz. Kolumny leżą przy jednej kresce, więc
+          półki DOTYKAJĄ SIĘ dosłownie. Przy okazji znika wada zmierzona na zrzucie z tego dnia:
+          treść siedziała w kolumnie 640 px, a prawa połowa okna była czarna na całą wysokość.
+
+          KOLEJNOŚĆ W DOKUMENCIE ZOSTAJE. Siatka nie przestawia dzieci, więc „Always on" wciąż
+          poprzedza „Used when it fits" — a to jest zamrożone kryterium
+          (`knowledge/one-section-two-shelves.test.tsx`). */}
+      {shelfPair(
+        <section data-zone="in-use" data-gap="2" className="stack md:pr-6">
+          <h2 className={ZONE_TITLE}>{ALWAYS_ON}</h2>
+          <p className={ZONE_LEAD}>{ALWAYS_ON_LEAD}</p>
+          {inUse.length === 0 ? (
+            <p className={ZONE_LEAD}>{NONE_IN_USE}</p>
+          ) : (
+            <ul className="flex flex-col">
+              {inUse.map((note) => (
+                <NoteRow
+                  key={`${note.place}:${note.id}`}
+                  note={note}
+                  onUse={use}
+                  onStopUse={stopUsing}
+                />
+              ))}
+            </ul>
+          )}
+        </section>,
+        nextShelf,
+      )}
 
       {/* Przekazania. Rysują się też puste — powód stoi w nagłówku pliku. */}
       <section data-zone="passed" data-gap="2" className="stack">

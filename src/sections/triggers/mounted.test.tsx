@@ -16,7 +16,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 /* SZEŚĆ, nie siedem: 2026-08-31 Skills i Memory zeszły się w jedną sekcję Knowledge
  * (`src/ui/sections.tsx`). Nazwa stałej nie mówi już liczby z tego samego powodu, dla którego
  * nie mówiła jej wcześniej dobrze — liczba zmienia się częściej niż lista. */
-const IDS = ['run', 'workflows', 'agents', 'knowledge', 'lab', 'triggers', 'settings'] as const;
+const IDS = ['agents', 'workflows', 'run', 'triggers', 'knowledge', 'lab', 'settings'] as const;
 
 function textOf(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';

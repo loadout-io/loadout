@@ -102,6 +102,7 @@ describe('the empty workflow list invites, and the button that invites really cr
         workflows={store.getState().workflows}
         pendingDeleteId={null}
         onOpen={() => undefined}
+        onRun={() => undefined}
         actions={store.getState()}
       />,
     );
@@ -128,6 +129,7 @@ describe('the empty workflow list invites, and the button that invites really cr
         workflows={store.getState().workflows}
         pendingDeleteId={null}
         onOpen={() => undefined}
+        onRun={() => undefined}
         actions={store.getState()}
       />,
     );
@@ -161,6 +163,7 @@ describe('the empty workflow list invites, and the button that invites really cr
         workflows={store.getState().workflows}
         pendingDeleteId={null}
         onOpen={() => undefined}
+        onRun={() => undefined}
         actions={actions}
       />,
     );
@@ -193,6 +196,7 @@ describe('the empty workflow list invites, and the button that invites really cr
         workflows={store.getState().workflows}
         pendingDeleteId={null}
         onOpen={() => undefined}
+        onRun={() => undefined}
         actions={store.getState()}
       />,
     );

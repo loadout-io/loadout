@@ -61,7 +61,7 @@ const PATH = 'ship-a-feature.json';
 /** Zdanie, którym ekran odpowiada, kiedy NIC nie jest zaznaczone. Kontrakt tego kryterium —
  * wpisany ręcznie, nie zaimportowany z `editor.tsx`: zaimportowany zgadzałby się z ekranem
  * zawsze, także wtedy, gdyby ekran pokazywał je przy każdym kafelku. */
-const PLACEHOLDER = 'Pick a step to see what it was given.';
+const PLACEHOLDER = 'Pick a step to set up what it does.';
 
 const COMMAND = 'npm run dev --workspace apps/web';
 

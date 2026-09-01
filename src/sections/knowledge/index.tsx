@@ -40,7 +40,7 @@ import { useMemory } from '../../state/memory';
 import { useSkills } from '../../state/skills';
 import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import type { MemoryStore } from '../memory/shelf';
-import NotesShelf from '../memory/shelf';
+import NotesShelf, { waitingFrom } from '../memory/shelf';
 import type { SkillsStore } from '../skills/shelf';
 import SkillsShelf from '../skills/shelf';
 
@@ -75,9 +75,32 @@ const NOTHING_YET = 'Nothing here yet.';
  * Człowiek, który wchodzi tu pierwszy raz, nie zobaczy ani jednej półki, bo obie są puste —
  * a to jest dokładnie ta chwila, w której musi się dowiedzieć, czym te dwie rzeczy się różnią.
  */
-const THE_DIFFERENCE =
-  'Notes go into every prompt. Skills get picked up when they fit the work. Agents write both ' +
-  'as they go, and you say which ones stay.';
+const THE_DIFFERENCE = 'Two kinds of knowledge land here, and they arrive by two roads.';
+
+/* DWIE DROGI, DWIE KARTY — a nie jedno zdanie i jeden przycisk (2026-08-31, fala kompozycji).
+ *
+ * ZMIERZONE NA ZRZUCIE Z TEGO DNIA: pusty ekran tej sekcji to był znak, jedno zdanie i jeden
+ * przycisk pośrodku czerni. Zdanie próbowało powiedzieć naraz trzy rzeczy — czym jest notatka,
+ * czym umiejętność i skąd się jedno i drugie bierze — a przycisk oferował drogę tylko do
+ * jednej z nich. Człowiek, który tu wchodzi pierwszy raz, czytał więc o dwóch rzeczach i widział
+ * wyjście do jednej, bez żadnej wskazówki, czy druga w ogóle jest w jego rękach.
+ *
+ * KAŻDA KARTA MÓWI SWOJĄ DROGĘ, i one naprawdę są różne: notatkę PISZE AGENT po biegu,
+ * a człowiek mówi tylko „zostaje". Dlatego karta notatek nie ma przycisku i mieć go nie może —
+ * byłby kontrolką bez czynności (niezmiennik 16). Karta umiejętności ma jedyną czynność główną
+ * tego ekranu.
+ *
+ * TO NIE JEST DRUGIE MIEJSCE NA RÓŻNICĘ (niezmiennik 13). Nagłówki stref „Always on"
+ * i „Used when it fits" istnieją na ekranie PEŁNYM; tutaj półek nie ma wcale, bo obie są puste,
+ * i to jest jedyna chwila, w której te dwie karty stoją na ekranie. */
+const NOTES_DOOR = 'Notes';
+const NOTES_ROAD =
+  'They go into every prompt, every time. An agent writes one when a run teaches it ' +
+  'something, and you decide whether it stays.';
+const SKILLS_DOOR = 'Skills';
+const SKILLS_ROAD =
+  'The model reaches for these on its own, when they fit the work. Paste a link, write one ' +
+  'yourself, or say what you want and have an agent write it.';
 
 function activeCatalogFolder(): string | null {
   return activeWorkspace()?.folder ?? null;
@@ -151,7 +174,7 @@ export default function KnowledgeScreen({
 
       <div className="screen-body">
         {nothingOnScreen && nothingWentWrong ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
+          <div className="mx-auto flex h-full max-w-240 flex-col items-center justify-center gap-4">
             <span className="mark">◇</span>
             {/* `data-empty` na elemencie z samym zdaniem — tak samo jak w `src/App.tsx`.
                 JEDEN znacznik na oba zdania, bo to jedno miejsce w dwóch chwilach: sekcja
@@ -162,23 +185,53 @@ export default function KnowledgeScreen({
             <p className="lead max-w-160 text-center">
               {bothAnswered ? THE_DIFFERENCE : READING_THE_FOLDERS}
             </p>
-            {/* Zaproszenie bez czynnej drogi dalej jest ślepym zaułkiem. Umiejętność człowiek
-                dopisuje sam; notatki pisze AGENT w trakcie biegu, więc przycisku „dodaj
-                notatkę" tu nie ma i mieć nie może — byłby kontrolką bez czynności
-                (niezmiennik 16). */}
-            <button
-              data-create
-              type="button"
-              className="btn-primary"
-              onClick={() => {
-                skills.getState().openAdd();
-              }}
-            >
-              ＋ Add a skill
-            </button>
+
+            {/* DWIE DROGI OBOK SIEBIE — powód stoi przy stałych wyżej. Karty wchodzą sprężyną,
+                bo PRZYBYWAJĄ na ekran: przed odpowiedzią katalogów nie ma ich w dokumencie.
+                Siatka po dwa, bo dwie drogi obok siebie czytają się jako para, a jedna pod
+                drugą jako kolejność kroków — a to nie są kroki. */}
+            {/* `items-start`: każda karta ma wysokość SWOJEJ treści. Rozciągnięte do równej
+                zostawiały dziurę na dole tej bez przycisku — pojemnik z pustym dnem to
+                miejsce zabrane treści, także wtedy, gdy równa go z sąsiadem. */}
+            <div className="grid w-full grid-cols-1 items-start gap-4 pt-2 md:grid-cols-2">
+              <div className="card enter flex flex-col gap-2">
+                <h2 className="text-subhead text-ink">{NOTES_DOOR}</h2>
+                <p className="lead">{NOTES_ROAD}</p>
+              </div>
+              <div className="card enter flex flex-col gap-2">
+                <h2 className="text-subhead text-ink">{SKILLS_DOOR}</h2>
+                <p className="lead">{SKILLS_ROAD}</p>
+                {/* Zaproszenie bez czynnej drogi dalej jest ślepym zaułkiem. Umiejętność
+                    człowiek dopisuje sam; notatki pisze AGENT w trakcie biegu, więc przycisku
+                    „dodaj notatkę" w karcie obok nie ma i mieć nie może — byłby kontrolką bez
+                    czynności (niezmiennik 16). To jest jedyna czynność główna tego ekranu. */}
+                <button
+                  data-create
+                  type="button"
+                  className="btn-primary mt-1 mr-auto"
+                  onClick={() => {
+                    skills.getState().openAdd();
+                  }}
+                >
+                  ＋ Add a skill
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
-          <NotesShelf store={notes} nextShelf={<SkillsShelf store={skills} />} />
+          <NotesShelf
+            store={notes}
+            nextShelf={
+              <SkillsShelf
+                store={skills}
+                /* JEDNA CZYNNOŚĆ GŁÓWNA NA EKRAN. Kiedy w kolejce stoi decyzja, to ona jest
+                   tym, po co człowiek przyszedł, a dodanie umiejętności schodzi o stopień.
+                   Odpowiedź liczy `waitingFrom` — jedna definicja czytana też przez półkę,
+                   która tę kolejkę rysuje (niezmiennik 13). */
+                addIsMainAction={waitingFrom(noteState.notes).length === 0}
+              />
+            }
+          />
         )}
       </div>
     </section>

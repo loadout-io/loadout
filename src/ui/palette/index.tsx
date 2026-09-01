@@ -16,12 +16,14 @@
  * i zawoła `stopPropagation`, wygrywa — i to jest właściwa kolejność: `Escape` w otwartym
  * wyborze folderu należy do tego wyboru, nie do palety, której akurat nie ma na ekranie.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
 
 import { list as listAgents } from '../../sections/agents/io';
 import { requestRun } from '../../sections/run/requested';
 import { list as listWorkflows } from '../../sections/workflows/io';
+import { collapseNav, navIsCollapsed } from '../../state/settings';
+import { asked as askedSearch, subscribeToAskedSearch } from '../shell/search-asked';
 import { useSectionStore } from '../shell/section-store';
 import { askForAgent } from './asked';
 import { focusedShape, moveFor, stepped } from './keys';
@@ -156,6 +158,16 @@ export function CommandPalette({ sources = LIVE }: CommandPaletteProps = {}): Re
           event.preventDefault();
           useSectionStore.getState().go(next.section);
           return;
+        case 'sidebar':
+          event.preventDefault();
+          /* Odpowiedź jest ZGUBIONA ŚWIADOMIE, i to jest jedyne takie miejsce w tym pliku.
+             `collapseNav` przestawia menu NATYCHMIAST i dopiero potem prosi plik, żeby to
+             zapamiętał; zdanie, które oddaje, mówi wyłącznie o tym, czy zapamiętanie się udało.
+             Nasłuch klawiatury nie ma gdzie takiego zdania postawić — nie rysuje niczego —
+             a jedyny koszt nieudanego zapisu jest opisany przy samej funkcji: menu zostaje tam,
+             gdzie człowiek je postawił, i wraca do poprzedniego trybu przy następnym otwarciu. */
+          void collapseNav(!navIsCollapsed());
+          return;
         case 'wait':
           waiting.current = true;
           if (disarm.current !== null) clearTimeout(disarm.current);
@@ -175,6 +187,21 @@ export function CommandPalette({ sources = LIVE }: CommandPaletteProps = {}): Re
       if (disarm.current !== null) clearTimeout(disarm.current);
     };
   }, [show]);
+
+  /* DRUGIE DRZWI DO TEGO SAMEGO, 2026-08-31. `⌘K` było jedyną drogą tutaj, a skrót, którego się
+   * nie zna, nie istnieje — boczne menu ma więc lupę i zapisuje nią prośbę
+   * (`../shell/search-asked.ts`). Licznik, nie flaga: człowiek zamyka paletę, klika lupę znowu,
+   * i druga prośba ma być odróżnialna od pierwszej.
+   *
+   * Zero na starcie nie otwiera niczego — dopiero WZROST. Bez tego paleta stawałaby otworem
+   * przy każdym zamontowaniu okna. */
+  const wanted = useSyncExternalStore(subscribeToAskedSearch, askedSearch, askedSearch);
+  const seen = useRef(wanted);
+  useEffect(() => {
+    if (wanted === seen.current) return;
+    seen.current = wanted;
+    show('items');
+  }, [wanted, show]);
 
   const isOpen = showing !== null;
   useEffect(() => {

@@ -42,13 +42,16 @@ export interface Focused {
 }
 
 /**
- * Co ma się stać. `wait` znaczy „G naciśnięte, czekam na literę" i jest wartością, nie stanem
+ * Co ma się stać. `sidebar` zwija albo rozwija boczne menu — jedno naciśnięcie, oba kierunki,
+ * bo tryb ma dokładnie jedno miejsce zamieszkania (`src/state/settings.ts`) i to ono wie,
+ * w którym stoi. `wait` znaczy „G naciśnięte, czekam na literę" i jest wartością, nie stanem
  * ukrytym w module: nasłuch trzyma tę jedną zapadkę u siebie i oddaje ją z powrotem argumentem,
  * więc cała reguła da się osądzić bez okna.
  */
 export type Move =
   | { readonly move: 'open' }
   | { readonly move: 'shortcuts' }
+  | { readonly move: 'sidebar' }
   | { readonly move: 'jump'; readonly section: Section }
   | { readonly move: 'wait' }
   | { readonly move: 'none' };
@@ -108,6 +111,23 @@ export function jumpFor(letter: string): Section | null {
 }
 
 /**
+ * Sekcja pod `⌘1`…`⌘9`, albo `null` — POZYCJA w rejestrze, nigdy druga tablica par.
+ *
+ * DOPISANE 2026-08-31 RAZEM Z DWUPOZIOMOWYM MENU. Boczne menu rysuje ten klawisz przy każdej
+ * pozycji, a narysowany klawisz jest kontrolką: jeśli nic nie robi, człowiek naciska i uczy
+ * się wyłącznie tego, że nie umie obsługiwać tej aplikacji (niezmiennik 16). Numer bierze się
+ * z tego samego miejsca, co kolejność wierszy w menu — z `src/ui/sections.tsx` — więc sekcja
+ * przestawiona w rejestrze przestawia klawisz i etykietę w jednym ruchu (niezmiennik 13).
+ *
+ * `⌘0` i wyżej niż lista są `null`: klawisz bez miejsca nie ma prawa nigdzie skoczyć.
+ */
+export function jumpForNumber(digit: string): Section | null {
+  const at = Number(digit);
+  if (!Number.isInteger(at) || at < 1 || at > SECTIONS.length) return null;
+  return SECTIONS[at - 1]?.id ?? null;
+}
+
+/**
  * Co ma zrobić okno, kiedy ktoś nacisnął klawisz i paleta jeszcze nie ma ogniska.
  *
  * @param waiting czy poprzednim naciśnięciem było `G`, czyli czy czekamy na literę skoku.
@@ -120,6 +140,23 @@ export function moveFor(pressed: Pressed, focused: Focused | null, waiting: bool
    * modyfikator jest tym, co odróżnia skrót od pisania, więc `⌘K` nie ma jak wpaść do treści.
    * To jedyne naciśnięcie w tym pliku, które przechodzi nad ogniskiem. */
   if (held && !pressed.altKey && key === 'k') return { move: 'open' };
+
+  /* `⌘B` — zwija i rozwija boczne menu, i przechodzi NAD ogniskiem z tego samego powodu, co
+   * dwa naciśnięcia obok: modyfikator odróżnia skrót od pisania, więc litera nie ma jak wpaść
+   * do treści pola. Ta litera, a nie inna, bo tak zwija panel każda aplikacja, w której człowiek
+   * ten gest już zna. Menu rysuje ten klawisz przy kontrolce zwijania
+   * (`../shell/titlebar.tsx`), więc odczytanie go tutaj jest jedyną rzeczą, która czyni
+   * narysowaną obietnicę prawdziwą (niezmiennik 16). */
+  if (held && !pressed.altKey && key === 'b') return { move: 'sidebar' };
+
+  /* `⌘1`…`⌘7` — jedyne poza `⌘K` naciśnięcie z modyfikatorem, które ta aplikacja bierze, i tak
+   * samo jak tamto przechodzi NAD ogniskiem: modyfikator odróżnia skrót od pisania, więc cyfra
+   * nie ma jak wpaść do treści pola. Menu rysuje te klawisze przy pozycjach, więc odczytanie
+   * ich tutaj jest jedyną rzeczą, która czyni je prawdziwymi. */
+  if (held && !pressed.altKey && /^[0-9]$/.test(key)) {
+    const section = jumpForNumber(key);
+    return section === null ? { move: 'none' } : { move: 'jump', section };
+  }
 
   /* CAŁA REGUŁA, o którą chodzi. Wszystko poniżej to skróty BEZ modyfikatora, więc każde z nich
    * jest jednocześnie znakiem, który człowiek może chcieć wpisać. */

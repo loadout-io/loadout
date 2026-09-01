@@ -24,7 +24,12 @@ const SWITCH = '[data-section-switch="workflows"]';
 const SCREEN = 'main[data-section="workflows"]';
 const TILE = 'main [data-tile]';
 const NAME = 'input[aria-label="Workflow name"]';
-const CANVAS = '[data-testid="rf__wrapper"]';
+/* Główna akcja ekranu. NIE `[data-testid="rf__wrapper"]`, jak stało tu do 2026-08-31:
+ * `Run` był wtedy nakładką w rogu płótna, czyli WEWNĄTRZ ramki React Flow, a dziś stoi
+ * w nagłówku edytora, obok nazwy workflow. Zawężenie do ramki płótna przestało więc trafiać
+ * w cokolwiek — a to kryterium jest o rewizji, którą Run zabiera, nie o tym, gdzie Run stoi.
+ * Zakresem jest cały ekran sekcji, bo `Run` jest na nim jeden. */
+const RUN_HOME = SCREEN;
 const APPEARS = 6_000;
 
 function workflowNamed(name: string) {
@@ -124,7 +129,7 @@ describe('Run never starts from a workflow revision older than the visible edit'
       expect((await waitForCalls(app, 'save_workflow')).length).toBe(1);
 
       await app.page.locator(NAME).fill('T151 visible at Run');
-      await app.page.locator(CANVAS).getByRole('button', { name: 'Run', exact: true }).click();
+      await app.page.locator(RUN_HOME).getByRole('button', { name: 'Run', exact: true }).click();
       await app.page.waitForTimeout(550);
 
       const whileOlderWasPending = await app.calls();
@@ -180,7 +185,7 @@ describe('Run never starts from a workflow revision older than the visible edit'
     const app = await openEditor(replies);
     try {
       await app.page.locator(NAME).fill('T151 refused revision');
-      await app.page.locator(CANVAS).getByRole('button', { name: 'Run', exact: true }).click();
+      await app.page.locator(RUN_HOME).getByRole('button', { name: 'Run', exact: true }).click();
       await waitForCalls(app, 'save_workflow');
       await app.page.waitForTimeout(100);
 
@@ -192,7 +197,7 @@ describe('Run never starts from a workflow revision older than the visible edit'
 
       if (stayedInEditor === 1) {
         await app.page.locator(NAME).fill('T151 recovered revision');
-        await app.page.locator(CANVAS).getByRole('button', { name: 'Run', exact: true }).click();
+        await app.page.locator(RUN_HOME).getByRole('button', { name: 'Run', exact: true }).click();
         await waitForCalls(app, 'run_workflow');
       }
 

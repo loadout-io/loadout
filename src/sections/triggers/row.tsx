@@ -105,10 +105,7 @@ export function TriggerRow({
 }: TriggerRowProps): ReactElement {
   if (trigger.problem !== undefined) {
     return (
-      <li
-        data-trigger-row={trigger.slug}
-        className="stack border-b border-line px-4 py-3 last:border-b-0"
-      >
+      <li data-trigger-row={trigger.slug} data-tone="attend" className="card stack" data-gap="2">
         <span data-trigger-text className="value">
           {trigger.slug}
         </span>
@@ -148,46 +145,66 @@ export function TriggerRow({
           ? 'Retry'
           : null;
   return (
-    <li
-      data-trigger-row={trigger.slug}
-      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-line px-4 py-3 last:border-b-0"
-    >
+    /* KARTA, NIE WIERSZ TABELI — 2026-08-31, przebudowa kompozycji.
+     *
+     * BYŁO: pięć komórek jednej wysokości w rzędzie, wszystkie tej samej głośności. Największym
+     * napisem wiersza był warunek („Assigned to you"), czyli fakt IDENTYCZNY w każdym wierszu
+     * biblioteki, a nazwa workflow — jedyna rzecz, która odpowiada na pytanie „co się odpali" —
+     * stała w kolumnie `lead` z `truncate`, czyli w barwie drugoplanowej i z przycięciem.
+     * Zmierzone na zrzucie 1512×950: trzy triggery zajmowały 135 px z 860 px ciała ekranu,
+     * a metadana (źródło, warunek) była głośniejsza od treści.
+     *
+     * JEST: nadoczko z metadaną, pod nim JEDNA linia treści. Chip jest pigułką ODCZYTU
+     * (DESIGN §6) i to jest dokładnie rola źródła i warunku — one nie są nazwą tej rzeczy,
+     * tylko jej etykietami. Nazwa stoi pod nimi w stopniu `--text-subhead`, który istnieje
+     * właśnie po to („tytuł kafelka na liście", theme.css:233) i jest w barwie `ink`.
+     *
+     * KOLEJNOŚĆ W DRZEWIE ZOSTAJE: źródło, warunek, wiersz o workflow, zdanie o stanie. Czyta
+     * ją czytnik ekranu i czytają ją kryteria po pozycji (`status-is-text-not-a-button.test.tsx`,
+     * `cells(row)[1]`), więc przestawienie jej CSS-em byłoby rozjazdem tego, co widać, z tym,
+     * co słychać. Nadoczko nad tytułem jest zwykłą kolejnością czytania, nie obejściem. */
+    <li data-trigger-row={trigger.slug} className="card stack" data-gap="2">
       {/* MYJKA POD KURSOREM, bo to jest wiersz listy, a nie napis: cały ten blok otwiera
           edytor, a do 2026-08-31 nie odpowiadał na najechanie ani jednym pikselem — kontrolka,
           która nie reaguje na kursor, czyta się jak etykieta (DESIGN §6, cztery stany).
           `.row` niesie myjkę, wciśnięcie i pierścień skupienia; `p-1 -m-1` daje jej oddech
-          bez przesunięcia czegokolwiek, a `grid` znosi jej `display:flex`, bo trzy kolumny
-          są rozmieszczeniem i należą do miejsca, nie do roli. */}
+          bez przesunięcia czegokolwiek, a `flex-col items-start` znosi jej `display:flex`
+          w rzędzie, bo dwie linie są rozmieszczeniem i należą do miejsca, nie do roli. */}
       <button
         data-trigger-open
         type="button"
         aria-label={`Edit ${trigger.slug}`}
-        className="row -m-1 grid min-w-0 grid-cols-3 gap-3 p-1"
+        className="row -m-1 flex min-w-0 flex-col items-start gap-2 p-1"
         onClick={() => {
           onOpen(trigger.slug);
         }}
       >
-        <span data-trigger-text className="label text-ink">
-          {sourceName(trigger.source)}
+        <span className="flex min-w-0 flex-wrap items-center gap-2">
+          <span data-trigger-text className="chip">
+            {sourceName(trigger.source)}
+          </span>
+          <span data-trigger-text className="chip">
+            {conditionName(trigger.condition)}
+          </span>
         </span>
-        {/* Stopień bierze się tu z `.row` (`--t-ui`), i to jest cała treść przejścia na
-            prymityw: wiersz listy JEST kontrolką, więc niesie rungę kontrolki. Napis
-            `text-body` stał tu wcześniej obok `text-ink` i był bez skutku — w tym motywie
-            `text-body` jest klasą BARWY (`--color-body`), nie stopnia, bo `--color-body`
-            i `--text-body` noszą tę samą nazwę, a Tailwind rozstrzyga ją na barwę. Dwie
-            barwy na jednym napisie: wygrywała ta druga. */}
-        <span data-trigger-text className="truncate text-ink">
-          {conditionName(trigger.condition)}
-        </span>
+        {/* BEZ `truncate`, i to jest cała różnica między tym wierszem a poprzednim. Nazwa
+            workflow jest treścią, a metadana ustępuje treści, nigdy odwrotnie: przy trzech
+            kolumnach równej szerokości „Ship a fix" ginęło jako „Ship a…", żeby zmieściła się
+            kadencja. Tutaj linia ma całą szerokość karty i zawija się na drugą, a kadencja
+            i tak stoi na jej końcu. */}
         <span
           data-trigger-text
+          data-trigger-workflow
           title={workspace?.folder ?? trigger.workspace ?? workspaceStatus}
-          className="lead truncate"
+          className="text-subhead text-ink"
         >
           {`${workflow} · ${workspaceLabel} · ${cadenceName(trigger.pollEveryMinutes)}`}
         </span>
       </button>
-      <div className="flex items-center gap-3">
+      {/* STOPKA KARTY: co się stało, i najwyżej dwie rzeczy, które można z tym zrobić.
+          Kreska nad nią oddziela odczyt od czynności — bez niej przełącznik czytał się jak
+          część zdania o stanie. */}
+      <div className="flex items-center gap-3 border-t border-line pt-2">
         {/* CO SIĘ STAŁO — TEKST, ZAWSZE, NIEZALEŻNIE OD TEGO, CZY JEST CO KLIKNĄĆ.
             2026-08-31: do tego dnia przy wierszu z czynnością zdanie o stanie było ETYKIETĄ
             przycisku (`${status.sentence} · ${retryLabel}`). Żeby przeczytać, co się właściwie
@@ -199,7 +216,7 @@ export function TriggerRow({
           data-trigger-text
           data-trigger-status
           title={statusWorkspace ?? undefined}
-          className="label max-w-96 text-right"
+          className="lead min-w-0 flex-1"
         >
           {missingWorkspace ? workspaceStatus : status.sentence}
         </span>

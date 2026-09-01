@@ -158,9 +158,25 @@ function nothingChecksThisPlan(plan: readonly Step[]): boolean {
  * kafelek „sprawdź" i kafelek agenta jako to samo.
  */
 function captionFor(workflow: string, blocks: readonly Block[], plan: readonly Step[]): string {
-  const total = blocks.length;
+  const phrase = stepPhrase(blocks, plan);
   /* Bieg, którego nie ma, nie ma czego podpisywać. „· 0 steps" opisywałoby workflow o zerowej
    * długości, czyli rzecz, której nie da się zbudować. */
+  if (phrase === '') return '';
+  return `${workflow} · ${phrase}`;
+}
+
+/**
+ * Sam ciąg o krokach, BEZ nazwy workflow — „step 3 of 4", „2 of 4 running", „4 steps",
+ * z doklejonym wyznaniem D7, kiedy w planie nikt niczego nie mierzy.
+ *
+ * WYJĘTE Z `captionFor` 2026-08-31, i to jest wyjęcie, nie druga kopia. Nazwa biegu stoi od dziś
+ * w TYTULE nagłówka (`./head.tsx`, `.rhead h1` z makiety), więc podpis, który dokleja ją jeszcze
+ * raz, byłby drugim domem jednego faktu (niezmiennik 13). Ta funkcja jest jedynym miejscem, które
+ * rozstrzyga, jak policzyć kroki — `captionFor` składa z niej to samo zdanie co dotąd, co do
+ * znaku, a nagłówek bierze ją samą.
+ */
+export function stepPhrase(blocks: readonly Block[], plan: readonly Step[]): string {
+  const total = blocks.length;
   if (total === 0) return '';
 
   const admission = nothingChecksThisPlan(plan) ? NO_CHECKS : '';
@@ -169,12 +185,12 @@ function captionFor(workflow: string, blocks: readonly Block[], plan: readonly S
     /* Numer kroku jest jego pozycją w grafie, nie liczbą tych, które się skończyły: przy
      * biegu, który przeskoczył krok, „step 2 of 4" i „drugi blok" muszą być tym samym blokiem. */
     const at = blocks.findIndex((block) => block.state === 'now') + 1;
-    return `${workflow} · step ${at} of ${total}${admission}`;
+    return `step ${at} of ${total}${admission}`;
   }
   if (running > 1) {
-    return `${workflow} · ${running} of ${total} running${admission}`;
+    return `${running} of ${total} running${admission}`;
   }
-  return `${workflow} · ${total} steps${admission}`;
+  return `${total} steps${admission}`;
 }
 
 /** Sekundy w milisekundzie — jedyne miejsce, w którym ta zamiana tu żyje. */

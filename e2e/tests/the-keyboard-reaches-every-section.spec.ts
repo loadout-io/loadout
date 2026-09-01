@@ -219,16 +219,19 @@ describe('the keyboard reaches every section, and never while somebody is typing
       await app.page.keyboard.press('Meta+k');
       await app.page.locator(PALETTE).waitFor({ state: 'visible', timeout: SETTLES });
 
-      /* Trzecia pozycja listy to trzecia sekcja rejestru — Agents. Dwie strzałki w dół
-         z pierwszej pozycji. */
+      /* Trzecia pozycja listy to trzecia sekcja rejestru — od 2026-08-31 jest nią Run, bo
+         kolejność sekcji poszła za drogą człowieka (Agents, Workflows, Run, …) i jej wyrocznią
+         jest makieta. Sądzimy tu CHODZENIE STRZAŁKAMI, nie kolejność: dwie strzałki w dół
+         z pierwszej pozycji mają wybrać trzecią, jakakolwiek by ona nie była, i nazwa stoi tu
+         na sztywno, żeby pomiar nie czytał tej samej tablicy, którą miałby sprawdzać. */
       await app.page.keyboard.press('ArrowDown');
       await app.page.keyboard.press('ArrowDown');
       await app.page.keyboard.press('Enter');
       await app.page
-        .locator('main[data-section="agents"]')
+        .locator('main[data-section="run"]')
         .waitFor({ state: 'attached', timeout: SETTLES })
         .catch(() => undefined);
-      expect(await sectionNow(app)).toBe('agents');
+      expect(await sectionNow(app)).toBe('run');
     } finally {
       await app.close();
     }

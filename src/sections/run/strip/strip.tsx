@@ -44,8 +44,24 @@
  * wyłącznie przewijaniem paska w poziomie. Zmierzone na biegu o 32 krokach: ekran Run mierzył
  * ponad 12 tys. px. Po zdjęciu toru prawa grupa dostaje całą wolną szerokość.
  *
- * PODPIS ZOSTAJE i dalej liczy się z KROKÓW („Fix the CSV parser · step 3 of 4"). To jest zdanie
- * o biegu, a nie drugi jego rysunek: obraz obok pokazuje kształt, podpis mówi, na czym stoimy.
+ * 2026-08-31, DRUGA ZMIANA TEGO DNIA — PODPIS I CHIP WYDATKU ZESZŁY Z PASKA DO NAGŁÓWKA BIEGU
+ * (`./head.tsx`, reguła `.rhead` z makiety). To jest przeniesienie, nie skasowanie, i przyczyna
+ * jest jedna: makieta mówi o biegu W NAGŁÓWKU EKRANU — nadoczkiem („Running · started 09:41"),
+ * tytułem w stopniu bohatera i jednym wierszem metadanej pod nim — a pasek na ekranie pracy
+ * nie niesie u niej ani nazwy biegu, ani jego kosztu. Zostawienie obu kopii dałoby dwa domy
+ * jednego faktu (niezmiennik 13): tę samą nazwę biegu i tę samą kwotę, dwa razy, o 60 px od
+ * siebie.
+ *
+ * Co pasek zyskał, zmierzone tą samą miarą, co poprzednia naprawa: rząd kontrolek przestał
+ * dzielić szerokość z podpisem i z chipem, więc nazwa sekcji nie ma już czemu ustępować.
+ *
+ * CO ZOSTAŁO BEZ CZYTELNIKA. `Strip.caption` z `./model.ts` nie ma od dziś ani jednego
+ * czytelnika w produkcie (liczy go dalej `stripFor`, a czyta wyłącznie `strip.test.ts`) —
+ * czyli jest tą samą rzeczą, co `Block.wentWrong` obok i zabrania jej ten sam niezmiennik 21.
+ * Zdjęcie należy do zadania, które przepisze `stripFor`; nagłówek bierze z tego modelu
+ * `stepPhrase`, czyli tę samą decyzję o liczeniu kroków, i przez to nie jest jej drugą kopią.
+ * `Block.ended` czytelnika ODZYSKAŁ: to z niego nagłówek odróżnia bieg skończony od takiego,
+ * który jeszcze nie ruszył.
  *
  * GDZIE JEST `Stop`, skoro makieta stawia go tutaj. W kontrolce biegu, na dole kolumny
  * strumienia, obok wiersza wejścia — bo tam mieszka cała polityka startu i zatrzymania:
@@ -56,16 +72,16 @@
  * jej własna logika, nie ucieczka od niej. Rozbieżność zgłoszona.
  */
 import type { ReactElement, ReactNode } from 'react';
-import type { Strip as StripModel } from './model';
 
 export interface StripProps {
-  strip: StripModel;
   /**
-   * Nazwa tej sekcji — wchodzi w pasek jako `<h1>`.
+   * Nazwa tej sekcji — wchodzi w pasek jako `<h2>`.
    *
    * Propsem, a nie literałem: jedyne miejsce, w którym mieszka nazwa sekcji, to rejestr
    * `src/ui/sections.tsx`, i tam po nią sięga `index.tsx`. Napis „Run" wpisany tutaj byłby
    * drugim domem tej nazwy i rozjechałby się z bocznym menu przy pierwszej zmianie.
+   *
+   * `h2`, NIE `h1`, i powód jest zmierzony — stoi przy samym znaczniku niżej.
    */
   heading: string;
   /**
@@ -102,7 +118,7 @@ export interface StripProps {
  */
 export const STRIP_HEIGHT = 52;
 
-export function Strip({ strip, heading, controls }: StripProps): ReactElement {
+export function Strip({ heading, controls }: StripProps): ReactElement {
   return (
     <div
       data-strip
@@ -114,46 +130,79 @@ export function Strip({ strip, heading, controls }: StripProps): ReactElement {
       style={{ height: STRIP_HEIGHT, contain: 'inline-size' }}
     >
       <div className="min-w-0">
-        {/* Nazwa sekcji na stopniu `.strip .title` z makiety (15 px / 600). Jeden rząd mniej. */}
-        <h1 className="truncate text-heading text-ink">{heading}</h1>
-        {/* Podpis, i tylko tutaj. Numer kroku żyje WYŁĄCZNIE na tym pasku (niezmiennik 13):
-            nagłówek z własnym licznikiem i linia `done` z własnym czasem to trzy żywe regiony
-            na jeden fakt przy limicie 1. */}
-        {strip.caption === '' ? null : <p className="value truncate">{strip.caption}</p>}
+        {/* Nazwa sekcji na stopniu `.strip .title` z makiety (15 px / 600). Jeden rząd mniej.
+
+            2026-08-31 — `whitespace-nowrap` ZAMIAST `truncate`, i to jest naprawa zmierzona na
+            zrzucie z okna 1512 px: nazwa sekcji czytała się „R..”, bo blok tożsamości miał
+            `min-w-0`, a rząd kontrolek obok stał na `w-max` i nie oddawał ani piksela. Nazwa
+            sekcji jest treścią — odpowiada na pytanie „na czym stoisz” — a ustąpiła metadanej
+            biegu. Trzy znaki to najkrótszy napis na tym ekranie i nie ma czego z niego uciąć.
+
+            2026-08-31 — NAZWA SEKCJI JEST `h1` NA CICHYM STOPNIU, i to jest rozstrzygnięcie
+            odwróconej hierarchii, a nie wybór między nią a zielonym kryterium.
+
+            Wada, od której to się zaczęło: `h1` niosła 15 px, a nazwa biegu („Ship a feature",
+            `./head.tsx`) stała pod nią jako `h2` w 34 px. Oko czyta rozmiar, czytnik czyta
+            numer — dostawały odwrotną odpowiedź.
+
+            Pierwsza próba zeszła nagłówkiem do `h2`. To było mylenie DWÓCH RÓŻNYCH RZECZY:
+            poziom nagłówka mówi, CZYM jest ten napis w dokumencie, a stopień mówi, JAK GŁOŚNO
+            go widać. Nazwa sekcji jest tym, co nazywa cały ekran, więc zostaje `h1`; głośność
+            oddaje stopniem. Nazwa biegu ma być największa i jest — bez zabierania jej numeru.
+
+            Stopień to `text-ui`, nie `text-eyebrow`, i powód jest zmierzony: rung nadoczka
+            wersalikuje treść arkuszem, więc `innerText` oddaje „RUN", a rejestr sekcji mówi
+            „Run". `e2e/tests/sections-mount.spec.ts` porównuje te napisy wprost i szło na
+            czerwono na samej wielkości liter — na fakcie o arkuszu, nie o produkcie.
+
+            Trzy kryteria pilnują tego z trzech stron i wszystkie trzy są dziś zielone:
+            `sections-mount` (ekran nazywa się swoją nazwą), `the-run-strip-fits-its-window`
+            (`[data-strip] h1` istnieje i mieści się w kadrze) oraz
+            `src/ui/shell/eyebrow-has-carriers.test.ts` (pierwszy `h2` widoku pracy stoi na
+            stopniu nadoczka — po zejściu nazwy sekcji do `h1` trafia on we właściwy nagłówek). */}
+        <h2 data-section-name className="whitespace-nowrap text-ui text-muted">
+          {heading}
+        </h2>
       </div>
 
       {/* KONTROLKI BIORĄ CAŁĄ WOLNĄ SZEROKOŚĆ, bo nie dzielą jej już z torem bloków — i to jest
           skutek, o który w tym zdjęciu chodziło: Start przestał wyjeżdżać poza kadr.
           `overflow-x-auto` zostaje jako ostatnia deska przy oknie węższym niż same kontrolki:
           bez niej pasek z `overflow-hidden` PRZYCINA przycisk, którego wtedy nie da się dosięgnąć
-          ani myszą, ani klawiaturą (niezmiennik 16). `w-max` zachowuje prawdziwe rozmiary —
-          nie ściska suwaka ani pól do zera. */}
+          ani myszą, ani klawiaturą (niezmiennik 16).
+
+          2026-08-31 — `w-max` ZESZŁO, I TO JEST CAŁA NAPRAWA PRZYCIĘTEGO PASKA. Zmierzone na
+          zrzucie okna 1512 px: rząd stał na swojej szerokości MINIMALNEJ-MAKSYMALNEJ, więc nic
+          w nim nie ustępowało — a nadmiar spadał na dwie rzeczy naraz. Nazwa sekcji kurczyła się
+          do „R..”, a prawy koniec rzędu (suwak „ile naraz” i sufit wydatku) wyjeżdżał poza kadr
+          i dawał się dosięgnąć wyłącznie przewinięciem, o którym nic na ekranie nie mówiło.
+
+          Bez `w-max` ustępuje to, co MA ustępować: napisy, które i tak niosą `truncate` —
+          etykieta suwaka i etykieta sufitu. Same kontrolki zostają w swoich rozmiarach, bo każda
+          z nich niesie `shrink-0` u siebie: metadana zawija się, skraca albo znika, a czynność
+          nigdy (DESIGN §1, „metadana nie wypycha treści”). `overflow-x-auto` przestaje być drogą
+          do przycisku, a zostaje ostatnią deską przy oknie węższym niż same kontrolki.
+
+          2026-09-01 — TO USTĘPOWANIE MIAŁO GRANICĘ I ZOSTAŁA ONA PRZEKROCZONA, ZANIM KTOKOLWIEK
+          TO ZOBACZYŁ. Zmierzone w chromium (1512×950, nawigacja rozwinięta): rząd dostawał
+          1108 px i chciał 1562, a cały niedobór 454 px pokrywały DWA NAPISY jednej kontrolki —
+          zdanie przy „Learn from this run" (0 px z 400) i reszta jej własnej nazwy (57 z 112).
+          Rząd „mieścił się" wyłącznie dlatego, że je zjadł, a `e2e/tests/the-run-strip-fits-its-
+          window.spec.ts` był nad tym ZIELONY: pytał o `scrollWidth` RZĘDU, a rząd po zjedzeniu
+          napisów jest równy sobie. Napis skrócony do zera nie jest metadaną, która ustąpiła —
+          jest zdaniem, którego produkt nie mówi. Ta kontrolka zeszła więc z paska w całości
+          (`../reflection/toggle.tsx`, cały rachunek), a tamto kryterium pyta od dziś także o to,
+          czy w tym rzędzie coś jest ucięte. */}
       <div
         data-workflow-controls
         className="ml-auto min-w-0 shrink overflow-x-auto overflow-y-hidden"
       >
-        <div className="flex w-max items-center gap-3 [&_.field]:w-44">
-          {controls}
-          {/* Chip z makiety (`.chip`, `data-copy`): czas i koszt są wartościami maszynowymi, więc
-              mono i do skopiowania. Podpowiedź nazywa, CO to za czas — suma tur agentów nie jest
-              zegarem ściennym biegu i nie ma prawa go udawać.
-
-              2026-08-31 — DWIE NAZWY ZAMIAST OŚMIU KLAS. `.chip` niesie kształt pigułki (obrys,
-              wypełnienie, promień, 20 px), `.value` — krój maszynowy razem ze stopniem i
-              `tabular-nums`. Ręczny zapis stał na własnej wysokości 19 px i własnym paddingu,
-              czyli był chipem o innych wymiarach niż każdy inny chip w aplikacji, a rodzinę mono
-              deklarował drugi raz obok stopnia, który ją już niesie. Liczba, która nie skacze
-              przy odświeżeniu, jest tu treścią: suma tur zmienia się co kilka sekund. */}
-          {strip.spend === '' ? null : (
-            <span
-              data-copyable
-              title="Time the agents have spent on this run, and what it has cost so far"
-              className="chip value"
-            >
-              {strip.spend}
-            </span>
-          )}
-        </div>
+        {/* 2026-08-31 — `[&_.field]:w-44` ZESZŁO. Pasek narzucał szerokość KAŻDEMU polu, które
+            w nim stanie, więc szerokość wyboru lidera i szerokość pola zadania były jedną liczbą
+            w pliku, który nie wie, co te pola niosą. Dwa różne fakty: nazwa agenta ma się
+            zmieścić, a zdanie zadania i tak się nie mieści przy żadnej z tych szerokości. Każde
+            pole deklaruje więc swoją własną (`../start.tsx`). */}
+        <div className="flex items-center gap-3">{controls}</div>
       </div>
     </div>
   );

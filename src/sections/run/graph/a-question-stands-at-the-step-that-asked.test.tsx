@@ -81,6 +81,22 @@ function stepSlice(markup: string, id: string): string {
   return next < 0 ? rest : rest.slice(0, next);
 }
 
+/**
+ * Jedna kolumna widoku pracy, wycięta z markupu — od jej znacznika do znacznika kolumny obok.
+ *
+ * Bez założenia, KTÓRA z nich stoi pierwsza: kolejność kolumn należy do układu i przyjeżdża
+ * z makiety (`../run-matches-mockup.test.tsx`), a to kryterium jest o tym, w której kolumnie
+ * stoi karta pytania.
+ */
+function columnOf(markup: string, marker: string): string {
+  const opens = markup.indexOf(marker);
+  if (opens < 0) return '';
+  const rest = markup.slice(opens);
+  const other = marker === 'data-plan-column' ? 'data-stream-column' : 'data-plan-column';
+  const ends = rest.indexOf(other, 1);
+  return ends < 0 ? rest : rest.slice(0, ends);
+}
+
 /** Ile razy ten napis stoi w markupie. */
 function times(markup: string, what: string): number {
   return markup.split(what).length - 1;
@@ -181,11 +197,22 @@ describe('the question stands at the step that asked it', () => {
         'question forever. No step means "we do not know who asked", never "nobody asked" ' +
         '(invariant 17).',
     ).toBe(1);
+    /* 2026-08-31 — PYTAMY O KOLUMNĘ, NIE O POZYCJĘ W NAPISIE. Wersja porównująca dwa indeksy
+       („karta stoi przed znacznikiem kolumny planu") mierzyła kolejność kolumn na ekranie,
+       a nie miejsce karty: kiedy kolumna planu przeszła na lewo, punkt zaczął padać przy karcie
+       stojącej dokładnie tam, gdzie ma stać. Wycinamy więc obie kolumny i pytamy każdą z nich
+       osobno — to jest mocniejsze, bo żąda i obecności w tej właściwej, i nieobecności w tej
+       drugiej. */
     expect(
-      nobodysStep.indexOf(CARD),
+      columnOf(nobodysStep, 'data-stream-column'),
+      'it left the stream column. A question nobody in the plan asked has nowhere else to ' +
+        'stand: the bottom of the stream is where it has always been.',
+    ).toContain(CARD);
+    expect(
+      columnOf(nobodysStep, 'data-plan-column'),
       'it stood in the plan column, under a step that did not ask it. Putting it under the ' +
         'nearest card would be a relation invented by this screen.',
-    ).toBeLessThan(nobodysStep.indexOf('data-plan-column'));
+    ).not.toContain(CARD);
   });
 
   it('keeps the record of the question in the history, because asking really happened', () => {

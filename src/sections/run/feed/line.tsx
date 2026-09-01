@@ -26,6 +26,7 @@ import { identityToken } from '../rail/colour';
 import { authorityOf } from '../rail/say';
 import type { HistoryRow } from './model';
 import { runSuggestion, suggestion } from './suggested';
+import { Answer, AnswerLine } from './answer';
 
 export interface LineProps {
   row: HistoryRow;
@@ -228,7 +229,13 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
 
             WŁASNY ELEMENT, nie klasa na rodzicu: rodzic niesie też podpis „kto mówi", a ten ma
             zostać w jednym wierszu z początkiem zdania. */}
-        <span className="whitespace-pre-line break-words">{row.label}</span>
+        <span className="whitespace-pre-line break-words">
+          {/* NAGŁÓWEK TEŻ JEST MARKDOWNEM. Zmierzone na prawdziwych odpowiedziach: cztery
+              pierwsze wiersze z sześciu niosą `##`, `**` albo backticki, więc rysowany surowo
+              pokazywałby te znaki w wierszu, który widać ZAWSZE. Wariant wierszowy, nie blokowy:
+              nagłówek ma zostać jednym wierszem. */}
+          {row.kind === 'note' ? <AnswerLine text={row.label} /> : row.label}
+        </span>
       </span>
 
       {/* Prawa kolumna: albo kontrolka startu propozycji, albo liczba, którą ta czynność
@@ -281,12 +288,15 @@ export function Line({ row, onToggle, command }: LineProps): ReactElement {
            jako BARWĘ i stopnia nie wypisuje wcale. Dwa razy ta sama barwa to jedna barwa, więc
            drugi napis znika bez zmiany na ekranie. Stopień zostaje odziedziczony z `body`,
            czyli dokładnie ten, który DESIGN §4 nazywa stopniem prozy. */
-        <p
-          data-line-body
-          className={`col-start-2 whitespace-pre-line break-words text-body ${MEASURE}`}
-        >
-          {row.body.join('\n')}
-        </p>
+        <div data-line-body className={`col-start-2 text-body ${MEASURE}`}>
+          {/* MARKDOWNEM, bo tak agenci piszą naprawdę: `## Answer`, `**bold**`, backticki, listy.
+              Pokazane dosłownie, te znaki są szumem na ekranie zamiast struktury — a strukturę
+              nadał odpowiedzi ten, kto wie o niej najwięcej. Renderer składa ELEMENTY z tokenów
+              i nigdy nie tyka HTML-a; powód w całości stoi w nagłówku `./answer.tsx`.
+              `whitespace-pre-line break-words` zeszło razem z akapitem: renderer składa własne
+              elementy, więc łamanie wierszy nie jest już sprawą tego kontenera. */}
+          <Answer text={row.body.join('\n')} />
+        </div>
       ) : null}
 
       {row.expanded && row.output.length > 0 ? (

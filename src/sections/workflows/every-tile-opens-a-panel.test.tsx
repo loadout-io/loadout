@@ -96,7 +96,7 @@ vi.mock('./step-panel/checkpoint-panel', async (importOriginal) => {
 const PATH = 'ship-a-feature.json';
 
 /** Zdanie, którym ekran odpowiada, kiedy NIC nie jest zaznaczone. Kontrakt tego kryterium. */
-const PLACEHOLDER = 'Pick a step to see what it was given.';
+const PLACEHOLDER = 'Pick a step to set up what it does.';
 
 const QUESTION = 'Does this plan look right before anyone writes code?';
 
