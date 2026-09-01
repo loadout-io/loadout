@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::library::agents::Agent;
+use crate::workflow::check::{Level, check_to_run};
 use crate::workflow::{
     AgentStep, CheckStep, CheckpointStep, Folder, Handover, Link, PlainNotes, Point, Skills, Step,
     WhenItFails, WorkflowFile,
@@ -55,7 +56,8 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
         .iter()
         .map(|item| (item.path.clone(), item.hash.clone()))
         .collect();
-    let imported_workflows = imported_workflows(&inspection, &adapted.agents, &adapted.skills);
+    let mut imported_workflows = imported_workflows(&inspection, &adapted.agents, &adapted.skills);
+    reconcile_workflow_targets(&mut imported_workflows);
     for imported in &imported_workflows {
         let Some((compatibility, message)) = &imported.mapping_override else {
             continue;
@@ -70,10 +72,7 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
         }
     }
     let items = typed_items(&inspection, &adapted, &imported_workflows);
-    let workflows = imported_workflows
-        .iter()
-        .filter_map(|imported| imported.workflow.clone())
-        .collect();
+    let workflows = unique_workflow_outputs(&imported_workflows);
     let mut draft = MigrationDraft {
         root: inspection.snapshot.root.clone(),
         source_hashes,
@@ -191,7 +190,7 @@ fn dependency_is_ready(draft: &MigrationDraft, ready: &BTreeSet<String>, depende
         "skill" => draft
             .skills
             .iter()
-            .find(|skill| skill.name.eq_ignore_ascii_case(name))
+            .find(|skill| skill.name == name)
             .is_some_and(|skill| {
                 let target = PathBuf::from("skills").join(&skill.name);
                 draft.items.iter().any(|item| {
@@ -292,7 +291,7 @@ fn typed_items(
         .iter()
         .map(|file| {
             let mapping = mappings.get(file.item.id.as_str()).copied();
-            let agent = agent_for(&file.item, &adapted.agents);
+            let agent = agent_for(&file.item, &adapted.agents, &adapted.agent_sources);
             let skill = (file.item.kind == ItemKind::Skill)
                 .then(|| {
                     adapted
@@ -537,9 +536,18 @@ fn aggregate_hash(mut files: Vec<(PathBuf, Vec<u8>)>) -> Option<String> {
     Some(super::discover::content_hash(&bytes))
 }
 
-fn agent_for<'a>(item: &SourceItem, agents: &'a [Agent]) -> Option<&'a Agent> {
+fn agent_for<'a>(
+    item: &SourceItem,
+    agents: &'a [Agent],
+    sources: &BTreeMap<String, String>,
+) -> Option<&'a Agent> {
     if item.kind != ItemKind::Agent {
         return None;
+    }
+    if let Some(id) = sources.get(&item.id)
+        && let Some(agent) = agents.iter().find(|agent| agent.id.to_string() == *id)
+    {
+        return Some(agent);
     }
     agents
         .iter()
@@ -757,6 +765,7 @@ fn agent_flow_list(text: &str) -> Option<Vec<Value>> {
 #[derive(Debug, Clone)]
 struct ImportedWorkflow {
     item_id: String,
+    source_path: PathBuf,
     workflow: Option<WorkflowFile>,
     dependencies: Vec<String>,
     mapping_override: Option<(Compatibility, String)>,
@@ -773,39 +782,139 @@ fn imported_workflows(
             continue;
         }
         let (workflow, dependencies, mapping_override) = match adapters::workflow_source(file) {
-            WorkflowSource::LegacyShipUi { command, proof } => (
-                ship_ui(agents, file, &command, &proof),
-                agent_dependencies(["frontend-dev", "design-qa", "code-reviewer"]),
-                None,
-            ),
-            WorkflowSource::Graph(graph) => {
-                let dependencies = graph_dependencies(&graph);
-                match graph_workflow(file, agents, skills, &graph) {
-                    Ok(workflow) => (workflow, dependencies, None),
-                    Err(message) => (
-                        None,
-                        dependencies,
-                        Some((Compatibility::NeedsChoice, message)),
-                    ),
-                }
+            WorkflowSource::LegacyShipUi { command, proof } => {
+                let workflow = ship_ui(agents, file, &command, &proof);
+                let dependencies = workflow.as_ref().map_or_else(
+                    || agent_dependencies(["frontend-dev", "design-qa", "code-reviewer"]),
+                    |_| Vec::new(),
+                );
+                (workflow, dependencies, None)
             }
+            WorkflowSource::Graph(graph) => match graph_workflow(file, agents, skills, &graph) {
+                GraphWorkflowImport::Ready {
+                    workflow,
+                    dependencies,
+                } => (Some(workflow), dependencies, None),
+                GraphWorkflowImport::Missing { dependencies } => (None, dependencies, None),
+                GraphWorkflowImport::NeedsChoice {
+                    dependencies,
+                    message,
+                } => (
+                    None,
+                    dependencies,
+                    Some((Compatibility::NeedsChoice, message)),
+                ),
+            },
             WorkflowSource::Routine(routine) => {
                 (Some(routine_workflow(file, &routine)), Vec::new(), None)
             }
             WorkflowSource::NeedsChoice(choice) => {
                 let dependencies =
                     agent_dependencies(choice.agent_roles.iter().map(String::as_str));
-                (None, dependencies, None)
+                (
+                    None,
+                    dependencies,
+                    Some((Compatibility::NeedsChoice, choice.message)),
+                )
             }
         };
         out.push(ImportedWorkflow {
             item_id: file.item.id.clone(),
+            source_path: file.item.path.clone(),
             workflow,
             dependencies,
             mapping_override,
         });
     }
     out
+}
+
+/// Dwa narzędzia często przechowują ten sam workflow pod tą samą nazwą. Jeden plik docelowy
+/// jest wtedy prawdą: identyczne definicje wskazują tę samą wartość, a różne definicje nie mogą
+/// czekać z kolizją aż do Apply, kiedy człowiek właśnie zatwierdził cały plan.
+fn reconcile_workflow_targets(imported: &mut [ImportedWorkflow]) {
+    let mut by_target: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+    for (index, item) in imported.iter().enumerate() {
+        let Some(workflow) = &item.workflow else {
+            continue;
+        };
+        by_target
+            .entry(workflow_target(workflow))
+            .or_default()
+            .push(index);
+    }
+
+    for (target, indices) in by_target {
+        if indices.len() < 2 {
+            continue;
+        }
+        let Some(canonical) = indices
+            .first()
+            .and_then(|index| imported.get(*index))
+            .and_then(|item| item.workflow.clone())
+        else {
+            continue;
+        };
+        let same = indices.iter().all(|index| {
+            imported
+                .get(*index)
+                .and_then(|item| item.workflow.as_ref())
+                .is_some_and(|workflow| same_workflow_definition(&canonical, workflow))
+        });
+        if same {
+            for index in indices.into_iter().skip(1) {
+                if let Some(item) = imported.get_mut(index) {
+                    item.workflow = Some(canonical.clone());
+                    item.mapping_override = Some((
+                        Compatibility::Adjusted,
+                        format!(
+                            "This is another app's copy of the same workflow. Both copies will use {}.",
+                            target.display()
+                        ),
+                    ));
+                }
+            }
+            continue;
+        }
+
+        let sources = indices
+            .iter()
+            .filter_map(|index| imported.get(*index))
+            .map(|item| item.source_path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!(
+            "These project workflows describe different behavior but would both become {}: {sources}. Choose which workflow to keep.",
+            target.display()
+        );
+        for index in indices {
+            if let Some(item) = imported.get_mut(index) {
+                item.workflow = None;
+                item.mapping_override = Some((Compatibility::NeedsChoice, message.clone()));
+            }
+        }
+    }
+}
+
+fn same_workflow_definition(left: &WorkflowFile, right: &WorkflowFile) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.id.clear();
+    right.id.clear();
+    left == right
+}
+
+fn unique_workflow_outputs(imported: &[ImportedWorkflow]) -> Vec<WorkflowFile> {
+    let mut seen = BTreeSet::new();
+    imported
+        .iter()
+        .filter_map(|item| item.workflow.clone())
+        .filter(|workflow| seen.insert(workflow_target(workflow)))
+        .collect()
+}
+
+fn workflow_target(workflow: &WorkflowFile) -> PathBuf {
+    PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)))
 }
 
 fn agent_dependencies<'a>(roles: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -831,39 +940,211 @@ fn graph_dependencies(source: &adapters::GraphWorkflow) -> Vec<String> {
     dependencies
 }
 
+enum GraphWorkflowImport {
+    Ready {
+        workflow: WorkflowFile,
+        dependencies: Vec<String>,
+    },
+    Missing {
+        dependencies: Vec<String>,
+    },
+    NeedsChoice {
+        dependencies: Vec<String>,
+        message: String,
+    },
+}
+
+enum DeclaredAgent<'a> {
+    Found(&'a Agent),
+    Missing,
+    Ambiguous(Vec<&'a Agent>),
+}
+
+enum ImportedSkill<'a> {
+    Found(&'a super::SkillDraft),
+    Missing,
+    Ambiguous(Vec<&'a super::SkillDraft>),
+}
+
+struct ResolvedGraph<'a> {
+    agents: Vec<&'a Agent>,
+    skills: Vec<Vec<String>>,
+    dependencies: Vec<String>,
+}
+
+enum GraphInputs<'a> {
+    Ready(ResolvedGraph<'a>),
+    Missing(Vec<String>),
+    NeedsChoice(String),
+}
+
+struct ResolvedStepSkills {
+    names: Vec<String>,
+    dependencies: Vec<String>,
+    missing: bool,
+}
+
 fn graph_workflow(
     file: &super::discover::InspectedFile,
     agents: &[Agent],
     skills: &[super::SkillDraft],
     source: &adapters::GraphWorkflow,
-) -> std::result::Result<Option<WorkflowFile>, String> {
-    let native_agents: Option<Vec<_>> = source
-        .steps
-        .iter()
-        .map(|step| find_declared_agent(agents, &step.role))
-        .collect();
-    let Some(native_agents) = native_agents else {
-        return Ok(None);
+) -> GraphWorkflowImport {
+    let fallback_dependencies = graph_dependencies(source);
+    let resolved = match resolve_graph_inputs(agents, skills, source) {
+        GraphInputs::Ready(resolved) => resolved,
+        GraphInputs::Missing(dependencies) => {
+            return GraphWorkflowImport::Missing { dependencies };
+        }
+        GraphInputs::NeedsChoice(message) => {
+            return GraphWorkflowImport::NeedsChoice {
+                dependencies: fallback_dependencies,
+                message,
+            };
+        }
     };
-    let mut missing_skill = false;
-    for (step, agent) in source.steps.iter().zip(&native_agents) {
-        for selected in step.skills.iter().flatten() {
-            if !agent.skills.iter().any(|assigned| assigned == selected) {
-                return Err(format!(
-                    "The {} workflow assigns skill `{selected}` to {}, but that skill is not assigned to agent {}. Choose the agent's skills or change the step.",
-                    source.name, step.name, agent.name
+    let ids = graph_step_ids(source);
+    let links = match graph_links(source, &ids) {
+        Ok(links) => links,
+        Err(message) => {
+            return GraphWorkflowImport::NeedsChoice {
+                dependencies: fallback_dependencies,
+                message,
+            };
+        }
+    };
+    let workflow = WorkflowFile {
+        format: 1,
+        id: imported_workflow_id(file, &source.name),
+        name: source.name.clone(),
+        description: Some("Imported from a declared project workflow.".to_owned()),
+        steps: graph_steps(source, &ids, &resolved),
+        links,
+        extra: imported_workflow_extra(),
+    };
+    let problems: Vec<_> = check_to_run(&workflow)
+        .into_iter()
+        .filter(|note| note.level == Level::Problem)
+        .map(|note| note.message)
+        .collect();
+    if !problems.is_empty() {
+        return GraphWorkflowImport::NeedsChoice {
+            dependencies: resolved.dependencies,
+            message: format!(
+                "The {} workflow cannot run as imported. {}",
+                source.name,
+                problems.join(" ")
+            ),
+        };
+    }
+    GraphWorkflowImport::Ready {
+        workflow,
+        dependencies: resolved.dependencies,
+    }
+}
+
+fn resolve_graph_inputs<'a>(
+    agents: &'a [Agent],
+    skills: &[super::SkillDraft],
+    source: &adapters::GraphWorkflow,
+) -> GraphInputs<'a> {
+    let mut dependencies = Vec::new();
+    let mut native_agents = Vec::with_capacity(source.steps.len());
+    let mut selected_skills = Vec::with_capacity(source.steps.len());
+    let mut missing = false;
+
+    for step in &source.steps {
+        let agent = match resolve_declared_agent(agents, &step.role) {
+            DeclaredAgent::Found(agent) => {
+                dependencies.push(format!("agent:{}", agent.id));
+                Some(agent)
+            }
+            DeclaredAgent::Missing => {
+                dependencies.push(format!("agent:{}", step.role));
+                missing = true;
+                None
+            }
+            DeclaredAgent::Ambiguous(candidates) => {
+                let names = joined_names(candidates.iter().map(|agent| agent.name.as_str()));
+                return GraphInputs::NeedsChoice(format!(
+                    "The {} workflow uses role `{}`, but it matches more than one imported agent: {names}. Choose one agent for {}.",
+                    source.name, step.role, step.name
                 ));
             }
-            if !skills.iter().any(|skill| skill.name == *selected) {
-                missing_skill = true;
+        };
+        let selected = match resolve_graph_step_skills(skills, agent, step, &source.name) {
+            Ok(selected) => selected,
+            Err(message) => return GraphInputs::NeedsChoice(message),
+        };
+        dependencies.extend(selected.dependencies);
+        missing |= selected.missing;
+        native_agents.push(agent);
+        selected_skills.push(selected.names);
+    }
+    dependencies.sort();
+    dependencies.dedup();
+    if missing {
+        return GraphInputs::Missing(dependencies);
+    }
+    GraphInputs::Ready(ResolvedGraph {
+        agents: native_agents.into_iter().flatten().collect(),
+        skills: selected_skills,
+        dependencies,
+    })
+}
+
+fn resolve_graph_step_skills(
+    skills: &[super::SkillDraft],
+    agent: Option<&Agent>,
+    step: &adapters::GraphAgentStep,
+    workflow_name: &str,
+) -> std::result::Result<ResolvedStepSkills, String> {
+    let mut resolved = ResolvedStepSkills {
+        names: Vec::new(),
+        dependencies: Vec::new(),
+        missing: false,
+    };
+    for selected in step.skills.iter().flatten() {
+        match resolve_imported_skill(skills, selected) {
+            ImportedSkill::Found(skill) => {
+                if let Err(issue) = validate_imported_skill(skill) {
+                    return Err(format!(
+                        "The {workflow_name} workflow selects skill `{selected}`, but that imported skill cannot run: {issue}"
+                    ));
+                }
+                if agent.is_some_and(|agent| {
+                    !agent.skills.iter().any(|assigned| assigned == &skill.name)
+                }) {
+                    let agent_name =
+                        agent.map_or("the selected agent", |agent| agent.name.as_str());
+                    return Err(format!(
+                        "The {workflow_name} workflow assigns skill `{selected}` to {}, but the imported skill is named `{}` and is not assigned to agent {agent_name}. Choose the agent's skills or change the step.",
+                        step.name, skill.name
+                    ));
+                }
+                resolved.dependencies.push(format!("skill:{}", skill.name));
+                resolved.names.push(skill.name.clone());
+            }
+            ImportedSkill::Missing => {
+                resolved.dependencies.push(format!("skill:{selected}"));
+                resolved.names.push(selected.clone());
+                resolved.missing = true;
+            }
+            ImportedSkill::Ambiguous(candidates) => {
+                let names = joined_names(candidates.iter().map(|skill| skill.name.as_str()));
+                return Err(format!(
+                    "The {workflow_name} workflow selects skill `{selected}`, but it matches more than one imported skill: {names}. Choose one skill for {}.",
+                    step.name
+                ));
             }
         }
     }
-    if missing_skill {
-        return Ok(None);
-    }
+    Ok(resolved)
+}
+
+fn graph_step_ids(source: &adapters::GraphWorkflow) -> BTreeMap<String, String> {
     let namespace = slug(&source.name);
-    let ids: BTreeMap<_, _> = source
+    source
         .steps
         .iter()
         .enumerate()
@@ -873,11 +1154,25 @@ fn graph_workflow(
                 format!("{}.{}-{}", namespace, slug(&step.binding), index + 1),
             )
         })
-        .collect();
-    let mut depths = BTreeMap::new();
+        .collect()
+}
+
+fn graph_steps(
+    source: &adapters::GraphWorkflow,
+    ids: &BTreeMap<String, String>,
+    resolved: &ResolvedGraph<'_>,
+) -> Vec<Step> {
+    let namespace = slug(&source.name);
+    let mut depths: BTreeMap<String, u32> = BTreeMap::new();
     let mut lanes: BTreeMap<u32, u32> = BTreeMap::new();
     let mut steps = Vec::with_capacity(source.steps.len());
-    for (index, (declared, agent)) in source.steps.iter().zip(native_agents).enumerate() {
+    for (index, ((declared, agent), selected)) in source
+        .steps
+        .iter()
+        .zip(&resolved.agents)
+        .zip(&resolved.skills)
+        .enumerate()
+    {
         let depth = declared
             .after
             .iter()
@@ -900,10 +1195,11 @@ fn graph_workflow(
             vendor_options: BTreeMap::new(),
             copies: 1,
             instructions: declared.task.clone(),
-            skills: declared
-                .skills
-                .clone()
-                .map_or_else(Skills::default, Skills::Only),
+            skills: if selected.is_empty() {
+                Skills::default()
+            } else {
+                Skills::Only(selected.clone())
+            },
             borrow: crate::workflow::Borrow::default(),
             folder: declared_folder(&declared.folder),
             handover: Handover::Plain(PlainNotes::Notes),
@@ -912,14 +1208,27 @@ fn graph_workflow(
             extra: Map::new(),
         }));
     }
+    steps
+}
+
+fn graph_links(
+    source: &adapters::GraphWorkflow,
+    ids: &BTreeMap<String, String>,
+) -> std::result::Result<Vec<Link>, String> {
     let mut links = Vec::new();
     for step in &source.steps {
         for predecessor in &step.after {
             let Some(from) = ids.get(predecessor) else {
-                return Ok(None);
+                return Err(format!(
+                    "The {} workflow says {} runs after `{predecessor}`, but that earlier step was not declared. Choose the intended order.",
+                    source.name, step.name
+                ));
             };
             let Some(to) = ids.get(&step.binding) else {
-                return Ok(None);
+                return Err(format!(
+                    "The {} workflow contains a step without a stable name. Choose how to represent {}.",
+                    source.name, step.name
+                ));
             };
             links.push(Link {
                 from: from.clone(),
@@ -928,15 +1237,11 @@ fn graph_workflow(
             });
         }
     }
-    Ok(Some(WorkflowFile {
-        format: 1,
-        id: imported_workflow_id(file, &source.name),
-        name: source.name.clone(),
-        description: Some("Imported from a declared project workflow.".to_owned()),
-        steps,
-        links,
-        extra: imported_workflow_extra(),
-    }))
+    Ok(links)
+}
+
+fn joined_names<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+    names.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 fn routine_workflow(
@@ -992,11 +1297,48 @@ fn declared_folder(folder: &str) -> Folder {
     }
 }
 
-fn find_declared_agent<'a>(agents: &'a [Agent], role: &str) -> Option<&'a Agent> {
+fn resolve_declared_agent<'a>(agents: &'a [Agent], role: &str) -> DeclaredAgent<'a> {
     let wanted = slug(role);
     let mut matches = agents.iter().filter(|agent| slug(&agent.name) == wanted);
-    let found = matches.next()?;
-    matches.next().is_none().then_some(found)
+    let Some(found) = matches.next() else {
+        return DeclaredAgent::Missing;
+    };
+    let Some(second) = matches.next() else {
+        return DeclaredAgent::Found(found);
+    };
+    let mut candidates = vec![found, second];
+    candidates.extend(matches);
+    DeclaredAgent::Ambiguous(candidates)
+}
+
+fn resolve_imported_skill<'a>(
+    skills: &'a [super::SkillDraft],
+    selected: &str,
+) -> ImportedSkill<'a> {
+    let mut matches = skills
+        .iter()
+        .filter(|skill| skill.name.eq_ignore_ascii_case(selected));
+    let Some(found) = matches.next() else {
+        return ImportedSkill::Missing;
+    };
+    let Some(second) = matches.next() else {
+        return ImportedSkill::Found(found);
+    };
+    let mut candidates = vec![found, second];
+    candidates.extend(matches);
+    ImportedSkill::Ambiguous(candidates)
+}
+
+fn validate_imported_skill(skill: &super::SkillDraft) -> std::result::Result<(), String> {
+    let source = skill.source_dir.join("SKILL.md");
+    let text = fs::read_to_string(&source).map_err(|_| {
+        format!(
+            "Loadout could not read the definition for skill `{}`.",
+            skill.name
+        )
+    })?;
+    let document = crate::skills::place::read_doc(&text);
+    crate::skills::place::validate_usable(&skill.name, &document).map_err(|issues| issues.join(" "))
 }
 
 fn imported_workflow_id(file: &super::discover::InspectedFile, name: &str) -> String {

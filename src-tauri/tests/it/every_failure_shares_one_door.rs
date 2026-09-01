@@ -582,7 +582,11 @@ async fn remove_source_handoff(project: &Path) -> anyhow::Result<()> {
                 };
                 for file in files.flatten() {
                     let path = file.path();
-                    if fs::read_to_string(&path).is_ok_and(|text| text.contains("\nfrom: Source\n"))
+                    // 2026-08-28 — publisher zapisuje pełny named temp w tym samym katalogu.
+                    // Sabotaż ma usunąć opublikowany wynik Source, nie stan przed commit pointem.
+                    if path.extension().is_some_and(|extension| extension == "md")
+                        && fs::read_to_string(&path)
+                            .is_ok_and(|text| text.contains("\nfrom: Source\n"))
                     {
                         fs::remove_file(path)?;
                         return Ok(());

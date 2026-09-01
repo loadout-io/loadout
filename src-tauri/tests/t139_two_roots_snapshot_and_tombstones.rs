@@ -552,7 +552,6 @@ async fn run_and_assert_project(
 
 struct FrozenFixture {
     note_path: PathBuf,
-    original: String,
     edited: String,
 }
 
@@ -563,11 +562,7 @@ impl FrozenFixture {
         let note_path = project.join(".loadout/memory/notes/frozen.md");
         fs::create_dir_all(note_path.parent().ok_or("frozen note has no parent")?)?;
         fs::write(&note_path, &original)?;
-        Ok(Self {
-            note_path,
-            original,
-            edited,
-        })
+        Ok(Self { note_path, edited })
     }
 
     fn hook(

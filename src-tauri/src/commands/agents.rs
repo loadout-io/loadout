@@ -15,7 +15,7 @@
 use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
 
-use crate::library::agents::{Agent, AgentError, read_agent_file, write_agent_file};
+use crate::library::agents::{Agent, AgentError, read_agent_directory, write_agent_file};
 
 /// Katalog agentów wewnątrz biblioteki: `~/.loadout/agents/` (`docs/ARCHITECTURE.md` §8).
 ///
@@ -44,37 +44,10 @@ fn refused(path: &Path, detail: &str) -> AgentError {
 /// leżałby pod nazwą, której ta warstwa by nie zgadła. Odpowiedź daje **odczyt**, nie zgadywanie.
 fn saved(home: &Path) -> Result<Vec<(PathBuf, Agent)>, AgentError> {
     let dir = home.join(AGENTS_DIR);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        // Biblioteka, w której nikt jeszcze nikogo nie zapisał, ma zero agentów, a nie błąd.
-        // Pusta sekcja Agenci przy pierwszym uruchomieniu jest prawdą; czerwony pasek nie jest.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(refused(&dir, &error.to_string())),
-    };
-
-    // Płasko i wyłącznie `.md`: w katalogu biblioteki potrafi wylądować `.DS_Store` albo kopia
-    // zapasowa z edytora, a spacer po drzewie zwróciłby je jako agentów.
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    // Sortujemy ŚCIEŻKI, nie wynik: kolejność, w jakiej system plików oddaje wpisy, nie jest
-    // niczyją obietnicą, a lista, która przy każdym otwarciu sekcji układa się inaczej, wygląda
-    // jak lista, która się zmieniła.
-    paths.sort();
-
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
-        // Nieczytelny plik agenta **przewraca całą listę**, i to jest różnica wobec notatek
-        // (`memory::notes::scan_notes` pomija je z wpisem w dzienniku). Plik agenta pisze
-        // człowiek i literówka ma zaboleć od razu, z nazwą pliku w zdaniu [T4 §10] — cicho
-        // pominięty agent znika z listy i z workflow, który go woła, a jedyny ślad zostaje
-        // w dzienniku, którego nikt nie czyta.
-        let agent = read_agent_file(&path)?;
-        out.push((path, agent));
-    }
-    Ok(out)
+    read_agent_directory(&dir)?
+        .into_iter()
+        .map(|(path, agent)| agent.map(|agent| (path, agent)))
+        .collect()
 }
 
 /// Wszyscy zapisani agenci, po jednym na plik.

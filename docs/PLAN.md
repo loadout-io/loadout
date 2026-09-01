@@ -179,16 +179,16 @@ worktree nie mają pełnego resource envelope.
 | **T-153** | Równoległe gałęzie składają pliki i zachowują fizyczną lineage kopii | full | T-201 |
 | **T-154** | Rerun, prompt i capability używają dokładnie zadeklarowanego stagingu | direct | T-151, T-153, T-155, T-156, T-210 |
 | **T-155** | Backend ma jeden adresowany bieg per workspace i jeden globalny limiter | full | T-151, T-152, T-153, T-156, T-201, T-203, T-210 |
-| **T-156** | Native output, prywatny stan i zamknięte zasoby mają skończony lifecycle | full | T-201, T-210 |
+| **T-156** | Native output, evidence i zamknięte zasoby mają skończony lifecycle | full | T-201, T-210 |
 | **T-157** | Connection odmawia literalnych sekretów w args i URL | direct | T-150 |
-| **T-158** | Lokalny log jest prywatny, rotowany i ograniczony | direct | T-155 |
+| **T-158** | Lokalny log jest prywatny, rotowany i ograniczony także po upgrade | direct | T-210 |
 | **T-201** | Naturalny i wymuszony koniec zachowuje ownership do ESRCH | full | T-152 |
 | **T-202** | Jeden durable publisher obsługuje workflow, agenta, handoff i attachment | full | T-150 |
 | **T-210** | Równoległy writer handoffu nie usuwa aktywnego tempa sąsiada | direct, stacked | implementacja T-202 |
 | **T-203** | Zepsuta definicja jest osobnym problemem, a zdrowa biblioteka działa | direct | T-210 |
 | **T-204** | Frontend kluczuje stan terminalem, workspace'em, runem i fizycznym krokiem | direct | T-154, T-155, T-156 |
-| **T-205** | Instrukcje i rozwiązane sekrety mają prywatny, bounded transport | full | T-154, T-156, T-157 |
-| **T-206** | Deterministyczna odmowa triggera przechodzi w durable quarantine | direct | T-155 |
+| **T-205** | Instrukcje, rozwiązane sekrety i prywatny stan sesji mają bounded transport | full | T-154, T-156, T-157 |
+| **T-206** | Wspólny preflight składa rustowy task i utrwala deterministyczną kwarantannę | full | T-155, T-158, T-205 |
 | **T-207** | Receipt rozdziela terminalność/evidence i dowodzi provenance oraz kosztu | direct | T-154, T-155, T-201, T-205, T-206 |
 | **T-208** | Każdy start ma jawny cost limit i bezpieczny próg dysku | full | T-204, T-206, T-207 |
 | **T-209** | Historyczne izolacje są odzyskiwane wyłącznie z dowodem | full | T-153, T-155, T-201, T-207 |
@@ -198,12 +198,12 @@ worktree nie mają pełnego resource envelope.
 ```text
 Gotowe:   T-150, T-151, T-157
 Fala A0:  T-202 + T-210 (jeden stack, T-202 nie ląduje osobno)
-Fala B:   T-152  || T-203
+Fala B:   T-152  || T-158  || T-203
 Fala C:   T-201
 Fala D1:  T-153
 Fala D2:  T-156
 Fala E:   T-155
-Fala F:   T-154  || T-158
+Fala F:   T-154
 Fala G1:  T-204  || T-205
 Fala G2:  T-206
 Fala H:   T-207
@@ -211,9 +211,11 @@ Fala I:   T-208  || T-209
 ```
 
 T-153 i T-156 są semantycznie niezależne po T-201, ale oba aktualizują
-`docs/ARCHITECTURE.md`, więc nie powstają jako równoległe worktree. T-205 i T-206 współdzielą
-`commands/run.rs`; najpierw ląduje prywatny transport, potem kwarantanna triggera. To są jawne
-cięcia wynikające z `OWNS`, nie sztuczne zależności produktu.
+`docs/ARCHITECTURE.md`, więc nie powstają jako równoległe worktree. T-158 korzysta już z rdzenia
+T-210 i ma rozłączne `OWNS` z T-152/T-203, dlatego domyka log równolegle w fali B. T-206 używa
+polityki sekretów T-205 i współdzieli z nim `commands/run.rs`; prywatny transport ląduje więc
+przed kwarantanną triggera. To są jawne cięcia semantyczne albo wynikające z `OWNS`, nie sztuczne
+zależności produktu.
 
 Kod i lekkie testy w jednej fali mogą zachodzić na siebie. Każde Cargo, `verify.sh` oraz
 `integrate.sh` wchodzi do jednej kolejki. Worktree następnej zależnej fali powstaje z exact SHA po

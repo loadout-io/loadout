@@ -33,6 +33,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError};
+use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
+
 use crate::engine::drivers::Policy;
 use crate::workflow::check::{escalation_in, is_reserved};
 
@@ -523,9 +526,67 @@ fn look_for_a_null(value: &Value, path: &str) -> Result<(), AgentError> {
 /// Treść jest instrukcjami i **tylko** treść nimi jest. Klucz `instructions` we
 /// front-matterze dawałby dwa źródła prawdy dla najdłuższego pola definicji [T4 §5.1].
 pub fn read_agent_file(path: &Path) -> Result<Agent, AgentError> {
-    let text = std::fs::read_to_string(path).map_err(|error| refused(path, &error.to_string()))?;
+    let bytes = std::fs::read(path).map_err(|error| refused(path, &error.to_string()))?;
+    read_agent_snapshot(path, &bytes)
+}
 
-    let (front, body) = front_and_body(&text).ok_or_else(|| {
+/// Jedno descriptor-bound źródło biblioteki dla ekranu i Startu. Wynik zachowuje błąd per plik,
+/// bo ekran dziś odmawia całej listy, a Run może nadal znaleźć zdrowego, wskazanego agenta obok.
+pub type AgentLibraryEntry = (PathBuf, Result<Agent, AgentError>);
+
+pub fn read_agent_directory(dir: &Path) -> Result<Vec<AgentLibraryEntry>, AgentError> {
+    let publisher = DurableFilePublisher::new(dir);
+    let mut listed = None;
+    match publisher.recover_with(|root| {
+        listed = Some(read_agent_directory_from_root(root, dir));
+        Ok(())
+    }) {
+        Ok(()) => {
+            listed.ok_or_else(|| refused(dir, "the recovered agent library was not listed"))?
+        }
+        Err(PublishError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Vec::new())
+        }
+        Err(error) => Err(refused(dir, &error.to_string())),
+    }
+}
+
+fn read_agent_directory_from_root(
+    root: &PublicationRoot,
+    dir: &Path,
+) -> Result<Vec<AgentLibraryEntry>, AgentError> {
+    let mut names = root
+        .list_directory(Path::new(""))
+        .map_err(|error| refused(dir, &error.to_string()))?
+        .into_iter()
+        .filter(|entry| {
+            entry.kind == PublicationEntryKind::Regular
+                && Path::new(&entry.name)
+                    .extension()
+                    .is_some_and(|ext| ext == "md")
+        })
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    names.sort();
+
+    let mut out = Vec::with_capacity(names.len());
+    for file_name in names {
+        let path = dir.join(&file_name);
+        let agent = root
+            .read_regular(Path::new(&file_name), false)
+            .map_err(|error| refused(&path, &error.to_string()))
+            .and_then(|bytes| read_agent_snapshot(&path, &bytes));
+        out.push((path, agent));
+    }
+    Ok(out)
+}
+
+/// Wariant dla produkcyjnego listowania, które trzyma deskryptor katalogu od recovery aż do
+/// parsera. `path` służy wyłącznie bezpiecznej nazwie w odmowie; bajty nie są otwierane drugi raz.
+pub(crate) fn read_agent_snapshot(path: &Path, bytes: &[u8]) -> Result<Agent, AgentError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| refused(path, &error.to_string()))?;
+
+    let (front, body) = front_and_body(text).ok_or_else(|| {
         refused(
             path,
             "an agent file is three dashes, then its settings, then three dashes, then what \
@@ -679,7 +740,13 @@ pub fn write_agent_file(dir: &Path, agent: &Agent) -> Result<PathBuf, AgentError
     text.push_str(body);
 
     std::fs::create_dir_all(dir).map_err(|error| refused(&path, &error.to_string()))?;
-    std::fs::write(&path, text).map_err(|error| refused(&path, &error.to_string()))?;
+    DurableFilePublisher::new(dir)
+        .atomic_replace(
+            &path,
+            text.as_bytes(),
+            ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+        )
+        .map_err(|error| refused(&path, &error.to_string()))?;
     Ok(path)
 }
 

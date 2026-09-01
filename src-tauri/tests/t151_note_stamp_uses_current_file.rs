@@ -165,10 +165,10 @@ fn concurrent_move_owns_the_source_until_the_stamp_rechecks_it() -> Result<(), B
     };
 
     let _ = release_move.send(());
-    let moved = mover
+    let move_result = mover
         .join()
         .map_err(|_| "the production Move thread panicked")?;
-    moved?;
+    move_result?;
     let run_result = runner
         .join()
         .map_err(|_| "the production Run thread panicked")?
@@ -185,7 +185,7 @@ fn concurrent_move_owns_the_source_until_the_stamp_rechecks_it() -> Result<(), B
     );
     assert_eq!(
         fs::read_to_string(target)?,
-        original_note(&NotePlace::Library)
+        original_note(NotePlace::Library)
     );
     assert_frozen_run(&report, &prompts)?;
     Ok(())
@@ -257,11 +257,11 @@ impl Scene {
         fs::create_dir_all(project.path().join(".loadout/memory/notes"))?;
         fs::write(home.join("agents/t151-builder.md"), AGENT)?;
         fs::write(home.join("workflows/t151.json"), WORKFLOW)?;
-        let source = match &place {
+        let source = match place {
             NotePlace::Library => home.join("memory/notes/frozen.md"),
             NotePlace::Project => project.path().join(".loadout/memory/notes/frozen.md"),
         };
-        fs::write(&source, original_note(&place))?;
+        fs::write(&source, original_note(place))?;
         Ok(Self {
             _root: root,
             home,
@@ -279,7 +279,11 @@ impl Scene {
         Arc::new(move |prompt| {
             assert!(prompt.contains(ORIGINAL_RULE));
             assert!(!prompt.contains(CURRENT_RULE));
-            fs::write(&source, &current).expect("the T151 hook must edit the live note");
+            let write = fs::write(&source, &current);
+            assert!(
+                write.is_ok(),
+                "the T151 hook must edit the live note: {write:?}"
+            );
         })
     }
 
@@ -288,7 +292,11 @@ impl Scene {
         let target = self.project_memory().join("notes/frozen.md");
         Arc::new(move |prompt| {
             assert!(prompt.contains(ORIGINAL_RULE));
-            fs::write(&source, &current).expect("the T151 hook must edit before Move");
+            let write = fs::write(&source, &current);
+            assert!(
+                write.is_ok(),
+                "the T151 hook must edit before Move: {write:?}"
+            );
             let mut io = RealMoveIo;
             let moved = move_note_file_with_io(&mut io, &source, &target);
             assert!(
@@ -304,7 +312,11 @@ impl Scene {
         let project = self.project.path().to_owned();
         Arc::new(move |prompt| {
             assert!(prompt.contains(ORIGINAL_RULE));
-            fs::write(&source, &current).expect("the T151 hook must edit before Discard");
+            let write = fs::write(&source, &current);
+            assert!(
+                write.is_ok(),
+                "the T151 hook must edit before Discard: {write:?}"
+            );
             let address = NoteAddress {
                 place: NotePlace::Project,
                 id: "frozen".to_owned(),
@@ -361,7 +373,7 @@ impl Scene {
     }
 }
 
-fn original_note(place: &NotePlace) -> String {
+fn original_note(place: NotePlace) -> String {
     let scope = match place {
         NotePlace::Library => "everywhere",
         NotePlace::Project => "this-project",

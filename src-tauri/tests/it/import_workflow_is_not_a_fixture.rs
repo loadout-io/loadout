@@ -136,6 +136,14 @@ fn arbitrary_role_names_and_source_edges_make_a_native_workflow() -> Result<(), 
     );
     let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
     assert!(
+        preview.draft.items.iter().all(|candidate| {
+            candidate.kind != ItemKind::Workflow
+                || candidate.status != ImportStatus::Ready
+                || candidate.target.is_some()
+        }),
+        "a Ready workflow without a generated target would fail only after the person approves the import"
+    );
+    assert!(
         item.dependencies.contains(&format!("skill:{SKILL}")),
         "a step-level skill must remain a workflow dependency instead of failing later at Start"
     );
@@ -197,13 +205,45 @@ fn a_step_cannot_select_a_skill_not_assigned_to_its_agent() -> Result<(), Box<dy
 }
 
 #[test]
-fn step_skill_identity_matches_the_runtime_exactly() -> Result<(), Box<dyn Error>> {
+fn source_skill_case_is_normalized_to_the_runtime_identity() -> Result<(), Box<dyn Error>> {
     let repo = tempfile::tempdir()?;
     write_roles(repo.path())?;
     write_skill(repo.path())?;
     let mismatched = SKILL.to_ascii_uppercase();
     let source = SOURCE.replace(SKILL, &mismatched);
     write_source(repo.path(), SOURCE_PATH, &source)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    let workflow = preview
+        .draft
+        .workflows
+        .iter()
+        .find(|workflow| workflow.name == WORKFLOW_NAME)
+        .ok_or("a case-only source spelling did not resolve to the imported skill")?;
+    let selected = workflow.steps.iter().find_map(|step| match step {
+        Step::Agent(step) if step.name == "Maker" => Some(&step.skills),
+        Step::Agent(_) | Step::Check(_) | Step::Checkpoint(_) | Step::Serve(_) => None,
+    });
+    assert_eq!(selected, Some(&Skills::Only(vec![SKILL.to_owned()])));
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::Ready);
+    assert!(item.target.is_some());
+    assert!(item.dependencies.contains(&format!("skill:{SKILL}")));
+    assert!(
+        !item.dependencies.contains(&format!("skill:{mismatched}")),
+        "the generated workflow must carry the canonical library name, not a source-only spelling"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_skill_that_the_runtime_would_reject_never_makes_a_ready_workflow() -> Result<(), Box<dyn Error>>
+{
+    let repo = tempfile::tempdir()?;
+    write_roles_with_maker_skill(repo.path(), &SKILL.to_ascii_uppercase())?;
+    let invalid = SKILL.to_ascii_uppercase();
+    write_named_skill(repo.path(), &invalid)?;
+    write_source(repo.path(), SOURCE_PATH, &SOURCE.replace(SKILL, &invalid))?;
 
     let preview = loadout_lib::import::translate::preview(repo.path())?;
     assert!(
@@ -216,7 +256,108 @@ fn step_skill_identity_matches_the_runtime_exactly() -> Result<(), Box<dyn Error
     let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
     assert_eq!(item.status, ImportStatus::NeedsChoice);
     assert!(item.target.is_none());
-    assert!(item.status_message.contains(&mismatched));
+    assert!(item.status_message.contains(&invalid));
+    assert!(
+        item.status_message
+            .to_ascii_lowercase()
+            .contains("cannot run"),
+        "the import screen must explain that the selected skill is unusable. It said: {}",
+        item.status_message
+    );
+    Ok(())
+}
+
+#[test]
+fn a_runtime_usable_vendor_skill_field_does_not_block_the_workflow() -> Result<(), Box<dyn Error>> {
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_named_skill_with_extra(repo.path(), SKILL, "user-invocable: true\n")?;
+    write_source(repo.path(), SOURCE_PATH, SOURCE)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::Ready);
+    assert!(item.target.is_some());
+    assert!(
+        preview
+            .draft
+            .workflows
+            .iter()
+            .any(|workflow| workflow.name == WORKFLOW_NAME),
+        "the importer must use the same usable-skill contract as Start, not the stricter publishing contract"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_slug_equivalent_role_resolves_once_and_depends_on_the_native_agent()
+-> Result<(), Box<dyn Error>> {
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_named_role(repo.path(), "maker.md", "maker role", SKILL)?;
+    write_skill(repo.path())?;
+    let source = SOURCE.replace("agent(\"maker\"", "agent(\"maker_role\"");
+    write_source(repo.path(), SOURCE_PATH, &source)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::Ready);
+    assert!(item.target.is_some());
+    assert!(
+        !item.dependencies.contains(&"agent:maker_role".to_owned()),
+        "a reconstructed workflow must depend on the resolved native id, not the source spelling"
+    );
+    assert!(item.dependencies.iter().any(|dependency| {
+        dependency
+            .strip_prefix("agent:")
+            .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok())
+    }));
+    Ok(())
+}
+
+#[test]
+fn two_agents_with_the_same_role_identity_require_a_named_choice() -> Result<(), Box<dyn Error>> {
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_named_role(repo.path(), "maker.md", "maker_role", SKILL)?;
+    write_named_role(repo.path(), "maker-two.md", "maker-role", SKILL)?;
+    write_skill(repo.path())?;
+    let source = SOURCE.replace("agent(\"maker\"", "agent(\"maker_role\"");
+    write_source(repo.path(), SOURCE_PATH, &source)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::NeedsChoice);
+    assert!(item.target.is_none());
+    assert!(
+        item.status_message.contains("maker_role")
+            && item.status_message.contains("maker-role")
+            && item.status_message.contains("Maker"),
+        "the choice must name the source role, both candidates, and the visible step. It said: {}",
+        item.status_message
+    );
+    Ok(())
+}
+
+#[test]
+fn a_parallel_graph_that_would_share_the_project_folder_is_not_ready() -> Result<(), Box<dyn Error>>
+{
+    let repo = tempfile::tempdir()?;
+    write_roles(repo.path())?;
+    write_skill(repo.path())?;
+    let source = SOURCE.replace("    folder: \"fresh-copy\"\n", "");
+    write_source(repo.path(), SOURCE_PATH, &source)?;
+
+    let preview = loadout_lib::import::translate::preview(repo.path())?;
+    let item = item_from(&preview.draft.items, Path::new(SOURCE_PATH))?;
+    assert_eq!(item.status, ImportStatus::NeedsChoice);
+    assert!(item.target.is_none());
+    let message = item.status_message.to_ascii_lowercase();
+    assert!(
+        message.contains("same time") && message.contains("fresh copy"),
+        "the import screen must show the same folder collision that would stop Run. It said: {}",
+        item.status_message
+    );
     Ok(())
 }
 
@@ -258,21 +399,41 @@ fn an_unrepresentable_branch_stays_named_and_unresolved() -> Result<(), Box<dyn 
 }
 
 fn write_roles(root: &Path) -> Result<(), Box<dyn Error>> {
+    write_roles_with_maker_skill(root, SKILL)
+}
+
+fn write_roles_with_maker_skill(root: &Path, maker_skill: &str) -> Result<(), Box<dyn Error>> {
     let agents = root.join(".claude/agents");
     fs::create_dir_all(&agents)?;
     for role in ROLES {
-        let skills = if role == "maker" {
-            "skills: [assembly-guide]\n"
+        let skills = if role == "maker" { maker_skill } else { "" };
+        let skill_field = if skills.is_empty() {
+            String::new()
         } else {
-            ""
+            format!("skills: [{skills}]\n")
         };
         fs::write(
             agents.join(format!("{role}.md")),
             format!(
-                "---\nname: {role}\ndescription: Does the {role} part\nmodel: sonnet\ntools: [Read, Write]\n{skills}---\nDo the {role} work.\n"
+                "---\nname: {role}\ndescription: Does the {role} part\nmodel: sonnet\ntools: [Read, Write]\n{skill_field}---\nDo the {role} work.\n"
             ),
         )?;
     }
+    Ok(())
+}
+
+fn write_named_role(
+    root: &Path,
+    file: &str,
+    name: &str,
+    skill: &str,
+) -> Result<(), Box<dyn Error>> {
+    fs::write(
+        root.join(".claude/agents").join(file),
+        format!(
+            "---\nname: {name}\ndescription: Does the maker part\nmodel: sonnet\ntools: [Read, Write]\nskills: [{skill}]\n---\nDo the maker work.\n"
+        ),
+    )?;
     Ok(())
 }
 
@@ -281,12 +442,20 @@ fn write_skill(root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn write_named_skill(root: &Path, name: &str) -> Result<(), Box<dyn Error>> {
+    write_named_skill_with_extra(root, name, "")
+}
+
+fn write_named_skill_with_extra(
+    root: &Path,
+    name: &str,
+    extra: &str,
+) -> Result<(), Box<dyn Error>> {
     let skill = root.join(".agents/skills").join(name);
     fs::create_dir_all(&skill)?;
     fs::write(
         skill.join("SKILL.md"),
         format!(
-            "---\nname: {name}\ndescription: Builds the delivery consistently\n---\nFollow the delivery conventions.\n"
+            "---\nname: {name}\ndescription: Builds the delivery consistently\n{extra}---\nFollow the delivery conventions.\n"
         ),
     )?;
     Ok(())

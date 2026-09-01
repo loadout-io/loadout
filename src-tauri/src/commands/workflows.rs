@@ -16,6 +16,8 @@ use std::borrow::Borrow;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::durable_file::{DurableFilePublisher, PublishError};
+use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
 use crate::workflow::WorkflowFile;
 use crate::workflow::check::Note;
 use crate::workflow::file::{LoadError, SaveError};
@@ -91,7 +93,22 @@ pub fn save_workflow_inner(
 /// Wczytuje workflow spod `file_name` w bibliotece.
 pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<WorkflowFile, LoadError> {
     let path = in_library(home, file_name).map_err(LoadError::Unreadable)?;
-    crate::workflow::file::load(&path)
+    let dir = home.join(WORKFLOWS_DIR);
+    let publisher = DurableFilePublisher::new(&dir);
+    let mut loaded = None;
+    publisher
+        .recover_with(|root| {
+            loaded = Some(
+                root.read_regular(Path::new(file_name), false)
+                    .map_err(LoadError::Unreadable)
+                    .and_then(|bytes| crate::workflow::file::load_snapshot(&path, &bytes)),
+            );
+            Ok(())
+        })
+        .map_err(|error| LoadError::Unreadable(error.into_io()))?;
+    loaded.ok_or_else(|| {
+        LoadError::Unreadable(io::Error::other("the recovered workflow file was not read"))
+    })?
 }
 
 /// Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą.
@@ -102,40 +119,58 @@ pub fn load_workflow_inner(home: &Path, file_name: &str) -> Result<WorkflowFile,
 /// widzi, że jego workflow przepadł — i tworzy go od nowa obok tego, który leży na dysku.
 pub fn list_workflows_inner(home: &Path) -> Result<Vec<WorkflowEntry>, LoadError> {
     let dir = home.join(WORKFLOWS_DIR);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        // Biblioteka bez ani jednego zapisanego workflow ma zero pozycji, a nie błąd.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(LoadError::Unreadable(error)),
-    };
+    let publisher = DurableFilePublisher::new(&dir);
+    let mut listed = None;
+    match publisher.recover_with(|root| {
+        listed = Some(list_workflows_from_root(root, &dir));
+        Ok(())
+    }) {
+        Ok(()) => listed.ok_or_else(|| {
+            LoadError::Unreadable(io::Error::other(
+                "the recovered workflow library was not listed",
+            ))
+        })?,
+        // Biblioteka bez katalogu pozostaje legalnie pusta. Recovery rozróżnia ten przypadek
+        // od symlinka lub pliku podstawionego pod nazwę kontrolowanego katalogu.
+        Err(PublishError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(LoadError::Unreadable(error.into_io())),
+    }
+}
 
-    // Wyłącznie `.json`, więc `.json.bak` odłożony przez migrację (`file::migrated`) nie wraca
-    // na listę jako drugi, starszy workflow o tej samej nazwie.
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    // Kolejność, w jakiej system plików oddaje wpisy, nie jest niczyją obietnicą. Sortowanie na
-    // ekranie robi magazyn listy (po nazwie, bez wielkości liter); tutaj chodzi tylko o to, żeby
-    // dwa wywołania na tym samym katalogu dały tę samą kolejność.
-    paths.sort();
+fn list_workflows_from_root(
+    root: &PublicationRoot,
+    dir: &Path,
+) -> Result<Vec<WorkflowEntry>, LoadError> {
+    // Wyłącznie regularne `.json`, więc symlink oraz `.json.bak` nie stają się definicją.
+    let mut names = root
+        .list_directory(Path::new(""))
+        .map_err(LoadError::Unreadable)?
+        .into_iter()
+        .filter(|entry| {
+            entry.kind == PublicationEntryKind::Regular
+                && Path::new(&entry.name)
+                    .extension()
+                    .is_some_and(|ext| ext == "json")
+        })
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    names.sort();
 
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
-        let workflow = crate::workflow::file::load(&path)?;
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            // Nazwa pliku, która nie jest tekstem w UTF-8, nie da się odesłać do okna jako
-            // `path` — a pozycja bez nazwy pliku jest pozycją, której nie da się ani zapisać,
-            // ani usunąć.
-            return Err(LoadError::Unreadable(io::Error::new(
+    let mut out = Vec::with_capacity(names.len());
+    for file_name in names {
+        let path = dir.join(&file_name);
+        let name = file_name.to_str().ok_or_else(|| {
+            LoadError::Unreadable(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{} is not a name Loadout can read", path.display()),
-            )));
-        };
+            ))
+        })?;
+        let bytes = root
+            .read_regular(Path::new(&file_name), false)
+            .map_err(LoadError::Unreadable)?;
         out.push(WorkflowEntry {
             path: name.to_owned(),
-            workflow,
+            workflow: crate::workflow::file::load_snapshot(&path, &bytes)?,
         });
     }
     Ok(out)

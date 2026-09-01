@@ -44,6 +44,9 @@ pub mod import;
 /// Polaczenia narzedziowe zarzadzane przez Loadout. Wypelnia T-75.
 pub mod connections;
 
+/// Trwała publikacja plików będących prawdą: jeden rdzeń replace i create-if-absent.
+pub mod durable_file;
+
 /// Granica z oknem: pompa sklejajaca i kanal do webviewa. Wypelnia T-07.
 pub mod ipc;
 

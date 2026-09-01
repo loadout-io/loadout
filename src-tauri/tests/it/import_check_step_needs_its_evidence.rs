@@ -20,7 +20,7 @@ const COMMAND: &str = "./verify.sh quick";
 const PROOF: &str = r"(\d+) passed";
 const QUESTION: &str = "Ship this release?";
 
-const EXACT_SOURCE: &str = r#"---
+const EXACT_SOURCE: &str = r"---
 name: Release Train
 description: Check the release, then ask a person
 ---
@@ -33,7 +33,141 @@ command: `./verify.sh quick`
 proof: `(\d+) passed`
 
 question: `Ship this release?`
-"#;
+";
+
+const UNRESOLVED_CASES: [(&str, &str, &str); 12] = [
+    (
+        "prohibited-check",
+        r"---
+name: Prohibited Check
+description: This command is explicitly forbidden
+---
+Do not run `./verify.sh full`; there is no such check in this setup.
+proof: `(\d+) passed`
+",
+        "./verify.sh full",
+    ),
+    (
+        "paraphrased-check",
+        r"---
+name: Paraphrased Check
+description: This routine only describes an intention
+---
+Run the quick verification suite and require a passing-test count.
+",
+        "quick verification",
+    ),
+    (
+        "unproved-check",
+        r"---
+name: Unproved Check
+description: This command has no execution proof
+---
+command: `./verify.sh quick`
+",
+        "./verify.sh quick",
+    ),
+    (
+        "loose-command",
+        r"---
+name: Loose Command
+description: Prose is not an executable declaration
+---
+Run `./verify.sh quick` before continuing.
+proof: `(\d+) passed`
+",
+        "./verify.sh quick",
+    ),
+    (
+        "never-rerun",
+        r"---
+name: Never Rerun
+description: A warning must not become a command
+---
+Never rerun `./verify.sh full` after release.
+proof: `(\d+) passed`
+",
+        "./verify.sh full",
+    ),
+    (
+        "task-is-not-command",
+        r"---
+name: Task Is Not Command
+description: A task belongs to an agent
+---
+task: `./verify.sh quick`
+proof: `(\d+) passed`
+",
+        "./verify.sh quick",
+    ),
+    (
+        "unterminated-command",
+        r"---
+name: Unterminated Command
+description: An open code span is ambiguous
+---
+command: `./verify.sh quick
+proof: `(\d+) passed`
+",
+        "./verify.sh quick",
+    ),
+    (
+        "failed-proof",
+        r"---
+name: Failed Proof
+description: A failure count cannot prove success
+---
+command: `./verify.sh quick`
+proof: `(\d+) failed`
+",
+        "failed",
+    ),
+    (
+        "unsafe-proof-suffix",
+        r"---
+name: Unsafe Proof Suffix
+description: A passing fragment does not make an arbitrary pattern safe
+---
+command: `./verify.sh quick`
+proof: `(\d+) passed|.*`
+",
+        "|.*",
+    ),
+    (
+        "indented-command-label",
+        r"---
+name: Indented Command Label
+description: A Markdown code block is not a workflow declaration
+---
+    command: `./verify.sh quick`
+proof: `(\d+) passed`
+",
+        "./verify.sh quick",
+    ),
+    (
+        "two-command-spans",
+        r"---
+name: Two Command Spans
+description: Import cannot choose between two values
+---
+command: `./verify.sh quick` `./verify.sh full`
+proof: `(\d+) passed`
+",
+        "./verify.sh quick",
+    ),
+    (
+        "loose-question",
+        r"---
+name: Loose Question
+description: Approval needs its exact label too
+---
+command: `./verify.sh quick`
+proof: `(\d+) passed`
+Then ask the person: `Ship this release?`
+",
+        "Ship this release?",
+    ),
+];
 
 #[test]
 fn a_literal_command_proof_and_source_become_one_check() -> Result<(), Box<dyn Error>> {
@@ -102,141 +236,7 @@ fn a_literal_command_proof_and_source_become_one_check() -> Result<(), Box<dyn E
 
 #[test]
 fn prohibited_paraphrased_and_unproved_commands_stay_unresolved() -> Result<(), Box<dyn Error>> {
-    let cases = [
-        (
-            "prohibited-check",
-            r#"---
-name: Prohibited Check
-description: This command is explicitly forbidden
----
-Do not run `./verify.sh full`; there is no such check in this setup.
-proof: `(\d+) passed`
-"#,
-            "./verify.sh full",
-        ),
-        (
-            "paraphrased-check",
-            r#"---
-name: Paraphrased Check
-description: This routine only describes an intention
----
-Run the quick verification suite and require a passing-test count.
-"#,
-            "quick verification",
-        ),
-        (
-            "unproved-check",
-            r#"---
-name: Unproved Check
-description: This command has no execution proof
----
-command: `./verify.sh quick`
-"#,
-            "./verify.sh quick",
-        ),
-        (
-            "loose-command",
-            r#"---
-name: Loose Command
-description: Prose is not an executable declaration
----
-Run `./verify.sh quick` before continuing.
-proof: `(\d+) passed`
-"#,
-            "./verify.sh quick",
-        ),
-        (
-            "never-rerun",
-            r#"---
-name: Never Rerun
-description: A warning must not become a command
----
-Never rerun `./verify.sh full` after release.
-proof: `(\d+) passed`
-"#,
-            "./verify.sh full",
-        ),
-        (
-            "task-is-not-command",
-            r#"---
-name: Task Is Not Command
-description: A task belongs to an agent
----
-task: `./verify.sh quick`
-proof: `(\d+) passed`
-"#,
-            "./verify.sh quick",
-        ),
-        (
-            "unterminated-command",
-            r#"---
-name: Unterminated Command
-description: An open code span is ambiguous
----
-command: `./verify.sh quick
-proof: `(\d+) passed`
-"#,
-            "./verify.sh quick",
-        ),
-        (
-            "failed-proof",
-            r#"---
-name: Failed Proof
-description: A failure count cannot prove success
----
-command: `./verify.sh quick`
-proof: `(\d+) failed`
-"#,
-            "failed",
-        ),
-        (
-            "unsafe-proof-suffix",
-            r#"---
-name: Unsafe Proof Suffix
-description: A passing fragment does not make an arbitrary pattern safe
----
-command: `./verify.sh quick`
-proof: `(\d+) passed|.*`
-"#,
-            "|.*",
-        ),
-        (
-            "indented-command-label",
-            r#"---
-name: Indented Command Label
-description: A Markdown code block is not a workflow declaration
----
-    command: `./verify.sh quick`
-proof: `(\d+) passed`
-"#,
-            "./verify.sh quick",
-        ),
-        (
-            "two-command-spans",
-            r#"---
-name: Two Command Spans
-description: Import cannot choose between two values
----
-command: `./verify.sh quick` `./verify.sh full`
-proof: `(\d+) passed`
-"#,
-            "./verify.sh quick",
-        ),
-        (
-            "loose-question",
-            r#"---
-name: Loose Question
-description: Approval needs its exact label too
----
-command: `./verify.sh quick`
-proof: `(\d+) passed`
-Then ask the person: `Ship this release?`
-"#,
-            "Ship this release?",
-        ),
-    ];
-
-    for (name, source, behavior) in cases {
+    for (name, source, behavior) in UNRESOLVED_CASES {
         let repo = tempfile::tempdir()?;
         let relative = format!(".claude/commands/{name}.md");
         write_source(repo.path(), &relative, source)?;

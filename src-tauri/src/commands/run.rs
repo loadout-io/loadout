@@ -195,7 +195,7 @@ use crate::inherit::rewrite;
 use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
 use crate::ipc::LineSink;
 use crate::library::agents::{
-    Agent, Overrides, Thinking, Tools, effort_level, read_agent_file, resolve,
+    Agent, Overrides, Thinking, Tools, effort_level, read_agent_directory, resolve,
 };
 use crate::memory::handoff::{self, Kind, MetaDraft};
 use crate::skills::StepSkills;
@@ -4034,19 +4034,7 @@ fn find_agent(library: &Path, id: &str, step: &str) -> Result<Agent, RunError> {
     // pierwsze uruchomienie po instalacji kończyło się „No such file or directory (os error 2)".
     // Katalog `agents/` powstaje dopiero przy pierwszym zapisanym agencie, czyli na świeżej
     // maszynie NIE ISTNIEJE — to jest stan normalny, nie awaria dysku, i ma o tym mówić.
-    let listing = match fs::read_dir(library) {
-        Ok(listing) => listing,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(RunError::NoAgentsSaved {
-                step: step.to_owned(),
-            });
-        }
-        Err(error) => return Err(RunError::Io(error)),
-    };
-    let mut files: Vec<PathBuf> = listing
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
+    let files = read_agent_directory(library).map_err(RunError::Agent)?;
     // Katalog, który istnieje i jest pusty, jest tym samym faktem co katalog, którego nie ma:
     // nie ma z czego wybrać. Dwa różne zdania o jednym stanie byłyby dwoma miejscami prawdy.
     if files.is_empty() {
@@ -4054,16 +4042,12 @@ fn find_agent(library: &Path, id: &str, step: &str) -> Result<Agent, RunError> {
             step: step.to_owned(),
         });
     }
-    // `read_dir` nie obiecuje żadnej kolejności, a odpowiedź „którego agenta wzięliśmy" nie ma
-    // prawa zależeć od systemu plików.
-    files.sort();
-
     let mut broken = None;
     // Nazwy, które udało się przeczytać. Zbierane po drodze, bo drugi spacer po katalogu byłby
     // drugą odpowiedzią na pytanie „kogo mam zapisanych" (niezmiennik 13).
     let mut saved: Vec<String> = Vec::new();
-    for path in files {
-        match read_agent_file(&path) {
+    for (_path, loaded) in files {
+        match loaded {
             Ok(agent) if agent.id.to_string() == id => return Ok(agent),
             Ok(agent) => saved.push(agent.name),
             Err(error) => broken = broken.or(Some(error)),

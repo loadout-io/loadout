@@ -17,6 +17,8 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy};
+
 use super::WorkflowFile;
 use super::check::{Level, Note, check};
 
@@ -129,7 +131,25 @@ impl std::error::Error for SaveError {}
 /// migracje po kolei, `.bak` przed pierwszą z nich.
 pub fn load(path: &Path) -> Result<WorkflowFile, LoadError> {
     let text = fs::read_to_string(path).map_err(LoadError::Unreadable)?;
-    let document: Value = serde_json::from_str(&text).map_err(LoadError::Malformed)?;
+    load_text(path, &text, true)
+}
+
+/// Parsuje bajty odczytane przez descriptor-bound loader biblioteki. Pierwsza przyszła
+/// migracja musi dostać równie descriptor-bound publikację `.bak`; do tego czasu snapshot
+/// odmawia migracji zamiast wracać do ścieżkowego `copy` po bezpiecznym odczycie.
+pub(crate) fn load_snapshot(path: &Path, bytes: &[u8]) -> Result<WorkflowFile, LoadError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        LoadError::Unreadable(io::Error::new(io::ErrorKind::InvalidData, error))
+    })?;
+    load_text(path, text, false)
+}
+
+fn load_text(
+    path: &Path,
+    text: &str,
+    path_migration_is_safe: bool,
+) -> Result<WorkflowFile, LoadError> {
+    let document: Value = serde_json::from_str(text).map_err(LoadError::Malformed)?;
 
     // Wersja czytana z SUROWEGO dokumentu, zanim spróbujemy zrozumieć resztę. Nowszy build
     // mógł zmienić kształt kroku tak, że ten build go nie wczyta — i wtedy użytkownik
@@ -146,8 +166,12 @@ pub fn load(path: &Path) -> Result<WorkflowFile, LoadError> {
         return Err(LoadError::TooNew);
     }
 
-    let document = if format < u64::from(CURRENT) {
+    let document = if format < u64::from(CURRENT) && path_migration_is_safe {
         migrated(path, document, format)?
+    } else if format < u64::from(CURRENT) {
+        return Err(LoadError::Unreadable(io::Error::other(
+            "this workflow needs a safe migration before it can be listed",
+        )));
     } else {
         document
     };
@@ -235,5 +259,17 @@ pub fn save(workflow: &WorkflowFile, path: &Path) -> Result<(), SaveError> {
     // dodatkowe „\ No newline at end of file", a plik przestaje być zwykłym plikiem tekstowym.
     text.push('\n');
 
-    fs::write(path, text).map_err(SaveError::Unwritable)
+    let root = path.parent().ok_or_else(|| {
+        SaveError::Unwritable(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a workflow path has no controlled parent",
+        ))
+    })?;
+    DurableFilePublisher::new(root)
+        .atomic_replace(
+            path,
+            text.as_bytes(),
+            ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+        )
+        .map_err(|error| SaveError::Unwritable(error.into_io()))
 }

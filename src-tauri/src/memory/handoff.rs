@@ -12,16 +12,22 @@
 //!
 //! Czego tu nie ma:
 //! - `Connection` — ten moduł zwraca strukturę, wiersz wkłada `store::writer` (niezmiennik 2);
-//! - `#[cfg(unix)]` — ścieżki składamy `PathBuf`em, uprawnień nie tykamy (niezmiennik 3);
+//! - `#[cfg(unix)]` — platformowe operacje wydziela publisher w supervisorze (niezmiennik 3);
 //! - ścieżki ani treści w argv — ciało jedzie do następnego kroku przez stdin (niezmiennik 9).
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write as _;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use uuid::Uuid;
+
+use crate::durable_file::{
+    DurableFilePublisher, ModePolicy, PRIVATE_FILE_MODE, PublicationBatch, PublishError,
+    recover_owned_temps_in,
+};
+use crate::engine::supervisor::{PublicationEntry, PublicationEntryKind, PublicationRoot};
 
 use super::{Error, FrontMatter, Result, est_tokens, slugify};
 
@@ -43,6 +49,10 @@ pub const BODY_CAP: usize = 8192;
 /// wskaźnik prowadzący tam, gdzie nikt nie otworzył drzwi — czyli odnośnik bez handlera
 /// (niezmiennik 16). Ten sam powód stoi nad `drivers::claude::Transcript`.
 pub const ATTACHMENTS_DIR: &str = "attachments";
+
+/// Handoff i jego pełna treść są prywatnym stanem biegu, więc nowe katalogi nie dostają praw
+/// grupy ani innych użytkowników. Istniejących katalogów nie przepisujemy przy samym odczycie.
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 
 /// Trzy sekcje o stałych nazwach i stałej kolejności [T6 §10.2].
 ///
@@ -344,6 +354,8 @@ pub struct Handoff {
     /// Faktyczna długość ciała, policzona przy odczycie. Osobne pole, bo `meta.bytes` jest
     /// **deklaracją z pliku**, a te dwie liczby mają prawo się różnić.
     pub actual_bytes: usize,
+    /// Wskaźnik z ciała staje się capability dopiero po no-follow sprawdzeniu regularnego leafu.
+    verified_attachment: Option<PathBuf>,
 }
 
 impl Handoff {
@@ -364,14 +376,7 @@ impl Handoff {
     /// położenia przekazania; nazwa musi zgadzać się z tą, którą nadał [`write_inner`].
     #[must_use]
     pub fn attachment(&self) -> Option<PathBuf> {
-        let stem = self.path.file_stem()?.to_str()?;
-        let name = format!("{stem}__full.md");
-        let pointer = format!("Moved to {ATTACHMENTS_DIR}/{name}");
-        let run_dir = self.path.parent()?.parent()?;
-        self.body
-            .lines()
-            .any(|line| line == pointer)
-            .then(|| run_dir.join(ATTACHMENTS_DIR).join(name))
+        self.verified_attachment.clone()
     }
 
     /// Czy po normalizacji wszystkie trzy sekcje są faktycznie puste.
@@ -408,8 +413,33 @@ pub fn write_handoff(run_dir: &Path, draft: MetaDraft, agent_body: &str) -> Resu
 
 /// Odczytuje jeden plik przekazania. Nieznany klucz i nieznany `kind` nie są błędem.
 pub fn read_handoff(path: &Path) -> Result<Handoff> {
-    let text = fs::read_to_string(path)?;
-    let (front, body_at) = FrontMatter::split(&text).map_err(|error| match error {
+    let parent = path.parent().ok_or_else(|| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a handoff path has no parent",
+        ))
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a handoff path has no file name",
+        ))
+    })?;
+    let root = PublicationRoot::open(parent)?;
+    let bytes = root.read_regular(Path::new(name), false)?;
+    let mut handoff = parse_handoff(path, &bytes)?;
+    handoff.verified_attachment = verified_attachment_from_path(path, &handoff.body);
+    Ok(handoff)
+}
+
+fn parse_handoff(path: &Path, bytes: &[u8]) -> Result<Handoff> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not UTF-8: {error}", path.display()),
+        ))
+    })?;
+    let (front, body_at) = FrontMatter::split(text).map_err(|error| match error {
         // Parser dostał sam tekst, więc nie miał czym wypełnić ścieżki. Tu wiemy.
         Error::NoFrontMatter { .. } => Error::NoFrontMatter {
             path: path.to_owned(),
@@ -423,7 +453,37 @@ pub fn read_handoff(path: &Path) -> Result<Handoff> {
         meta: meta_from(&front),
         actual_bytes: body.len(),
         body,
+        verified_attachment: None,
     })
+}
+
+fn declared_attachment(path: &Path, body: &str) -> Option<(PathBuf, PathBuf)> {
+    let stem = path.file_stem()?.to_str()?;
+    let name = format!("{stem}__full.md");
+    let pointer = format!("Moved to {ATTACHMENTS_DIR}/{name}");
+    if !body.lines().any(|line| line == pointer) {
+        return None;
+    }
+    let relative = PathBuf::from(ATTACHMENTS_DIR).join(&name);
+    let run_dir = path.parent()?.parent()?;
+    Some((relative.clone(), run_dir.join(relative)))
+}
+
+fn verified_attachment_from_path(path: &Path, body: &str) -> Option<PathBuf> {
+    let (relative, absolute) = declared_attachment(path, body)?;
+    let run_dir = path.parent()?.parent()?;
+    let root = PublicationRoot::open(run_dir).ok()?;
+    match root.regular_file_exists(&relative) {
+        Ok(true) => Some(absolute),
+        Ok(false) => None,
+        Err(error) => {
+            tracing::warn!(
+                "{} does not have a safe attachment: {error}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 /// Czyta `run_dir/handoffs/` bez bazy i bez zaufania do tego, kto te pliki pisał.
@@ -431,33 +491,175 @@ pub fn read_handoff(path: &Path) -> Result<Handoff> {
 /// Kolejność wynikowa jest kolejnością nazw plików, bo prefiks `NN` jest numerem kroku —
 /// to jedyne uporządkowanie, które przeżywa skasowanie `loadout.db` (niezmiennik 4).
 pub fn scan_run_dir(run_dir: &Path) -> Result<Vec<Handoff>> {
-    let dir = run_dir.join("handoffs");
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        // Bieg, w którym jeszcze nikt niczego nie przekazał, ma zero przekazań, a nie błąd.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
+    DurableFilePublisher::new(run_dir)
+        .recover_with(|root| {
+            recover_handoff_attachments(root, run_dir).map_err(PublishError::Io)?;
+            scan_handoffs(root, run_dir).map_err(PublishError::Io)
+        })
+        .map_err(|error| Error::Io(error.into_io()))
+}
+
+#[derive(Debug)]
+enum DirectoryView {
+    Missing,
+    Unsafe,
+    Entries(Vec<PublicationEntry>),
+}
+
+fn directory_view(
+    root: &PublicationRoot,
+    root_entries: &[PublicationEntry],
+    name: &str,
+    run_dir: &Path,
+) -> io::Result<DirectoryView> {
+    let Some(entry) = root_entries
+        .iter()
+        .find(|entry| entry.name.as_os_str() == std::ffi::OsStr::new(name))
+    else {
+        return Ok(DirectoryView::Missing);
+    };
+    if entry.kind == PublicationEntryKind::Directory {
+        return root
+            .list_directory(Path::new(name))
+            .map(DirectoryView::Entries);
+    }
+    tracing::warn!(
+        "{} is not a safe local directory; it was not read or cleaned",
+        run_dir.join(name).display()
+    );
+    Ok(DirectoryView::Unsafe)
+}
+
+/// Usuwa wyłącznie regularny attachment, dla którego brak regularnego pointera jest dowodem
+/// przerwanego commit pointu. Istniejący, nawet uszkodzony Markdown chroni pełne bajty historii.
+fn recover_handoff_attachments(root: &PublicationRoot, run_dir: &Path) -> io::Result<()> {
+    let root_entries = root.list_directory(Path::new(""))?;
+    for name in ["handoffs", ATTACHMENTS_DIR] {
+        if root_entries.iter().any(|entry| {
+            entry.name.as_os_str() == std::ffi::OsStr::new(name)
+                && entry.kind == PublicationEntryKind::Directory
+        }) {
+            recover_owned_temps_in(root, Path::new(name)).map_err(PublishError::into_io)?;
+        }
+    }
+    let handoffs = directory_view(root, &root_entries, "handoffs", run_dir)?;
+    let attachments = directory_view(root, &root_entries, ATTACHMENTS_DIR, run_dir)?;
+    let DirectoryView::Entries(attachments) = attachments else {
+        return Ok(());
     };
 
-    // Płasko, nie rekurencyjnie: `attachments/` trzyma pliki `.md`, które przekazaniami nie
-    // są, a spacer po drzewie zwróciłby je jako kolejne rekordy i nikt by nie zauważył.
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    paths.sort();
+    for attachment in attachments {
+        let Some(name) = attachment.name.to_str() else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix("__full.md") else {
+            continue;
+        };
+        if attachment.kind != PublicationEntryKind::Regular {
+            tracing::warn!(
+                "{} is not a regular attachment; recovery left it untouched",
+                run_dir
+                    .join(ATTACHMENTS_DIR)
+                    .join(&attachment.name)
+                    .display()
+            );
+            continue;
+        }
 
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
-        match read_handoff(&path) {
-            Ok(handoff) => out.push(handoff),
+        let pointer_name = format!("{stem}.md");
+        let proven_missing = match &handoffs {
+            DirectoryView::Missing => true,
+            DirectoryView::Unsafe => false,
+            DirectoryView::Entries(entries) => match entries
+                .iter()
+                .find(|entry| entry.name.as_os_str() == std::ffi::OsStr::new(&pointer_name))
+            {
+                None => true,
+                Some(pointer) if pointer.kind == PublicationEntryKind::Regular => false,
+                Some(_pointer) => {
+                    tracing::warn!(
+                        "{} is not a regular handoff; recovery preserved its attachment",
+                        run_dir.join("handoffs").join(&pointer_name).display()
+                    );
+                    false
+                }
+            },
+        };
+        if proven_missing {
+            let relative = PathBuf::from(ATTACHMENTS_DIR).join(&attachment.name);
+            let _removed = root.remove_regular_file(&relative)?;
+        }
+    }
+    Ok(())
+}
+
+fn scan_handoffs(root: &PublicationRoot, run_dir: &Path) -> io::Result<Vec<Handoff>> {
+    let root_entries = root.list_directory(Path::new(""))?;
+    let DirectoryView::Entries(entries) = directory_view(root, &root_entries, "handoffs", run_dir)?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut entries: Vec<PublicationEntry> = entries
+        .into_iter()
+        .filter(|entry| {
+            Path::new(&entry.name)
+                .extension()
+                .is_some_and(|ext| ext == "md")
+        })
+        .collect();
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let path = run_dir.join("handoffs").join(&entry.name);
+        if entry.kind != PublicationEntryKind::Regular {
+            tracing::warn!(
+                "{} is not a regular handoff; it was skipped",
+                path.display()
+            );
+            continue;
+        }
+        let relative = PathBuf::from("handoffs").join(&entry.name);
+        let bytes = match root.read_regular(&relative, false) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!("{} is not a readable handoff: {error}", path.display());
+                continue;
+            }
+        };
+        match parse_handoff(&path, &bytes) {
+            Ok(mut handoff) => {
+                handoff.verified_attachment = verified_attachment_in_root(root, &handoff);
+                out.push(handoff);
+            }
             // Niezmiennik 5: jeden nieczytelny plik nie zabiera ze sobą całej listy. Ślad
             // zostaje w dzienniku, bo cicha strata rekordu jest gorsza niż głośna.
             Err(error) => tracing::warn!("{} is not a readable handoff: {error}", path.display()),
         }
     }
     Ok(out)
+}
+
+fn verified_attachment_in_root(root: &PublicationRoot, handoff: &Handoff) -> Option<PathBuf> {
+    let (relative, absolute) = declared_attachment(&handoff.path, &handoff.body)?;
+    match root.regular_file_exists(&relative) {
+        Ok(true) => Some(absolute),
+        Ok(false) => {
+            tracing::warn!(
+                "{} points to a missing or unsafe attachment",
+                handoff.path.display()
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                "{} does not have a safe attachment: {error}",
+                handoff.path.display()
+            );
+            None
+        }
+    }
 }
 
 /// Korekta: **nowy** plik z `supersedes: <old_id>`, a w starym zmienia się jedna linia.
@@ -494,8 +696,7 @@ fn write_inner(
     agent_body: &str,
     supersedes: Option<&str>,
 ) -> Result<Written> {
-    let dir = run_dir.join("handoffs");
-    fs::create_dir_all(&dir)?;
+    let publisher = DurableFilePublisher::new(run_dir);
 
     let stem = format!(
         "{:02}__{}__{}",
@@ -503,30 +704,85 @@ fn write_inner(
         slugify(&draft.from),
         slugify(draft.kind.name())
     );
-    let (path, mut file) = claim(&dir, &stem)?;
+    let normalized = normalize(agent_body);
+    let (shaped, repaired) = reshape(&normalized);
+    let left_nothing = sections_are_empty(&shaped);
+    let prepared = PreparedHandoff {
+        run_dir,
+        stem,
+        draft,
+        supersedes,
+        normalized,
+        shaped,
+        repaired,
+        left_nothing,
+    };
+    publisher
+        .with_initialized_publication(
+            "handoffs",
+            |root| {
+                recover_handoff_attachments(root, run_dir).map_err(PublishError::Io)?;
+                root.ensure_directory(Path::new("handoffs"), PRIVATE_DIRECTORY_MODE)
+                    .map_err(PublishError::Io)
+            },
+            |batch| publish_handoff_batch(batch, prepared),
+        )
+        .map_err(|error| Error::Io(error.into_io()))
+}
+
+struct PreparedHandoff<'a> {
+    run_dir: &'a Path,
+    stem: String,
+    draft: MetaDraft,
+    supersedes: Option<&'a str>,
+    normalized: String,
+    shaped: String,
+    repaired: Vec<Section>,
+    left_nothing: bool,
+}
+
+fn publish_handoff_batch(
+    batch: &PublicationBatch<'_>,
+    prepared: PreparedHandoff<'_>,
+) -> std::result::Result<Written, PublishError> {
+    let PreparedHandoff {
+        run_dir,
+        stem,
+        draft,
+        supersedes,
+        normalized,
+        shaped,
+        repaired,
+        left_nothing,
+    } = prepared;
+    batch
+        .root()
+        .ensure_directory(Path::new("handoffs"), PRIVATE_DIRECTORY_MODE)?;
+    let path = claim_path(batch.root(), run_dir, &stem)?;
 
     // Nazwa attachmentu jest nazwą przekazania, do którego należy — para daje się rozpoznać
     // bez otwierania żadnego z dwóch plików.
     let name = path
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or(stem.as_str());
+        .unwrap_or(&stem);
     let attachment_name = format!("{name}__full.md");
     let pointer = format!("Moved to {ATTACHMENTS_DIR}/{attachment_name}");
-
-    let normalized = normalize(agent_body);
-    let (shaped, repaired) = reshape(&normalized);
-    let left_nothing = sections_are_empty(&shaped);
     let (body, truncated) = cap(&shaped, &pointer);
 
     let attachment = if truncated {
         // Niezmiennik 21: plik powstaje TYLKO wtedy, gdy w ciele stoi wskaźnik, który do
         // niego prowadzi. Trzyma **oryginał** agenta, nie to, co zostało po cięciu — inaczej
         // zgubionego zdania nie ma nigdzie [T6 §11.2].
-        let attachments = run_dir.join(ATTACHMENTS_DIR);
-        fs::create_dir_all(&attachments)?;
-        let at = attachments.join(&attachment_name);
-        fs::write(&at, normalized.as_bytes())?;
+        batch
+            .root()
+            .ensure_directory(Path::new(ATTACHMENTS_DIR), PRIVATE_DIRECTORY_MODE)?;
+        let at = run_dir.join(ATTACHMENTS_DIR).join(&attachment_name);
+        batch.atomic_create_if_absent(
+            &at,
+            normalized.as_bytes(),
+            ModePolicy::Exact(PRIVATE_FILE_MODE),
+        )?;
         Some(at)
     } else {
         None
@@ -535,7 +791,7 @@ fn write_inner(
     let mut out = front_matter(draft, supersedes, body.len()).render();
     out.push('\n');
     out.push_str(&body);
-    file.write_all(out.as_bytes())?;
+    batch.atomic_create_if_absent(&path, out.as_bytes(), ModePolicy::Exact(PRIVATE_FILE_MODE))?;
 
     Ok(Written {
         path,
@@ -546,13 +802,16 @@ fn write_inner(
     })
 }
 
-/// Zajmuje ścieżkę w `handoffs/` i oddaje otwarty plik.
+/// Wybiera pierwszą wolną nazwę bez zajmowania jej pustym plikiem.
 ///
-/// `create_new`, nie „sprawdź i zapisz": sprawdzenie i zapis to dwa wywołania, a między nimi
-/// mieści się drugi krok biegu piszący tę samą nazwę. Kolizja idzie licznikiem `-2`, `-3`, …
-/// — sufiks zaszyty na sztywno przechodzi drugi zapis i **nadpisuje** przy trzecim.
-fn claim(dir: &Path, stem: &str) -> Result<(PathBuf, fs::File)> {
-    let root = fs::canonicalize(dir)?;
+/// Istniejący retry dostaje kolejny sufiks. Dwa równoległe wywołania mogą wybrać tę samą
+/// wolną nazwę; rozstrzyga je późniejszy atomowy create-if-absent i przegrany dostaje konflikt.
+fn claim_path(
+    root: &PublicationRoot,
+    run_dir: &Path,
+    stem: &str,
+) -> std::result::Result<PathBuf, PublishError> {
+    let entries = root.list_directory(Path::new("handoffs"))?;
     let mut nth = 1usize;
     loop {
         let name = if nth == 1 {
@@ -560,29 +819,16 @@ fn claim(dir: &Path, stem: &str) -> Result<(PathBuf, fs::File)> {
         } else {
             format!("{stem}-{nth}.md")
         };
-        let path = dir.join(&name);
-
-        // AC-6: pytanie brzmi „gdzie ten plik naprawdę leży", a odpowiada na nie wyłącznie
-        // system plików. `starts_with` porównuje tekst, więc przechodzi na ścieżce z `..`
-        // w środku i na dowiązaniu. `slugify` nie przepuszcza `/` ani `.`, ale obrona,
-        // której nikt nie sprawdza, jest obroną, o której nie wiadomo, że przestała działać.
-        let parent = path.parent().map(fs::canonicalize).transpose()?;
-        if parent.as_ref() != Some(&root) {
-            return Err(Error::Io(std::io::Error::other(format!(
-                "{} would land outside {}",
-                path.display(),
-                root.display()
-            ))));
-        }
-
-        match fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
+        let path = run_dir.join("handoffs").join(&name);
+        match entries
+            .iter()
+            .find(|entry| entry.name.as_os_str() == std::ffi::OsStr::new(&name))
         {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => nth += 1,
-            Err(error) => return Err(error.into()),
+            Some(entry) if entry.kind == PublicationEntryKind::Symlink => {
+                return Err(PublishError::InvalidTarget { target: path });
+            }
+            Some(_entry) => nth += 1,
+            None => return Ok(path),
         }
     }
 }

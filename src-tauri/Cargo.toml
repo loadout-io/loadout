@@ -61,7 +61,7 @@ tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # tylko po stałe sygnałów
-nix = { version = "0.31.3", features = ["fs", "user"] }
+nix = { version = "0.31.3", features = ["dir", "fs", "user"] }
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["full", "test-util"] }

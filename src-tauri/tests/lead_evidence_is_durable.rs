@@ -1028,7 +1028,7 @@ async fn failed_terminal_attempt_commit_poison_prevents_a_complete_conversation(
 
 #[test]
 #[cfg(unix)]
-fn an_opened_private_parent_cannot_be_swapped_to_a_neighbor_before_publication()
+fn an_opened_private_parent_swap_is_refused_without_touching_the_neighbor()
 -> Result<(), Box<dyn Error>> {
     const PRIVATE_BYTES: &[u8] = b"PRIVATE_PARENT_SWAP_T34";
     const VICTIM_BYTES: &[u8] = b"VICTIM_UNCHANGED_T34";
@@ -1041,30 +1041,30 @@ fn an_opened_private_parent_cannot_be_swapped_to_a_neighbor_before_publication()
     let publisher =
         PrivateFilePublisher::open(anchor.path(), Path::new("evidence/live/receipt.json"))?;
 
-    // This is the exact TOCTOU window that a path-based `metadata -> rename` reopened. The
-    // publisher already owns the real directory; changing its former name must not redirect a
-    // single private byte into the neighboring workspace.
+    // This is the exact TOCTOU window that a path-based `metadata -> rename` reopened. A held
+    // descriptor prevents escape, but success in a detached directory would still hide evidence
+    // from the production reader, so changing the controlled name must now fail closed.
     fs::rename(&live, &parked)?;
     let victim = neighbor.path().join("receipt.json");
     fs::write(&victim, VICTIM_BYTES)?;
     std::os::unix::fs::symlink(neighbor.path(), &live)?;
 
-    publisher.publish(PRIVATE_BYTES, false)?;
+    let result = publisher.publish(PRIVATE_BYTES, false);
+    assert!(
+        result.is_err(),
+        "publication reported success after the controlled parent name changed"
+    );
     assert_eq!(fs::read(&victim)?, VICTIM_BYTES);
-    assert_eq!(fs::read(parked.join("receipt.json"))?, PRIVATE_BYTES);
-    assert_eq!(
-        fs::metadata(parked.join("receipt.json"))?
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
+    assert!(
+        !parked.join("receipt.json").exists(),
+        "refused create published private bytes into the detached parent"
     );
     Ok(())
 }
 
 #[test]
 #[cfg(unix)]
-fn replacement_publication_stays_on_the_held_parent_after_a_swap() -> Result<(), Box<dyn Error>> {
+fn replacement_publication_refuses_a_detached_parent() -> Result<(), Box<dyn Error>> {
     const PRIVATE_BYTES: &[u8] = b"PRIVATE_REPLACE_PARENT_SWAP_T34";
     const ORIGINAL_BYTES: &[u8] = b"ORIGINAL_PRIVATE_T34";
     const VICTIM_BYTES: &[u8] = b"VICTIM_REPLACE_UNCHANGED_T34";
@@ -1086,9 +1086,13 @@ fn replacement_publication_stays_on_the_held_parent_after_a_swap() -> Result<(),
     fs::set_permissions(&victim, fs::Permissions::from_mode(0o600))?;
     std::os::unix::fs::symlink(neighbor.path(), &live)?;
 
-    publisher.publish(PRIVATE_BYTES, true)?;
+    let result = publisher.publish(PRIVATE_BYTES, true);
+    assert!(
+        result.is_err(),
+        "replacement reported success after the controlled parent name changed"
+    );
     assert_eq!(fs::read(&victim)?, VICTIM_BYTES);
-    assert_eq!(fs::read(parked.join("receipt.json"))?, PRIVATE_BYTES);
+    assert_eq!(fs::read(parked.join("receipt.json"))?, ORIGINAL_BYTES);
     Ok(())
 }
 

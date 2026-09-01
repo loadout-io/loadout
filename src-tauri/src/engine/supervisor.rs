@@ -58,7 +58,7 @@
 //! zabezpieczenie czasem startu przed ponownym użyciem PID-u (T-20 — my dajemy [`reap_group`],
 //! decyzję *czy wolno* podejmuje odzyskiwanie).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -70,6 +70,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
+
+pub use crate::durable_file::PrivateFilePublisher;
 
 /// Sposób otwarcia istniejącego prywatnego artefaktu przez dowiedzioną ścieżkę katalogów.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,158 +119,823 @@ pub fn open_private_file(
     Ok(std::fs::File::from(file))
 }
 
-/// Publikuje mały prywatny dokument atomowo przez ten sam dowiedziony deskryptor katalogu.
-///
-/// To jest druga połowa [`open_private_file`]: samo sprawdzenie istniejącego pliku przez fd nie
-/// wystarcza, jeżeli późniejszy `rename(path, path)` ponownie rozwiązuje ścieżkę. Tutaj zarówno
-/// plik tymczasowy, jak i nazwa docelowa są operacjami `*at` na jednym otwartym katalogu. Zmiana
-/// któregoś rodzica na symlink po otwarciu nie może więc przekierować prywatnych bajtów.
-pub struct PrivateFilePublisher {
-    #[cfg(unix)]
-    directory: std::os::fd::OwnedFd,
-    #[cfg(unix)]
-    file_name: std::ffi::OsString,
+/// Tożsamość inode'u utrzymana obok deskryptora. Rdzeń używa jej wyłącznie do porównania,
+/// czy nazwa nadal wskazuje dokładnie ten plik lub katalog, który został zwalidowany.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationIdentity {
+    device: u64,
+    inode: u64,
 }
 
-impl fmt::Debug for PrivateFilePublisher {
+/// Rodzaj wpisu zwrócony przez descriptor-relative listing. Symlink pozostaje osobnym faktem,
+/// więc caller nie musi otwierać go, aby zdecydować, że go pominie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublicationEntryKind {
+    Regular,
+    Directory,
+    Symlink,
+    Other,
+}
+
+/// Płaski wpis katalogu względem zakotwiczonego roota.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationEntry {
+    pub(crate) name: OsString,
+    pub(crate) kind: PublicationEntryKind,
+}
+
+/// Otwarty, niesymlinkowany root publikacji. Wszystkie późniejsze operacje pozostają względem
+/// tego deskryptora, nawet jeśli ktoś podmieni nazwę roota w trakcie recovery.
+pub(crate) struct PublicationRoot {
+    #[cfg(unix)]
+    directory: std::os::fd::OwnedFd,
+    identity: PublicationIdentity,
+}
+
+impl fmt::Debug for PublicationRoot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Nazwa docelowa może pochodzić z prywatnej tożsamości rozmowy; sam fakt zachowania
-        // deskryptora wystarcza do diagnostyki i nie wypuszcza ścieżki do zwykłego logu.
         formatter
-            .debug_struct("PrivateFilePublisher")
-            .field("directory_held", &true)
-            .finish_non_exhaustive()
+            .debug_struct("PublicationRoot")
+            .field("directory", &"<held descriptor>")
+            .field("identity", &self.identity)
+            .finish()
     }
 }
 
-impl PrivateFilePublisher {
-    /// Dowodzi całej ścieżki rodziców i zachowuje deskryptor ostatniego katalogu.
-    ///
-    /// Rozdzielenie `open` od [`Self::publish`] jest celowe i daje testowi awarii możliwość
-    /// podmiany nazwy rodzica pomiędzy tymi operacjami. Produkcja korzysta z dokładnie tego
-    /// samego obiektu co produkcyjny zapis evidence, więc oracle zabija powrót do ścieżkowego
-    /// `metadata -> rename`, a nie wyłącznie testową kopię reguły.
+impl PublicationRoot {
     #[cfg(unix)]
-    pub fn open(anchor: &Path, relative: &Path) -> io::Result<Self> {
-        let (directory, file_name) = private_parent(anchor, relative)?;
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        let directory = private_directory(path)?;
+        let identity = identity_of(&directory)?;
         Ok(Self {
+            directory,
+            identity,
+        })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn open(_path: &Path) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no-follow publication roots are not implemented on Windows",
+        ))
+    }
+
+    pub(crate) const fn identity(&self) -> PublicationIdentity {
+        self.identity
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn target(&self, relative: &Path) -> io::Result<PublicationTarget> {
+        let (directory, file_name) = relative_parent(&self.directory, relative)?;
+        Ok(PublicationTarget {
             directory,
             file_name,
         })
     }
 
     #[cfg(windows)]
-    pub fn open(_anchor: &Path, _relative: &Path) -> io::Result<Self> {
+    pub(crate) fn target(&self, _relative: &Path) -> io::Result<PublicationTarget> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "private no-follow file publication is not implemented on Windows",
+            "no-follow publication targets are not implemented on Windows",
         ))
     }
 
-    /// Zapisuje i publikuje względem zachowanego katalogu, bez ponownego rozwiązania ścieżki.
+    /// Dowodzi, że nazwa roota nadal prowadzi do utrzymanego katalogu. Błąd otwarcia (w tym
+    /// symlink) jest odmową, a nie fałszywym `false`, którego caller mógłby zignorować.
+    pub(crate) fn validate_path_identity(&self, path: &Path) -> io::Result<()> {
+        let current = Self::open(path)?;
+        if current.identity != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the publication root changed while it was in use",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Usuwa tylko regularne pliki bezpośrednio z wybranego katalogu. Recovery nie spaceruje
+    /// rekurencyjnie: szerszy anchor nie może sprzątnąć aktywnego tempu writera z własnym
+    /// lifecycle niżej w drzewie.
     #[cfg(unix)]
-    pub fn publish(self, bytes: &[u8], replace: bool) -> io::Result<()> {
-        use std::io::Write as _;
-
-        use nix::errno::Errno;
-        use nix::fcntl::{AtFlags, OFlag, openat, renameat};
-        use nix::sys::stat::{Mode, fstatat};
-        use nix::unistd::{UnlinkatFlags, fsync, linkat, unlinkat};
-
-        let Self {
-            directory,
-            file_name,
-        } = self;
-        let mut guard_name = file_name.clone();
-        guard_name.push(".writing");
-        match fstatat(
-            &directory,
-            Path::new(&guard_name),
-            AtFlags::AT_SYMLINK_NOFOLLOW,
-        ) {
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "an evidence writing guard already exists",
-                ));
-            }
-            Err(Errno::ENOENT) => {}
-            Err(error) => return Err(io::Error::from(error)),
-        }
-
-        if replace {
-            let existing = openat(
-                &directory,
-                Path::new(&file_name),
-                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(io::Error::from)?;
-            validate_private_fd(&existing)?;
-        }
-
-        let temporary_name = format!(".loadout-writing-{}", uuid::Uuid::now_v7());
-        let temporary = openat(
-            &directory,
-            temporary_name.as_str(),
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::from_bits_truncate(0o600),
-        )
-        .map_err(io::Error::from)?;
-        validate_private_fd(&temporary)?;
-
-        let written = (|| -> io::Result<()> {
-            let mut file = std::fs::File::from(temporary);
-            file.write_all(bytes)?;
-            file.flush()?;
-            file.sync_all()?;
-            drop(file);
-            if replace {
-                renameat(
-                    &directory,
-                    temporary_name.as_str(),
-                    &directory,
-                    Path::new(&file_name),
-                )
-                .map_err(io::Error::from)?;
-            } else {
-                // `linkat` is the portable no-clobber publication primitive. A plain `renameat`
-                // would silently replace a document that belongs to another conversation attempt.
-                linkat(
-                    &directory,
-                    temporary_name.as_str(),
-                    &directory,
-                    Path::new(&file_name),
-                    AtFlags::empty(),
-                )
-                .map_err(io::Error::from)?;
-                unlinkat(
-                    &directory,
-                    temporary_name.as_str(),
-                    UnlinkatFlags::NoRemoveDir,
-                )
-                .map_err(io::Error::from)?;
-            }
-            fsync(&directory).map_err(io::Error::from)
-        })();
-
-        // Po udanym `renameat` nazwa tymczasowa już nie istnieje. Po błędzie sprzątamy wyłącznie
-        // losową nazwę, którą sami utworzyliśmy, nadal względem tego samego deskryptora katalogu.
-        let _ = unlinkat(
-            &directory,
-            temporary_name.as_str(),
-            UnlinkatFlags::NoRemoveDir,
-        );
-        written
+    pub(crate) fn remove_matching_files_in(
+        &self,
+        relative: &Path,
+        mut matches: impl FnMut(&Path) -> bool,
+    ) -> io::Result<()> {
+        let directory = self.open_directory(relative)?;
+        let directory = nix::dir::Dir::from_fd(directory).map_err(io::Error::from)?;
+        remove_matching_from(directory, relative, &mut matches)
     }
 
     #[cfg(windows)]
-    pub fn publish(self, _bytes: &[u8], _replace: bool) -> io::Result<()> {
+    pub(crate) fn remove_matching_files_in(
+        &self,
+        _relative: &Path,
+        _matches: impl FnMut(&Path) -> bool,
+    ) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "private no-follow file publication is not implemented on Windows",
+            "descriptor-relative recovery is not implemented on Windows",
         ))
     }
+
+    /// Tworzy brakujące katalogi pod utrzymanym rootem. Istniejący symlink lub plik odmawia,
+    /// a każdy nowy wpis katalogowy jest synchronizowany przed przejściem głębiej.
+    #[cfg(unix)]
+    pub(crate) fn ensure_directory(&self, relative: &Path, mode: u32) -> io::Result<()> {
+        use nix::errno::Errno;
+        use nix::fcntl::openat;
+        use nix::sys::stat::{Mode, mkdirat};
+
+        let requested_mode = nix::sys::stat::mode_t::try_from(mode).map_err(|_error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the requested publication-directory mode is out of range",
+            )
+        })?;
+        let requested_mode = Mode::from_bits_truncate(requested_mode);
+        let mut directory = nix::unistd::dup(&self.directory).map_err(io::Error::from)?;
+        let flags = directory_flags();
+        for component in plain_parts(relative, true)? {
+            let opened = openat(&directory, Path::new(&component), flags, Mode::empty());
+            directory = match opened {
+                Ok(opened) => opened,
+                Err(Errno::ENOENT) => {
+                    let created = match mkdirat(&directory, Path::new(&component), requested_mode) {
+                        Ok(()) => true,
+                        // Dwa shared writery mogą zobaczyć ENOENT przed tym samym mkdirat.
+                        // EEXIST nie jest sukcesem ścieżki: ponowny openat niżej nadal odmawia
+                        // symlinka i zwykłego pliku, a zwycięzca ustawia docelowy tryb.
+                        Err(Errno::EEXIST) => false,
+                        Err(error) => return Err(io::Error::from(error)),
+                    };
+                    if created {
+                        nix::unistd::fsync(&directory).map_err(io::Error::from)?;
+                    }
+                    openat(&directory, Path::new(&component), flags, Mode::empty())
+                        .map_err(io::Error::from)?
+                }
+                Err(error) => return Err(io::Error::from(error)),
+            };
+            enforce_owned_directory_mode(&directory, requested_mode)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn ensure_directory(&self, _relative: &Path, _mode: u32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative directory creation is not implemented on Windows",
+        ))
+    }
+
+    /// Zwraca wyłącznie bezpośrednie wpisy katalogu, nigdy ich cele.
+    #[cfg(unix)]
+    pub(crate) fn list_directory(&self, relative: &Path) -> io::Result<Vec<PublicationEntry>> {
+        let directory = self.open_directory(relative)?;
+        directory_entries(directory)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn list_directory(&self, _relative: &Path) -> io::Result<Vec<PublicationEntry>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative directory listing is not implemented on Windows",
+        ))
+    }
+
+    /// Czyta regularny leaf bez śledzenia symlinków. Prywatny wariant dodatkowo egzekwuje
+    /// bieżącego właściciela i dokładne `0600` na otwartym deskryptorze.
+    #[cfg(unix)]
+    pub(crate) fn read_regular(&self, relative: &Path, private: bool) -> io::Result<Vec<u8>> {
+        use std::io::Read as _;
+
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::Mode;
+
+        let target = self.target(relative)?;
+        let opened = openat(
+            &target.directory,
+            Path::new(&target.file_name),
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        if private {
+            validate_private_fd(&opened)?;
+        } else {
+            validate_regular_fd(&opened)?;
+        }
+        let mut file = std::fs::File::from(opened);
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn read_regular(&self, _relative: &Path, _private: bool) -> io::Result<Vec<u8>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative reads are not implemented on Windows",
+        ))
+    }
+
+    /// Sprawdza typ leaf bez otwierania jego celu. Symlink celowo odpowiada `false`.
+    #[cfg(unix)]
+    pub(crate) fn regular_file_exists(&self, relative: &Path) -> io::Result<bool> {
+        self.target(relative)?.is_regular()
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn regular_file_exists(&self, _relative: &Path) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative metadata is not implemented on Windows",
+        ))
+    }
+
+    /// Usuwa dokładnie regularny leaf i synchronizuje jego utrzymany katalog. Brak albo
+    /// symlink nie są usuwane i zwracają `false`.
+    #[cfg(unix)]
+    pub(crate) fn remove_regular_file(&self, relative: &Path) -> io::Result<bool> {
+        use nix::unistd::{UnlinkatFlags, unlinkat};
+
+        let target = self.target(relative)?;
+        if !target.is_regular()? {
+            return Ok(false);
+        }
+        unlinkat(
+            &target.directory,
+            Path::new(&target.file_name),
+            UnlinkatFlags::NoRemoveDir,
+        )
+        .map_err(io::Error::from)?;
+        target.sync_directory()?;
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn remove_regular_file(&self, _relative: &Path) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative removal is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    fn open_directory(&self, relative: &Path) -> io::Result<std::os::fd::OwnedFd> {
+        let mut directory = nix::unistd::dup(&self.directory).map_err(io::Error::from)?;
+        for component in plain_parts(relative, true)? {
+            directory = nix::fcntl::openat(
+                &directory,
+                Path::new(&component),
+                directory_flags(),
+                nix::sys::stat::Mode::empty(),
+            )
+            .map_err(io::Error::from)?;
+        }
+        Ok(directory)
+    }
+}
+
+/// Platformowy uchwyt wspólnego publishera. Polityka kolejności, praw i fault pointów mieszka
+/// w `durable_file`; tutaj zostają tylko operacje `*at` (niezmiennik 3).
+pub(crate) struct PublicationTarget {
+    #[cfg(unix)]
+    directory: std::os::fd::OwnedFd,
+    #[cfg(unix)]
+    file_name: std::ffi::OsString,
+}
+
+impl fmt::Debug for PublicationTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PublicationTarget")
+            .field("directory_held", &true)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PublicationTarget {
+    #[cfg(unix)]
+    pub(crate) fn parent_identity(&self) -> io::Result<PublicationIdentity> {
+        identity_of(&self.directory)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn parent_identity(&self) -> io::Result<PublicationIdentity> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "publication parent identity is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn target_mode(&self) -> io::Result<Option<u32>> {
+        use nix::errno::Errno;
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::{SFlag, fstatat};
+
+        match fstatat(
+            &self.directory,
+            Path::new(&self.file_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(stat) => {
+                let kind = SFlag::from_bits_truncate(stat.st_mode);
+                if kind != SFlag::S_IFREG {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the publication target is not a regular file",
+                    ));
+                }
+                Ok(Some(u32::from(stat.st_mode & 0o777)))
+            }
+            Err(Errno::ENOENT) => Ok(None),
+            Err(error) => Err(io::Error::from(error)),
+        }
+    }
+
+    /// Otwiera istniejący prywatny leaf, waliduje jego prawa i zachowuje tożsamość inode'u.
+    /// `ENOENT` jest osobnym wynikiem, bo create-if-absent nie potrzebuje istniejącego celu.
+    #[cfg(unix)]
+    pub(crate) fn private_target_identity(&self) -> io::Result<Option<PublicationIdentity>> {
+        use nix::errno::Errno;
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::Mode;
+
+        let opened = match openat(
+            &self.directory,
+            Path::new(&self.file_name),
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(opened) => opened,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(error) => return Err(io::Error::from(error)),
+        };
+        validate_private_fd(&opened)?;
+        Ok(Some(identity_of(&opened)?))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn private_target_identity(&self) -> io::Result<Option<PublicationIdentity>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private target identity is not implemented on Windows",
+        ))
+    }
+
+    /// Czy bieżąca nazwa nadal wskazuje zwalidowany wcześniej inode.
+    pub(crate) fn has_identity(&self, expected: PublicationIdentity) -> io::Result<bool> {
+        Ok(self.private_target_identity()? == Some(expected))
+    }
+
+    /// Stary `<target>.writing` jest terminalnym dowodem niedokończonej publikacji evidence.
+    /// Sama obecność dowolnego wpisu blokuje nowy sukces; nie otwieramy ani nie kasujemy guarda.
+    #[cfg(unix)]
+    pub(crate) fn has_writing_guard(&self) -> io::Result<bool> {
+        use nix::errno::Errno;
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::fstatat;
+
+        let mut guard_name = self.file_name.clone();
+        guard_name.push(".writing");
+        match fstatat(
+            &self.directory,
+            Path::new(&guard_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(_) => Ok(true),
+            Err(Errno::ENOENT) => Ok(false),
+            Err(error) => Err(io::Error::from(error)),
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn has_writing_guard(&self) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private writing guards are not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    fn is_regular(&self) -> io::Result<bool> {
+        use nix::errno::Errno;
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::{SFlag, fstatat};
+
+        match fstatat(
+            &self.directory,
+            Path::new(&self.file_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(stat) => Ok(SFlag::from_bits_truncate(stat.st_mode) == SFlag::S_IFREG),
+            Err(Errno::ENOENT) => Ok(false),
+            Err(error) => Err(io::Error::from(error)),
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn target_mode(&self) -> io::Result<Option<u32>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no-follow file publication is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn create_temp(&self, name: &str, mode: u32) -> io::Result<std::fs::File> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::Mode;
+
+        let platform_mode = mode.try_into().map_err(io::Error::other)?;
+        let temporary = openat(
+            &self.directory,
+            name,
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(platform_mode),
+        )
+        .map_err(io::Error::from)?;
+        let file = std::fs::File::from(temporary);
+        // `openat` respektuje umask. Jawne chmod na jeszcze nieopublikowanym inode sprawia,
+        // że polityka definicji nie zależy od środowiska procesu.
+        if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(mode)) {
+            // 2026-08-28: temp istnieje już przed chmod. Caller nie może zaznaczyć ownershipu,
+            // dopóki ta funkcja nie wróci, więc lokalny cleanup musi nastąpić właśnie tutaj.
+            drop(file);
+            let _removed = self.remove_temp(name);
+            let _synced = self.sync_directory();
+            return Err(error);
+        }
+        Ok(file)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn create_temp(&self, _name: &str, _mode: u32) -> io::Result<std::fs::File> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no-follow file publication is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn commit_replace(&self, temporary_name: &str) -> io::Result<()> {
+        use nix::fcntl::renameat;
+        renameat(
+            &self.directory,
+            temporary_name,
+            &self.directory,
+            Path::new(&self.file_name),
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn commit_replace(&self, _temporary_name: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no-follow file publication is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn commit_create_if_absent(&self, temporary_name: &str) -> io::Result<()> {
+        use nix::fcntl::AtFlags;
+        use nix::unistd::linkat;
+        linkat(
+            &self.directory,
+            temporary_name,
+            &self.directory,
+            Path::new(&self.file_name),
+            AtFlags::empty(),
+        )
+        .map_err(io::Error::from)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn commit_create_if_absent(&self, _temporary_name: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no-follow file publication is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn remove_temp(&self, temporary_name: &str) -> io::Result<()> {
+        use nix::errno::Errno;
+        use nix::unistd::{UnlinkatFlags, unlinkat};
+        match unlinkat(&self.directory, temporary_name, UnlinkatFlags::NoRemoveDir) {
+            Ok(()) | Err(Errno::ENOENT) => Ok(()),
+            Err(error) => Err(io::Error::from(error)),
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn remove_temp(&self, _temporary_name: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no-follow file publication is not implemented on Windows",
+        ))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn sync_directory(&self) -> io::Result<()> {
+        nix::unistd::fsync(&self.directory).map_err(io::Error::from)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn sync_directory(&self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "directory sync is not implemented on Windows",
+        ))
+    }
+}
+
+/// Stabilny klucz wyłącznie dla współdzielenia lifecycle. Nie jest autoryzacją ścieżki:
+/// każda operacja nadal otwiera root komponent po komponencie z `O_NOFOLLOW`.
+pub(crate) fn publication_root_key(path: &Path) -> io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let normalized = normalize_plain_absolute(&private_anchor_path(&absolute))?;
+    match std::fs::canonicalize(&normalized) {
+        Ok(canonical) => Ok(canonical),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(normalized),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn private_directory(path: &Path) -> io::Result<std::os::fd::OwnedFd> {
+    use nix::fcntl::{open, openat};
+    use nix::sys::stat::Mode;
+
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let normalized = normalize_plain_absolute(&private_anchor_path(&absolute))?;
+    let mut components = normalized.components();
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a publication root is not absolute",
+        ));
+    }
+    let mut directory =
+        open(Path::new("/"), directory_flags(), Mode::empty()).map_err(io::Error::from)?;
+    for component in components {
+        let Component::Normal(parent) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a publication root is not plain",
+            ));
+        };
+        directory = openat(
+            &directory,
+            Path::new(parent),
+            directory_flags(),
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+    }
+    Ok(directory)
+}
+
+fn normalize_plain_absolute(path: &Path) -> io::Result<PathBuf> {
+    let mut normalized = PathBuf::from("/");
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a publication root is not absolute",
+        ));
+    }
+    for component in components {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.parent().is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "a publication root escapes the filesystem root",
+                    ));
+                }
+                normalized.pop();
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a publication root is not plain",
+                ));
+            }
+        }
+    }
+    Ok(normalized)
+}
+
+#[cfg(unix)]
+fn relative_parent(
+    root: &impl std::os::fd::AsFd,
+    relative: &Path,
+) -> io::Result<(std::os::fd::OwnedFd, OsString)> {
+    use nix::fcntl::openat;
+    use nix::sys::stat::Mode;
+
+    let parts = plain_parts(relative, false)?;
+    let (file_name, parents) = parts
+        .split_last()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty private file path"))?;
+    let mut directory = nix::unistd::dup(root).map_err(io::Error::from)?;
+    for parent in parents {
+        directory = openat(
+            &directory,
+            Path::new(parent),
+            directory_flags(),
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+    }
+    Ok((directory, file_name.clone()))
+}
+
+fn plain_parts(relative: &Path, allow_empty: bool) -> io::Result<Vec<OsString>> {
+    let parts = relative
+        .components()
+        .map(|part| match part {
+            Component::Normal(name) => Ok(name.to_owned()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a publication path is not relative and plain",
+            )),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if !allow_empty && parts.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a publication path is empty",
+        ));
+    }
+    Ok(parts)
+}
+
+#[cfg(unix)]
+fn directory_flags() -> nix::fcntl::OFlag {
+    nix::fcntl::OFlag::O_RDONLY
+        | nix::fcntl::OFlag::O_DIRECTORY
+        | nix::fcntl::OFlag::O_NOFOLLOW
+        | nix::fcntl::OFlag::O_CLOEXEC
+}
+
+#[cfg(unix)]
+fn identity_of(file: &impl std::os::fd::AsFd) -> io::Result<PublicationIdentity> {
+    let stat = nix::sys::stat::fstat(file).map_err(io::Error::from)?;
+    Ok(PublicationIdentity {
+        device: u64::try_from(stat.st_dev).map_err(|_error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a publication device identifier was negative",
+            )
+        })?,
+        inode: stat.st_ino as u64,
+    })
+}
+
+#[cfg(unix)]
+fn validate_regular_fd(file: &impl std::os::fd::AsFd) -> io::Result<()> {
+    use nix::sys::stat::{SFlag, fstat};
+
+    let stat = fstat(file).map_err(io::Error::from)?;
+    if SFlag::from_bits_truncate(stat.st_mode) != SFlag::S_IFREG {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the publication leaf is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn directory_entries(directory: std::os::fd::OwnedFd) -> io::Result<Vec<PublicationEntry>> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    use nix::dir::Type;
+    use nix::fcntl::AtFlags;
+    use nix::sys::stat::{SFlag, fstatat};
+
+    let mut directory = nix::dir::Dir::from_fd(directory).map_err(io::Error::from)?;
+    let lookup = nix::unistd::dup(&directory).map_err(io::Error::from)?;
+    let mut entries = Vec::new();
+    for entry in directory.iter() {
+        let entry = entry.map_err(io::Error::from)?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let kind = match entry.file_type() {
+            Some(Type::File) => PublicationEntryKind::Regular,
+            Some(Type::Directory) => PublicationEntryKind::Directory,
+            Some(Type::Symlink) => PublicationEntryKind::Symlink,
+            Some(_) => PublicationEntryKind::Other,
+            None => {
+                let stat = fstatat(&lookup, entry.file_name(), AtFlags::AT_SYMLINK_NOFOLLOW)
+                    .map_err(io::Error::from)?;
+                let flags = SFlag::from_bits_truncate(stat.st_mode);
+                if flags == SFlag::S_IFREG {
+                    PublicationEntryKind::Regular
+                } else if flags == SFlag::S_IFDIR {
+                    PublicationEntryKind::Directory
+                } else if flags == SFlag::S_IFLNK {
+                    PublicationEntryKind::Symlink
+                } else {
+                    PublicationEntryKind::Other
+                }
+            }
+        };
+        entries.push(PublicationEntry {
+            name: OsString::from_vec(name.to_vec()),
+            kind,
+        });
+    }
+    Ok(entries)
+}
+
+#[cfg(unix)]
+fn remove_matching_from(
+    mut directory: nix::dir::Dir,
+    relative: &Path,
+    matches: &mut impl FnMut(&Path) -> bool,
+) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    use nix::dir::Type;
+    use nix::fcntl::AtFlags;
+    use nix::sys::stat::{SFlag, fstatat};
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
+    let lookup = nix::unistd::dup(&directory).map_err(io::Error::from)?;
+    let mut entries = Vec::new();
+    for entry in directory.iter() {
+        let entry = entry.map_err(io::Error::from)?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let kind = match entry.file_type() {
+            Some(Type::File) => PublicationEntryKind::Regular,
+            Some(Type::Directory) => PublicationEntryKind::Directory,
+            Some(Type::Symlink) => PublicationEntryKind::Symlink,
+            Some(_) => PublicationEntryKind::Other,
+            None => {
+                let stat = fstatat(&lookup, entry.file_name(), AtFlags::AT_SYMLINK_NOFOLLOW)
+                    .map_err(io::Error::from)?;
+                let flags = SFlag::from_bits_truncate(stat.st_mode);
+                if flags == SFlag::S_IFREG {
+                    PublicationEntryKind::Regular
+                } else if flags == SFlag::S_IFDIR {
+                    PublicationEntryKind::Directory
+                } else if flags == SFlag::S_IFLNK {
+                    PublicationEntryKind::Symlink
+                } else {
+                    PublicationEntryKind::Other
+                }
+            }
+        };
+        entries.push((entry.file_name().to_owned(), kind));
+    }
+
+    let mut changed = false;
+    for (name, kind) in entries {
+        let part = OsStr::from_bytes(name.to_bytes());
+        let child_relative = relative.join(part);
+        match kind {
+            PublicationEntryKind::Regular if matches(&child_relative) => {
+                unlinkat(&directory, name.as_c_str(), UnlinkatFlags::NoRemoveDir)
+                    .map_err(io::Error::from)?;
+                changed = true;
+            }
+            PublicationEntryKind::Regular
+            | PublicationEntryKind::Directory
+            | PublicationEntryKind::Symlink
+            | PublicationEntryKind::Other => {}
+        }
+    }
+    if changed {
+        nix::unistd::fsync(&directory).map_err(io::Error::from)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -276,64 +943,8 @@ fn private_parent(
     anchor: &Path,
     relative: &Path,
 ) -> io::Result<(std::os::fd::OwnedFd, std::ffi::OsString)> {
-    use nix::fcntl::{OFlag, open, openat};
-    use nix::sys::stat::Mode;
-
-    let parts = relative
-        .components()
-        .map(|part| match part {
-            Component::Normal(name) => Ok(name.to_owned()),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a private evidence path is not relative and plain",
-            )),
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    let (file_name, parents) = parts
-        .split_last()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty private file path"))?;
-
-    let directory_flags =
-        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    // 2026-08-21: `open(anchor, O_NOFOLLOW)` chroni tylko ostatni komponent. Evidence ma
-    // absolutny korzeń workspace'u, więc zaczynamy od `/` i otwieramy KAŻDY katalog przez
-    // poprzedni deskryptor. Symlink pośrodku `anchor` nie może przekierować prywatnych bajtów
-    // do sąsiedniego projektu.
-    let anchor = private_anchor_path(anchor);
-    let mut anchor_parts = anchor.components();
-    if !matches!(anchor_parts.next(), Some(Component::RootDir)) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "a private evidence anchor is not absolute",
-        ));
-    }
-    let mut directory =
-        open(Path::new("/"), directory_flags, Mode::empty()).map_err(io::Error::from)?;
-    for component in anchor_parts {
-        let Component::Normal(parent) = component else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a private evidence anchor is not plain",
-            ));
-        };
-        directory = openat(
-            &directory,
-            Path::new(parent),
-            directory_flags,
-            Mode::empty(),
-        )
-        .map_err(io::Error::from)?;
-    }
-    for parent in parents {
-        directory = openat(
-            &directory,
-            Path::new(parent),
-            directory_flags,
-            Mode::empty(),
-        )
-        .map_err(io::Error::from)?;
-    }
-    Ok((directory, file_name.clone()))
+    let directory = private_directory(anchor)?;
+    relative_parent(&directory, relative)
 }
 
 #[cfg(target_os = "macos")]
@@ -355,6 +966,11 @@ fn private_anchor_path(anchor: &Path) -> std::path::PathBuf {
     anchor.to_path_buf()
 }
 
+#[cfg(not(unix))]
+fn private_anchor_path(anchor: &Path) -> std::path::PathBuf {
+    anchor.to_path_buf()
+}
+
 #[cfg(unix)]
 fn validate_private_fd(file: &impl std::os::fd::AsFd) -> io::Result<()> {
     use nix::sys::stat::{SFlag, fstat};
@@ -370,6 +986,31 @@ fn validate_private_fd(file: &impl std::os::fd::AsFd) -> io::Result<()> {
             io::ErrorKind::PermissionDenied,
             "an existing private evidence file is not owner-only",
         ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn enforce_owned_directory_mode(
+    directory: &impl std::os::fd::AsFd,
+    requested: nix::sys::stat::Mode,
+) -> io::Result<()> {
+    use nix::sys::stat::{SFlag, fchmod, fstat};
+    use nix::unistd::geteuid;
+
+    let stat = fstat(directory).map_err(io::Error::from)?;
+    if SFlag::from_bits_truncate(stat.st_mode) != SFlag::S_IFDIR
+        || stat.st_uid != geteuid().as_raw()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "a private publication directory is not owned by the current user",
+        ));
+    }
+    let current = nix::sys::stat::Mode::from_bits_truncate(stat.st_mode);
+    if current != requested {
+        fchmod(directory, requested).map_err(io::Error::from)?;
+        nix::unistd::fsync(directory).map_err(io::Error::from)?;
     }
     Ok(())
 }

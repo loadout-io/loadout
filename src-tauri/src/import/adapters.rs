@@ -18,6 +18,9 @@ use super::{Compatibility, Mapping, MemoryNote, SkillDraft, SourceKind};
 
 pub(crate) struct AdapterOutput {
     pub agents: Vec<Agent>,
+    /// Źródłowy item -> natywny agent. Nazwa w front-matterze nie musi być nazwą pliku, więc
+    /// odtwarzanie tej relacji po stemie gubiło gotowy target jeszcze przed domknięciem zależności.
+    pub agent_sources: BTreeMap<String, String>,
     pub skills: Vec<SkillDraft>,
     pub connections: Vec<Connection>,
     pub notes: Vec<MemoryNote>,
@@ -72,6 +75,7 @@ pub(crate) struct WorkflowChoice {
 pub(crate) fn adapt(inspection: &Inspection) -> AdapterOutput {
     let mut output = AdapterOutput {
         agents: Vec::new(),
+        agent_sources: BTreeMap::new(),
         skills: Vec::new(),
         connections: Vec::new(),
         notes: Vec::new(),
@@ -160,6 +164,9 @@ fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut u
                 .iter_mut()
                 .find(|existing| existing.name.eq_ignore_ascii_case(&agent.name))
             {
+                output
+                    .agent_sources
+                    .insert(file.item.id.clone(), existing.id.to_string());
                 let same = normalized(&existing.instructions) == normalized(&agent.instructions);
                 merge_names(&mut existing.skills, &agent.skills);
                 merge_names(&mut existing.connections, &agent.connections);
@@ -192,6 +199,9 @@ fn adapt_agent(file: &InspectedFile, output: &mut AdapterOutput, colours: &mut u
             take_connections(&mut output.connections, &mut mine.connections);
             agent.skills.sort();
             agent.connections.sort();
+            output
+                .agent_sources
+                .insert(file.item.id.clone(), agent.id.to_string());
             output.agents.push(agent);
         }
         Err(message) => output
@@ -2431,50 +2441,6 @@ fn loose_code_behavior(source: &str) -> Option<String> {
     })
 }
 
-#[derive(Debug, Default)]
-struct CommandMentions {
-    accepted: Vec<String>,
-    rejected: Vec<String>,
-}
-
-fn command_mentions(source: &str) -> CommandMentions {
-    let mut mentions = CommandMentions::default();
-    for line in source.lines() {
-        let lower = line.to_ascii_lowercase();
-        let labelled = line
-            .split_once(':')
-            .is_some_and(|(label, _)| label.trim().eq_ignore_ascii_case("command"));
-        let asks_to_run = labelled || lower.contains("run ") || lower.starts_with("run`");
-        if !asks_to_run {
-            continue;
-        }
-        let prohibited = [
-            "do not",
-            "don't",
-            "must not",
-            "never run",
-            "without running",
-        ]
-        .iter()
-        .any(|phrase| lower.contains(phrase));
-        for value in inline_code_values(line) {
-            if value.is_empty() || value.contains(['\n', '\r']) {
-                continue;
-            }
-            if prohibited {
-                mentions.rejected.push(value);
-            } else {
-                mentions.accepted.push(value);
-            }
-        }
-    }
-    mentions.accepted.sort();
-    mentions.accepted.dedup();
-    mentions.rejected.sort();
-    mentions.rejected.dedup();
-    mentions
-}
-
 fn inline_code_values(line: &str) -> Vec<String> {
     line.split('`')
         .enumerate()
@@ -2504,14 +2470,16 @@ pub(crate) fn knows_ship_ui(content: &str) -> bool {
 }
 
 pub(crate) fn check_command(source: &str) -> Option<String> {
-    command_mentions(source)
-        .accepted
-        .into_iter()
-        .find(|command| {
-            command.starts_with("./")
+    match strict_code_field(source, "command") {
+        StrictCodeField::Value(command)
+            if command.starts_with("./")
                 && (command.contains("verify")
                     || command.contains("test")
                     || command.contains("ci"))
-                && !command.contains(['\n', '\r'])
-        })
+                && !command.contains(['\n', '\r']) =>
+        {
+            Some(command)
+        }
+        StrictCodeField::Missing | StrictCodeField::Invalid(_) | StrictCodeField::Value(_) => None,
+    }
 }
