@@ -12,7 +12,7 @@ printf 'model = "test"\n' > "$scratch/home/.codex/config.toml"
 pids=()
 for number in 1 2 3 4 5 6 7 8 9 10 11 12; do
   HOME="$scratch/home" CODEX_HOME="$scratch/home/.codex" \
-    python3 "$ROOT/.loadout/h/trust-workspace.py" "$scratch/work-$number" &
+    python3 "$ROOT/harness/trust-workspace.py" "$scratch/work-$number" &
   pids+=("$!")
 done
 for pid in "${pids[@]}"; do

@@ -265,7 +265,7 @@ describe('invoke-args.sh compares invoke() keys against the signatures in ipc.rs
     plant(dir, IPC, IPC_FIXTURE);
   });
 
-  /* 2026-08-28: pin przeniesiony z `checks/MANIFEST` do `.loadout/h/checks.json`.
+  /* 2026-08-28: pin przeniesiony z `checks/MANIFEST` do `harness/checks.json`.
    *
    * Powod istnienia tej asercji jest bez zmian i jest blizna (N-13): check odkrywany po nazwie
    * pliku, ktory zostanie SKASOWANY, nie produkuje nic -- a bramka melduje czysty przebieg.
@@ -274,7 +274,7 @@ describe('invoke-args.sh compares invoke() keys against the signatures in ipc.rs
    * Zmienil sie WYLACZNIE plik, w ktorym stoi pin. `checks.json` jest teraz jedynym miejscem,
    * z ktorego harness wie, ze ten check istnieje i kiedy go odpalic, a `checks_are_declared`
    * w `scripts/ci.sh` pilnuje rozjazdu W OBIE STRONY. */
-  it('case f: .loadout/h/checks.json declares invoke-args, or nothing would run it at all', () => {
+  it('case f: harness/checks.json declares invoke-args, or nothing would run it at all', () => {
     const cfg = JSON.parse(slurp(join(REPO, '.loadout', 'h', 'checks.json')));
     const commands = [
       ...Object.entries(cfg.checks ?? {}),

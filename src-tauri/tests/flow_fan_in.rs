@@ -14,7 +14,7 @@
 //! # Dlaczego `#[ignore]`, i dlaczego to NIE jest ucieczka
 //!
 //! Ten test uruchamia **cztery prawdziwe sesje `claude`** i za nie płaci. Bramka woła
-//! `cargo test --tests -- --test-threads=1` (`.loadout/h/checks.json`, check `rust-test`)
+//! `cargo test --tests -- --test-threads=1` (`harness/checks.json`, check `rust-test`)
 //! **bez** `--include-ignored`, więc go nie odpala — i tak ma być: kryterium, które przy każdym
 //! przebiegu bramki wystawia rachunek, zostaje wyłączone przez pierwszą osobę, której się
 //! spieszy. Uruchamia się je świadomie:

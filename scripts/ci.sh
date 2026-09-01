@@ -9,7 +9,7 @@
 # kroków żyła w ci.sh i drugi raz w .github/workflows/ci.yml, i te dwie listy się
 # rozjechały. Workflow tego repo woła wyłącznie ten plik i nie wymienia ani jednego kroku.
 #
-# Kody wyjścia — ten sam kontrakt, co `.loadout/h/h.py`:
+# Kody wyjścia — ten sam kontrakt, co `harness/h.py`:
 #   0  pas przeszedł
 #   1  sprawdzenie padło (uczciwa porażka)
 #   2  to MY jesteśmy źle skonfigurowani: brak narzędzia, brak zależności, zły argument
@@ -80,7 +80,7 @@ step() { # step <etykieta> <komenda...>
 # Niezmiennik 19: kod wyjścia to nie dowód. Testowany kod biegnie w tym samym
 # procesie, którego rc czytamy — `os._exit(0)`/`process.exit(0)` na poziomie modułu
 # zazielenia całą suitę. Wymagamy, żeby runner wypisał SWOJE podsumowanie z licznikiem.
-# Regex jest ten sam, którego używa `.loadout/h/h.py` (PASS_COUNT), w składni ERE.
+# Regex jest ten sam, którego używa `harness/h.py` (PASS_COUNT), w składni ERE.
 EVIDENCE_RE='(Ran +[0-9]+ tests?|[0-9]+ (passed|tests? passed))'
 
 with_evidence() { # with_evidence <komenda...>
@@ -285,14 +285,14 @@ web_lane() {
 #
 # Dwie klasy odeszły nie przez skasowanie, tylko przez KONSTRUKCJĘ, i to jest lepszy wynik:
 # `prompt_backticks` i `prompt_dollars` pilnowały metaznaków w heredocach promptów. Prompty
-# są teraz plikami `.md` w `.loadout/h/prompts/`, więc bash nigdy ich nie interpoluje — nie ma
+# są teraz plikami `.md` w `harness/prompts/`, więc bash nigdy ich nie interpoluje — nie ma
 # czego pilnować. Każda z tych klas kosztowała kiedyś bieg.
 guards_lane() {
   echo
   echo "── guards (the check of checks) ──"
   checks_are_declared
   spine_merges_keep_both_declarations
-  bash .loadout/h/guards.sh
+  bash harness/guards.sh
 }
 
 # także wtedy, gdyby git scalał te wiersze sam z siebie, i nie mierzyłby reguły.
@@ -371,14 +371,14 @@ spine_merges_keep_both_declarations() {
 # sprawdzenie napisane po incydencie za 6,98 USD, a bramka tego nie zauważyła, bo iterowała
 # po plikach, które istnieją.
 #
-# Teraz checki wybiera `.loadout/h/checks.json` po zmienionych ścieżkach, więc pytanie jest
+# Teraz checki wybiera `harness/checks.json` po zmienionych ścieżkach, więc pytanie jest
 # dwustronne: czy każdy plik w `checks/` jest zadeklarowany, i czy każda deklaracja wskazuje
 # na plik, który istnieje. Cichy rozjazd w obie strony to ten sam brak sprawdzenia.
 checks_are_declared() {
   python3 - <<'PY' || return 1
 import json, os, re, sys
 
-cfg = json.load(open(".loadout/h/checks.json", encoding="utf-8"))
+cfg = json.load(open("harness/checks.json", encoding="utf-8"))
 declared, missing = set(), []
 for group in ("checks", "manual_only"):
     for cid, spec in cfg[group].items():

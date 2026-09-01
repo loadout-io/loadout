@@ -39,7 +39,7 @@ zostało zrobione i czy ta funkcjonalność działa. Trzy wyjścia: `DZIALA`, `N
 Przy `NIE_DZIALA` poprawia **ten sam** agent, przez `claude --continue`. Po dwóch nieudanych
 poprawkach STOP i pytanie do człowieka.
 
-Pełne okablowanie: [`.loadout/h/README.md`](.loadout/h/README.md). Reguły niżej są wiążące
+Pełne okablowanie: [`harness/README.md`](harness/README.md). Reguły niżej są wiążące
 niezależnie od tego, kto je wykonuje.
 
 Cztery rzeczy w tej pętli są nienegocjowalne:
@@ -49,11 +49,11 @@ Cztery rzeczy w tej pętli są nienegocjowalne:
   nie egzekwuje mechanicznie — sprawdza ją weryfikator, patrząc na diff.
 - **Zielone wymaga licznika przejść.** `exit 0` bez ani jednego zameldowanego przejścia jest
   czerwone (niezmiennik 19). Kod testowany biegnie w tym samym procesie, którego kod wyjścia
-  czytasz. Pilnuje tego `PASS_COUNT` w `.loadout/h/h.py` i to jedyna rzecz, która została
+  czytasz. Pilnuje tego `PASS_COUNT` w `harness/h.py` i to jedyna rzecz, która została
   z całej dawnej maszynerii dowodowej.
 - **Kryterium dotyczy zdania, które widzi CZŁOWIEK**, nie wartości zwróconej przez funkcję
   (niezmiennik 29). Zielone kryterium nad martwą funkcją jest wadą, dla której to repo powstało.
-- **Wyrocznia jest dla biegu niezapisywalna.** `.loadout/h/`, `checks/`, `scripts/`,
+- **Wyrocznia jest dla biegu niezapisywalna.** `harness/`, `checks/`, `scripts/`,
   `AGENTS.md` i `docs/DECISIONS-LOCKED.md` są w `deny` — bieg nie ma jak osłabić tego, co go
   sądzi. Jeśli check jest zły, mówi to (§7), a nie zmienia.
 
@@ -245,7 +245,7 @@ a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
 | „Sprawdzenie", które sprawdza samo siebie | uczciwy stan „no checks configured" |
 | Recenzent, który blokuje albo recenzuje kod poza zadaniem | jedno pytanie: DZIAŁA / NIE_DZIAŁA + konkret |
 | Komenda złożona: `a; b; c` w jednym Bashu | **jedna komenda na wywołanie.** Claude Code rozbija złożone i pyta o zgodę na każdy człon; w biegu bez człowieka nie ma kto jej dać, więc to jest stracona tura. Zmierzone: 13 odmów w jednej fazie |
-| Dopisanie czegokolwiek do `.loadout/h/` bez sprawdzenia w `runs/`, czy to kiedykolwiek złapało realny błąd | poprzedni harness miał 9323 linie i to jest powód, dla którego go nie ma |
+| Dopisanie czegokolwiek do `harness/` bez sprawdzenia w `runs/`, czy to kiedykolwiek złapało realny błąd | poprzedni harness miał 9323 linie i to jest powód, dla którego go nie ma |
 
 ---
 
@@ -259,8 +259,8 @@ docs/design/DESIGN.md         tokeny i komponenty; theme.css jest jego lustrem
 docs/research/projects/       rekonesans trzech repo źródłowych + synteza
 docs/research/topics/         osiem raportów tematycznych + ADR-y
 docs/patterns/<nn>-<nazwa>.md wzorce, które zadania cytują po nazwie pliku
-.loadout/h/                   CAŁY harness: h.py, checks.json, trzy prompty, guards.sh
-.loadout/h/checks.json        zmienione ścieżki -> checki. Jedyne miejsce, gdzie się je dodaje
+harness/                   CAŁY harness: h.py, checks.json, trzy prompty, guards.sh
+harness/checks.json        zmienione ścieżki -> checki. Jedyne miejsce, gdzie się je dodaje
 checks/*.sh                   sprawdzenia WŁASNE (niezmienniki, D1, D5); jednolinijkowce
                               stoją wprost w checks.json
 runs/<id>/                     transkrypty biegu; `.git/h/<id>.json` trzyma jego stan
@@ -294,6 +294,6 @@ Workflow GitHuba tylko go opakowuje.
 
 - Bramka jest czerwona po jednej rundzie poprawek.
 - Zadanie wymaga dotknięcia pliku, którego plan nie przewidywał, a nie da się go pominąć.
-- Trzeba zmienić coś w `.loadout/h/`, `checks/`, `scripts/` albo w `docs/DECISIONS-LOCKED.md`.
+- Trzeba zmienić coś w `harness/`, `checks/`, `scripts/` albo w `docs/DECISIONS-LOCKED.md`.
 - Kryterium akceptacji da się przejść w sposób, który jego zdaniem jest oszustwem.
   **Powiedz to zamiast tak zrobić.** To najcenniejsza rzecz, jaką możesz zgłosić.

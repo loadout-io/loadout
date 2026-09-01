@@ -36,12 +36,12 @@ except Exception:
 ' 2>/dev/null || true)"
 
 cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || exit 0
-if [ -n "$HERE" ] && [ -f "$HERE/.loadout/h/h.py" ]; then
+if [ -n "$HERE" ] && [ -f "$HERE/harness/h.py" ]; then
   cd "$HERE" || exit 0
 fi
 
 BLOCK_CAP=3
-[ -f .loadout/h/h.py ] || { echo "stop-gate: nie ma tu harnessu — nic do sprawdzenia." >&2; exit 0; }
+[ -f harness/h.py ] || { echo "stop-gate: nie ma tu harnessu — nic do sprawdzenia." >&2; exit 0; }
 
 # NIE ".git/…": w podpiętym worktree `.git` jest PLIKIEM, więc zapis kończy się
 # "not a directory". `rev-parse --git-dir` zwraca prawdziwy katalog gita tego worktree,
@@ -60,8 +60,8 @@ if printf '%s' "$INPUT" | grep -q '"stop_hook_active"[[:space:]]*:[[:space:]]*tr
 fi
 
 # `h check` sam wybiera checki po ZMIENIONYCH ścieżkach i kończy zerem, gdy nic nie zmienione.
-# Nie ma tu poziomów ani nazw checków — lista mieszka w `.loadout/h/checks.json`, w jednym miejscu.
-out="$(python3 -B .loadout/h/h.py check 2>&1)"; rc=$?
+# Nie ma tu poziomów ani nazw checków — lista mieszka w `harness/checks.json`, w jednym miejscu.
+out="$(python3 -B harness/h.py check 2>&1)"; rc=$?
 
 if [ "$rc" -eq 0 ]; then echo 0 > "$STATE"; exit 0; fi
 
@@ -77,7 +77,7 @@ fi
   echo "stop-gate: check padł (blokada $n z $BLOCK_CAP). Napraw to, zanim skończysz turę."
   printf '%s\n' "$out" | tail -40
   echo
-  echo "Nigdy nie tykaj .loadout/h/, checks/ ani scripts/ci.sh, żeby check przeszedł,"
+  echo "Nigdy nie tykaj harness/, checks/ ani scripts/ci.sh, żeby check przeszedł,"
   echo "i nigdy nie osłabiaj asercji. Jeśli check jest zły — powiedz to zamiast go zmieniać."
 } >&2
 exit 2

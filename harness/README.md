@@ -63,7 +63,7 @@ niezmienniki 1–3 (`boundary`), tabela żargonu D5 (`vocabulary`), tokeny D1 (`
 (`wired`), deklaracje modułów testowych (`tests-listed`).
 
 `density` i `worktree-trust` są w `manual_only` — odpalasz je sam (`scripts/h check density`),
-a `.loadout/h/guards.sh` wypisuje je z nazwy jako pominięte, żeby cichy skip był niemożliwy.
+a `harness/guards.sh` wypisuje je z nazwy jako pominięte, żeby cichy skip był niemożliwy.
 
 ## `target/` NIE jest dzielony między worktree
 

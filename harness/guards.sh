@@ -55,7 +55,7 @@ fi
 
 # Wszystkie checki z checks/ POZA manualnymi. Do 2026-08-28 stalo tu
 # `checks/before-*.sh checks/quick-*.sh checks/full-*.sh`, bo nazwa pliku niosla poziom
-# bramki; poziomy odeszly razem z gate.py, a checki wybiera teraz `.loadout/h/checks.json`
+# bramki; poziomy odeszly razem z gate.py, a checki wybiera teraz `harness/checks.json`
 # po zmienionych sciezkach.
 #
 # Manualne pomijamy JAWNIE i z nazwy. Nie sa warunkiem zaliczenia biegu (czlowiek odpala je
@@ -65,7 +65,7 @@ fi
 # rejestr guardow jest definiowany NIZEJ, wiec `declare -F` w tym miejscu nie widzi jeszcze
 # ani jednego. Zmierzone: caly pas zameldowal "MANUAL, bez guarda" o checkach, ktore guarda
 # maja. Decyzja mieszka wiec w petli, gdzie funkcje juz istnieja.
-MANUAL="$(python3 -c "import json;print(' '.join(k for k in json.load(open('.loadout/h/checks.json'))['manual_only'] if not k.startswith('_')))")"
+MANUAL="$(python3 -c "import json;print(' '.join(k for k in json.load(open('harness/checks.json'))['manual_only'] if not k.startswith('_')))")"
 CHECKS=( checks/*.sh )
 if [ "${#CHECKS[@]}" -eq 0 ]; then
   echo "no checks discovered under checks/ -- this gate can only report on itself" >&2
@@ -207,10 +207,10 @@ guard_worktree_trust_race() {
   python3 - <<'PY'
 from pathlib import Path
 
-path = Path('.loadout/h/trust-workspace.py')
+path = Path('harness/trust-workspace.py')
 path.write_text('#!/usr/bin/env python3\nraise SystemExit(0)\n')
 PY
-  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} .loadout/h/trust-workspace.py )
+  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} harness/trust-workspace.py )
 }
 
 guard_tokens() {
@@ -270,7 +270,7 @@ guard_tests_listed() {
   plant_new src-tauri/tests/it/_guard_orphan.rs <<'EOF'
 #[test]
 fn _guard_orphan_never_declared() {
-    assert!(true, "planted by .loadout/h/guards.sh");
+    assert!(true, "planted by harness/guards.sh");
 }
 EOF
 }
@@ -347,7 +347,7 @@ for script in "${CHECKS[@]}"; do
         continue ;;
     esac
     no_guard=$((no_guard + 1))
-    say_fail "$id" "NO GUARD -- add $fn() to .loadout/h/guards.sh"
+    say_fail "$id" "NO GUARD -- add $fn() to harness/guards.sh"
     continue
   fi
 

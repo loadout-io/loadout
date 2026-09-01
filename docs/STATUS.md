@@ -267,10 +267,10 @@ zamiast go wymuszać, kłamało tygodniami i nikt tego nie sprawdził.
    pomijając `ipc.rs`, który widziałem we własnym logu clippy. Lądowanie padło. Reguła:
    drugą gałąź przed lądowaniem merguj z `main` **w jej worktree**, nie na trunku.
 4. **Commitowałem do `main`, gdy `h land` był w środku CI.** Skutek był ograniczony (tylko
-   `.loadout/h/**`, którego żaden krok bramki nie czyta), ale reguła jest prosta: naprawy
+   `harness/**`, którego żaden krok bramki nie czyta), ale reguła jest prosta: naprawy
    harnessu idą przed lądowaniem albo po nim.
 5. **`git diff main..<gałąź>` obwinia gałąź o moje własne commity.** Gałąź wyglądała na taką,
-   która tknęła `.loadout/h/h.py` — czyli łamie najostrzejszą regułę repo. Tknąłem go ja.
+   która tknęła `harness/h.py` — czyli łamie najostrzejszą regułę repo. Tknąłem go ja.
    O winę biegu pytaj od `git merge-base`.
 6. **Backticki w promptcie podanym przez shell zostają wykonane**, a stary `<log>.rc` po
    nieudanej próbie natychmiast odpala czuwanie i melduje żywy bieg jako padnięty. Prompty
@@ -458,7 +458,7 @@ Wejście: `scripts/h run <id> --prompt "co ma powstać"`. Pętla:
 (9 plików + MANIFEST) · `review.sh` 365 · `process-group*.sh` 348 · `integrate.sh` 179 ·
 `verify.sh` 17 · guardy skasowanych checków 138. Razem **−5859 linii**, +1256.
 
-**Co zastąpiło:** `.loadout/h/` — `h.py` 587, `checks.json` 89, trzy prompty po ~30 linii,
+**Co zastąpiło:** `harness/` — `h.py` 587, `checks.json` 89, trzy prompty po ~30 linii,
 `README.md` 88, `guards.sh` 378, `trust-workspace.py` 105. Plus osiem **własnych** checków
 w `checks/`, bo pilnują niezmienników produktu, nie ceremonii.
 

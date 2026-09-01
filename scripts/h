@@ -1,2 +1,2 @@
 #!/bin/sh
-exec python3 -B "$(dirname "$0")/../.loadout/h/h.py" "$@"
+exec python3 -B "$(dirname "$0")/../harness/h.py" "$@"

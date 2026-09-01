@@ -10,9 +10,20 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JakubGawr/Loadout/releases/latest"><strong>Download for macOS</strong></a>
+  <img src="https://img.shields.io/github/v/release/loadout-io/loadout?style=flat-square&color=6e76ff&label=version" alt="version">
+  <img src="https://img.shields.io/badge/macOS-13%2B%20Apple%20Silicon-0b0b0b?style=flat-square&logo=apple&logoColor=white" alt="macOS 13+ Apple Silicon">
+  <img src="https://img.shields.io/badge/notarized-Developer%20ID-3fb950?style=flat-square&logo=apple&logoColor=white" alt="signed and notarized">
+  <img src="https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex-9d7bff?style=flat-square" alt="Claude Code and Codex">
+  <img src="https://img.shields.io/badge/Tauri-2.11-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2.11">
+  <img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react&logoColor=white" alt="React 19">
+  <img src="https://img.shields.io/badge/Rust-1.96-dea584?style=flat-square&logo=rust&logoColor=white" alt="Rust 1.96">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-8ca0ff?style=flat-square" alt="license AGPL-3.0"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/loadout-io/loadout/releases/latest"><strong>Download for macOS</strong></a>
   ·
-  <a href="https://github.com/JakubGawr/Loadout/actions/workflows/ci.yml">CI</a>
+  <a href="https://github.com/loadout-io/loadout/actions/workflows/ci.yml">CI</a>
   ·
   <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
@@ -91,7 +102,7 @@ Loadout treats orchestration failures as product failures, not terminal noise:
 
 Loadout is packaged for Apple Silicon Macs.
 
-1. Download [`Loadout_0.2.0_aarch64.dmg`](https://github.com/JakubGawr/Loadout/releases/latest).
+1. Download [`Loadout_0.2.0_aarch64.dmg`](https://github.com/loadout-io/loadout/releases/latest).
 2. Open the DMG and drag Loadout to Applications.
 3. Launch it normally — the app and DMG are signed with Apple Developer ID, notarized, and
    stapled.
@@ -105,7 +116,7 @@ shasum -a 256 ~/Downloads/Loadout_0.2.0_aarch64.dmg
 spctl --assess --type open --context context:primary-signature -v ~/Downloads/Loadout_0.2.0_aarch64.dmg
 ```
 
-The checksum lives in the [release notes](https://github.com/JakubGawr/Loadout/releases/latest)
+The checksum lives in the [release notes](https://github.com/loadout-io/loadout/releases/latest)
 rather than in this file, so it always describes the build you actually downloaded.
 
 ## Run from source

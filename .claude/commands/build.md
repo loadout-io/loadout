@@ -19,14 +19,14 @@ więc zostało tu tylko to, czego żaden skrypt nie robi za ciebie.
 | `docs/STATUS.md` | **czytaj to pierwsze.** Co stoi w trunku, co odstawione i dlaczego |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). Nie podważaj ich |
 | `AGENTS.md` | karta pracy: 29 niezmienników i kontrakt kryterium w §2a |
-| `.loadout/h/README.md` | jak spina się harness i co znaczy każdy kod wyjścia |
+| `harness/README.md` | jak spina się harness i co znaczy każdy kod wyjścia |
 | `docs/ARCHITECTURE.md` · `docs/PLAN.md` | kształt systemu; fazy i linia cięcia |
 
 Czego **nie** czytasz: raportów z `docs/research/`. Mają po 40–60 KB.
 
 ## 2. Jedna zasada nadrzędna
 
-**Graf biegu jest w kodzie `.loadout/h/h.py`, nie w twoim prompcie.** Model, który dostaje sekwencję
+**Graf biegu jest w kodzie `harness/h.py`, nie w twoim prompcie.** Model, który dostaje sekwencję
 etapów w prompcie, pomija etap, kiedy uzna go za zbędny — i pomija najchętniej ten, który by go
 zdemaskował. Więc nigdy nie odtwarzasz etapów ręcznie i nie wołasz `claude` bezpośrednio:
 
@@ -102,7 +102,7 @@ człowieka, naprawiasz i jedziesz. Pięć rzeczy, których przy tym pilnujesz:
 2. **W komunikacie commita zapisz INCYDENT, nie tylko zmianę.** „Budżet 20 s jest krótszy niż
    zimny build cargo; zmierzone: AC-5 wywalił się na limicie, retry zmieścił się w 10,3 s" jest
    warte dziesięć razy więcej niż „podniesiono limit".
-3. **Nowe sprawdzenie ma strażnika** w `.loadout/h/guards.sh`, który sadzi naruszenie i wymaga
+3. **Nowe sprawdzenie ma strażnika** w `harness/guards.sh`, który sadzi naruszenie i wymaga
    czerwonego. Sprawdzenie bez strażnika to sprawdzenie, o którym nie wiesz, czy strzela.
 4. **Naprawa, która rozluźnia bramkę, to nie naprawa.** Podniesienie limitu czasu — tak.
    Zdjęcie asercji — nie, i to jest moment na zatrzymanie się.

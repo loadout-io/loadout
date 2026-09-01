@@ -11,7 +11,7 @@ Zasady:
 - Nie dopisuj rzeczy, o które nikt nie prosił.
 - Kod ma wyglądać jak ten wokół — te same nazwy, ten sam styl, ta sama gęstość
   komentarzy. Komentuj DLACZEGO, z datą przy nieoczywistej linii (niezmiennik 24).
-- Nigdy nie tykaj `.loadout/h/`, `checks/`, `scripts/ci.sh` ani `AGENTS.md`.
+- Nigdy nie tykaj `harness/`, `checks/`, `scripts/ci.sh` ani `AGENTS.md`.
   To jest wyrocznia, która cię sądzi. Jeśli kryterium da się spełnić tylko przez
   jej zmianę — powiedz to i nic nie zmieniaj. To najcenniejsza rzecz, jaką możesz
   zgłosić (AGENTS.md §7).

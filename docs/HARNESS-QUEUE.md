@@ -215,7 +215,7 @@ Jedno założenie, jedno miejsce, obie wartości uzasadnione.
 **Zmierzone 2026-08-28 na biegu `p8-t201-process-proof`.** Agent implementacji odpalił
 **siedem razy** `cargo test --tests -- --test-threads=1`, czyli suitę CAŁEGO repo, mimo że
 zabraniają tego dwa niezależne miejsca prozy: AGENTS.md §4 („Zakazane → zamiast tego") oraz
-`.loadout/h/prompts/implement.md` („Testuj ZAWĘŻONYM poleceniem, nie całym suitem").
+`harness/prompts/implement.md` („Testuj ZAWĘŻONYM poleceniem, nie całym suitem").
 
 Cena, policzona z transkryptów: `cargo test --tests` to ~300 s i link 60 celów za sztukę,
 więc siedem przebiegów to **~35 minut samego budowania** — plus całe wyjście wracające do
