@@ -34,7 +34,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import type { ReactElement } from 'react';
 
-import { useRun } from '../../../state/run';
+import { stepIsOver, useRun } from '../../../state/run';
 import { runStepAgain } from '../rail/again';
 import type { Step } from '../../../state/run';
 import type { Handoff as HandedOver, Note } from '../../../state/memory';
@@ -45,10 +45,11 @@ import { listHandoffs, listNotes } from '../../memory/io';
 import { runFeed } from '../feed/live';
 import type { FeedView } from '../feed/model';
 import type { RailCard } from '../rail/card';
+import { agentStatusOf } from '../rail/roster';
 import { changesOf } from './changes';
 import type { Handoff, StepBrief, UsedNote } from './layout';
 import { sessionSections } from './layout';
-import { closeAgent, openedAgent, subscribeToOpenAgent } from './open';
+import { closeAgent, openedAgent, openedAgentStep, subscribeToOpenAgent } from './open';
 import { Session } from './session';
 
 /* ─── CO TEN AGENT DOSTAŁ ──────────────────────────────────────────────────────────────────
@@ -262,6 +263,7 @@ function stepsOf(steps: readonly Step[], agent: string): readonly StepBrief[] {
  */
 export function AgentScreen({ cards, onSaid }: AgentScreenProps): ReactElement | null {
   const opened = useSyncExternalStore(subscribeToOpenAgent, openedAgent, openedAgent);
+  const openedStep = useSyncExternalStore(subscribeToOpenAgent, openedAgentStep, openedAgentStep);
   const view = useSyncExternalStore(runFeed.subscribe, currentView, currentView);
   const run = useSyncExternalStore(useRun.subscribe, useRun.getState, useRun.getState);
   const given = useSyncExternalStore(subscribeToGiven, whatWasGiven, whatWasGiven);
@@ -279,6 +281,27 @@ export function AgentScreen({ cards, onSaid }: AgentScreenProps): ReactElement |
   const card = cards.find((one) => one.id === opened);
   if (card === undefined) return null;
 
+  /* Obraz otwiera KONKRETNY krok. Podpis znajduje wspólny strumień agenta, ale nie rozróżnia
+   * dwóch legalnych kroków o tej samej nazwie. Klucz wybiera dokładnie ten stan schedulera,
+   * który człowiek kliknął; wejście z palety bez klucza używa go tylko wtedy, gdy nazwa jest
+   * jednoznaczna. Terminalny stan kroku bije wcześniejszy koniec tury vendora. */
+  const sameNamed = run.steps.filter((step) => step.name === card.id);
+  const selectedStep =
+    openedStep === null
+      ? sameNamed.length === 1
+        ? sameNamed[0]
+        : undefined
+      : sameNamed.find((step) => step.id === openedStep);
+  const shownStepId =
+    selectedStep?.id ?? (openedStep === null && sameNamed.length === 1 ? card.stepId : null);
+  const shownCard: RailCard = {
+    ...card,
+    stepId: shownStepId,
+    ...(selectedStep !== undefined && (sameNamed.length > 1 || stepIsOver(selectedStep.state))
+      ? { status: agentStatusOf(selectedStep.state) }
+      : {}),
+  };
+
   const sections = sessionSections(
     { id: card.id, name: card.name },
     {
@@ -292,11 +315,11 @@ export function AgentScreen({ cards, onSaid }: AgentScreenProps): ReactElement |
 
   /* Powtórzenie dostaje wyłącznie krok, który JEST w grafie: pod-agent rozpuszczony w trakcie
    * biegu nie ma czego powtórzyć, więc jego ekran nie dostaje przycisku. */
-  const step = card.stepId;
+  const step = shownCard.stepId;
 
   return (
     <Session
-      card={card}
+      card={shownCard}
       sections={sections}
       onBack={closeAgent}
       onToggle={runFeed.toggle}

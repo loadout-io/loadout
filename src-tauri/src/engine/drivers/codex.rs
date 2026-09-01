@@ -65,6 +65,7 @@ use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
     Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages, unknown_price_notice,
 };
+use crate::engine::line::{Action, Tool};
 use crate::engine::stream;
 use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
 use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
@@ -95,6 +96,12 @@ const COMPLAINT_KEPT: usize = 4 * 1024;
 /// over. The supervisor still runs afterwards: a JSON-RPC response proves only that the request
 /// was read, never that the process group is dead (invariants 6 and 10).
 const APP_INTERRUPT_WINDOW: Duration = Duration::from_secs(2);
+
+/// App Server requests are local pipe round-trips, so thirty seconds is already a transport
+/// failure rather than model work. The timeout covers both admission to the stdin owner and the
+/// matching JSON-RPC response. Its callers still stop the supervised group afterwards: dropping a
+/// Rust future is not process cancellation (invariant 10).
+const APP_REQUEST_WINDOW: Duration = Duration::from_secs(30);
 
 /// Commands waiting between a Lead handle and its one stdin owner. The protocol is sequential at
 /// the product boundary, but a small reserve prevents stderr/stdout draining from depending on a
@@ -530,23 +537,33 @@ impl AppClient {
             anyhow!("Loadout could not encode a Codex App Server request.")
         })?;
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(AppCommand::Request {
-                id,
-                method,
-                body,
-                begins_turn,
-                reply,
-            })
-            .await
-            .map_err(|_| {
+        let answer = timeout(APP_REQUEST_WINDOW, async {
+            self.commands
+                .send(AppCommand::Request {
+                    id,
+                    method,
+                    body,
+                    begins_turn,
+                    reply,
+                })
+                .await
+                .map_err(|_| {
+                    self.mark_incomplete();
+                    anyhow!("The Codex App Server input channel closed.")
+                })?;
+            response.await.map_err(|_| {
                 self.mark_incomplete();
-                anyhow!("The Codex App Server input channel closed.")
-            })?;
-        let answer = response.await.map_err(|_| {
+                anyhow!("The Codex App Server stopped before it answered.")
+            })
+        })
+        .await
+        .map_err(|_| {
             self.mark_incomplete();
-            anyhow!("The Codex App Server stopped before it answered.")
-        })?;
+            anyhow!(
+                "The Codex App Server did not answer within {} seconds.",
+                APP_REQUEST_WINDOW.as_secs()
+            )
+        })??;
         if answer.is_err() {
             self.mark_incomplete();
         }
@@ -709,6 +726,29 @@ impl AppServerState {
         }
     }
 
+    /// Powiadomienie App Servera razem ze strukturalnym faktem o narzędziu czytanym przez bieg.
+    ///
+    /// To osobny szew obok [`Self::notification`], bo tamta funkcja nadal współdzieli mapowanie
+    /// zdarzeń, cen i stanu tury. Dawna konwersja tylko do zdarzenia gubiła ten fakt; kryterium
+    /// MCP niżej dowodzi, dlaczego wywołanie narzędzia potrzebuje bogatszej paczki.
+    fn decoded_notification(&mut self, value: &Value) -> Vec<DecodedEvent> {
+        let began = value.get("method").and_then(Value::as_str) == Some("item/started");
+        let fact = app_item(value).and_then(|item| app_tool_fact(&item, began));
+        self.notification(value)
+            .into_iter()
+            .map(|event| {
+                let tool = match (&event, &fact) {
+                    (
+                        AgentEvent::ToolStart { id, .. } | AgentEvent::ToolEnd { id, .. },
+                        Some((fact_id, tool)),
+                    ) if id == fact_id => Some(tool.clone()),
+                    _ => None,
+                };
+                DecodedEvent { event, tool }
+            })
+            .collect()
+    }
+
     fn complete_turn(&mut self, value: &Value) -> Vec<AgentEvent> {
         self.active = false;
         let status = value
@@ -747,6 +787,71 @@ impl AppServerState {
 fn app_item(value: &Value) -> Option<Item> {
     let item = value.pointer("/params/item")?.clone();
     serde_json::from_value(item).ok()
+}
+
+/// Strukturalny fakt o narzędziu z jednego powiadomienia App Servera.
+///
+/// Dekoder zdarzenia rozstrzyga wynik wywołania, a ta funkcja zachowuje pełny cel i wynik,
+/// których `AgentEvent` celowo nie niesie. Parowanie nadal odbywa się po identyfikatorze
+/// wywołania z protokołu.
+fn app_tool_fact(item: &Item, began: bool) -> Option<(String, Tool)> {
+    let (id, tool) = match item {
+        Item::CommandExecution {
+            id,
+            command,
+            aggregated_output,
+            ..
+        } => {
+            let tool = if began {
+                Tool::Started {
+                    action: Action::Ran,
+                    target: command.clone().unwrap_or_default(),
+                }
+            } else {
+                Tool::Ended {
+                    output: aggregated_output.clone().unwrap_or_default(),
+                }
+            };
+            (id.as_deref(), tool)
+        }
+        Item::WebSearch { id, query } => {
+            let tool = if began {
+                Tool::Started {
+                    action: Action::Search,
+                    target: query.clone().unwrap_or_default(),
+                }
+            } else {
+                Tool::Ended {
+                    output: query.clone().unwrap_or_default(),
+                }
+            };
+            (id.as_deref(), tool)
+        }
+        Item::McpToolCall {
+            id,
+            server,
+            tool,
+            status,
+            error,
+            result,
+        } => {
+            let tool = if began {
+                Tool::Started {
+                    action: Action::Ran,
+                    target: mcp_target(server.as_deref(), tool.as_deref()),
+                }
+            } else {
+                let completion = mcp_completion(*status, error.as_ref(), result.as_ref());
+                Tool::Ended {
+                    output: completion.output,
+                }
+            };
+            (id.as_deref(), tool)
+        }
+        _ => return None,
+    };
+    id.filter(|id| !id.trim().is_empty())
+        .map(|id| (id.to_owned(), tool))
 }
 
 fn app_usage(value: &Value) -> Option<Tokens> {
@@ -1162,9 +1267,9 @@ where
                 }
 
                 let began = state.began;
-                for event in state.notification(&parsed) {
+                for decoded in state.decoded_notification(&parsed) {
                     emit_app(
-                        event,
+                        decoded,
                         began,
                         &events,
                         &outcomes,
@@ -1184,18 +1289,25 @@ where
         .clone();
     let began = state.began;
     for event in state.end_of_stream(&said) {
-        emit_app(event, began, &events, &outcomes, evidence_target.as_ref()).await;
+        emit_app(
+            event.into(),
+            began,
+            &events,
+            &outcomes,
+            evidence_target.as_ref(),
+        )
+        .await;
     }
 }
 
 async fn emit_app(
-    mut event: AgentEvent,
+    mut decoded: DecodedEvent,
     began: Instant,
     events: &mpsc::Sender<DecodedEvent>,
     outcomes: &mpsc::Sender<Outcome>,
     evidence_target: Option<&EvidenceTarget>,
 ) {
-    if let AgentEvent::Finished(outcome) = &mut event {
+    if let AgentEvent::Finished(outcome) = &mut decoded.event {
         if outcome.took.is_zero() {
             outcome.took = began.elapsed();
         }
@@ -1203,7 +1315,7 @@ async fn emit_app(
             mark_evidence_incomplete(evidence_target);
         }
     }
-    if events.send(event.into()).await.is_err() {
+    if events.send(decoded).await.is_err() {
         mark_evidence_incomplete(evidence_target);
     }
 }
@@ -2115,8 +2227,31 @@ enum Item {
         id: Option<String>,
         server: Option<String>,
         tool: Option<String>,
+        /// Typowany stan protokołu z `McpToolCallThreadItem` (Codex App Server 0.152.0).
+        #[serde(default, deserialize_with = "lenient")]
+        status: Option<McpToolStatus>,
+        /// Obecny przy typowanej porażce. Dalej kopiujemy tylko `message`; cała obca koperta
+        /// nie należy do istniejącej ścieżki wyniku narzędzia.
+        #[serde(default, deserialize_with = "lenient")]
+        error: Option<WireError>,
+        /// Pełny udany wynik. Nieznany przyszły kształt zostaje `Value`, zamiast czynić całą
+        /// pozycję nieczytelną (niezmiennik 5).
+        #[serde(default, deserialize_with = "lenient")]
+        result: Option<Value>,
     },
     /// Typ, którego nie znamy — a przybywa ich co tydzień, po cichu.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Wartości statusu wygenerowane przez `codex app-server generate-json-schema` 0.152.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum McpToolStatus {
+    InProgress,
+    Completed,
+    Failed,
+    /// Nowy stan vendora nie może odrzucić całej pozycji (niezmiennik 5).
     #[serde(other)]
     Unknown,
 }
@@ -2303,13 +2438,32 @@ impl CodexDecoder {
                 vec![AgentEvent::Said { text }]
             }
             Item::Reasoning {} => vec![AgentEvent::Thinking],
-            // Ani szukanie, ani podłączona aplikacja nie mają kodu wyjścia: zakończyły się, więc
-            // się udały. Wymaganie tu `exit_code` skasowałoby oba wiersze z transkryptu.
+            // Szukanie nie ma kodu wyjścia: zakończyło się, więc się udało. Wymaganie tu
+            // `exit_code` skasowałoby jego wiersz z transkryptu.
             Item::WebSearch { id, query } => {
                 Self::tool_end(id, first_line(query.as_deref().unwrap_or_default()))
             }
-            Item::McpToolCall { id, server, tool } => {
-                Self::tool_end(id, app_label(server.as_deref(), tool.as_deref()))
+            /* MCP MA WŁASNY TYPOWANY STATUS. Do 2026-09-01 ten match go nie czytał, a funkcja niżej
+             * wpisywał `ok: true` bezwarunkowo. `status: failed` z prawdziwego App Servera
+             * wyglądał więc na udane narzędzie i agent mógł powtarzać tę samą niedostępną
+             * zależność do końca tury. Nie zgadujemy po tekście: tylko typowany `Failed`
+             * odwraca `ok`. */
+            Item::McpToolCall {
+                id,
+                server,
+                tool,
+                status,
+                error,
+                result,
+            } => {
+                let completion = mcp_completion(status, error.as_ref(), result.as_ref());
+                let label = app_label(server.as_deref(), tool.as_deref());
+                let summary = if completion.output.trim().is_empty() {
+                    label
+                } else {
+                    first_line(&completion.output)
+                };
+                Self::tool_end_with_status(id, completion.ok, summary)
             }
             Item::Unknown => Vec::new(),
         }
@@ -2326,12 +2480,13 @@ impl CodexDecoder {
 
     /// Koniec czynności, która nie ma kodu wyjścia.
     fn tool_end(id: Option<String>, summary: String) -> Vec<AgentEvent> {
+        Self::tool_end_with_status(id, true, summary)
+    }
+
+    /// Koniec czynności z wynikiem rozstrzygniętym przez jej własne typowane pole protokołu.
+    fn tool_end_with_status(id: Option<String>, ok: bool, summary: String) -> Vec<AgentEvent> {
         match id.filter(|id| !id.is_empty()) {
-            Some(id) => vec![AgentEvent::ToolEnd {
-                id,
-                ok: true,
-                summary,
-            }],
+            Some(id) => vec![AgentEvent::ToolEnd { id, ok, summary }],
             None => Vec::new(),
         }
     }
@@ -2554,6 +2709,83 @@ fn app_label(server: Option<&str>, tool: Option<&str>) -> String {
         (Some(server), Some(tool)) => format!("Asking {server} to {tool}"),
         (Some(server), None) => format!("Asking {server}"),
         _ => "Working".to_owned(),
+    }
+}
+
+/// Stabilny cel, nie zdanie, do porównania powtórzonych wywołań z obu transportów Codeksa.
+fn mcp_target(server: Option<&str>, tool: Option<&str>) -> String {
+    [server, tool]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Jedno rozstrzygnięcie typowanego wyniku MCP dla wszystkich ścieżek Codeksa.
+///
+/// Tekst porażki pochodzi wyłącznie z typowanego `error.message`. Nie wnioskujemy porażki
+/// z podciągu w `result`, bo udane narzędzie może zwrócić prozę zawierającą słowo
+/// "error". Kształty udanego wyniku pozostają zgodne w przód dzięki `Value`.
+fn mcp_completion(
+    status: Option<McpToolStatus>,
+    error: Option<&WireError>,
+    result: Option<&Value>,
+) -> McpCompletion {
+    let failed = matches!(status, Some(McpToolStatus::Failed));
+    if failed {
+        return McpCompletion {
+            ok: false,
+            output: error
+                .and_then(|error| error.message.as_deref())
+                .unwrap_or_default()
+                .to_owned(),
+        };
+    }
+    McpCompletion {
+        ok: true,
+        output: value_text(result),
+    }
+}
+
+/// Typowany wynik MCP współdzielony przez dekoder zdarzenia i ekstrakcję pełnego faktu.
+#[derive(Debug)]
+pub(crate) struct McpCompletion {
+    pub(crate) ok: bool,
+    pub(crate) output: String,
+}
+
+/// Czyta wspólną politykę wyniku MCP z surowej pozycji używanej przez `stream`.
+pub(crate) fn mcp_completion_from_wire(item: &Value) -> Option<McpCompletion> {
+    let Item::McpToolCall {
+        status,
+        error,
+        result,
+        ..
+    } = serde_json::from_value(item.clone()).ok()?
+    else {
+        return None;
+    };
+    Some(mcp_completion(status, error.as_ref(), result.as_ref()))
+}
+
+/// Wartość wyniku vendora jako pełny tekst, bez przycięcia dla interfejsu.
+fn value_text(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| block.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
     }
 }
 
@@ -3296,6 +3528,73 @@ mod app_server_pricing_tests {
 }
 
 #[cfg(test)]
+mod app_server_mcp_failure_tests {
+    use serde_json::json;
+
+    use crate::engine::drivers::{AgentEvent, DecodedEvent};
+    use crate::engine::line::{Action, Tool};
+
+    use super::AppServerState;
+
+    const ERROR: &str = "browserType.launch: Executable doesn't exist";
+
+    #[test]
+    fn a_failed_app_server_mcp_item_reaches_forward_with_full_typed_facts() -> Result<(), String> {
+        let mut state = AppServerState::new(None);
+        state.begin_turn();
+        let mut decoded = state.decoded_notification(&json!({
+            "method": "item/started",
+            "params": { "item": {
+                "type": "mcpToolCall",
+                "id": "browser_1",
+                "server": "playwright",
+                "tool": "browser_navigate",
+                "status": "inProgress"
+            }}
+        }));
+        decoded.extend(state.decoded_notification(&json!({
+            "method": "item/completed",
+            "params": { "item": {
+                "type": "mcpToolCall",
+                "id": "browser_1",
+                "server": "playwright",
+                "tool": "browser_navigate",
+                "status": "failed",
+                "error": { "message": ERROR },
+                "result": null
+            }}
+        })));
+
+        let [
+            DecodedEvent {
+                event: AgentEvent::ToolStart { .. },
+                tool: Some(Tool::Started { action, target }),
+            },
+            DecodedEvent {
+                event: AgentEvent::ToolEnd { ok, summary, .. },
+                tool: Some(Tool::Ended { output }),
+            },
+        ] = decoded.as_slice()
+        else {
+            return Err(format!(
+                "the App Server road lost the start or end facts before forward: {decoded:?}"
+            ));
+        };
+        if *action != Action::Ran || target != "playwright browser_navigate" {
+            return Err(format!(
+                "the App Server road changed the MCP target: {action:?} {target:?}"
+            ));
+        }
+        if *ok || summary != ERROR || output != ERROR {
+            return Err(format!(
+                "the typed App Server failure became ok={ok}, summary={summary:?}, output={output:?}"
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod stop_proof_tests {
     use std::io::{self, Write};
     use std::path::PathBuf;
@@ -3603,6 +3902,63 @@ mod stop_proof_tests {
         assert!(
             !exec_target.is_healthy(),
             "a post-channel Finished result cannot be accepted as complete evidence"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_app_request_has_a_finite_private_deadline() -> anyhow::Result<()> {
+        const REQUEST_WINDOW: Duration = Duration::from_secs(30);
+        const PRIVATE: &str = "PRIVATE_HANDSHAKE_SENTINEL";
+
+        let directory = TempDir::new()?;
+        let evidence = target(&directory, "app-request-deadline");
+        let (commands, inbox) = mpsc::channel(1);
+        let client = AppClient::new(commands, Some(evidence.clone()));
+        let request = tokio::spawn(async move {
+            client
+                .request(
+                    "initialize",
+                    serde_json::json!({ "private": PRIVATE }),
+                    false,
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            inbox.len(),
+            1,
+            "the fixture never handed a real JSON-RPC request to the App Server actor"
+        );
+        tokio::time::advance(REQUEST_WINDOW - Duration::from_secs(1)).await;
+        assert!(
+            !request.is_finished(),
+            "the request deadline fired before its documented transport window"
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            request.is_finished(),
+            "an App Server that kept its pipes open without one JSON-RPC response left the first \
+             Lead turn waiting forever"
+        );
+        let error = request
+            .await?
+            .expect_err("an unanswered JSON-RPC request was reported as successful")
+            .to_string();
+        assert!(
+            error.contains("did not answer") && error.contains("30 seconds"),
+            "the bounded transport failure did not say what stopped responding: {error}"
+        );
+        assert!(
+            !error.contains(PRIVATE),
+            "the request timeout exposed private handshake parameters: {error}"
+        );
+        assert!(
+            !evidence.is_healthy(),
+            "a JSON-RPC timeout left later conversation evidence eligible for completion"
         );
         Ok(())
     }

@@ -25,6 +25,11 @@
     "state": "running"
   },
   {
+    "kind": "stepCarriedOn",
+    "agent": "builder",
+    "stepId": "s_2"
+  },
+  {
     "kind": "read",
     "agent": "builder",
     "text": "Read 3 files",

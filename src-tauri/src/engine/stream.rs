@@ -76,7 +76,7 @@ use tokio::sync::mpsc;
 
 use super::drivers::AgentEvent;
 use super::drivers::claude::ClaudeDecoder;
-use super::drivers::codex::CodexDecoder;
+use super::drivers::codex::{CodexDecoder, mcp_completion_from_wire};
 use super::line::{Action, Curator, Line, Seen, Tool};
 
 /// Jedno zdarzenie razem z faktami, których ono samo nie niesie.
@@ -475,7 +475,20 @@ fn codex_facts(value: &Value) -> HashMap<String, Tool> {
                     );
                 }
             } else {
-                facts.insert(id, Tool::Ended { output: label });
+                /* `McpToolCallThreadItem` ma typowane `status`, `error.message` i `result`
+                 * (schemat Codex App Servera 0.152.0). Do 2026-09-01 wynik zastępował tu
+                 * ETYKIETĘ narzędzia, więc `forward` nie mógł odróżnić dwóch przyczyn ani
+                 * zobaczyć niedostępnej zależności. Polityka `failed` mieszka wyłącznie
+                 * w dekoderze Codeksa; tutaj tylko dokładamy pełny fakt do tej samej paczki. */
+                let Some(completion) = mcp_completion_from_wire(item) else {
+                    return facts;
+                };
+                let output = if completion.ok && completion.output.is_empty() {
+                    label
+                } else {
+                    completion.output
+                };
+                facts.insert(id, Tool::Ended { output });
             }
         }
         Some("file_change") if !began => {

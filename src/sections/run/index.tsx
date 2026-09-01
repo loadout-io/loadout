@@ -60,7 +60,7 @@ import { why } from '../../ipc/why';
 import { sectionEntry } from '../../ui/sections';
 import type { FeedLine, Step } from '../../state/run';
 import type { Link } from '../../state/workflows';
-import { runFor, useRun } from '../../state/run';
+import { runFor, stepIsOver, useRun } from '../../state/run';
 import { useSkills } from '../../state/skills';
 import { useWorkspaces } from '../../state/workspaces';
 import { addresseeOf } from './addressee';
@@ -300,6 +300,8 @@ function planFor(
 ): RunPlan {
   const spoke = new Map(cards.map((card) => [card.id, card]));
   const doing = new Map(now.rows.map((row) => [row.agent, row.text]));
+  const names = new Map<string, number>();
+  for (const step of steps) names.set(step.name, (names.get(step.name) ?? 0) + 1);
 
   return {
     steps: steps.map((step): GraphStep => {
@@ -309,15 +311,24 @@ function planFor(
        * na kafelku, więc pierwszeństwo musi być zapisane, a nie przypadkowe. */
       const says = doing.get(step.name) ?? card?.say.text ?? '';
       const asked = pinned !== null && pinned.agent === step.name ? pinned : undefined;
+      const stepStatus = agentStatusOf(step.state);
       return {
         id: step.id,
         name: step.name,
-        status: card?.status ?? agentStatusOf(step.state),
+        // `done` zamyka TURĘ vendora, a terminalny stan kroku powstaje później i może zmienić
+        // jej wynik. Przy dwóch legalnych nazwach `Build` wspólny strumień nie mówi, któremu
+        // krokowi należy przypisać koniec tury, więc KAŻDY z nich czyta własny stan po kluczu.
+        // Jedynie nazwa unikalna może bezpiecznie użyć dokładniejszego stanu z karty.
+        status:
+          stepIsOver(step.state) || (names.get(step.name) ?? 0) > 1
+            ? stepStatus
+            : (card?.status ?? stepStatus),
         ...(card === undefined
           ? {}
           : { who: { name: card.name === step.name ? '' : card.name, square: card.square } }),
         ...(says === '' ? {} : { doing: says }),
         ...(step.at === undefined ? {} : { at: step.at }),
+        ...(step.carriedOn === true ? { carriedOn: true as const } : {}),
         ...(asked === undefined ? {} : { asked }),
       };
     }),
@@ -1584,7 +1595,7 @@ export default function Run(): ReactElement {
                     ? {}
                     : {
                         onOpenAgent: () => {
-                          openAgent(showingStep.name);
+                          openAgent(showingStep.name, showingStep.id);
                         },
                       })}
                 />

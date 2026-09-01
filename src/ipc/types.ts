@@ -55,6 +55,11 @@ export type Line =
    * zmienią się w tym samym commicie. Nowy rodzaj jest addytywny w obie strony: starszy front
    * porzuca go w ciszy (jedna linia mniej), starszy Rust go po prostu nie wysyła. */
   | { kind: 'stepState'; agent: string; stepId: string; state: string }
+  /* Cały wynik nieudanego kroku, po którym polityka kazała jechać dalej: odbiorca ustawia z
+   * niego `failed` i kwalifikację jednym zapisem. Osobny addytywny rodzaj, nie pole `stepState`:
+   * starsze lustro może porzucić jeden nieznany fakt, zamiast odrzucić każdą linię stanu o
+   * zmienionym zestawie kluczy. */
+  | { kind: 'stepCarriedOn'; agent: string; stepId: string }
   | {
       kind: 'read';
       agent: string;
@@ -141,6 +146,7 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ['agent', SAYS],
   ['thinking', { agent: str }],
   ['stepState', { agent: str, stepId: str, state: str }],
+  ['stepCarriedOn', { agent: str, stepId: str }],
   ['read', { agent: str, text: str, count: num, paths: strs, detailId: maybeNum }],
   ['search', { agent: str, text: str, count: num, paths: strs, detailId: maybeNum }],
   [

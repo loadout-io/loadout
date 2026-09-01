@@ -28,7 +28,7 @@ use crate::commands::agents::list_agents_inner;
 use crate::commands::chat::LEAD;
 use crate::commands::workflows::{WorkflowPlace, list_workflow_definitions_inner, typable};
 use crate::engine::line::Line;
-use crate::ipc::LineSink;
+use crate::ipc::{LineSink, Sent};
 use crate::library::definition::Definition;
 
 /// Workflow tego człowieka — nazwa do wpisania, tytuł, liczba kroków i półka.
@@ -161,7 +161,7 @@ pub struct Waiting {
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): pod nim są wyłącznie
     /// `take` i `replace`.
-    slot: Mutex<Option<(String, tokio::sync::oneshot::Sender<String>)>>,
+    slot: Mutex<Option<(String, Arc<()>, tokio::sync::oneshot::Sender<String>)>>,
 }
 
 impl Waiting {
@@ -170,10 +170,28 @@ impl Waiting {
     /// Nadpisuje to, co stało wcześniej: nadawca porzucony tutaj zamyka swój kanał, więc
     /// poprzednie pytanie dostaje odmowę zamiast ciszy. Cisza byłaby turą wiszącą do końca
     /// rozmowy.
-    fn park(&self, asker: String) -> tokio::sync::oneshot::Receiver<String> {
+    fn park(&self, asker: String) -> (Arc<()>, tokio::sync::oneshot::Receiver<String>) {
         let (say, hear) = tokio::sync::oneshot::channel();
-        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some((asker, say));
-        hear
+        let ticket = Arc::new(());
+        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((asker, Arc::clone(&ticket), say));
+        (ticket, hear)
+    }
+
+    /// Wycofuje pytanie, którego nie udało się pokazać.
+    ///
+    /// Ticket wskazuje dokładnie TEN `park`, nie tylko tego samego pytającego. Dwa połączenia
+    /// jednego Leada mogą pytać równolegle; starsze `Dropped` nie ma prawa wycofać nowszego,
+    /// widocznego pytania tylko dlatego, że oba mają podpis `Lead`.
+    fn withdraw(&self, ticket: &Arc<()>) -> bool {
+        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        match slot.take() {
+            Some((_waiting, parked, _say)) if Arc::ptr_eq(&parked, ticket) => true,
+            other => {
+                *slot = other;
+                false
+            }
+        }
     }
 
     /// Odkłada pytanie tak, jak zrobiłby to czasownik — **wyłącznie dla kryteriów**.
@@ -186,7 +204,17 @@ impl Waiting {
     /// Nazwa mówi wprost, do czego to służy, bo `quick-wired.sh` sądzi każde nowe `pub fn` — i ma
     /// prawo zapytać, kto to woła.
     pub fn park_for_test(&self, asker: &str) -> tokio::sync::oneshot::Receiver<String> {
-        self.park(asker.to_owned())
+        self.park(asker.to_owned()).1
+    }
+
+    /// Czy podpisane pytanie stoi w slocie — wyłącznie do synchronizacji kryterium mostu.
+    #[must_use]
+    pub fn is_waiting_for_test(&self, asker: &str) -> bool {
+        self.slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|(waiting, _ticket, _say)| waiting == asker)
     }
 
     /// Człowiek odpowiedział. `false`, kiedy ten podpis na nic nie czekał.
@@ -196,7 +224,7 @@ impl Waiting {
     pub fn answer(&self, asker: &str, said: String) -> bool {
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
         match slot.take() {
-            Some((waiting, say)) if waiting == asker => say.send(said).is_ok(),
+            Some((waiting, _ticket, say)) if waiting == asker => say.send(said).is_ok(),
             /* CUDZE PYTANIE WRACA NA MIEJSCE. Zabrane stąd zostawiłoby lidera czekającego bez
              * końca na odpowiedź, którą człowiek dał komu innemu. */
             other => {
@@ -364,9 +392,9 @@ impl Desk {
         /* NASŁUCH PRZED PYTANIEM. Odwrotna kolejność ma okno, w którym człowiek odpowiada
          * szybciej, niż zdążymy odłożyć kanał — a wtedy odpowiedź trafia w nikogo i tura stoi
          * już na zawsze. Ten sam powód i ta sama kolejność, co przy `wait_for_a_person`. */
-        let hear = self.waiting.park(LEAD.to_owned());
+        let (ticket, hear) = self.waiting.park(LEAD.to_owned());
 
-        let _ = lines
+        let shown = lines
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .send(Line::Asked {
@@ -374,6 +402,19 @@ impl Desk {
                 text: question.to_owned(),
                 options,
             });
+
+        /* PYTANIE, KTÓRE NIE DOTARŁO NA EKRAN, NIE MOŻE BLOKOWAĆ TURY. Zmierzone 2026-09-01:
+         * pełna kolejka zwraca `Dropped`, lecz wcześniejsza wersja ignorowała ten wynik i czekała
+         * na odpowiedź bezterminowo. Człowiek nie miał czego kliknąć, więc wyglądało to jak Lead,
+         * który po prostu przestał odpowiadać. */
+        if shown == Sent::Dropped {
+            let _withdrew = self.waiting.withdraw(&ticket);
+            return Answer::Refused(
+                "Loadout could not show that question on the screen. Continue without waiting for \
+                 an answer, or ask it in your reply."
+                    .to_owned(),
+            );
+        }
 
         match hear.await {
             Ok(said) => Answer::Ok(Value::String(said)),

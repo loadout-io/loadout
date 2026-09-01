@@ -47,6 +47,13 @@ export interface GraphStep {
   readonly doing?: string;
   readonly at?: Point;
   /**
+   * Jawny fakt schedulera: ten krok padł, ale wykonał politykę „jedź dalej”.
+   *
+   * Opcjonalny, bo starszy strumień może go nie znać. Nie wyliczamy go ze strzałek ani
+   * z żywego stanu potomka: oba mogą opisywać równoległą pracę, nie decyzję o tej porażce.
+   */
+  readonly carriedOn?: boolean;
+  /**
    * Pytanie bez odpowiedzi, na którym stoi TEN krok — albo brak pola, kiedy stoi na żadnym.
    *
    * 2026-08-31 — DOSZŁO, BO PYTANIE MUSI MIEĆ MIEJSCE, NIE PODPIS. Karta „Needs your answer"

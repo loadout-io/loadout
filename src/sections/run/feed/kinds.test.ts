@@ -29,11 +29,10 @@ const EXPECTED = [...WIRE_KINDS].sort();
 /**
  * Rodzaje, które nie wchodzą do historii, a zajmują stały slot [T2 §7.3 reguła 5].
  *
- * Dwa, i to nie łamie niezmiennika 13, bo to są DWA RÓŻNE FAKTY: `thinking` mówi, co agent robi
- * w tej chwili, a `stepState` — na którym kroku stoi bieg. Fakt trzeci w tej strefie byłby już
- * dwoma odpowiedziami na jedno pytanie i ma tu paść na czerwono.
+ * Trzy i każdy odpowiada na inne pytanie: `thinking` mówi, co agent robi, `stepState` — na
+ * czym stoi krok, a `stepCarriedOn` — czy scheduler wykonał dla jego porażki „jedź dalej”.
  */
-const LIVE = ['stepState', 'thinking'];
+const LIVE = ['stepCarriedOn', 'stepState', 'thinking'];
 
 /** Enumy prosto z drutu — dokładnie to, co przyjdzie, gdy vendor doda typ zdarzenia. */
 const FOREIGN = ['tool_use', 'stream_event'];
@@ -80,8 +79,8 @@ describe('the view knows exactly the kinds the wire can send', () => {
     expect(
       live,
       'Thinking… is a status, not a line [T2 §7.3 rule 5], and so is which step the run stands ' +
-        'on. A THIRD kind in the standing slot means two answers to one question fighting over ' +
-        'one region (invariant 13).',
+        'on, and whether its failure explicitly carried on. These are state facts, never rows ' +
+        'of history (invariant 13).',
     ).toEqual(LIVE);
 
     for (const kind of EXPECTED) {

@@ -24,15 +24,15 @@
 //! końcu. Rozmowa nie ma nic z tego i udawanie, że ma, kosztowałoby wpis w historii biegów za
 //! każde „siema". To jest jedna sesja, jeden proces, tyle tur, ile człowiek napisze.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -48,8 +48,8 @@ use crate::engine::drivers::{
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::GroupProof;
 use crate::evidence::{
-    ConversationMetadata, ConversationVendor, EvidenceFailureKind, EvidenceTarget, ImageFact,
-    SafeInputManifest, TurnCounters,
+    ConversationEnd, ConversationMetadata, ConversationVendor, EvidenceFailureKind, EvidenceTarget,
+    ImageFact, SafeInputManifest, TurnCounters,
 };
 use crate::inherit::rewrite;
 use crate::ipc::LineSink;
@@ -72,6 +72,10 @@ const EVENTS: usize = 128;
 
 /// Ile czekamy, aż po dowodzie `Dead` czytnik opróżni już zakolejkowane zdarzenia i `flush()`.
 const READER_DRAIN: Duration = Duration::from_secs(1);
+
+/// Jawne okno arbitrażu dla `Finished`, które było gotowe na granicy limitu, lecz czekało na
+/// zaplanowanie czytnika. Stała liczba `yield_now` nie daje takiej gwarancji pod obciążeniem.
+const REPLY_DEADLINE_SETTLE: Duration = Duration::from_millis(100);
 
 /// Katalog agentów w bibliotece człowieka: `~/.loadout/agents/` (`docs/ARCHITECTURE.md` §8).
 ///
@@ -291,6 +295,11 @@ struct Session {
     handle: Box<dyn AgentHandle>,
     /// Zadanie zamieniające zdarzenia na wiersze. Kończy się razem z kanałem sesji.
     reader: JoinHandle<()>,
+    /// Stan czytnika obserwowany przez actora będącego właścicielem sesji.
+    ///
+    /// `watch`, nie kolejka: interesuje nas najnowsza liczba zakończonych tur i EOF, a czytnik nie
+    /// może utknąć tylko dlatego, że actor właśnie dowodzi śmierci procesu.
+    progress: watch::Receiver<ReaderProgress>,
     /// Prywatny receipt tej rozmowy. `None` tylko w legacy `Chat`, bez produkcyjnego wolacza.
     evidence: Option<EvidenceTarget>,
     /// Liczba rozpoczętych prób, także tej, której transport odmówił przed dostarczeniem.
@@ -312,15 +321,31 @@ struct ReadySession {
 
 impl ReadySession {
     fn listen(self, lines: Arc<Mutex<LineSink>>) -> Session {
-        let reader = tokio::spawn(read_along(self.inbox, lines, self.evidence.clone()));
+        let (progress, observed) = watch::channel(ReaderProgress::default());
+        let reader = tokio::spawn(read_along(
+            self.inbox,
+            lines,
+            self.evidence.clone(),
+            progress,
+        ));
         Session {
             voice: self.voice,
             handle: self.handle,
             reader,
+            progress: observed,
             evidence: self.evidence,
             attempts: self.attempts,
         }
     }
+}
+
+/// Najnowszy stan pętli, która jako jedyna widzi zdarzenia vendora.
+#[derive(Debug, Clone, Copy, Default)]
+struct ReaderProgress {
+    /// Ile umówionych `Finished` naprawdę przyszło, licząc wszystkie tury tej sesji.
+    finished: usize,
+    /// Kanał zdarzeń się zamknął albo zadanie czytnika zniknęło.
+    closed: bool,
 }
 
 /// Rozmowa z orchestratorem: strumień do okna i sesja, która powstaje przy pierwszym zdaniu.
@@ -426,8 +451,12 @@ impl Chat {
                 if let Some(mut failed) = self.live.take() {
                     match failed.handle.cancel().await {
                         GroupProof::Dead { status } => {
-                            finish_dead_session(failed, status.and_then(|status| status.code()))
-                                .await;
+                            finish_dead_session(
+                                failed,
+                                status.and_then(|status| status.code()),
+                                ConversationEnd::AgentFailed,
+                            )
+                            .await;
                         }
                         GroupProof::Alive { .. } => {
                             self.live = Some(failed);
@@ -735,7 +764,37 @@ struct TurnRequest {
     spec: RunSpec,
     text: String,
     images: ValidatedImages,
+    limit: ReplyLimit,
     done: oneshot::Sender<Result<(), ChatError>>,
+}
+
+/// Limit jednej zaakceptowanej odpowiedzi, dokładnie z definicji wskazanego agenta.
+#[derive(Debug, Clone, Copy)]
+struct ReplyLimit {
+    minutes: u32,
+}
+
+impl ReplyLimit {
+    fn for_lead(lead: &Lead) -> Self {
+        Self {
+            minutes: lead.agent.give_up_after_minutes,
+        }
+    }
+
+    fn deadline(self) -> Option<tokio::time::Instant> {
+        (self.minutes != 0).then(|| {
+            tokio::time::Instant::now()
+                + Duration::from_secs(u64::from(self.minutes).saturating_mul(60))
+        })
+    }
+}
+
+/// Jedna dostarczona odpowiedź, na której `Finished` jeszcze nie zamknęło zegara.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplyDeadline {
+    attempt: usize,
+    at: tokio::time::Instant,
+    minutes: u32,
 }
 
 struct StopRequest {
@@ -745,6 +804,23 @@ struct StopRequest {
 enum FollowUp {
     Delivered(Result<(), ChatError>),
     Stop(Option<StopRequest>),
+    Deadline(ReplyDeadline),
+    ReaderClosed,
+}
+
+/// Wynik długiego `await`, którego actor nie wolno pozbawić pasma Stop ani własnego zegara.
+enum ActorWait<T> {
+    Ready(T),
+    Stop(Option<StopRequest>),
+    Deadline(ReplyDeadline),
+    ReaderClosed,
+}
+
+/// Rozstrzygnięcie pierwszego startu, zanim istnieje uchwyt, który można zatrzymać.
+enum FirstTurnWait {
+    Ready(Result<ReadySession, ChatError>),
+    Stop(Option<StopRequest>),
+    Deadline(ReplyDeadline),
 }
 
 impl Conversation {
@@ -774,6 +850,10 @@ impl Conversation {
         )
     }
 
+    fn is_closed(&self) -> bool {
+        self.inner.status.load(Ordering::Acquire) == THREAD_CLOSED
+    }
+
     fn same_as(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
@@ -784,6 +864,7 @@ impl Conversation {
         spec: RunSpec,
         text: String,
         images: ValidatedImages,
+        limit: ReplyLimit,
     ) -> Result<(), ChatError> {
         let (done, answer) = oneshot::channel();
         self.inner
@@ -793,6 +874,7 @@ impl Conversation {
                 spec,
                 text,
                 images,
+                limit,
                 done,
             })
             .await
@@ -840,11 +922,12 @@ async fn conversation_actor(
     lines: Arc<Mutex<LineSink>>,
 ) {
     let mut session: Option<Session> = None;
-    let mut closing = false;
+    let mut deadlines = VecDeque::new();
+    let mut closing = None;
 
     loop {
-        if closing {
-            serve_while_closing(&mut session, &mut turns, &mut stops, &status).await;
+        if let Some(ending) = closing {
+            serve_while_closing(&mut session, &mut turns, &mut stops, &status, ending).await;
             return;
         }
 
@@ -852,39 +935,166 @@ async fn conversation_actor(
             biased;
             stop = stops.recv() => {
                 let Some(stop) = stop else {
-                    stop_orphan(session, &status).await;
+                    stop_orphan(session, &status, ConversationEnd::Cancelled).await;
                     return;
                 };
-                let proof = cancel_session(&mut session).await;
+                let proof = cancel_session(&mut session, ConversationEnd::Cancelled).await;
                 let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+                deadlines.clear();
                 status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
                 let _ = stop.done.send(proof);
                 if alive {
-                    closing = true;
+                    closing = Some(ConversationEnd::Cancelled);
                 } else {
                     return;
                 }
             }
+            progress = reader_progress(&mut session) => {
+                retire_finished(&mut deadlines, progress.finished);
+                let unfinished = session
+                    .as_ref()
+                    .is_some_and(|running| running.attempts > progress.finished);
+                if !progress.closed {
+                    continue;
+                }
+
+                /* EOF JEST ZDARZENIEM SESJI, NIE KOŃCEM POBIERZNEGO ZADANIA. Do 2026-09-01
+                 * `read_along` znikało, actor dalej trzymał uchwyt i raportował `active`, a na
+                 * ekran nie trafiało ani jedno zdanie. Dopiero tutaj — u jedynego właściciela
+                 * uchwytu — wolno rozstrzygnąć śmierć i ewentualnie obiecać świeżą rozmowę. */
+                let Some((proof, ending)) = cancel_reader_session(&mut session, unfinished).await
+                else {
+                    status.store(THREAD_IDLE, Ordering::Release);
+                    continue;
+                };
+                let alive = matches!(proof, GroupProof::Alive { .. });
+                deadlines.clear();
+                if unfinished || alive {
+                    say_reader_problem(&lines, alive);
+                }
+                if alive {
+                    status.store(THREAD_CLOSING, Ordering::Release);
+                    closing = Some(ending);
+                } else {
+                    status.store(THREAD_IDLE, Ordering::Release);
+                }
+            }
+            expired = next_reply_deadline(&deadlines) => {
+                if !reply_is_still_overdue(&mut session, &mut deadlines, expired).await {
+                    continue;
+                }
+                /* Po `Dead` człowiek może dostać rozstrzygnięcie natychmiast; drain i zapis
+                 * prywatnego receiptu nie są częścią dowodu procesu i nie powinny zamrażać
+                 * widocznego stanu na czas pracy systemu plików. Callback biegnie po prawdziwym
+                 * `cancel()`, ale przed finalizacją dowodów. */
+                let proof = cancel_session_after_proof(
+                    &mut session,
+                    ConversationEnd::AgentFailed,
+                    |proof| {
+                        let alive = matches!(proof, GroupProof::Alive { .. });
+                        say_reply_deadline_problem(&lines, alive, expired.minutes);
+                        status.store(
+                            if alive { THREAD_CLOSING } else { THREAD_IDLE },
+                            Ordering::Release,
+                        );
+                    },
+                )
+                .await;
+                let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+                deadlines.clear();
+                if alive {
+                    closing = Some(ConversationEnd::AgentFailed);
+                }
+            }
             turn = turns.recv() => {
                 let Some(turn) = turn else {
-                    stop_orphan(session, &status).await;
+                    stop_orphan(session, &status, ConversationEnd::Cancelled).await;
                     return;
                 };
 
                 status.store(THREAD_ACTIVE, Ordering::Release);
                 if session.is_none() {
-                    match begin_thread(turn.driver, turn.spec, turn.images).await {
-                        Ok(ready) => {
+                    /* Limit pierwszej odpowiedzi zaczyna się razem z widocznym oczekiwaniem,
+                     * także gdy vendor utknął jeszcze w handshake. Future startu pozostaje w
+                     * tym actorze: Stop może odpowiedzieć od razu, ale nie porzuca właściciela
+                     * procesu, którego uchwyt dopiero ma wrócić. */
+                    let first_deadline = turn.limit.deadline().map(|at| ReplyDeadline {
+                        attempt: 1,
+                        at,
+                        minutes: turn.limit.minutes,
+                    });
+                    let starting = begin_thread(turn.driver, turn.spec, turn.images);
+                    tokio::pin!(starting);
+                    let first = tokio::select! {
+                        biased;
+                        stop = stops.recv() => FirstTurnWait::Stop(stop),
+                        ready = &mut starting => FirstTurnWait::Ready(ready),
+                        expired = next_start_deadline(first_deadline) => {
+                            FirstTurnWait::Deadline(expired)
+                        }
+                    };
+                    match first {
+                        FirstTurnWait::Ready(Ok(ready)) => {
+                            let attempt = ready.attempts;
                             /* Najpierw przyjęta tura człowieka, dopiero potem zadanie, które
                              * może przepuścić odpowiedź. `start` mógł już zapełnić `inbox`, ale
                              * bez czytnika żaden z tych wierszy nie wyprzedzi `Told`. */
                             say_to_stream(&lines, &turn.text);
                             session = Some(ready.listen(Arc::clone(&lines)));
+                            if let Some(deadline) = first_deadline {
+                                deadlines.push_back(ReplyDeadline {
+                                    attempt,
+                                    ..deadline
+                                });
+                            }
                             let _ = turn.done.send(Ok(()));
                         }
-                        Err(error) => {
+                        FirstTurnWait::Ready(Err(error)) => {
                             status.store(THREAD_IDLE, Ordering::Release);
                             let _ = turn.done.send(Err(error));
+                        }
+                        FirstTurnWait::Stop(stop) => {
+                            let keep_actor = false;
+                            status.store(THREAD_CLOSING, Ordering::Release);
+                            let _ = turn.done.send(Err(if stop.is_some() {
+                                ChatError::StillRunning
+                            } else {
+                                ChatError::StoppedListening
+                            }));
+                            if let Some(stop) = stop {
+                                let _ = stop.done.send(Some(GroupProof::Alive { group: None }));
+                            }
+                            finish_starting(
+                                starting.as_mut(),
+                                &mut session,
+                                &mut turns,
+                                &mut stops,
+                                &status,
+                                ConversationEnd::Cancelled,
+                                keep_actor,
+                            )
+                            .await;
+                            return;
+                        }
+                        FirstTurnWait::Deadline(expired) => {
+                            say_reply_deadline_problem(&lines, true, expired.minutes);
+                            status.store(THREAD_CLOSING, Ordering::Release);
+                            let _ = turn.done.send(Err(ChatError::StillRunning));
+                            if finish_starting(
+                                starting.as_mut(),
+                                &mut session,
+                                &mut turns,
+                                &mut stops,
+                                &status,
+                                ConversationEnd::AgentFailed,
+                                true,
+                            )
+                            .await
+                            {
+                                deadlines.clear();
+                                continue;
+                            }
+                            return;
                         }
                     }
                     continue;
@@ -895,18 +1105,27 @@ async fn conversation_actor(
                     let _ = turn.done.send(Err(ChatError::StoppedListening));
                     continue;
                 };
-                let follow_up =
-                    interruptible_next_turn(running, &turn.text, turn.images, &mut stops).await;
+                let follow_up = interruptible_next_turn(
+                    running,
+                    &turn.text,
+                    turn.images,
+                    &mut stops,
+                    &mut deadlines,
+                )
+                .await;
+                let attempt = running.attempts;
                 match follow_up {
                     FollowUp::Delivered(Ok(())) => {
                         say_to_stream(&lines, &turn.text);
+                        arm_reply_deadline(&mut deadlines, attempt, turn.limit);
                         let _ = turn.done.send(Ok(()));
                     }
                     FollowUp::Delivered(Err(error)) => {
-                        let proof = cancel_session(&mut session).await;
+                        let proof = cancel_session(&mut session, ConversationEnd::AgentFailed).await;
+                        deadlines.clear();
                         if matches!(proof, Some(GroupProof::Alive { .. })) {
                             status.store(THREAD_CLOSING, Ordering::Release);
-                            closing = true;
+                            closing = Some(ConversationEnd::AgentFailed);
                             let _ = turn.done.send(Err(ChatError::StillRunning));
                         } else {
                             status.store(THREAD_IDLE, Ordering::Release);
@@ -919,8 +1138,9 @@ async fn conversation_actor(
                         }
                     }
                     FollowUp::Stop(Some(stop)) => {
-                        let proof = cancel_session(&mut session).await;
+                        let proof = cancel_session(&mut session, ConversationEnd::Cancelled).await;
                         let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+                        deadlines.clear();
                         status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
                         let _ = turn.done.send(Err(if alive {
                             ChatError::StillRunning
@@ -929,20 +1149,236 @@ async fn conversation_actor(
                         }));
                         let _ = stop.done.send(proof);
                         if alive {
-                            closing = true;
+                            closing = Some(ConversationEnd::Cancelled);
                         } else {
                             return;
                         }
                     }
                     FollowUp::Stop(None) => {
                         let _ = turn.done.send(Err(ChatError::StoppedListening));
-                        stop_orphan(session, &status).await;
+                        stop_orphan(session, &status, ConversationEnd::Cancelled).await;
                         return;
+                    }
+                    FollowUp::Deadline(expired) => {
+                        /* `wait_with_actor_controls` wykonało już ostatnią arbitrażową próbę
+                         * odebrania `Finished`. Powtórzenie jej tutaj porzucało future wysyłki,
+                         * po czym późne `Finished` mogło cofnąć decyzję i zostawić receipt w
+                         * `sending` razem z żywym procesem. */
+                        let done = turn.done;
+                        let proof = cancel_session_after_proof(
+                            &mut session,
+                            ConversationEnd::AgentFailed,
+                            |proof| {
+                                let alive = matches!(proof, GroupProof::Alive { .. });
+                                say_reply_deadline_problem(&lines, alive, expired.minutes);
+                                status.store(
+                                    if alive { THREAD_CLOSING } else { THREAD_IDLE },
+                                    Ordering::Release,
+                                );
+                                let _ = done.send(Err(if alive {
+                                    ChatError::StillRunning
+                                } else {
+                                    ChatError::StoppedListening
+                                }));
+                            },
+                        )
+                        .await;
+                        let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+                        deadlines.clear();
+                        if alive {
+                            closing = Some(ConversationEnd::AgentFailed);
+                        }
+                    }
+                    FollowUp::ReaderClosed => {
+                        let done = turn.done;
+                        let proof = cancel_session_after_proof(
+                            &mut session,
+                            ConversationEnd::AgentFailed,
+                            |proof| {
+                                let alive = matches!(proof, GroupProof::Alive { .. });
+                                say_reader_problem(&lines, alive);
+                                status.store(
+                                    if alive { THREAD_CLOSING } else { THREAD_IDLE },
+                                    Ordering::Release,
+                                );
+                                let _ = done.send(Err(if alive {
+                                    ChatError::StillRunning
+                                } else {
+                                    ChatError::StoppedListening
+                                }));
+                            },
+                        )
+                        .await;
+                        let alive = matches!(proof, Some(GroupProof::Alive { .. }));
+                        deadlines.clear();
+                        if alive {
+                            closing = Some(ConversationEnd::AgentFailed);
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/// Czeka na zmianę obserwowaną przez czytnik; bez sesji nie wygrywa nigdy.
+async fn reader_progress(session: &mut Option<Session>) -> ReaderProgress {
+    let Some(running) = session.as_mut() else {
+        return std::future::pending::<ReaderProgress>().await;
+    };
+    if running.progress.changed().await.is_err() {
+        let last = *running.progress.borrow();
+        return ReaderProgress {
+            finished: last.finished,
+            closed: true,
+        };
+    }
+    *running.progress.borrow_and_update()
+}
+
+/// Uruchamia zegar dopiero po przyjęciu tury przez vendora.
+fn arm_reply_deadline(deadlines: &mut VecDeque<ReplyDeadline>, attempt: usize, limit: ReplyLimit) {
+    let Some(at) = limit.deadline() else {
+        return;
+    };
+    deadlines.push_back(ReplyDeadline {
+        attempt,
+        at,
+        minutes: limit.minutes,
+    });
+}
+
+/// `Finished` zamyka wszystkie starsze zegary w kolejności strumienia tej jednej sesji.
+fn retire_finished(deadlines: &mut VecDeque<ReplyDeadline>, finished: usize) {
+    deadlines.retain(|deadline| deadline.attempt > finished);
+}
+
+/// Najbliższy zegar albo oczekiwanie bez końca, kiedy żadna odpowiedź nie ma limitu.
+async fn next_reply_deadline(deadlines: &VecDeque<ReplyDeadline>) -> ReplyDeadline {
+    let Some(deadline) = deadlines.iter().min_by_key(|deadline| deadline.at).copied() else {
+        return std::future::pending::<ReplyDeadline>().await;
+    };
+    tokio::time::sleep_until(deadline.at).await;
+    deadline
+}
+
+/// Deadline pierwszego startu albo oczekiwanie bez końca dla agenta bez limitu.
+async fn next_start_deadline(deadline: Option<ReplyDeadline>) -> ReplyDeadline {
+    let Some(deadline) = deadline else {
+        return std::future::pending::<ReplyDeadline>().await;
+    };
+    tokio::time::sleep_until(deadline.at).await;
+    deadline
+}
+
+/// Ostatnia kontrola po obudzeniu zegara rozstrzyga remis na korzyść prawdziwego `Finished`.
+async fn reply_deadline_is_still_overdue(
+    progress: &mut watch::Receiver<ReaderProgress>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    expired: ReplyDeadline,
+) -> bool {
+    /* `Finished` przechodzi przez osobne zadanie vendora i `read_along`. Stała liczba yieldów
+     * zależała od obciążenia executora: gotowy wynik przegrywał po dziewiątym oczekującym
+     * zadaniu. Jawne, małe okno jest częścią kontraktu limitu i kończy się natychmiast, gdy
+     * właściwy `Finished` naprawdę zmieni obserwowany stan. */
+    let settle_until = tokio::time::Instant::now() + REPLY_DEADLINE_SETTLE;
+    loop {
+        let latest = *progress.borrow_and_update();
+        retire_finished(deadlines, latest.finished);
+        if !deadlines.contains(&expired) {
+            return false;
+        }
+        match tokio::time::timeout_at(settle_until, progress.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => return true,
+        }
+    }
+}
+
+async fn reply_is_still_overdue(
+    session: &mut Option<Session>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+    expired: ReplyDeadline,
+) -> bool {
+    let Some(running) = session.as_mut() else {
+        return false;
+    };
+    reply_deadline_is_still_overdue(&mut running.progress, deadlines, expired).await
+}
+
+/// Każde długie oczekiwanie actora widzi Stop, limit odpowiedzi i śmierć czytnika.
+async fn wait_with_actor_controls<F>(
+    future: F,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    progress: &mut watch::Receiver<ReaderProgress>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
+) -> ActorWait<F::Output>
+where
+    F: std::future::Future,
+{
+    tokio::pin!(future);
+    loop {
+        let expired = tokio::select! {
+            biased;
+            stop = stops.recv() => return ActorWait::Stop(stop),
+            ready = &mut future => return ActorWait::Ready(ready),
+            changed = progress.changed() => {
+                let mut latest = *progress.borrow_and_update();
+                if changed.is_err() {
+                    latest.closed = true;
+                }
+                retire_finished(deadlines, latest.finished);
+                if latest.closed {
+                    return ActorWait::ReaderClosed;
+                }
+                continue;
+            }
+            expired = next_reply_deadline(deadlines) => expired,
+        };
+        if reply_deadline_is_still_overdue(progress, deadlines, expired).await {
+            return ActorWait::Deadline(expired);
+        }
+    }
+}
+
+/// Zdanie o limicie w tym samym strumieniu, w którym człowiek czekał na odpowiedź.
+fn say_reply_deadline_problem(lines: &Arc<Mutex<LineSink>>, alive: bool, minutes: u32) {
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    let text = if alive {
+        format!(
+            "The lead agent did not finish this reply within {minutes} {unit}, and Loadout could \
+             not make sure it stopped. Loadout is still tracking it; close this terminal to try \
+             stopping it again."
+        )
+    } else {
+        format!(
+            "The lead agent did not finish this reply within {minutes} {unit}, so Loadout stopped \
+             it. Write again to start a fresh conversation."
+        )
+    };
+    let sink = lines.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let _ = sink.send(Line::Problem {
+        agent: LEAD.to_owned(),
+        text,
+        resets_at: None,
+    });
+}
+
+/// Zdanie o zerwanym strumieniu tam, gdzie człowiek czekał na odpowiedź.
+fn say_reader_problem(lines: &Arc<Mutex<LineSink>>, alive: bool) {
+    let text = if alive {
+        "The lead agent stopped sending replies, but it is still running. Loadout is still tracking \
+         it; close this terminal to try stopping it again."
+    } else {
+        "The lead agent stopped before it finished replying. Write again to start a fresh \
+         conversation."
+    };
+    let sink = lines.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let _ = sink.send(Line::Problem {
+        agent: LEAD.to_owned(),
+        text: text.to_owned(),
+        resets_at: None,
+    });
 }
 
 /// Po `Alive` actor nie przyjmuje już tur, ale zachowuje uchwyt i obsługuje kolejne próby Stop.
@@ -951,16 +1387,17 @@ async fn serve_while_closing(
     turns: &mut mpsc::Receiver<TurnRequest>,
     stops: &mut mpsc::Receiver<StopRequest>,
     status: &AtomicU8,
+    ending: ConversationEnd,
 ) {
     loop {
         tokio::select! {
             biased;
             stop = stops.recv() => {
                 let Some(stop) = stop else {
-                    stop_orphan(session.take(), status).await;
+                    stop_orphan(session.take(), status, ending).await;
                     return;
                 };
-                let proof = cancel_session(session).await;
+                let proof = cancel_session(session, ending).await;
                 let alive = matches!(proof, Some(GroupProof::Alive { .. }));
                 status.store(if alive { THREAD_CLOSING } else { THREAD_CLOSED }, Ordering::Release);
                 let _ = stop.done.send(proof);
@@ -970,7 +1407,7 @@ async fn serve_while_closing(
             }
             turn = turns.recv() => {
                 let Some(turn) = turn else {
-                    stop_orphan(session.take(), status).await;
+                    stop_orphan(session.take(), status, ending).await;
                     return;
                 };
                 let _ = turn.done.send(Err(ChatError::StillRunning));
@@ -979,12 +1416,83 @@ async fn serve_while_closing(
     }
 }
 
+/// Zachowuje własność startu po Stopie albo deadline'ie, aż powstanie uchwyt możliwy do
+/// zatrzymania. Kolejne komendy dostają uczciwe `Alive`; żadna nie może wypchnąć future startu
+/// ze scope i osierocić procesu, który vendor zdążył już utworzyć.
+async fn finish_starting<F>(
+    mut starting: std::pin::Pin<&mut F>,
+    session: &mut Option<Session>,
+    turns: &mut mpsc::Receiver<TurnRequest>,
+    stops: &mut mpsc::Receiver<StopRequest>,
+    status: &AtomicU8,
+    ending: ConversationEnd,
+    mut keep_actor: bool,
+) -> bool
+where
+    F: std::future::Future<Output = Result<ReadySession, ChatError>>,
+{
+    let ready = loop {
+        tokio::select! {
+            biased;
+            ready = starting.as_mut() => break ready,
+            stop = stops.recv() => {
+                let Some(stop) = stop else {
+                    keep_actor = false;
+                    break starting.as_mut().await;
+                };
+                keep_actor = false;
+                let _ = stop.done.send(Some(GroupProof::Alive { group: None }));
+            }
+            turn = turns.recv() => {
+                let Some(turn) = turn else {
+                    keep_actor = false;
+                    break starting.as_mut().await;
+                };
+                let _ = turn.done.send(Err(ChatError::StillRunning));
+            }
+        }
+    };
+
+    let Ok(ready) = ready else {
+        status.store(
+            if keep_actor {
+                THREAD_IDLE
+            } else {
+                THREAD_CLOSED
+            },
+            Ordering::Release,
+        );
+        return keep_actor;
+    };
+    /* Pierwsze zdanie nie zostało pokazane jako dostarczone, więc późne wiersze startu nie mogą
+     * go wyprzedzić. Czytnik nadal musi istnieć, żeby opróżnić dowody i nie zablokować cancel. */
+    let (discard, discarded) = crate::ipc::line_channel(EVENTS);
+    drop(discarded);
+    *session = Some(ready.listen(Arc::new(Mutex::new(discard))));
+    let proof = cancel_session(session, ending).await;
+    if matches!(proof, Some(GroupProof::Alive { .. })) {
+        status.store(THREAD_CLOSING, Ordering::Release);
+        serve_while_closing(session, turns, stops, status, ending).await;
+        return false;
+    }
+    status.store(
+        if keep_actor {
+            THREAD_IDLE
+        } else {
+            THREAD_CLOSED
+        },
+        Ordering::Release,
+    );
+    keep_actor
+}
+
 /// Kolejna tura, z priorytetowym pasmem Stop podczas każdego długiego `await` sterownika.
 async fn interruptible_next_turn(
     session: &mut Session,
     text: &str,
     images: ValidatedImages,
     stops: &mut mpsc::Receiver<StopRequest>,
+    deadlines: &mut VecDeque<ReplyDeadline>,
 ) -> FollowUp {
     let number = session.attempts + 1;
     let evidence = session.evidence.clone();
@@ -1001,55 +1509,84 @@ async fn interruptible_next_turn(
 
     let delivered = if let Some(voice) = session.voice.clone() {
         if images.is_empty() {
-            tokio::select! {
-                biased;
-                stop = stops.recv() => {
+            match wait_with_actor_controls(
+                voice.send(ToAgent::Turn(text.to_owned())),
+                stops,
+                &mut session.progress,
+                deadlines,
+            )
+            .await
+            {
+                ActorWait::Ready(sent) => sent.map_err(|_| ChatError::StoppedListening),
+                ActorWait::Stop(stop) => {
                     cancel_pending_attempt(evidence.as_ref(), number).await;
                     return FollowUp::Stop(stop);
-                },
-                sent = voice.send(ToAgent::Turn(text.to_owned())) => {
-                    sent.map_err(|_| ChatError::StoppedListening)
                 }
+                ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
+                ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
             }
         } else {
-            tokio::select! {
-                biased;
-                stop = stops.recv() => {
+            let sent = {
+                let (handle, progress) = (&mut session.handle, &mut session.progress);
+                wait_with_actor_controls(
+                    handle.send_with_images(text.to_owned(), images),
+                    stops,
+                    progress,
+                    deadlines,
+                )
+                .await
+            };
+            match sent {
+                ActorWait::Ready(sent) => sent.map_err(|_| ChatError::StoppedListening),
+                ActorWait::Stop(stop) => {
                     cancel_pending_attempt(evidence.as_ref(), number).await;
                     return FollowUp::Stop(stop);
-                },
-                sent = session.handle.send_with_images(text.to_owned(), images) => {
-                    sent.map_err(|_| ChatError::StoppedListening)
                 }
+                ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
+                ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
             }
         }
     } else {
-        let waited = tokio::select! {
-            biased;
-            stop = stops.recv() => {
-                cancel_pending_attempt(evidence.as_ref(), number).await;
-                return FollowUp::Stop(stop);
-            },
-            waited = session.handle.wait() => waited,
+        let waited = {
+            let (handle, progress) = (&mut session.handle, &mut session.progress);
+            wait_with_actor_controls(handle.wait(), stops, progress, deadlines).await
         };
-        if waited.is_err() {
-            fail_pending_attempt(
-                evidence.as_ref(),
-                number,
-                EvidenceFailureKind::DeliveryFailed,
-            )
-            .await;
-            return FollowUp::Delivered(Err(ChatError::StoppedListening));
-        }
-        tokio::select! {
-            biased;
-            stop = stops.recv() => {
+        match waited {
+            ActorWait::Stop(stop) => {
                 cancel_pending_attempt(evidence.as_ref(), number).await;
                 return FollowUp::Stop(stop);
-            },
-            sent = session.handle.send_with_images(text.to_owned(), images) => {
-                sent.map_err(|_| ChatError::StoppedListening)
             }
+            ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
+            ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
+            ActorWait::Ready(waited) if waited.is_err() => {
+                fail_pending_attempt(
+                    evidence.as_ref(),
+                    number,
+                    EvidenceFailureKind::DeliveryFailed,
+                )
+                .await;
+                return FollowUp::Delivered(Err(ChatError::StoppedListening));
+            }
+            ActorWait::Ready(_) => {}
+        }
+        let sent = {
+            let (handle, progress) = (&mut session.handle, &mut session.progress);
+            wait_with_actor_controls(
+                handle.send_with_images(text.to_owned(), images),
+                stops,
+                progress,
+                deadlines,
+            )
+            .await
+        };
+        match sent {
+            ActorWait::Ready(sent) => sent.map_err(|_| ChatError::StoppedListening),
+            ActorWait::Stop(stop) => {
+                cancel_pending_attempt(evidence.as_ref(), number).await;
+                return FollowUp::Stop(stop);
+            }
+            ActorWait::Deadline(expired) => return FollowUp::Deadline(expired),
+            ActorWait::ReaderClosed => return FollowUp::ReaderClosed,
         }
     };
     if delivered.is_ok() {
@@ -1086,17 +1623,61 @@ async fn cancel_pending_attempt(evidence: Option<&EvidenceTarget>, number: usize
     fail_pending_attempt(evidence, number, EvidenceFailureKind::Cancelled).await;
 }
 
-/// Eskalacja jednego actora. `Dead` opróżnia slot; `Alive` zostawia uchwyt dokładnie tam,
-/// gdzie był, żeby następny Stop miał do czego wrócić (niezmiennik 6).
-async fn cancel_session(session: &mut Option<Session>) -> Option<GroupProof> {
+/// EOF po kompletnej odpowiedzi jest zdrowym zamknięciem tylko wtedy, gdy proces także jest
+/// dowiedziony martwy. `Alive` oznacza awarię transportu i tę przyczynę trzeba zachować do
+/// późniejszej, skutecznej eskalacji.
+async fn cancel_reader_session(
+    session: &mut Option<Session>,
+    unfinished: bool,
+) -> Option<(GroupProof, ConversationEnd)> {
     let running = session.as_mut()?;
     let proof = running.handle.cancel().await;
+    let ending = if unfinished || matches!(proof, GroupProof::Alive { .. }) {
+        ConversationEnd::AgentFailed
+    } else {
+        ConversationEnd::Cancelled
+    };
     if let GroupProof::Dead { status } = &proof
         && let Some(ended) = session.take()
     {
         finish_dead_session(
             ended,
             status.as_ref().and_then(std::process::ExitStatus::code),
+            ending,
+        )
+        .await;
+    }
+    Some((proof, ending))
+}
+
+/// Eskalacja jednego actora. `Dead` opróżnia slot; `Alive` zostawia uchwyt dokładnie tam,
+/// gdzie był, żeby następny Stop miał do czego wrócić (niezmiennik 6).
+async fn cancel_session(
+    session: &mut Option<Session>,
+    ending: ConversationEnd,
+) -> Option<GroupProof> {
+    cancel_session_after_proof(session, ending, |_| {}).await
+}
+
+/// Anuluje proces i pozwala właścicielowi opublikować wynik dowodu przed wolniejszym drainem.
+async fn cancel_session_after_proof<F>(
+    session: &mut Option<Session>,
+    ending: ConversationEnd,
+    after_proof: F,
+) -> Option<GroupProof>
+where
+    F: FnOnce(&GroupProof),
+{
+    let running = session.as_mut()?;
+    let proof = running.handle.cancel().await;
+    after_proof(&proof);
+    if let GroupProof::Dead { status } = &proof
+        && let Some(ended) = session.take()
+    {
+        finish_dead_session(
+            ended,
+            status.as_ref().and_then(std::process::ExitStatus::code),
+            ending,
         )
         .await;
     }
@@ -1109,13 +1690,14 @@ async fn cancel_session(session: &mut Option<Session>) -> Option<GroupProof> {
 /// koleję i wykonuje `Curator::flush`. Abort jest wyłącznie bezpiecznikiem na wadliwy adapter,
 /// który po dowodzie śmierci nadal trzyma klon nadajnika; po aborcie również odbieramy wynik
 /// zadania, żeby nie zostawić porzuconego `JoinHandle`.
-async fn finish_dead_session(ended: Session, exit_code: Option<i32>) {
+async fn finish_dead_session(ended: Session, exit_code: Option<i32>, ending: ConversationEnd) {
     let Session {
         voice,
         handle,
         mut reader,
+        progress,
         evidence,
-        attempts: _,
+        attempts,
     } = ended;
     drop(voice);
     drop(handle);
@@ -1132,10 +1714,14 @@ async fn finish_dead_session(ended: Session, exit_code: Option<i32>) {
         }
     };
     if let Some(evidence) = evidence {
+        let unfinished_attempt = attempts > progress.borrow().finished;
         if !drained {
             evidence.mark_incomplete();
         }
-        if drained && let Err(error) = evidence.finish_conversation(exit_code, true).await {
+        if let Err(error) = evidence
+            .finish_conversation_as(exit_code, true, ending, unfinished_attempt)
+            .await
+        {
             evidence.mark_incomplete();
             tracing::warn!(%error, "the lead conversation receipt stayed incomplete");
         }
@@ -1146,9 +1732,9 @@ async fn finish_dead_session(ended: Session, exit_code: Option<i32>) {
 ///
 /// `Alive` nie może wypuścić uchwytu ze scope. Actor ponawia pełną eskalację i pozostaje
 /// jedynym właścicielem sesji tak długo, aż dostanie dowód `Dead`.
-async fn stop_orphan(mut session: Option<Session>, status: &AtomicU8) {
+async fn stop_orphan(mut session: Option<Session>, status: &AtomicU8, ending: ConversationEnd) {
     loop {
-        match cancel_session(&mut session).await {
+        match cancel_session(&mut session, ending).await {
             None | Some(GroupProof::Dead { .. }) => {
                 status.store(THREAD_CLOSED, Ordering::Release);
                 return;
@@ -1324,6 +1910,11 @@ impl Threads {
     /// KAŻDY z nich: jeden `Alive` wśród pięciu `Dead` jest dokładnie tym stanem, o którym nikt
     /// się nie dowie z liczby „zamknięto pięć".
     pub async fn close(&self) -> Vec<GroupProof> {
+        enum PendingClose {
+            AlreadyClosed,
+            Requested(Result<oneshot::Receiver<Option<GroupProof>>, ()>),
+        }
+
         let closing: Vec<(String, Conversation)> = self
             .state
             .lock()
@@ -1338,17 +1929,28 @@ impl Threads {
          * po jej końcu. To jest równoległość kontroli, nie tylko lista actorów. */
         let mut pending = Vec::with_capacity(closing.len());
         for (terminal, thread) in closing {
-            let proof = thread.ask_to_stop().await.ok();
+            /* Actor zatrzymany po wcześniejszym `Alive` może nadal czekać w rejestrze, choć
+             * później uzyskał uchwyt i opublikował `CLOSED` po dowodzie `Dead`. Nie wysyłamy do
+             * jego zamkniętego kanału: brak odbiorcy nie jest wtedy nieznanym procesem. */
+            let proof = if thread.is_closed() {
+                PendingClose::AlreadyClosed
+            } else {
+                PendingClose::Requested(thread.ask_to_stop().await)
+            };
             pending.push((terminal, thread, proof));
         }
 
         let mut proofs = Vec::with_capacity(pending.len());
         for (terminal, thread, pending_proof) in pending {
             let proof = match pending_proof {
-                Some(pending_proof) => pending_proof
-                    .await
-                    .unwrap_or(Some(GroupProof::Alive { group: None })),
-                None => Some(GroupProof::Alive { group: None }),
+                PendingClose::AlreadyClosed => None,
+                PendingClose::Requested(Ok(pending_proof)) => match pending_proof.await {
+                    Ok(proof) => proof,
+                    Err(_) if thread.is_closed() => None,
+                    Err(_) => Some(GroupProof::Alive { group: None }),
+                },
+                PendingClose::Requested(Err(_)) if thread.is_closed() => None,
+                PendingClose::Requested(Err(_)) => Some(GroupProof::Alive { group: None }),
             };
             let stopped = !matches!(proof, Some(GroupProof::Alive { .. }));
             if stopped {
@@ -1509,6 +2111,22 @@ impl Threads {
             .collect();
         let thread = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            /* Stop podczas pierwszego handshake uczciwie oddaje `Alive`, zanim istnieje uchwyt,
+             * więc `close_at` nie może wtedy wyrzucić jedynego właściciela procesu. Actor robi to
+             * później i publikuje `CLOSED` dopiero po dowodzie `Dead`. Następne zdanie jest
+             * pierwszym miejscem, które na pewno potrzebuje wpisu ponownie: usuwa więc wyłącznie
+             * dowiedzioną martwą generację razem z jej mostem i skrzynką odpowiedzi. Bez tego
+             * `or_insert_with` zwracało zamknięty kanał i Lead milczał już na zawsze w tym samym
+             * terminalu, mimo że proces został poprawnie posprzątany. */
+            if state
+                .live
+                .get(&terminal.id)
+                .is_some_and(Conversation::is_closed)
+            {
+                state.live.remove(&terminal.id);
+                state.bridges.remove(&terminal.id);
+                state.waiting.remove(&terminal.id);
+            }
             state
                 .live
                 .entry(terminal.id.clone())
@@ -1575,7 +2193,7 @@ impl Threads {
                 });
         }
         thread
-            .say_with_images(driver, told.spec, said.to_owned(), images)
+            .say_with_images(driver, told.spec, said.to_owned(), images, told.limit)
             .await
     }
 
@@ -1612,16 +2230,10 @@ impl Threads {
          * jest właściwe zachowanie, nie brak: bieg zaczęty bez śladu na ekranie jest dokładnie
          * tą awarią, przed którą stoi całe „rusza samo". */
         let waiting = Arc::new(AskWaiting::default());
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .waiting
-            .insert(terminal.id.clone(), Arc::clone(&waiting));
-
         let desk = Arc::new(
             BridgeLibrary::at(library, terminal.folder.clone())
                 .showing(Arc::clone(lines))
-                .hearing(waiting),
+                .hearing(Arc::clone(&waiting)),
         );
         let opened = Bridge::open(&std::env::temp_dir(), BridgeRole::Lead, desk)
             .await
@@ -1633,12 +2245,20 @@ impl Threads {
 
         let bridge = Arc::new(opened);
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        /* WYŚCIG ROZSTRZYGA WPIS, KTÓRY JUŻ STOI. Dwa pierwsze zdania w jednym terminalu mogą
-         * wejść tu naraz; przegrany most jest po prostu porzucany, a jego gniazdo znika razem
-         * z nim. Nadpisanie cudzego wpisu zostawiłoby żywy nasłuch bez właściciela. */
-        Some(Arc::clone(
-            state.bridges.entry(terminal.id.clone()).or_insert(bridge),
-        ))
+        /* MOST I JEGO SKRZYNKA ODPOWIEDZI SĄ JEDNYM COMMIT-EM. Dwa pierwsze zdania mogą
+         * równolegle otworzyć kandydatów; wcześniejsza wersja publikowała `waiting` przed
+         * `Bridge::open`, a zwycięzcę `bridges` wybierała później. Zostawał wtedy Bridge A,
+         * lecz `answer_in` odpowiadało do Waiting B i prawdziwe pytanie A wisiało bez końca. */
+        if let Some(standing) = state.bridges.get(&terminal.id) {
+            return Some(Arc::clone(standing));
+        }
+        state
+            .waiting
+            .insert(terminal.id.clone(), Arc::clone(&waiting));
+        state
+            .bridges
+            .insert(terminal.id.clone(), Arc::clone(&bridge));
+        Some(bridge)
     }
 
     /// Człowiek odpowiedział na pytanie lidera w tym terminalu.
@@ -1701,6 +2321,7 @@ async fn read_along(
     mut inbox: mpsc::Receiver<DecodedEvent>,
     lines: Arc<Mutex<LineSink>>,
     evidence: Option<EvidenceTarget>,
+    progress: watch::Sender<ReaderProgress>,
 ) {
     /* KURATOR ROZMOWY, NIE BIEGU. Odpowiedź lidera zachowuje akapity i listy, którymi ją
      * napisał; strumień pracy zostaje przy jednej linii na zdanie (reguła 1). Powód w całości
@@ -1709,7 +2330,16 @@ async fn read_along(
     let mut curator = Curator::talking();
     let began = std::time::Instant::now();
     let mut attempt = 1_usize;
+    let mut reader_progress = ReaderProgress::default();
     while let Some(DecodedEvent { event, tool }) = inbox.recv().await {
+        let finished = matches!(&event, AgentEvent::Finished(_));
+        if finished {
+            /* Zegar mierzy odpowiedź vendora, nie prędkość dysku. `Finished` jest już faktem
+             * transportu w chwili odbioru; zapis prywatnego receiptu niżej może wejść w
+             * `spawn_blocking` i nie ma prawa przez to przegrać remisu z deadline'em. */
+            reader_progress.finished = reader_progress.finished.saturating_add(1);
+            progress.send_replace(reader_progress);
+        }
         if let AgentEvent::Finished(outcome) = &event {
             if let Some(evidence) = &evidence {
                 let counters = TurnCounters {
@@ -1756,6 +2386,8 @@ async fn read_along(
         let sink = lines.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let _ = sink.send(line);
     }
+    reader_progress.closed = true;
+    progress.send_replace(reader_progress);
 }
 
 /// Sterownik rozmowy niosący to, co ten lider naprawdę dostaje — tym samym szwem, co krok biegu.
@@ -2305,6 +2937,8 @@ struct Told {
     said: Option<String>,
     /// Sesja, którą i tak zaczynamy.
     spec: RunSpec,
+    /// Limit każdej odpowiedzi tej wskazanej definicji.
+    limit: ReplyLimit,
 }
 
 /// Wolna funkcja obok [`spec_for`], a nie trzecia gałąź w środku: te dwa zestawy wartości mają
@@ -2402,6 +3036,7 @@ fn spec_for(
 
     Told {
         said: say_out_loud,
+        limit: ReplyLimit::for_lead(lead),
         spec: RunSpec {
             run_id: Uuid::now_v7(),
             cwd,

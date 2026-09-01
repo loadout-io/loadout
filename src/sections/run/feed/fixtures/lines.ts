@@ -41,6 +41,11 @@ export const line = {
     return { kind: 'stepState', agent, stepId, state, id, at };
   },
 
+  /** Jawny fakt, że scheduler ruszył dalej po porażce tego kroku. */
+  stepCarriedOn(id: number, at: number, agent: string, stepId: string): FeedLine {
+    return { kind: 'stepCarriedOn', agent, stepId, id, at };
+  },
+
   read(id: number, at: number, agent: string, path: string): FeedLine {
     return {
       kind: 'read',

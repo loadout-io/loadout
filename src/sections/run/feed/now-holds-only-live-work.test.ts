@@ -128,4 +128,38 @@ describe('the NOW zone holds only work that is still going', () => {
       'what the finished agent said is still in the record',
     ).toBe(true);
   });
+
+  it('does not turn a carried-on failure back into live work or history', () => {
+    const feed = running();
+    const before = feed.view.history.length;
+    feed.appendLines([
+      line.stepState(3, 1_000, FORGE, BUILD, 'running'),
+      line.stepState(4, 2_000, FORGE, BUILD, 'failed'),
+      line.stepCarriedOn(5, 2_001, FORGE, BUILD),
+    ]);
+
+    expect(
+      agentsInTheZone(feed),
+      'the carry-on fact describes an already failed step; it must not resurrect the agent',
+    ).toEqual([NEEDLE]);
+    expect(
+      feed.view.history.length,
+      'stepCarriedOn is scheduler state for the tile, not a sentence in the run history',
+    ).toBe(before);
+  });
+
+  it('closes live work from the single self-contained carry-on outcome', () => {
+    const feed = running();
+    const before = feed.view.history.length;
+    feed.appendLines([
+      line.stepState(3, 1_000, FORGE, BUILD, 'running'),
+      line.stepCarriedOn(4, 2_000, FORGE, BUILD),
+    ]);
+
+    expect(
+      agentsInTheZone(feed),
+      'stepCarriedOn is the whole failed terminal outcome, so it must close the live step by itself',
+    ).toEqual([NEEDLE]);
+    expect(feed.view.history.length).toBe(before);
+  });
 });

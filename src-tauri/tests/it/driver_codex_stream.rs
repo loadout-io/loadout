@@ -36,7 +36,9 @@ use std::error::Error;
 use std::path::Path;
 
 use loadout_lib::engine::drivers::codex::CodexDecoder;
-use loadout_lib::engine::drivers::{AgentEvent, FinishReason};
+use loadout_lib::engine::drivers::{AgentEvent, DecodedEvent, FinishReason};
+use loadout_lib::engine::line::{Action, Tool};
+use loadout_lib::engine::stream::{Decoded, decode_codex};
 
 /// Złoty plik ze spike'u S-3. Ścieżka złożona z `CARGO_MANIFEST_DIR`, więc test nie zależy od
 /// tego, skąd go uruchomiono.
@@ -79,6 +81,19 @@ const ITEMS: &str = r#"{"type":"thread.started","thread_id":"01a01b33-3p"}
 {"type":"item.completed","item":{"type":"mcp_tool_call","id":"item_6","server":"notion","tool":"search"}}
 {"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122}}"#;
 
+/// Prawdziwy kształt `McpToolCallThreadItem` z protokołu App Servera Codeksa 0.152.0.
+///
+/// `status`, `error.message` i `result` są polami typowanymi przez schemat vendora. Nie wolno
+/// zastępować ich zgadywaniem po tekście: `failed` jest faktem o wyniku, a wiadomość jest pełnym
+/// wyjściem tej porażki, które musi dojechać do ogólnej ochrony przed powtarzaniem narzędzia.
+const FAILED_MCP: &str = r#"{"type":"item.started","item":{"type":"mcp_tool_call","id":"browser_1","server":"playwright","tool":"browser_navigate","status":"inProgress"}}
+{"type":"item.completed","item":{"type":"mcp_tool_call","id":"browser_1","server":"playwright","tool":"browser_navigate","status":"failed","error":{"message":"browserType.launch: Executable doesn't exist"},"result":null}}"#;
+
+/// Przyszły, niezgodny kształt jednego pola nie może skasować całej znanej pozycji (niezmiennik 5).
+const MALFORMED_MCP_STATUS: &str = r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"future_1","server":"future","tool":"read","status":{"name":"completed"},"result":"still readable"}}"#;
+
+const MISSING_BROWSER: &str = "browserType.launch: Executable doesn't exist";
+
 /// Rodzaj zdarzenia jako słowo, żeby dało się porównać **całą sekwencję** jednym
 /// `assert_eq!`. `AgentEvent` nie implementuje `PartialEq` — i słusznie, bo niesie `Outcome`
 /// z liczbami zmiennoprzecinkowymi.
@@ -102,6 +117,19 @@ fn decode_all(text: &str) -> Vec<AgentEvent> {
     let mut events = Vec::new();
     for line in text.lines() {
         events.extend(decoder.push(line));
+    }
+    events
+}
+
+/// Jak [`decode_all`], ale zachowuje fakty `Tool`, które naprawdę płyną do `forward`.
+fn decode_all_with_tool(text: &str) -> Vec<DecodedEvent> {
+    let mut decoder = CodexDecoder::new();
+    let mut events = Vec::new();
+    for line in text.lines() {
+        let Decoded::Events(decoded) = decode_codex(&mut decoder, line) else {
+            continue;
+        };
+        events.extend(decoded);
     }
     events
 }
@@ -244,4 +272,68 @@ fn every_item_type_maps_to_its_own_event() {
         vec!["done"],
         "agent_message is the only prose Codex writes, and item.text is where it lives"
     );
+}
+
+#[test]
+fn a_typed_mcp_failure_keeps_its_status_target_and_full_error() -> Result<(), Box<dyn Error>> {
+    let decoded = decode_all_with_tool(FAILED_MCP);
+    assert_eq!(
+        decoded.len(),
+        2,
+        "one typed MCP call has exactly one start and one end; it produced {decoded:?}"
+    );
+
+    let DecodedEvent {
+        event: AgentEvent::ToolStart { id, .. },
+        tool: Some(Tool::Started { action, target }),
+    } = &decoded[0]
+    else {
+        return Err(format!("the MCP start lost its structured target: {:?}", decoded[0]).into());
+    };
+    assert_eq!(id, "browser_1");
+    assert_eq!(*action, Action::Ran);
+    assert_eq!(target, "playwright browser_navigate");
+
+    let DecodedEvent {
+        event: AgentEvent::ToolEnd { id, ok, summary },
+        tool: Some(Tool::Ended { output }),
+    } = &decoded[1]
+    else {
+        return Err(format!("the MCP end lost its structured result: {:?}", decoded[1]).into());
+    };
+    assert_eq!(id, "browser_1");
+    assert!(
+        !ok,
+        "status=failed must never be rewritten to a successful tool call"
+    );
+    assert_eq!(summary, MISSING_BROWSER);
+    assert_eq!(
+        output, MISSING_BROWSER,
+        "forward needs the complete typed error, not the server/tool label or a UI summary"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_changed_status_shape_does_not_drop_the_rest_of_the_known_item() -> Result<(), Box<dyn Error>> {
+    let decoded = decode_all_with_tool(MALFORMED_MCP_STATUS);
+    let [
+        DecodedEvent {
+            event: AgentEvent::ToolEnd { id, ok, .. },
+            tool: Some(Tool::Ended { output }),
+        },
+    ] = decoded.as_slice()
+    else {
+        return Err(format!(
+            "a malformed optional status dropped the otherwise known MCP item: {decoded:?}"
+        )
+        .into());
+    };
+    assert_eq!(id, "future_1");
+    assert!(
+        *ok,
+        "an unreadable status is unknown, not evidence of failure"
+    );
+    assert_eq!(output, "still readable");
+    Ok(())
 }

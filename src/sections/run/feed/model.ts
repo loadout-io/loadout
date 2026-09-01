@@ -631,22 +631,26 @@ export function createFeed(scroller: Scroller): Feed {
        * TERAZ i o niczym więcej: historia bierze wszystkie wiersze, także te z okna. */
       const atWork = !windowWrote(line);
 
-      if (atWork && !doing.has(line.agent)) doing.set(line.agent, '');
+      // `stepCarriedOn` jest pełnym faktem schedulera o zakończonym kroku, nie nową pracą
+      // agenta. Sam zdejmuje go ze strefy TERAZ niżej; dodanie tutaj zostawiałoby go jako
+      // pracującego już po końcu kroku.
+      if (atWork && line.kind !== 'stepCarriedOn' && !doing.has(line.agent)) {
+        doing.set(line.agent, '');
+      }
 
       if (REGISTRY[line.kind].route === 'now') {
-        /* Dwa rodzaje jadą do strefy TERAZ i odpowiadają na DWA różne pytania, więc nie wolno
-         * ich obsłużyć jedną linią. `thinking` mówi „ktoś myśli" i ma tu swój slot. `stepState`
-         * mówi, na czym stoi KROK — przestawia pasek loadoutu i chip na kafelku agenta,
-         * i robi to w magazynie biegu (`src/state/run.ts`, `withStepStates`), bo tam mieszka
-         * plan. Wersja, która zapaliłaby tym wierszem slot `Thinking…`, pokazywałaby myślącego
-         * agenta za każdym razem, gdy krok się kończy. */
+        /* Trzy rodzaje jadą trasą TERAZ i odpowiadają na trzy różne pytania. `thinking`
+         * ma swój slot. `stepState` i `stepCarriedOn` są faktami kroku konsumowanymi przez
+         * magazyn biegu; model strumienia nie rysuje ich i nie zamienia w bieżącą pracę. */
         if (line.kind === 'thinking') thinking = line.agent;
-        if (line.kind === 'stepState') {
+        if (line.kind === 'stepState' || line.kind === 'stepCarriedOn') {
           /* Koniec kroku zdejmuje agenta ze strefy TERAZ dopiero wtedy, gdy nie została mu
-           * ani jedna żywa kopia. Start kroku niczego nie zdejmuje — implementacja, która
-           * reagowałaby na każdy `stepState`, trzymałaby strefę pustą przez cały bieg. */
+           * ani jedna żywa kopia. `stepCarriedOn` jest samowystarczalnym terminalnym wynikiem
+           * `failed`; nie czeka na osobną linię stanu, bo stratna kolejka mogłaby ją zgubić.
+           * Start kroku niczego nie zdejmuje — implementacja, która reagowałaby na każdy
+           * `stepState`, trzymałaby strefę pustą przez cały bieg. */
           const mine = liveSteps.get(line.agent) ?? new Set<string>();
-          if (stepIsOver(line.state)) {
+          if (line.kind === 'stepCarriedOn' || stepIsOver(line.state)) {
             mine.delete(line.stepId);
             if (mine.size === 0) {
               doing.delete(line.agent);

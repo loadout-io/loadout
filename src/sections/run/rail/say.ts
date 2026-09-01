@@ -68,6 +68,8 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
   thinking: 'loadout',
   /* Loadout, nie agent: stan kroku ogłasza planista, a nie ten, kto ten krok wykonuje. */
   stepState: 'loadout',
+  /* Tak samo rozstrzygnięcie „jedź dalej”: ogłasza je scheduler po wyniku kroku. */
+  stepCarriedOn: 'loadout',
 };
 
 /** Kto powiedział to, co niesie wiersz tego rodzaju. */

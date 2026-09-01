@@ -72,6 +72,15 @@ export interface Step {
   readonly name: string;
   readonly state: StepState;
   /**
+   * Scheduler wykonał dla tego nieudanego kroku politykę „jedź dalej”.
+   *
+   * Opcjonalne, bo stare strumienie i plany składane bez biegu tego faktu nie znają. Brak
+   * znaczy „nie otrzymaliśmy takiego faktu”, nigdy domysł na podstawie pracującego sąsiada.
+   * `true` przyjeżdża wyłącznie linią `stepCarriedOn`; nie istnieje wartość `false` na
+   * drucie, która mogłaby nadpisać trwałe rozstrzygnięcie schedulera.
+   */
+  readonly carriedOn?: boolean;
+  /**
    * Rodzaj kafelka, z którego ten krok powstał — albo BRAK POLA, kiedy nie wiadomo.
    *
    * 2026-08-28 — PO CO TO POWSTAŁO. Decyzja D7 obiecuje, że bieg, którego plan nie ma ani
@@ -318,14 +327,29 @@ const STEP_STATES: ReadonlySet<string> = new Set<StepState>([
 function withStepStates(steps: readonly Step[], batch: readonly FeedLine[]): readonly Step[] {
   let next: Step[] | null = null;
   for (const line of batch) {
-    if (line.kind !== 'stepState') continue;
-    if (!STEP_STATES.has(line.state)) continue;
-    const state = line.state as StepState;
-    const at = (next ?? steps).findIndex((step) => step.id === line.stepId);
-    if (at < 0) continue;
-    const step = (next ?? steps)[at];
-    if (step === undefined || step.state === state) continue;
-    (next ??= [...steps])[at] = { ...step, state };
+    if (line.kind === 'stepState') {
+      if (!STEP_STATES.has(line.state)) continue;
+      const state = line.state as StepState;
+      const at = (next ?? steps).findIndex((step) => step.id === line.stepId);
+      if (at < 0) continue;
+      const step = (next ?? steps)[at];
+      if (step === undefined || (step.state === state && step.carriedOn !== true)) continue;
+      // Każde zwykłe ogłoszenie stanu zaczyna świeży etap tego kafelka. Samowystarczalny
+      // `stepCarriedOn` jedzie osobną gałęzią niżej; wyzerowanie tutaj zapobiega przeciekowi
+      // jego rozstrzygnięcia do następnej rundy lub kopii o tym samym `tile_key`.
+      (next ??= [...steps])[at] = { ...step, state, carriedOn: false };
+      continue;
+    }
+    if (line.kind === 'stepCarriedOn') {
+      const at = (next ?? steps).findIndex((step) => step.id === line.stepId);
+      if (at < 0) continue;
+      const step = (next ?? steps)[at];
+      if (step === undefined || (step.state === 'failed' && step.carriedOn === true)) continue;
+      // Samowystarczalny wynik, nie druga połowa pary: kolejka Rusta może zgubić dowolną linię,
+      // więc zależność od wcześniejszego `stepState: failed` odtwarzałaby dokładnie fałszywy stan
+      // „failed, ale bieg bez powodu idzie dalej”. Jeden odbiór ustawia oba fakty atomowo.
+      (next ??= [...steps])[at] = { ...step, state: 'failed', carriedOn: true };
+    }
   }
   return next ?? steps;
 }
@@ -371,9 +395,9 @@ export function createRunStore(): RunStore {
            * i od czego zacząć prośbę wstecz. */
           earliestKnownId: lines[0]?.id ?? null,
           agents: withAgents(state.agents, batch),
-          /* Stan kroku wjeżdża TĄ SAMĄ paczką, co linie, i to jest cała naprawa defektu
-           * „sześć z siedmiu stanów nieosiągalnych": jeden konsument, ten sam moment,
-           * żadnej drugiej drogi do pola `state` (niezmiennik 13). */
+          /* Fakty kroku wjeżdżają TĄ SAMĄ paczką, co linie: stan i jawne rozstrzygnięcie
+           * „jedź dalej” mają po jednym konsumencie, w tym samym momencie, bez inferencji
+           * z sąsiednich kroków (niezmienniki 13 i 17). */
           steps: withStepStates(state.steps, batch),
         };
       });

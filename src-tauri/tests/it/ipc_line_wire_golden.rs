@@ -38,8 +38,8 @@ use loadout_lib::ipc::{Sent, line_channel, spawn_pump};
 use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
-/// Wszystkie czternaście rodzajów wiersza [T2 §7.2], w kolejności deklaracji.
-const KINDS: [LineKind; 17] = [
+/// Wszystkie osiemnaście rodzajów wiersza, w kolejności deklaracji.
+const KINDS: [LineKind; 18] = [
     LineKind::Run,
     LineKind::Step,
     LineKind::Agent,
@@ -48,6 +48,9 @@ const KINDS: [LineKind; 17] = [
     // `Thinking`), ale JEST na drucie, wiec ma tu stac: wariant bez wiersza w tej tablicy jest
     // wariantem, ktorego nikt nigdy nie zobaczyl na drucie.
     LineKind::StepState,
+    // 2026-09-01 — osiemnasty rodzaj: addytywny fakt o wykonanym `carry-on`, oddzielony od
+    // ścisłego kształtu `StepState`, żeby starsze okno mogło porzucić tylko nowy fakt.
+    LineKind::StepCarriedOn,
     LineKind::Read,
     LineKind::Search,
     LineKind::Edit,
@@ -110,6 +113,10 @@ fn sample(kind: LineKind) -> Line {
             agent: "builder".to_owned(),
             step_id: "s_2".to_owned(),
             state: "running".to_owned(),
+        },
+        LineKind::StepCarriedOn => Line::StepCarriedOn {
+            agent: "builder".to_owned(),
+            step_id: "s_2".to_owned(),
         },
         LineKind::Read => Line::Read {
             agent: "builder".to_owned(),

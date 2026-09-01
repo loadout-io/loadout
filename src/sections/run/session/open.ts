@@ -15,15 +15,28 @@
  * tamtego folderu wraca do tego samego agenta (wymóg właściciela: „nie tracę sesji").
  */
 
-/** Podpis agenta, którego ekran jest otwarty, albo `null`. */
-let opened: string | null = null;
+interface OpenedAgent {
+  /** Podpis, którym agent nadaje w strumieniu. */
+  readonly agent: string;
+  /** Konkretny krok kliknięty na obrazie, albo brak dla wejścia z palety agentów. */
+  readonly stepId: string | null;
+}
+
+/** Jeden wybór ekranu: agent oraz, kiedy istnieje, tożsamość klikniętego kroku. */
+let opened: OpenedAgent | null = null;
 
 const listeners = new Set<() => void>();
 
-/** Otwiera ekran tego agenta. Podpis jest tym, którym agent nadaje w strumieniu. */
-export function openAgent(agent: string): void {
-  if (opened === agent) return;
-  opened = agent;
+/**
+ * Otwiera ekran tego agenta. Podpis znajduje jego strumień, a klucz zachowuje tożsamość kroku.
+ *
+ * Sam podpis nie wystarcza: workflow legalnie może mieć dwa kroki o tej samej nazwie. Bez
+ * `stepId` kliknięcie porażki A otwierało szczegóły ze stanem kroku B (zmierzone 2026-09-02).
+ * Brak klucza zostaje legalny dla palety, która otwiera agenta, nie konkretny krok.
+ */
+export function openAgent(agent: string, stepId: string | null = null): void {
+  if (opened?.agent === agent && opened.stepId === stepId) return;
+  opened = { agent, stepId };
   publish();
 }
 
@@ -36,7 +49,12 @@ export function closeAgent(): void {
 
 /** Kto jest otwarty. Ta sama migawka dla okna i dla renderu serwerowego. */
 export function openedAgent(): string | null {
-  return opened;
+  return opened?.agent ?? null;
+}
+
+/** Który konkretny krok otworzył ekran, albo `null` dla wejścia po samym agencie. */
+export function openedAgentStep(): string | null {
+  return opened?.stepId ?? null;
 }
 
 /** Powiadomienie o zmianie; oddaje funkcję, która je odwołuje. Kształt `useSyncExternalStore`. */

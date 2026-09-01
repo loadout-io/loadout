@@ -29,6 +29,12 @@ pub struct EvidenceTarget {
     input: SafeInputManifest,
     healthy: Arc<AtomicBool>,
     receipt: Arc<tokio::sync::Mutex<()>>,
+    /// Publikacja przeżywa anulowanie future, które ją zleciło.
+    ///
+    /// `spawn_blocking` nie jest anulowany razem z czytnikiem. Osobny guard przechodzi więc do
+    /// zadania blokującego; następny mutation najpierw czeka na jego rzeczywisty koniec, zamiast
+    /// czytać stary dokument i publikować terminalny receipt przed spóźnionym zapisem.
+    publication: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Rodzaj sesji, bez vendorowego identyfikatora i bez arbitralnego tekstu.
@@ -114,6 +120,17 @@ pub enum EvidenceFailureKind {
     Cancelled,
 }
 
+/// Dlaczego właściciel rozmowy zatrzymał niedokończoną odpowiedź.
+///
+/// Jawny typ, zamiast `bool`: Stop człowieka i cisza vendora oba kończą się `Dead`, lecz tylko
+/// pierwsze jest anulowaniem. Spłaszczenie ich przy finalizacji robiło z awarii agenta działanie
+/// człowieka w support receipt i odbierało diagnostyce jedyny ślad przyczyny.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversationEnd {
+    Cancelled,
+    AgentFailed,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum ConversationState {
@@ -153,6 +170,7 @@ impl EvidenceTarget {
             input,
             healthy: Arc::new(AtomicBool::new(true)),
             receipt: Arc::new(tokio::sync::Mutex::new(())),
+            publication: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -166,6 +184,7 @@ impl EvidenceTarget {
             input,
             healthy: Arc::new(AtomicBool::new(true)),
             receipt: Arc::new(tokio::sync::Mutex::new(())),
+            publication: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -182,6 +201,7 @@ impl EvidenceTarget {
             input,
             healthy: Arc::new(AtomicBool::new(true)),
             receipt: Arc::new(tokio::sync::Mutex::new(())),
+            publication: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -198,6 +218,14 @@ impl EvidenceTarget {
     #[must_use]
     pub fn input(&self) -> &SafeInputManifest {
         &self.input
+    }
+
+    /// Serializuje logiczną zmianę i czeka na fizyczny zapis, który mógł przeżyć abort callera.
+    async fn lock_receipt(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        let guard = self.receipt.lock().await;
+        let publication = self.publication.lock().await;
+        drop(publication);
+        guard
     }
 
     /// Surowy stdout vendora. Nazwa kroku jest kontraktem z `store::rebuild`.
@@ -278,6 +306,7 @@ impl EvidenceTarget {
             ));
         };
         self.prepare().await?;
+        let _guard = self.lock_receipt().await;
         let now = now_ms();
         let document = ConversationDocument {
             schema_version: 1,
@@ -300,14 +329,20 @@ impl EvidenceTarget {
             cached_tokens: 0,
         };
         let bytes = serde_json::to_vec_pretty(&document).map_err(io::Error::other)?;
-        write_new_json(&self.anchor, &self.root.join("conversation.json"), &bytes).await
+        write_new_json(
+            &self.anchor,
+            &self.root.join("conversation.json"),
+            &bytes,
+            Arc::clone(&self.publication),
+        )
+        .await
     }
 
     /// Rejestruje próbę przed dostarczeniem. `sending` jest jawne, więc odmowa nie zostawia
     /// pliku udającego zaakceptowaną turę.
     pub async fn begin_turn(&self, number: usize, input: &SafeInputManifest) -> io::Result<()> {
         validate_manifest(input)?;
-        let _guard = self.receipt.lock().await;
+        let _guard = self.lock_receipt().await;
         let turns = self.root.join("turns");
         ensure_directory(&turns).await?;
         let document = TurnDocument {
@@ -327,7 +362,13 @@ impl EvidenceTarget {
         };
         let bytes = serde_json::to_vec_pretty(&document).map_err(io::Error::other)?;
         let turn_path = turns.join(format!("{number:04}.json"));
-        write_new_json(&self.anchor, &turn_path, &bytes).await?;
+        write_new_json(
+            &self.anchor,
+            &turn_path,
+            &bytes,
+            Arc::clone(&self.publication),
+        )
+        .await?;
         let mut conversation = self.read_conversation()?;
         if conversation.complete || number != conversation.attempts.saturating_add(1) {
             let _ = tokio::fs::remove_file(&turn_path).await;
@@ -346,7 +387,7 @@ impl EvidenceTarget {
 
     /// Potwierdza, że vendor przyjął próbę. Licznik aktywnej rozmowy zmienia się od razu.
     pub async fn accept_turn(&self, number: usize) -> io::Result<()> {
-        let _guard = self.receipt.lock().await;
+        let _guard = self.lock_receipt().await;
         let mut conversation = self.read_conversation()?;
         if conversation.complete || conversation.attempts != number {
             return Err(io::Error::new(
@@ -391,7 +432,7 @@ impl EvidenceTarget {
         ok: bool,
         cancelled: bool,
     ) -> io::Result<()> {
-        let _guard = self.receipt.lock().await;
+        let _guard = self.lock_receipt().await;
         let mut turn = self.read_turn(number)?;
         if !matches!(turn.state, AttemptState::Sending | AttemptState::Delivered) {
             return Err(io::Error::new(
@@ -467,7 +508,7 @@ impl EvidenceTarget {
 
     /// Kończy niedostarczoną próbę jawnie, zamiast zostawiać fantomowy plik `sending`.
     pub async fn fail_turn(&self, number: usize, failure: EvidenceFailureKind) -> io::Result<()> {
-        let _guard = self.receipt.lock().await;
+        let _guard = self.lock_receipt().await;
         let mut turn = self.read_turn(number)?;
         if turn.state != AttemptState::Sending {
             return Err(io::Error::new(
@@ -499,22 +540,35 @@ impl EvidenceTarget {
         exit_code: Option<i32>,
         death_proof: bool,
     ) -> io::Result<()> {
+        self.finish_conversation_as(exit_code, death_proof, ConversationEnd::Cancelled, true)
+            .await
+    }
+
+    /// Finalizuje rozmowę z jawną przyczyną niedokończonych prób.
+    ///
+    /// Niezdrowy strumień odbiera wyłącznie obietnicę `complete`. Nie odbiera faktów lifecycle:
+    /// `Dead`, czasu końca i porażki. Wcześniejszy szybki powrót na `!is_healthy()` zostawiał po
+    /// udowodnionej śmierci `active/deathProof=false`, czyli support report przeczył actorowi.
+    pub async fn finish_conversation_as(
+        &self,
+        exit_code: Option<i32>,
+        death_proof: bool,
+        ending: ConversationEnd,
+        unfinished_attempt: bool,
+    ) -> io::Result<()> {
         let EvidenceIdentity::LeadConversation { conversation_id } = &self.identity else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "workflow evidence cannot finish a lead conversation",
             ));
         };
-        if !self.is_healthy() {
-            return Err(io::Error::other("the conversation evidence is incomplete"));
-        }
         if !death_proof {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a conversation cannot finish without GroupProof::Dead",
             ));
         }
-        let _guard = self.receipt.lock().await;
+        let _guard = self.lock_receipt().await;
         let mut document = self.read_conversation()?;
         if document.id != *conversation_id || document.complete {
             return Err(io::Error::new(
@@ -522,25 +576,67 @@ impl EvidenceTarget {
                 "the conversation receipt does not match the active conversation",
             ));
         }
+        let (attempt_state, conversation_state, failure) = match ending {
+            ConversationEnd::Cancelled => (
+                AttemptState::Cancelled,
+                ConversationState::Cancelled,
+                EvidenceFailureKind::Cancelled,
+            ),
+            ConversationEnd::AgentFailed => (
+                AttemptState::Failed,
+                ConversationState::Failed,
+                EvidenceFailureKind::AgentFailed,
+            ),
+        };
+        let mut complete = self.is_healthy();
+        let mut first_error = None;
+        if document.state == ConversationState::Active
+            && (ending == ConversationEnd::AgentFailed || unfinished_attempt)
+        {
+            /* Przyczyna należy do actora i agregatu, nie do czytelności pliku tury. Licznik
+             * `turns` dowodzi dostarczenia, nie zakończenia; tylko reader zna liczbę odebranych
+             * `Finished`. Dlatego jawny fakt `unfinished_attempt` jedzie z właścicielem sesji i
+             * zachowuje Stop także wtedy, gdy JSON zaakceptowanej tury jest nieczytelny. */
+            document.state = conversation_state;
+            document.failure_kind = Some(failure);
+        }
         for number in 1..=document.attempts {
-            let mut turn = self.read_turn(number)?;
+            let mut turn = match self.read_turn(number) {
+                Ok(turn) => turn,
+                Err(error) => {
+                    complete = false;
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
             if matches!(turn.state, AttemptState::Sending | AttemptState::Delivered) {
-                turn.state = AttemptState::Cancelled;
+                turn.state = attempt_state;
                 turn.ended_at = Some(now_ms());
-                turn.failure_kind = Some(EvidenceFailureKind::Cancelled);
-                self.write_turn_document(number, &turn).await?;
-                document.state = ConversationState::Cancelled;
-                document.failure_kind = Some(EvidenceFailureKind::Cancelled);
+                turn.failure_kind = Some(failure);
+                if let Err(error) = self.write_turn_document(number, &turn).await {
+                    complete = false;
+                    first_error.get_or_insert(error);
+                }
+                if document.state == ConversationState::Active {
+                    document.state = conversation_state;
+                    document.failure_kind = Some(failure);
+                }
             }
         }
-        document.complete = true;
+        document.complete = complete;
         document.ended_at = Some(now_ms());
         document.exit_code = exit_code;
         document.death_proof = true;
         if document.state == ConversationState::Active {
             document.state = ConversationState::Closed;
         }
-        self.write_conversation(&document).await
+        self.write_conversation(&document).await?;
+        if complete {
+            Ok(())
+        } else {
+            Err(first_error
+                .unwrap_or_else(|| io::Error::other("the conversation evidence is incomplete")))
+        }
     }
 
     fn read_conversation(&self) -> io::Result<ConversationDocument> {
@@ -549,7 +645,13 @@ impl EvidenceTarget {
 
     async fn write_conversation(&self, document: &ConversationDocument) -> io::Result<()> {
         let bytes = serde_json::to_vec_pretty(document).map_err(io::Error::other)?;
-        replace_json(&self.anchor, &self.root.join("conversation.json"), &bytes).await
+        replace_json(
+            &self.anchor,
+            &self.root.join("conversation.json"),
+            &bytes,
+            Arc::clone(&self.publication),
+        )
+        .await
     }
 
     fn read_turn(&self, number: usize) -> io::Result<TurnDocument> {
@@ -565,6 +667,7 @@ impl EvidenceTarget {
             &self.anchor,
             &self.root.join("turns").join(format!("{number:04}.json")),
             &bytes,
+            Arc::clone(&self.publication),
         )
         .await
     }
@@ -598,7 +701,7 @@ impl EvidenceTarget {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        write_new_json(&self.anchor, &path, &bytes).await
+        write_new_json(&self.anchor, &path, &bytes, Arc::clone(&self.publication)).await
     }
 
     async fn prepare_directories(&self) -> io::Result<()> {
@@ -848,12 +951,22 @@ fn validate_manifest(input: &SafeInputManifest) -> io::Result<()> {
     Ok(())
 }
 
-async fn write_new_json(anchor: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_json(anchor, path, bytes, false).await
+async fn write_new_json(
+    anchor: &Path,
+    path: &Path,
+    bytes: &[u8],
+    publication: Arc<tokio::sync::Mutex<()>>,
+) -> io::Result<()> {
+    atomic_json(anchor, path, bytes, false, publication).await
 }
 
-async fn replace_json(anchor: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_json(anchor, path, bytes, true).await
+async fn replace_json(
+    anchor: &Path,
+    path: &Path,
+    bytes: &[u8],
+    publication: Arc<tokio::sync::Mutex<()>>,
+) -> io::Result<()> {
+    atomic_json(anchor, path, bytes, true, publication).await
 }
 
 /// Zapisuje mały, bezpieczny JSON przez losowy plik 0600 w tym samym katalogu.
@@ -861,7 +974,13 @@ async fn replace_json(anchor: &Path, path: &Path, bytes: &[u8]) -> io::Result<()
 /// Całe rozwiązanie ścieżki, kontrola istniejącego celu, zapis i publikacja odbywają się przez
 /// jeden deskryptor katalogu w supervisorze. Dzięki temu podmiana rodzica na symlink między
 /// sprawdzeniem i `rename` nie może przekierować prywatnych bajtów do sąsiedniego workspace.
-async fn atomic_json(anchor: &Path, path: &Path, bytes: &[u8], replace: bool) -> io::Result<()> {
+async fn atomic_json(
+    anchor: &Path,
+    path: &Path,
+    bytes: &[u8],
+    replace: bool,
+    publication: Arc<tokio::sync::Mutex<()>>,
+) -> io::Result<()> {
     let relative = path.strip_prefix(anchor).map_err(|_error| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -871,7 +990,12 @@ async fn atomic_json(anchor: &Path, path: &Path, bytes: &[u8], replace: bool) ->
     let anchor = anchor.to_path_buf();
     let relative = relative.to_path_buf();
     let bytes = bytes.to_vec();
+    /* Guard przechodzi do pracy blokującej PRZED jej startem. Porzucenie future z JoinHandle
+     * nie anuluje `spawn_blocking`, ale nie zwalnia też tej blokady; kolejny mutation poczeka na
+     * rzeczywisty commit albo błąd poprzednika. */
+    let publication = publication.lock_owned().await;
     tokio::task::spawn_blocking(move || {
+        let _publication = publication;
         PrivateFilePublisher::open(&anchor, &relative)?.publish(&bytes, replace)
     })
     .await

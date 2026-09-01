@@ -212,7 +212,7 @@ use crate::engine::drivers::{
     DriverSetupFailure, FinishReason, Outcome as DriverOutcome, Policy, RunSpec,
 };
 use crate::engine::limits::{self, Limiter};
-use crate::engine::line::{Curator, Line, Seen, Status};
+use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::{GroupProof, MissingProgram, PublicationIdentity};
@@ -266,6 +266,14 @@ const BORROWED_DIR: &str = "borrowed";
 
 /// Opis biegu: bieg, jego kroki i migawki. To jest **prawda** (niezmiennik 4).
 const RUN_FILE: &str = "run.json";
+
+/// Bezpieczne zdanie pokazywane i zapisywane, gdy jeden żywy agent powtarza typowaną porażkę.
+///
+/// Cel i surowy wynik są celowo pominięte: pochodzą z obcego procesu i mogą zawierać prywatne
+/// ścieżki albo wartości. Są dowodem do porównania w pamięci, nie tekstem interfejsu.
+pub const REPEATED_TOOL_FAILURE_SENTENCE: &str = "The same tool failed with the same error three times, so Loadout stopped this step. Fix the tool or its setup, then run the step again.";
+
+const REPEATED_TOOL_FAILURE_LIMIT: u8 = 3;
 
 /// Nazwa, pod którą `run.json` powstaje przed przemianowaniem.
 ///
@@ -3052,7 +3060,7 @@ struct CheckJob {
     ours: bool,
 }
 
-/// Czym skończyło się czekanie na turę. Trzy stany, bo `Option` umiał powiedzieć dwa, a od
+/// Czym skończyło się czekanie na turę. Cztery stany, bo `Option` umiał powiedzieć dwa, a od
 /// T-35 „skończył się czas" jest czymś innym niż „człowiek nacisnął Stop": pierwsze jest
 /// porażką kroku z nazwanym powodem, drugie jest anulowaniem i nie jest niczyją winą.
 enum Ended {
@@ -3062,6 +3070,115 @@ enum Ended {
     Stopped,
     /// Krok przekroczył swój limit czasu.
     Overdue,
+    /// Żywa tura trzeci raz dostała ten sam typowany błąd jednego narzędzia.
+    RepeatedToolFailure,
+}
+
+/// Start jednej czynności, zachowany do przyjścia wyniku o tym samym identyfikatorze wywołania.
+#[derive(Debug)]
+struct PendingToolCall {
+    action: Action,
+    target: String,
+}
+
+/// Ostatnia mierzona porażka jednej dokładnej pary `(Action, cel)`.
+#[derive(Debug)]
+struct ToolFailureRun {
+    action: Action,
+    target: String,
+    output: String,
+    repeats: u8,
+}
+
+/// Niezależny od vendora bezpiecznik jednej żywej sesji.
+///
+/// Liczy wyłącznie `ok: false`, dla którego ta sama para zdarzeń przyniosła zarówno
+/// strukturalny start (`Action`, pełny cel), jak i niepuste pełne wyjście. `AgentEvent::summary` nie wchodzi
+/// tu nigdy: jest tekstem kuracji i trzy różne awarie mogą mieć to samo jednozdaniowe streszczenie.
+#[derive(Debug, Default)]
+struct RepeatedToolFailures {
+    pending: BTreeMap<String, PendingToolCall>,
+    run: Option<ToolFailureRun>,
+}
+
+impl RepeatedToolFailures {
+    /// `true` dokładnie na trzecim identycznym typowanym błędzie jednego celu.
+    fn observe(&mut self, event: &AgentEvent, tool: Option<&Tool>) -> bool {
+        match (event, tool) {
+            (AgentEvent::ToolStart { id, .. }, Some(Tool::Started { action, target })) => {
+                // 2026-09-01 — pusty cel nie identyfikuje wywołania. App Server dopuszcza
+                // taki fakt na drucie, więc trzy anonimowe narzędzia mogłyby inaczej zostać
+                // uznane za jedną serię i fałszywie zatrzymać żywego agenta.
+                if target.trim().is_empty() {
+                    self.pending.remove(id);
+                    return false;
+                }
+                self.pending.insert(
+                    id.clone(),
+                    PendingToolCall {
+                        action: *action,
+                        target: target.clone(),
+                    },
+                );
+                false
+            }
+            (AgentEvent::ToolEnd { id, ok, .. }, ended) => {
+                let Some(started) = self.pending.remove(id) else {
+                    self.run = None;
+                    return false;
+                };
+
+                // Każde ukończone wywołanie, które nie jest kolejną identyczną typowaną porażką, przerywa
+                // serię. Inaczej `fail A, fail B, fail A, fail A` fałszywie wygląda jak trzy A.
+                if *ok {
+                    self.run = None;
+                    return false;
+                }
+                let Some(Tool::Ended { output }) = ended else {
+                    self.run = None;
+                    return false;
+                };
+                let Some(output) = normalized_tool_output(output) else {
+                    self.run = None;
+                    return false;
+                };
+
+                if let Some(run) = self.run.as_mut()
+                    && run.action == started.action
+                    && run.target == started.target
+                    && run.output == output
+                {
+                    run.repeats = run.repeats.saturating_add(1);
+                    run.repeats == REPEATED_TOOL_FAILURE_LIMIT
+                } else {
+                    self.run = Some(ToolFailureRun {
+                        action: started.action,
+                        target: started.target,
+                        output,
+                        repeats: 1,
+                    });
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Minimalna normalizacja transportowa, nie heurystyka komunikatu.
+///
+/// CRLF i końcowy znak nowego wiersza zależą od adaptera/potoku, nie od przyczyny błędu.
+/// Niczego w samym tekście nie maskujemy: spacja, PID, znacznik czasu albo inna zmienna
+/// wartość mają uczciwie dać inną porażkę i nie uruchomić bezpiecznika.
+fn normalized_tool_output(output: &str) -> Option<String> {
+    if output.trim().is_empty() {
+        return None;
+    }
+    let mut output = output.replace("\r\n", "\n").replace('\r', "\n");
+    while output.ends_with('\n') {
+        output.pop();
+    }
+    Some(output)
 }
 
 /// Co zostało po turze: gotowy wynik albo porażka, którą wolno rozstrzygnąć dopiero PO tym, jak
@@ -8500,7 +8617,21 @@ impl Live {
                 step.ended_at = Some(now_ms());
             }
         });
-        self.announce(id, ended);
+        if report == StepReport::FailedAndCarriedOn {
+            // JEDNA LINIA NIESIE CAŁE ROZSTRZYGNIĘCIE: krok padł ORAZ polityka puściła bieg dalej.
+            // `LineSink` jest celowo stratny, więc para `StepState::Failed` + `StepCarriedOn`
+            // mogła rozdzielić się na granicy kolejki i zostawić człowiekowi dokładnie połowę
+            // prawdy. Nieznany addytywny wariant starsze okno porzuci jako jeden fakt; dzisiejsze
+            // przy jego odbiorze ustawia oba pola atomowo.
+            let _ = self.lines.send(Line::StepCarriedOn {
+                agent: self.plan.steps[id].name.clone(),
+                // Klucz Z PLIKU, tak samo jak w `announce`: fizyczne rundy pętli i kopie mają
+                // w księdze osobne `node_key`, ale okno zna wyłącznie klucz kafelka.
+                step_id: self.plan.steps[id].tile_key.clone(),
+            });
+        } else {
+            self.announce(id, ended);
+        }
         report
     }
 
@@ -8979,6 +9110,17 @@ impl Live {
         slot: &mut Option<limits::Slot>,
     ) -> StepReport {
         let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
+        // Osobny, jednokrotny kanał decyzji z pompy do właściciela `AgentHandle`. Pompa widzi
+        // typowany `ToolEnd`, ale tylko `one_turn` ma prawo anulować i dowieść zejścia procesu.
+        let (runtime_faults, mut runtime_fault) = mpsc::channel(1);
+        // Sterownik gwarantuje dokładnie jedno `Finished`. Osobny sygnał po jego przetworzeniu
+        // jest barierą FIFO: wynik procesu nie może wyprzedzić wcześniejszego `ToolEnd`, choć
+        // kanał wyniku i kanał zdarzeń są od siebie niezależne.
+        let (finished_events, mut finished_event) = mpsc::channel(1);
+        // Osobny sygnał domknięcia odbiornika na wypadek, gdy żywa grupa przejdzie do rejestru
+        // razem z uchwytem, który nadal trzyma klon nadajnika. Zamknięcie odbiornika zachowuje
+        // już zakolejkowane zdarzenia, a nie czeka na upuszczenie zachowanego uchwytu.
+        let finish_forward = CancellationToken::new();
         // Odbiór staje PRZED startem sterownika: vendor ma prawo powiedzieć pierwsze zdarzenia
         // jeszcze w `start`, a kanał bez odbiorcy zatrzymałby go na pierwszym pełnym buforze.
         // Limit dostawcy przychodzi właśnie tędy, więc pętla dostaje CAŁY bieg, nie same linie.
@@ -8987,6 +9129,9 @@ impl Live {
             inbox,
             self.plan.steps[id].name.clone(),
             id,
+            runtime_faults,
+            finished_events,
+            finish_forward.clone(),
         ));
         // Własny klon nadawcy zostaje po to, żeby o nieudanym starcie dało się powiedzieć tą samą
         // drogą, którą mówi agent. Musi zginąć na OBU gałęziach — nadawca, który przeżył krok,
@@ -9121,8 +9266,18 @@ impl Live {
                 self.update(|book| book.steps[id].execution.process_started = true);
                 self.record_memory_for_started_step(id, &job.memory);
                 drop(ours);
-                self.one_turn(id, handle, cancel, &reads, &evidence, slot)
-                    .await
+                self.one_turn(
+                    id,
+                    handle,
+                    cancel,
+                    &mut runtime_fault,
+                    &mut finished_event,
+                    &finish_forward,
+                    &reads,
+                    &evidence,
+                    slot,
+                )
+                .await
             }
             Err(error) => {
                 let text = public_start_refusal(job.driver.id(), &error);
@@ -9388,8 +9543,12 @@ impl Live {
             .await
     }
 
-    /// Kończy krok po Stopie i nie myli wysłanego sygnału z dowodem martwej grupy.
-    async fn stop_cancelled_agent(&self, id: StepId, handle: &mut dyn AgentHandle) -> StepReport {
+    /// Kończy krok po Stopie i oddaje dowód właścicielowi uchwytu oraz ciężkiego slotu.
+    async fn stop_cancelled_agent(
+        &self,
+        id: StepId,
+        handle: &mut dyn AgentHandle,
+    ) -> (StepReport, GroupProof) {
         let proof = self.prove_agent_dead_after_live_stop(handle).await;
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
@@ -9399,22 +9558,23 @@ impl Live {
                 step.error = Some(LIVE_STOP_SURVIVOR_ERROR.to_owned());
             }
         });
-        if proven_dead {
+        let report = if proven_dead {
             StepReport::Cancelled
         } else {
             // 2026-08-27 — Stop całego biegu pozostaje anulowaniem, ale ten krok nie może być
             // nazwany anulowanym: należąca do niego grupa nadal mogła żyć po pełnej eskalacji.
             StepReport::Failed
-        }
+        };
+        (report, proof)
     }
 
     /// Ponawia pełną eskalację Stopu, ale nie zamraża aplikacji na zawsze.
     ///
     /// 2026-08-27 — trzy próby są polityką produktu, nie parametrem wołającego. Każde
     /// `cancel()` przechodzi przez pełne TERM → łaska → KILL → dowód supervisora; odstęp jest
-    /// tylko między próbami. Po ostatnim `Alive` uchwyt musi zostać zwolniony, żeby bieg mógł
-    /// zapalić `settled`, ale zapisane wcześniej `pid` i `pgid` pozostają jedynym adresem dla
-    /// cleanupu przy następnym starcie. `Alive` wraca jako brak dowodu, nigdy jako `Dead`.
+    /// tylko między próbami. Po ostatnim `Alive` posiadany uchwyt wraz z ciężkim slotem przechodzi
+    /// do rejestru żywych procesów: adres nie wystarcza, bo tylko właściciel może ponowić dowód.
+    /// `Alive` wraca jako brak dowodu, nigdy jako `Dead`.
     async fn prove_agent_dead_after_live_stop(&self, handle: &mut dyn AgentHandle) -> GroupProof {
         // Adres z uchwytu jest tym, co wiemy PRZED pierwszą próbą; każdy kolejny `Alive` niesie
         // własny i nadpisuje ten wstępny. Zwrócenie świeżo zmyślonego `Alive` gubiłoby jedno
@@ -9610,6 +9770,9 @@ impl Live {
         id: StepId,
         mut handle: Box<dyn AgentHandle>,
         cancel: &CancellationToken,
+        runtime_fault: &mut mpsc::Receiver<()>,
+        finished_event: &mut mpsc::Receiver<()>,
+        finish_forward: &CancellationToken,
         reads: &[String],
         evidence: &EvidenceTarget,
         slot: &mut Option<limits::Slot>,
@@ -9665,8 +9828,25 @@ impl Live {
                 // samego powodu limit czasu stoi PO Stopie: człowiek, który nacisnął Stop
                 // w ostatniej sekundzie, ma dostać „anulowane", a nie „przekroczony limit".
                 biased;
-                done = &mut waiting => Ended::Turn(done),
+                done = &mut waiting => match done {
+                    Err(error) => Ended::Turn(Err(error)),
+                    Ok(turn) => {
+                        // 2026-09-01 — App Server oddaje wynik, a dopiero potem wkłada
+                        // `Finished` do osobnego kanału zdarzeń. Czekamy więc na przetworzenie
+                        // tej bariery FIFO i jeszcze raz czytamy decyzję pompy: inaczej gotowe
+                        // `wait()` mogło wygrać z trzecim, już zakolejkowanym `ToolEnd`.
+                        // Błąd `wait()` nie ma wyniku ani `Finished` i omija barierę: dopiero
+                        // dowód zejścia oraz upuszczenie uchwytu domykają wtedy jego nadajnik.
+                        let _ = finished_event.recv().await;
+                        if runtime_fault.try_recv().is_ok() {
+                            Ended::RepeatedToolFailure
+                        } else {
+                            Ended::Turn(Ok(turn))
+                        }
+                    }
+                },
                 () = cancel.cancelled() => Ended::Stopped,
+                Some(()) = runtime_fault.recv() => Ended::RepeatedToolFailure,
                 () = &mut overdue => Ended::Overdue,
             }
             // Pożyczka `handle` kończy się razem z tym blokiem — dopiero po nim wolno zawołać
@@ -9689,7 +9869,43 @@ impl Live {
             // ANULOWANIE IDZIE PRZEZ STEROWNIK, nie przez zdjęcie zadania Rusta. `tokio::time::
             // timeout` wokół kroku wygląda tak samo i jest o linijkę tańszy — i zostawia żywą
             // grupę procesów palącą limit u dostawcy (niezmienniki 6 i 10).
-            Ended::Stopped => Turned::Settled(self.stop_cancelled_agent(id, handle.as_mut()).await),
+            Ended::Stopped => {
+                let (report, proof) = self.stop_cancelled_agent(id, handle.as_mut()).await;
+                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+                // `Alive` zabiera posiadany uchwyt i ciężki slot do rejestru. Domykamy tylko
+                // odbiornik pompy, bo zachowany uchwyt nadal ma nadajnik; kolejka jest drenowana.
+                self.released_by(handle, slot, proof);
+                if !proven_dead {
+                    finish_forward.cancel();
+                }
+                Turned::Settled(report)
+            }
+            Ended::RepeatedToolFailure => {
+                // Pompa wykrywa pętlę, ale nie posiada procesu. Zatrzymanie musi przejść dokładnie
+                // tą samą pełną eskalacją i dowodem, co Stop/timeout (niezmienniki 6 i 10).
+                let _ = self.lines.send(Line::Problem {
+                    agent: self.plan.steps[id].name.clone(),
+                    text: REPEATED_TOOL_FAILURE_SENTENCE.to_owned(),
+                    resets_at: None,
+                });
+                let proof = self.prove_agent_dead_after_live_stop(handle.as_mut()).await;
+                let proven_dead = matches!(proof, GroupProof::Dead { .. });
+                self.update(|book| {
+                    let step = &mut book.steps[id];
+                    step.death_proof = proven_dead;
+                    if !proven_dead {
+                        step.error = Some(LIVE_STOP_SURVIVOR_ERROR.to_owned());
+                    }
+                });
+                // `Alive` zabiera posiadany uchwyt i przepustkę do rejestru; upuszczenie ich z
+                // ramką tej funkcji osierociłoby grupę i natychmiast zwolniło ciężki slot
+                // (niezmienniki 6, 11). `Dead` zwalnia oba zwykłą drogą.
+                self.released_by(handle, slot, proof);
+                if !proven_dead {
+                    finish_forward.cancel();
+                }
+                Turned::Broke(REPEATED_TOOL_FAILURE_SENTENCE.to_owned())
+            }
             Ended::Turn(Err(error)) => {
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
                 self.update(|book| {
@@ -9717,6 +9933,9 @@ impl Live {
                 } = self.close_and_prove(id, handle.as_mut(), evidence).await;
                 let proven_dead = matches!(proof, GroupProof::Dead { .. });
                 self.released_by(handle, slot, proof);
+                if !proven_dead {
+                    finish_forward.cancel();
+                }
                 // Sukces to zero **i** `is_error == false` (niezmiennik 19, ARCHITECTURE §5).
                 // Samo zero z drivera nie kończy kroku sukcesem — agent, który wypisał „nie dam
                 // rady" i wyszedł czysto, nie zrobił tego, o co go proszono.
@@ -10826,8 +11045,13 @@ async fn forward(
     mut inbox: mpsc::Receiver<DecodedEvent>,
     agent: String,
     id: StepId,
+    runtime_fault: mpsc::Sender<()>,
+    finished_event: mpsc::Sender<()>,
+    finish: CancellationToken,
 ) {
     let mut curator = Curator::new();
+    let mut repeated_failures = RepeatedToolFailures::default();
+    let mut tripped = false;
     // 2026-08-25 (T-115) — NAZWA KROKU NIE JEST KLUCZEM. Dwa wezly moga miec ten sam tekst
     // na ekranie; indeks planu pozostaje rozny i nie pozwala, by uwaga o nieznanej cenie
     // jednego wezla zostala dopisana do koncowego wiersza drugiego.
@@ -10843,7 +11067,35 @@ async fn forward(
     // i strumien pokazywal wylacznie proze agenta. Powod, dla ktorego naprawa nalezy tutaj,
     // a nie do drugiej tabeli nazw narzedzi w tym pliku, stoi przy `engine::drivers::DecodedEvent`
     // (niezmienniki 15 i 23).
-    while let Some(DecodedEvent { event, tool }) = inbox.recv().await {
+    let mut closing = false;
+    loop {
+        let decoded = if closing {
+            inbox.recv().await
+        } else {
+            tokio::select! {
+                // Najpierw zamknij przyjmowanie nowych zdarzeń, ale nie zgub tych, które już
+                // są w ograniczonej kolejce. `Receiver::close` właśnie po to rozdziela
+                // „nie przyjmuj więcej” od „opróżnij to, co przyjęte”.
+                biased;
+                () = finish.cancelled() => {
+                    inbox.close();
+                    closing = true;
+                    continue;
+                }
+                decoded = inbox.recv() => decoded,
+            }
+        };
+        let Some(DecodedEvent { event, tool }) = decoded else {
+            break;
+        };
+        let finishes_turn = matches!(&event, AgentEvent::Finished(_));
+        // Decyzja biegu czyta fakty PRZED kuracją. Kurator przycina wynik dla ekranu, a dokładne
+        // pełne wyjście jest częścią podpisu porażki. Jeden sygnał wystarcza; właściciel uchwytu
+        // anuluje proces i zamyka ten kanał po dowodzie zejścia.
+        if !tripped && repeated_failures.observe(&event, tool.as_ref()) {
+            tripped = true;
+            let _ = runtime_fault.try_send(());
+        }
         // PRZED kuracją, nie po niej: wiersz jest zdaniem dla człowieka, a to niżej jest
         // decyzją dla biegu. Kolejność odwrotna dokłada okno, w którym ekran już wie, a bieg
         // jeszcze wysyła.
@@ -10908,6 +11160,12 @@ async fn forward(
         }
 
         send_batch(&live.lines, batch);
+        if finishes_turn {
+            // Potwierdzenie idzie dopiero po decyzjach biegu i kuracji tego zdarzenia. Ponieważ
+            // kanał wejściowy jest FIFO, odbiorca wie wtedy, że każdy wcześniejszy `ToolEnd`
+            // został już policzony, zanim przyjmie niezależny wynik procesu.
+            let _ = finished_event.try_send(());
+        }
     }
     // Ostatnia grupa sklejania wyszłaby inaczej nigdy, a użytkownik zobaczyłby o wiersz mniej,
     // niż się wydarzyło — najgorszy rodzaj zgubienia, bo cichy.

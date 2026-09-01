@@ -43,11 +43,11 @@ use serde::Serialize;
 
 use super::drivers::{AgentEvent, FinishReason, Outcome, is_unknown_price_notice};
 
-/// Rodzaj wiersza. Czternaście z [T2 §7.2] plus [`LineKind::StepState`].
+/// Rodzaj wiersza. Czternaście z [T2 §7.2] plus cztery addytywne fakty produktu.
 ///
-/// **Dwa z nich nie są wpisem w historii** i nie stają się nim przez to, że kurator je
+/// **Trzy z nich nie są wpisem w historii** i nie stają się nim przez to, że silnik je
 /// wypuszcza: [`LineKind::Thinking`] rysuje stały slot na dole ekranu, a [`LineKind::StepState`]
-/// przestawia blok paska loadoutu i chip na kafelku agenta. Dokąd wiersz idzie, rozstrzyga
+/// i [`LineKind::StepCarriedOn`] przestawiają fakty kafelka. Dokąd wiersz idzie, rozstrzyga
 /// **jedno** miejsce — rejestr rodzajów po stronie okna (`src/sections/run/feed/kinds.ts`,
 /// pole `route`) — i to jest cała treść reguły 5 w wersji, którą da się wykonać: „nigdy nie
 /// powstaje" znaczyłoby, że dół ekranu jest martwy, a sześć z siedmiu stanów kroku
@@ -60,6 +60,9 @@ pub enum LineKind {
     Step,
     /// Krok zmienił stan. **Nigdy w historii** — przestawia pasek loadoutu w miejscu.
     StepState,
+    /// Nieudany krok wykonał politykę „jedź dalej”. **Nigdy w historii** — atomowo ustawia
+    /// porażkę i dopisuje jej rozstrzygnięcie do kafelka.
+    StepCarriedOn,
     /// Agent dołączył albo skończył. Nigdy paplanina.
     Agent,
     /// Stały slot na dole ekranu. **Nigdy w historii.**
@@ -160,6 +163,21 @@ pub enum Line {
         /// `STEP_STATES`) — enum na drucie zmuszałby je do znajomości naszego `serde`. Wartość
         /// składa `StepState::name`, więc te siedem słów stoi w drzewie raz.
         state: String,
+    },
+    /// Nieudany krok wykonał politykę kontynuacji: `{"kind":"stepCarriedOn", "agent":"Build",
+    /// "stepId":"build"}`.
+    ///
+    /// Osobny, samowystarczalny wariant addytywny, nie pole w [`Line::StepState`]: starsze okno
+    /// może porzucić jeden nieznany fakt, a dopisanie pola zmieniłoby kształt każdej linii stanu
+    /// i kazało lustrze odrzucać ją w całości. Samowystarczalny, bo kolejka linii jest stratna:
+    /// porażka i „jedź dalej” wysłane osobno mogłyby rozdzielić się dokładnie między dwoma
+    /// miejscami kolejki. Wiersz nie wchodzi do historii; magazyn ustawia z niego `failed` oraz
+    /// kwalifikację przy kroku jednym zapisem.
+    StepCarriedOn {
+        /// Podpis kroku, spójny z pozostałymi liniami tego kroku.
+        agent: String,
+        /// Klucz kafelka z pliku workflow, wspólny dla fizycznych rund i kopii.
+        step_id: String,
     },
     /// `Researcher 2 joined`
     Agent {
@@ -465,6 +483,7 @@ impl Line {
             Self::Run { .. } => LineKind::Run,
             Self::Step { .. } => LineKind::Step,
             Self::StepState { .. } => LineKind::StepState,
+            Self::StepCarriedOn { .. } => LineKind::StepCarriedOn,
             Self::Agent { .. } => LineKind::Agent,
             Self::Thinking { .. } => LineKind::Thinking,
             Self::Read { .. } => LineKind::Read,
@@ -490,6 +509,7 @@ impl Line {
             Self::Run { agent, .. }
             | Self::Step { agent, .. }
             | Self::StepState { agent, .. }
+            | Self::StepCarriedOn { agent, .. }
             | Self::Agent { agent, .. }
             | Self::Thinking { agent }
             | Self::Read { agent, .. }
@@ -512,10 +532,10 @@ impl Line {
     #[must_use]
     pub fn text(&self) -> &str {
         match self {
-            // Oba rodzaje spoza historii mówią stanem, nie zdaniem: „Thinking…" rysuje stały
-            // slot, a stan kroku przestawia blok paska. Tekst dorobiony tutaj byłby drugim
-            // brzmieniem tego samego faktu, i to tym, którego nikt nie tłumaczy.
-            Self::Thinking { .. } | Self::StepState { .. } => "",
+            // Trzy rodzaje spoza historii mówią stanem lub faktem, nie zdaniem: „Thinking…”
+            // rysuje stały slot, a dwa rodzaje kroku przestawiają kafelek. Tekst dorobiony tutaj
+            // byłby drugim brzmieniem tego samego faktu, i to tym, którego nikt nie tłumaczy.
+            Self::Thinking { .. } | Self::StepState { .. } | Self::StepCarriedOn { .. } => "",
             Self::Run { text, .. }
             | Self::Step { text, .. }
             | Self::Agent { text, .. }
@@ -579,6 +599,7 @@ impl Line {
             Self::Run { .. }
             | Self::Step { .. }
             | Self::StepState { .. }
+            | Self::StepCarriedOn { .. }
             | Self::Agent { .. }
             | Self::Thinking { .. }
             | Self::Note { .. }

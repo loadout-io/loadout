@@ -310,6 +310,10 @@ pub(super) fn reason(run_file: &Value, name: &str) -> Result<String, Box<dyn Err
 
 pub(super) fn last_stream_state(lines: &[Line], step_id: &str) -> Option<String> {
     lines.iter().rev().find_map(|line| match line {
+        // Samowystarczalny wynik: ten wariant jest równocześnie terminalnym `failed` oraz
+        // kwalifikacją, że polityka puściła potomków dalej. Szukanie wyłącznie `StepState`
+        // wymagałoby od produkcji drugiej, stratnej linii o tej samej porażce.
+        Line::StepCarriedOn { step_id: found, .. } if found == step_id => Some("failed".to_owned()),
         Line::StepState {
             step_id: found,
             state,

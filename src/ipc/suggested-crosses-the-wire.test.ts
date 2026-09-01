@@ -93,7 +93,7 @@ describe('the run a lead suggested crosses the wire and has a place in the view'
         'Compared as a whole list, so the two failures nobody looks for both show up here: a ' +
         'kind added only in the view (which the wire will never send, leaving a row that cannot ' +
         'arrive) and a kind quietly dropped or renamed while the count still looked right.',
-    ).toEqual([...BEFORE, SUGGESTED].sort());
+    ).toEqual([...BEFORE, SUGGESTED, 'stepCarriedOn'].sort());
     expect(
       BEFORE.includes(SUGGESTED),
       'and it was not there before, or this whole file is checking a row that already existed',

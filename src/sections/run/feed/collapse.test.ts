@@ -21,7 +21,7 @@ import { kinds } from './kinds';
 import type { Feed } from './model';
 import { createFeed } from './model';
 
-/** Dziewięć rodzajów rozwiniętych domyślnie [T2 §7.3 reguła 2] — proza, pytania, błędy, struktura. */
+/** Dziesięć rodzajów rozwiniętych domyślnie — proza, pytania, błędy i struktura. */
 const OPEN = [
   'agent',
   'asked',
@@ -40,8 +40,8 @@ const OPEN = [
   'told',
 ];
 
-/** Sześć zwiniętych — mechanika. */
-const SHUT = ['edit', 'memory', 'ran', 'read', 'search', 'stepState', 'thinking'];
+/** Osiem zwiniętych — mechanika oraz fakty stanu spoza historii. */
+const SHUT = ['edit', 'memory', 'ran', 'read', 'search', 'stepCarriedOn', 'stepState', 'thinking'];
 
 /** Czterdzieści linii wyjścia, każda rozpoznawalna po numerze. */
 const OUTPUT = Array.from({ length: 40 }, (_, i) => 'output line ' + String(i + 1));

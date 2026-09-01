@@ -143,14 +143,21 @@ const GLYPH: Readonly<Record<AgentStatus, string>> = {
  *
  * SŁOWEM JEST SAM `status`, nie jego tłumaczenie. Druga tabela stan → napis rozjechałaby się
  * z tą, którą ten sam zbiór wartości ma w `../rail/card.ts`, a rozjazd byłby cichy: obie
- * wersje dalej rysowałyby napis.
+ * wersje dalej rysowałyby napis. Jedyny dopisek nie tłumaczy stanu: „carried on” jest
+ * osobnym, jawnym faktem schedulera dowiezionym przez krok.
  *
  * BARWA TYLKO TAM, GDZIE JEST FORMĄ TEGO STANU. `--fail` ma na tej liście glif i lewą krawędź
  * bloku, więc chip z glifem barwę bierze; pozostałe pięć stanów jej nie dostaje i to jest cała
  * teza tej naprawy — chip pomalowany na sześć sposobów byłby szóstym miejscem, w którym stan
  * mieszka w kolorze, i znowu ani jednym, w którym mieszka w słowie.
  */
-function StateChip({ status }: { status: AgentStatus }): ReactElement {
+function StateChip({
+  status,
+  carriedOn,
+}: {
+  status: AgentStatus;
+  carriedOn: boolean;
+}): ReactElement {
   const glyph = GLYPH[status];
   return (
     <span className="chip shrink-0" {...(status === 'failed' ? { 'data-tone': 'fail' } : {})}>
@@ -159,6 +166,7 @@ function StateChip({ status }: { status: AgentStatus }): ReactElement {
       ) : null}
       {glyph === '' ? null : <span aria-hidden>{glyph}</span>}
       {status}
+      {carriedOn ? ' — carried on' : ''}
     </span>
   );
 }
@@ -257,7 +265,10 @@ export function RunTile({ step, plan, onOpen, style }: RunTileProps): ReactEleme
           full={step.name}
           className="min-w-0 flex-1 truncate text-heading text-ink"
         />
-        <StateChip status={step.status} />
+        <StateChip
+          status={step.status}
+          carriedOn={step.status === 'failed' && step.carriedOn === true}
+        />
       </div>
 
       {/* KTO GO ROBI. Twarz jest TOŻSAMOŚCIĄ i nigdy stanem — ten sam kolor, który ten agent

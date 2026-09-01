@@ -26,9 +26,9 @@ import { rowFor } from '../feed/model';
  *
  * Linia bez zdania nie wchodzi. Dziś kurator żadnej takiej nie wypuszcza — `thinking` ma stały
  * slot na dole ekranu i do historii nie wchodzi nigdy (`docs/ARCHITECTURE.md` §6, reguła 5),
- * a `stepState` przestawia pasek i kafelek — ale ten plik czyta PLIK, a plik bywa starszy albo
- * nowszy od nas. Wiersz bez tekstu byłby pustym paskiem w historii, którego nie da się odróżnić
- * od zgubionej linii (niezmiennik 5: nieznaną linię porzucamy, biegu nie wywalamy).
+ * a `stepState` i `stepCarriedOn` przestawiają kafelek — ale ten plik czyta PLIK, a plik bywa
+ * starszy albo nowszy od nas. Wiersz bez tekstu byłby pustym paskiem w historii, którego nie da
+ * się odróżnić od zgubionej linii (niezmiennik 5: nieznaną linię porzucamy, biegu nie wywalamy).
  */
 export function rowsOf(lines: readonly Line[]): readonly HistoryRow[] {
   return lines

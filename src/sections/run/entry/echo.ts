@@ -27,8 +27,9 @@ import type { Stamped } from '../../../state/run';
  * Wiersz dopisany przez OKNO — linia strumienia, która zawsze niesie zdanie.
  *
  * `Extract`, a nie konkretny rodzaj: kryterium sprawdza podpis WOŁAJĄC `authorityOf(kind)`,
- * więc wybór rodzaju należy do implementacji, a nie do typu. Odsiane są dokładnie te dwa
- * rodzaje, które zdania nie niosą i nie wchodzą do historii (`thinking`, `stepState`) —
+ * więc wybór rodzaju należy do implementacji, a nie do typu. Odsiane są dokładnie te trzy
+ * rodzaje, które zdania nie niosą i nie wchodzą do historii (`thinking`, `stepState`,
+ * `stepCarriedOn`) —
  * wiersz bez tekstu nie jest echem niczego.
  */
 export type WindowLine = Extract<Line, { text: string }> & Stamped;
