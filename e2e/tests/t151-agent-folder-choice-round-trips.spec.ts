@@ -154,7 +154,9 @@ describe('an agent has three visible, exclusive file-location choices', () => {
         await app.page.getByRole('radio', { name: LABELS[use], exact: true }).click();
         savesSeen += 1;
         const saves = await waitForSaves(app, savesSeen);
-        expect(saves.length, `choosing ${use} did not cross production workflow IO`).toBe(savesSeen);
+        expect(saves.length, `choosing ${use} did not cross production workflow IO`).toBe(
+          savesSeen,
+        );
         expect(folderIn(saves[savesSeen - 1]), `the ${use} choice saved a different intent`).toBe(
           use,
         );

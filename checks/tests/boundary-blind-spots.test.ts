@@ -1,8 +1,8 @@
-/* AC-1 dla T-22 — quick-boundary.sh widzi kod platformowy, który nie jest napisany
+/* AC-1 dla T-22 — boundary.sh widzi kod platformowy, który nie jest napisany
  * `#[cfg(windows)]`.
  *
  * Sprawdzacz, którego nikt nigdy nie widział na czerwono, jest nieprzetestowany. Dzisiejszy
- * `quick-boundary.sh` pilnuje niezmiennika 3 gerpem po `#[cfg(windows|unix|target_os…)]`,
+ * `boundary.sh` pilnuje niezmiennika 3 gerpem po `#[cfg(windows|unix|target_os…)]`,
  * więc `use libc::SIGTERM;` przechodzi bez słowa — a `libc` jest w src-tauri/Cargo.toml
  * zależnością WYŁĄCZNIE uniksową (`[target.'cfg(unix)'.dependencies]`) i to jest dokładnie
  * ten kod platformowy, który zamienia port na Windows z gałęzi cfg w przepisanie.
@@ -26,7 +26,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { copyCheck, plant, runCheck, sandbox, type Run } from './_support';
 
-const CHECK = 'quick-boundary.sh';
+const CHECK = 'boundary.sh';
 
 const DAG = 'src-tauri/src/engine/dag.rs';
 const SUPERVISOR = 'src-tauri/src/engine/supervisor.rs';
@@ -74,7 +74,7 @@ beforeEach(() => {
   restore();
 });
 
-describe('quick-boundary.sh refuses platform code that never says cfg(windows)', () => {
+describe('boundary.sh refuses platform code that never says cfg(windows)', () => {
   it('sees `use libc::SIGTERM;` in engine/dag.rs and names the file and invariant 3', () => {
     const run = withPlanted(
       DAG,
@@ -109,7 +109,7 @@ describe('quick-boundary.sh refuses platform code that never says cfg(windows)',
   });
 });
 
-describe('quick-boundary.sh refuses a Tauri dependency inside engine/', () => {
+describe('boundary.sh refuses a Tauri dependency inside engine/', () => {
   it('stops excusing engine/drivers/fake.rs, which ships in the binary and is not a test', () => {
     const run = withPlanted(
       FAKE,
@@ -133,7 +133,7 @@ describe('quick-boundary.sh refuses a Tauri dependency inside engine/', () => {
   });
 });
 
-describe('quick-boundary.sh stays silent where the boundary is not crossed', () => {
+describe('boundary.sh stays silent where the boundary is not crossed', () => {
   it('lets all three platform tokens live inside engine/supervisor.rs', () => {
     const run = withPlanted(
       SUPERVISOR,

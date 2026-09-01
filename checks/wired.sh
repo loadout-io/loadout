@@ -52,9 +52,9 @@ for cand in "$TRUNK" "refs/heads/$TRUNK" "origin/$TRUNK"; do
 done
 base=""
 [ -n "$TRUNK_REF" ] && base="$(git merge-base HEAD "$TRUNK_REF" 2>/dev/null || true)"
-if [ -z "$base" ] && [ -f TASK.md ]; then
-  base="$(git log --diff-filter=A --format=%H -- TASK.md 2>/dev/null | head -1 || true)"
-fi
+# Bez trunka nie ma czego porownac. Do 2026-08-28 byla tu zapasowa baza z commita, ktory
+# dodal TASK.md; kontrakty odeszly razem ze starym harnessem, a zgadywanie bazy jest gorsze
+# niz uczciwe "nie wiem" nizej.
 if [ -z "$base" ]; then
   echo "wired: no branch point to compare against — what this branch added is not knowable"
   exit 0
@@ -96,11 +96,15 @@ if os.path.isfile(gp):
     golden = {l.strip() for l in open(gp, encoding="utf-8") if l.strip()
               and not l.lstrip().startswith("#")}
 
+# Furtka "ktos to obiecal". Czytala kolejno `tasks/*.md` (rejestr zadan na trunku), potem
+# `TASK.md` (kontrakt biegu) -- oba odeszly. Teraz czyta PLAN biegu, ktory `h` zapisuje jako
+# `.h-plan.md` w worktree. Bez tej furtki bieg dodajacy `pub fn`, ktora jego wlasny plan
+# jawnie obiecuje zawolac w nastepnym kroku, dostaje falszywa czerwien i nie ma jak jej zamknac.
 tasks = ""
-for root, _, names in os.walk("tasks"):
-    for n in names:
-        if n.endswith(".md"):
-            tasks += open(os.path.join(root, n), encoding="utf-8", errors="replace").read()
+for candidate in (".h-plan.md",):
+    if os.path.isfile(candidate):
+        tasks = open(candidate, encoding="utf-8", errors="replace").read()
+        break
 
 orphans = []
 for s in symbols:
@@ -136,7 +140,7 @@ if orphans:
         "\na function used only from tests/ is NOT dead code to clippy -- integration tests\n"
         "are separate crates, so dead_code stays silent and the thing rots green. That is how\n"
         "engine::limits::Limiter landed with a passing test and zero production callers.\n"
-        "Wire it, or promise it by name in the TASK.md of the run that will.\n")
+        "Wire it, or promise it by name in the plan of the run that will.\n")
     raise SystemExit(1)
 
 print("wired: %d new pub fn, every one called from %s, registered as a command, or owned "

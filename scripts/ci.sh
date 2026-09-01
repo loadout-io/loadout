@@ -9,7 +9,7 @@
 # kroków żyła w ci.sh i drugi raz w .github/workflows/ci.yml, i te dwie listy się
 # rozjechały. Workflow tego repo woła wyłącznie ten plik i nie wymienia ani jednego kroku.
 #
-# Kody wyjścia — ten sam kontrakt, co verify.sh i harness/gate.py:
+# Kody wyjścia — ten sam kontrakt, co `.loadout/h/h.py`:
 #   0  pas przeszedł
 #   1  sprawdzenie padło (uczciwa porażka)
 #   2  to MY jesteśmy źle skonfigurowani: brak narzędzia, brak zależności, zły argument
@@ -80,7 +80,7 @@ step() { # step <etykieta> <komenda...>
 # Niezmiennik 19: kod wyjścia to nie dowód. Testowany kod biegnie w tym samym
 # procesie, którego rc czytamy — `os._exit(0)`/`process.exit(0)` na poziomie modułu
 # zazielenia całą suitę. Wymagamy, żeby runner wypisał SWOJE podsumowanie z licznikiem.
-# Regex jest ten sam, którego używa harness/gate.py (DEFAULT_EXPECT), w składni ERE.
+# Regex jest ten sam, którego używa `.loadout/h/h.py` (PASS_COUNT), w składni ERE.
 EVIDENCE_RE='(Ran +[0-9]+ tests?|[0-9]+ (passed|tests? passed))'
 
 with_evidence() { # with_evidence <komenda...>
@@ -153,7 +153,13 @@ rust_lane() {
   # zakazana (AGENTS.md §4): przestawia profil builda i potrafi przekroczyć limit czasu.
   step "cargo clippy --all-targets" cargo clippy --all-targets "${locked[@]+"${locked[@]}"}" -- -D warnings
 
-  step "cargo test" with_evidence cargo test "${locked[@]+"${locked[@]}"}"
+  # `--test-threads=1`. ZMIERZONE 2026-08-28: rownolegle 31 s, ale TRZY testy padaja na
+  # `Elapsed(())` -- `driver_codex_finish`, `driver_codex_resume`
+  # i `started_processes_die_with_the_window` spawnuja prawdziwe procesy i mierza czasy, wiec
+  # pod obciazeniem maszyny wychodza na timeout. W izolacji przechodza wszystkie trzy.
+  # Jednowatkowo: 88 s, 818 passed, 0 failed. Placimy 57 s za to, zeby zielone mowilo o kodzie,
+  # a nie o tym, czy maszyna byla akurat wolna -- bramka mierzaca obciazenie nie jest bramka.
+  step "cargo test" with_evidence cargo test "${locked[@]+"${locked[@]}"}" -- --test-threads=1
 
   ensure_cargo_deny
   # Zakres: advisories + licenses + bans + sources, wszystko z deny.toml.
@@ -176,7 +182,11 @@ rust_lane() {
   # Jeśli któryś krok padł przez `die`, do tego wiersza nie dojdziemy — i dobrze:
   # trap EXIT nadal zwolni zamek przy wyjściu procesu. To jest zwolnienie WCZEŚNIEJSZE,
   # nie jedyne.
-  declare -F cargo_release >/dev/null && cargo_release
+  # `cargo_release` odeszlo razem z muteksem z checks/_cargo-serialize.sh (2026-08-28).
+  # Ta linia stala tu jako OSTATNIA instrukcja funkcji, wiec pod `set -e` nieistniejaca
+  # funkcja dawala `declare -F` -> 1 -> rust_lane zwraca 1 -> caly skrypt wychodzi jedynka
+  # BEZ ANI JEDNEJ LINII WYJSCIA. Log konczyl sie na "cargo build (5s)" i wygladalo to jak
+  # zniknieciecie skryptu. Zmierzone przy pierwszym CI po przebudowie.
 }
 
 ensure_cargo_deny() {
@@ -246,470 +256,24 @@ web_lane() {
   run_check_if_present checks/quick-vocabulary.sh
 }
 
-# ── co bramka widzi, a CI nie ─────────────────────────────────────────────────
-
-report_gate_only_checks() {
-  # verify.sh biegnie w worktree z TASK.md; CI biegnie na trunku, gdzie TASK.md nie ma.
-  # Te dwa zbiory nigdy nie będą równe i nie mają być. Wypisujemy różnicę, bo „którego
-  # pliku z checks/ CI nie woła" to pytanie, które inaczej zadaje się po incydencie.
-  # To notatka, nie werdykt: część z tych sprawdzeń CI pokrywa MOCNIEJSZĄ formą tej samej
-  # rzeczy (clippy --all-targets zamiast --lib), a część nie ma tu sensu w ogóle
-  # (quick-scope pilnuje niezacommitowanych zapisów w worktree, których na trunku nie ma).
-  local f rest=()
-  for f in checks/quick-*.sh checks/full-*.sh; do
-    [ -e "$f" ] || continue
-    case " ${CI_RAN_CHECKS[*]-} " in *" $f "*) continue ;; esac
-    rest+=("$f")
-  done
-  [ ${#rest[@]} -gt 0 ] || return 0
-  printf '\n· not invoked by CI (the gate runs these): %s\n' "${rest[*]}"
-}
-
 # ── sprawdzenie sprawdzeń ─────────────────────────────────────────────────────
 #
-# N-12 (audyt 2026-08-15): harness/guards.sh nie był wołany przez NIC. Występował
-# w harness/README.md, w docs/, w tasks/T-22.md i w samym sobie — ale nie w verify.sh,
-# nie w gate.py, nie w ship.sh, nie tutaj i nie w haku Stop. Sprawdzenie sprawdzeń
-# było komendą, którą człowiek musiał pamiętać. 00-SYNTHESIS §4.1 przewidywał je „przy pięciu
-# sprawdzeniach, obowiązkowo przy dziesięciu" — mamy jedenaście.
+# Do 2026-08-28 pas guards miał trzynaście funkcji pilnujących `gate.py`, `ship-task.sh`,
+# muteksu cargo i poziomów bramki. Wszystkie te rzeczy zniknęły, a strażnik pilnujący
+# nieistniejącego kodu jest gorszy niż jego brak: przechodzi zawsze i czyta się jak dowód.
 #
-# Uruchamiamy je TUTAJ, a nie jako checks/full-guards.sh w bramce, z dwóch powodów: guards
-# odpala każde sprawdzenie dwa razy (to podwoiłoby najdroższą warstwę), i odmawia na brudnym
-# drzewie kodem 2 — co bramka słusznie eskaluje na MISCONFIGURED dla całej warstwy. Drzewo CI
-# jest zawsze czyste, czyli dokładnie to, czego guards wymaga.
-#
-# Bramkowane ścieżką, nigdy oceną: „czy ten diff dotyka harnessu" to test ścieżki
-# (spreadsheet/checks/fast-selftest.sh:5), a nie decyzja do podjęcia.
+# Dwie klasy odeszły nie przez skasowanie, tylko przez KONSTRUKCJĘ, i to jest lepszy wynik:
+# `prompt_backticks` i `prompt_dollars` pilnowały metaznaków w heredocach promptów. Prompty
+# są teraz plikami `.md` w `.loadout/h/prompts/`, więc bash nigdy ich nie interpoluje — nie ma
+# czego pilnować. Każda z tych klas kosztowała kiedyś bieg.
 guards_lane() {
-  local base="${LOADOUT_CI_BASE:-origin/main}"
-  local touched=""
-  if git rev-parse --verify -q "$base" >/dev/null 2>&1; then
-    touched="$(git diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(harness/|checks/|verify\.sh$)' || true)"
-  else
-    touched="baza nieznana — uruchamiam"
-  fi
-  if [ -z "$touched" ]; then
-    echo "guards: the diff does not touch harness/, checks/ or verify.sh — skipped by path"
-    return 0
-  fi
-  prompt_backticks
-  pinned_scripts_find_the_repo
-  bash harness/process-group-selftest.sh
-  cargo_lock_exit_code
-  cargo_lock_reclaims_dead_owner
-  rust_compile_failure_never_certifies_before
-  hung_check_reads_as_red_not_as_a_slow_gate
-  spec_assertions_may_grow_never_shrink
-  branch_is_judged_by_the_trunks_oracle
-  spine_merges_keep_both_declarations
-  one_clippy_at_the_full_tier
-  queueing_never_lands_in_the_waiters_budget
-  two_full_gates_never_overlap
+  echo
   echo "── guards (the check of checks) ──"
-  bash harness/guards.sh
+  checks_are_declared
+  spine_merges_keep_both_declarations
+  bash .loadout/h/guards.sh
 }
 
-
-# ── prompty pisarza nie mogą zawierać nieescapowanych backticków ──────────────
-# Zmierzone 2026-08-15: wstawka do promptu w ship-task.sh niosła `;` i `&&` w backtickach.
-# Heredoc <<PROMPT jest NIECYTOWANY (celowo — podstawiamy $ID i $AGENT), więc bash wykonał
-# je jako komendy, prompt dojechał do modelu zniekształcony, a `bash -n` nic nie zgłosił:
-# składniowo to poprawne podstawienie komendy, tylko robi coś zupełnie innego.
-prompt_backticks() {
-  local bad
-  bad="$(awk '/<<PROMPT/,/^PROMPT$/' ship.sh review.sh 2>/dev/null \
-         | grep -n '[^\\]`' || true)"
-  if [ -n "$bad" ]; then
-    echo "unescaped backtick inside a writer prompt heredoc -- bash will RUN it:" >&2
-    printf '%s\n' "$bad" | head -10 | sed 's/^/  /' >&2
-    echo "escape them as \\\` — the heredoc is unquoted on purpose." >&2
-    return 1
-  fi
-  echo "prompts: no unescaped backticks"
-}
-
-# ── przeterminowany muteks cargo to 2, nigdy 1 ────────────────────────────────
-# Zmierzone 2026-08-15: `cargo_serialize || exit 1` sprawiał, że sprawdzenie, które NIC nie
-# uruchomiło, meldowało „twój kod jest zepsuty". gate.py zna na poziomie sprawdzenia tylko
-# dwie kategorie — 2 to `misconfigured`, wszystko inne niezerowe to `failed` — więc jedyną
-# poprawną odpowiedzią jest 2. Fałszywa czerwień uzbraja się dopiero przy zadaniach
-# równoległych, czyli tam, gdzie nikt jej nie będzie szukał.
-#
-# Nie jest to strażnik w harness/guards.sh: tamten framework daje jedną funkcję na sprawdzenie
-# i sadzi naruszenie W KODZIE. Tutaj naruszeniem jest STAN MASZYNY (zajęty muteks), więc
-# asercja mieszka tam, gdzie już mieszka prompt_backticks — obok, nie w środku.
-cargo_lock_exit_code() {
-  local sandbox rc
-  # WŁASNY katalog tymczasowy, nie współdzielony. Pierwsza wersja zajmowała prawdziwy zamek
-  # i pomijała się, gdy był zajęty — a wewnątrz ci.sh był zajęty ZAWSZE, więc asercja nie
-  # wykonała się ani razu i meldowała to jednym wierszem, który wyglądał jak sukces.
-  # Asercja, która się pomija, nie jest asercją.
-  sandbox="$(mktemp -d)" || { echo "nie mogę zrobić katalogu na zamek" >&2; return 1; }
-  mkdir "$sandbox/loadout-cargo.lock"
-  # Właściciel musi ŻYĆ, inaczej nowa reguła odzyskania skasuje zamek i zmierzymy
-  # zupełnie inną ścieżkę niż tę, o którą pytamy. $$ to ci.sh, czyli na pewno żywy.
-  echo "$$" > "$sandbox/loadout-cargo.lock/pid"
-
-  rc=0
-  TMPDIR="$sandbox" LOADOUT_CARGO_LOCK_WAIT=2 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
-  rm -rf "$sandbox"
-
-  if [ "$rc" != 2 ]; then
-    echo "quick-clippy wyszedł $rc na zajętym muteksie, a ma wyjść 2" >&2
-    echo "detail: nic się nie wykonało, więc to nie jest twierdzenie o kodzie (Q-3)." >&2
-    return 1
-  fi
-  echo "cargo lock: zajęty muteks daje 2, nie 1"
-}
-
-# ── zadanie tworzace modul Rusta musi miec w OWNS plik z jego deklaracja ──────
-# 2026-08-28: `task_spine_declarations` odszedl razem z katalogiem tasks/. Cialo mieszkalo
-# w harness/task-spine.py i symulowalo KOLEJNOSC LADOWANIA plikow zadan, zeby sprawdzic, czy
-# kazde zadanie tworzace modul Rusta ma w OWNS plik z jego deklaracja. Bez wielu plikow zadan
-# nie ma czego symulowac: kontrakt powstaje w worktree, dla jednego biegu, a brak deklaracji
-# modulu lapie natychmiast `before` -- "module not found" jest podpisem z NOT_A_REAL_RED,
-# wiec bramka odrzuca to jako falszywa czerwien w tej samej minucie, w ktorej powstalo,
-# zamiast tygodnie pozniej przy ladowaniu.
-
-# ── przypięte skrypty muszą nadal znajdować korzeń repo ───────────────────────
-# Regresja z 2026-08-15, wprowadzona przez samą poprawkę przeciw edycji w trakcie biegu:
-# po `exec bash "$snap"` ${BASH_SOURCE[0]} wskazuje plik w $TMPDIR, więc każde
-# `dirname "${BASH_SOURCE[0]}"` liczyło korzeń repo jako /var/folders/… i oba skrypty
-# padały natychmiast. `bash -n` tego nie widzi — składnia jest bez zarzutu.
-#
-# Drugi, gorszy wariant tej samej wady: LOADOUT_PINNED jest wyeksportowany, więc
-# ship-task.sh odpalony przez build-loop.sh dziedziczyłby cudzy sentinel, pomijał własne
-# przypięcie i brał katalog scripts/ za korzeń. Poprawka wyłączałaby się dokładnie tam,
-# gdzie pętla jej najbardziej potrzebuje. Stąd `unset` w obu skryptach i drugi wiersz niżej.
-pinned_scripts_find_the_repo() {
-  local out
-  # ship.sh --dry-run wypisuje ROOT, ktory sam sobie ustalil -- najtansze wywolanie, ktore
-  # dowodzi przypiecia. Gdyby przypiecie bylo zepsute, ROOT bylby katalogiem w $TMPDIR
-  # i skrypt padlby wczesniej na "verify.sh is missing".
-  out="$(bash ship.sh --dry-run __ci_probe__ 2>&1 || true)"
-  if ! printf '%s\n' "$out" | grep -q "^root: *$REPO\$"; then
-    echo "ship.sh nie znajduje korzenia repo po przypieciu:" >&2
-    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
-    return 1
-  fi
-
-  # Cudzy sentinel NIE MOZE wylaczyc przypiecia. To druga wada, nie ta sama: przy wspolnej
-  # nazwie dziecko dziedziczylo sentinel rodzica i bralo jego katalog za korzen repo, czyli
-  # obrona wylaczala sie dokladnie tam, gdzie petla jej najbardziej potrzebuje. Podrzucamy
-  # taka pare zmiennych i wymagamy, zeby nic sie nie zmienilo -- bo nazwy sa rozlaczne.
-  out="$(env LOADOUT_PINNED_BUILD_LOOP=1 LOADOUT_SELF_BUILD_LOOP=/tmp \
-             bash ship.sh --dry-run __ci_probe__ 2>&1 || true)"
-  if ! printf '%s\n' "$out" | grep -q "^root: *$REPO\$"; then
-    echo "cudzy sentinel wylaczyl przypiecie ship.sh:" >&2
-    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
-    return 1
-  fi
-
-  echo "pinned script: ship.sh znajduje korzen repo, cudzy sentinel go nie rusza"
-}
-
-# ── zamek po martwym właścicielu ma być odzyskany, nie odczekany ──────────────
-# Druga połowa tej samej reguły. Bez niej „daje 2" byłoby prawdą także wtedy, gdyby zamek
-# nigdy nie dał się odzyskać — czyli pierwsze zabite cargo blokowałoby maszynę na 5 minut
-# przy każdym kolejnym sprawdzeniu.
-cargo_lock_reclaims_dead_owner() {
-  local sandbox rc dead
-  sandbox="$(mktemp -d)" || return 1
-  mkdir "$sandbox/loadout-cargo.lock"
-  # PID, który na pewno nie żyje: odpal cokolwiek i poczekaj, aż skończy.
-  ( exit 0 ) & dead=$!; wait "$dead" 2>/dev/null || true
-  echo "$dead" > "$sandbox/loadout-cargo.lock/pid"
-
-  rc=0
-  TMPDIR="$sandbox" LOADOUT_CARGO_LOCK_WAIT=5 bash checks/quick-clippy.sh >/dev/null 2>&1 || rc=$?
-  rm -rf "$sandbox"
-
-  if [ "$rc" != 0 ]; then
-    echo "quick-clippy wyszedł $rc na zamku po MARTWYM właścicielu, a ma przejść" >&2
-    echo "detail: zamek po trupie ma być odzyskany od razu, nie odczekany do sufitu." >&2
-    return 1
-  fi
-  echo "cargo lock: zamek po martwym właścicielu odzyskany"
-}
-
-# ── kod Rusta, który się nie kompiluje, nie jest dowodem czerwonego zachowania ─────────
-# Incydent 2026-08-24: wspólny cel `it` nie skompilował się przez E0308 w jednym pliku,
-# więc każde z pięciu kryteriów T-112 dostało ten sam niezerowy kod. Oracle znał tylko
-# E0432/E0433 i wszystkie pięć nazwał „red for the right reason”. Mierzymy tu WERDYKT,
-# nie obecność regexu, oraz chronimy drugą stronę granicy: prawdziwa panika testu nadal
-# musi certyfikować brak zachowania.
-rust_compile_failure_never_certifies_before() {
-  python3 - <<'PY' || return 1
-import importlib.util
-
-spec = importlib.util.spec_from_file_location("gate", "harness/gate.py")
-gate = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gate)
-
-compile_failure = {
-    "kind": "acceptance",
-    "rc": 101,
-    "rc_raw": 101,
-    "reason": "error[E0308]: mismatched types",
-    "full": """error[E0308]: mismatched types
-  --> tests/it/a_contract.rs:12:9
-error: could not compile `loadout` (test \"it\") due to 1 previous error
-""",
-}
-ok, note = gate.verdict("before", compile_failure)
-if ok or "did not RUN" not in note:
-    raise SystemExit("E0308 compilation failure certified the before oracle")
-
-runtime_failure = {
-    "kind": "acceptance",
-    "rc": 101,
-    "rc_raw": 101,
-    "reason": "thread 'the_test' panicked at assertion failed",
-    "full": """running 1 test
-thread 'the_test' panicked at assertion failed
-test result: FAILED. 0 passed; 1 failed; 0 ignored
-""",
-}
-ok, note = gate.verdict("before", runtime_failure)
-if not ok or note:
-    raise SystemExit("runtime assertion failure stopped certifying the before oracle")
-PY
-  echo "gate: błąd kompilacji nie certyfikuje before, panika testu nadal tak"
-}
-
-# ── zawieszone kryterium ma się czytać jako CZERWONE, nie jako wolna bramka ───
-# Zmierzone na T-06 (2026-08-16). AC-2 zawisło na zakleszczeniu kanału tokio, zjadło swój
-# budżet 420 s, `run_one` spytał drugi raz — to jest zamierzone, bo timeout mówi „nie
-# skończyło", nie mówi dlaczego — więc razem 840 s. Bramka zapisała je uczciwie jako
-# `failed` z powodem „did not FINISH", po czym zwróciła **3**, bo sufit poziomu liczył
-# JEDEN budżet zamiast dwóch, które sam przyznał. Kod 3 znaczy „przerwane albo maszyna"
-# i wysyła orchestratora po osierocone procesy; prawdą był defekt kontraktu, leżący
-# w paragonie. Kosztowało to bieg i noc na hipotezie o zamku SQLite.
-#
-# Strażnik stoi tutaj, a nie w harness/guards.sh: tamten framework sadzi naruszenie w pliku
-# checks/*.sh, a to naruszenie mieszka w arytmetyce oracle'a. Odtworzenie go end-to-end
-# wymagałoby biegu 840 s, więc pytamy funkcję wprost — jej własnymi liczbami z paragonu.
-hung_check_reads_as_red_not_as_a_slow_gate() {
-  python3 - <<'PY' || return 1
-import importlib.util, sys
-
-spec = importlib.util.spec_from_file_location("gate", "harness/gate.py")
-g = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(g)
-per = g.CHECK_TIMEOUT["before"]
-
-# Paragon T-06 co do liczby: szesc kryteriow czerwonych w ~1 s, AC-2 wisialo 420 + 420.
-argv = {"AC-%d" % i: ["cargo", "test", "--test", "store_x%d" % i] for i in range(1, 8)}
-hung = [{"id": "AC-%d" % i, "seconds": s, "retried": "", "rc": rc} for i, s, rc in
-        [(1, 11.26, 101), (2, 840.39, 124), (3, 1.10, 101), (4, 1.02, 101),
-         (5, 1.11, 101), (6, 1.00, 101), (7, 0.95, 101)]]
-if 840.40 > g.ceiling_for("before", hung, argv, per):
-    sys.exit("zawieszone kryterium przewraca poziom na 3 -- czerwien chowa sie za sufitem, "
-             "ktory sama wypelnila, a orchestrator dostaje diagnoze 'maszyna' zamiast 'kontrakt'")
-
-# Kontrola przeciw pustej asercji. Bez niej ta asercja przechodzilaby takze wtedy, gdyby
-# poprawka po prostu skasowala sufit: poziom wolny BEZ ani jednego sprawdzenia dotknietego
-# timeoutem musi NADAL wychodzic trojka.
-slow = [{"id": "P-%d" % i, "seconds": 5.0, "retried": "", "rc": 0} for i in range(40)]
-if 200.0 <= g.ceiling_for("before", slow, {}, per):
-    sys.exit("sufit przestal lapac bramke wolna bez powodu -- poprawka zjadla go w calosci")
-PY
-  echo "gate: zawieszone kryterium czyta się jako RED, wolna bramka nadal jako 3"
-}
-
-# ── specyfikacji wolno zyskiwać asercje, nigdy żadnej zgubić ──────────────────
-# Obrona rundy naprawczej kontraktu (ship.sh, etap 2a). Ta faza dostaje instrukcję
-# „spraw, żeby kryterium padało INACZEJ", a najtańsza droga do tego jest asertować mniej —
-# i jest to jedyna faza, w której „asertuj mniej" jest wiarygodnym ODCZYTEM instrukcji,
-# a nie jawnym oszustwem. Dlatego dostała obronę mechaniczną, a nie zdanie w promptcie
-# (niezmiennik 28). Obrona bez strażnika jest obroną, o której nikt nie wie, czy strzela.
-#
-# Strażnik wycina OBIE funkcje z ship.sh i uruchamia je naprawdę. Kopia asercji
-# wklejona tutaj testowałaby kopię, nie mechanizm (niezmiennik 20).
-spec_assertions_may_grow_never_shrink() {
-  local sandbox fns wt src
-  sandbox="$(mktemp -d)" || return 1
-  fns="$sandbox/fns.sh"
-  wt="$sandbox/wt"
-
-  python3 - ship.sh "$fns" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
-import io, sys
-
-lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
-out = []
-for want in ("assertion_fingerprint()", "assertions_lost()"):
-    head = [k for k, l in enumerate(lines) if l.startswith(want)]
-    if len(head) != 1:
-        sys.exit("%s wystepuje %d razy w ship.sh" % (want, len(head)))
-    i = head[0]
-    j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
-    out.extend(lines[i:j + 1])
-if len(out) < 20:
-    sys.exit("wyciety kod jest podejrzanie krotki -- ksztalt pliku sie zmienil")
-io.open(sys.argv[2], "w", encoding="utf-8").write("\n".join(out) + "\n")
-EXTRACT
-
-  src="source '$fns'"
-  mkdir -p "$wt/src-tauri/tests" "$wt/src-tauri/src"
-  # Trzy makra, `expect` i warunkowy rustowy fail-path — plus PRODUKCYJNY plik, którego
-  # odcisk ma nie widzieć: tam asercji ubywa legalnie razem ze szkieletem.
-  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nlet proof = maybe.expect("proof");\nif proof.is_empty() {\n    return Err("missing proof".into());\n}\n' \
-    > "$wt/src-tauri/tests/spec_one.rs"
-  printf 'assert!(internal);\nreturn Err("production".into());\n' > "$wt/src-tauri/src/thing.rs"
-
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/a.tsv"
-  if [ "$(cat "$sandbox/a.tsv")" != "$(printf 'src-tauri/tests/spec_one.rs\t5')" ]; then
-    echo "odcisk asercji nie mierzy tego, co ma mierzyć:" >&2
-    sed 's/^/  /' "$sandbox/a.tsv" >&2
-    echo "  oczekiwano dokładnie: src-tauri/tests/spec_one.rs<TAB>5" >&2
-    echo "  (plik produkcyjny z asercją i fail-pathem NIE ma się tu pojawić)" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  # (a) usunięcie `expect` nadal jest stratą, nazwaną z pliku i obiema liczbami.
-  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nif proof.is_empty() {\n    return Err("missing proof".into());\n}\n' > "$wt/src-tauri/tests/spec_one.rs"
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/b.tsv"
-  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/b.tsv'" | grep -q 'spec_one.rs: 5 assertion lines -> 4'; then
-    echo "specyfikacja straciła expect, a porównanie tego nie zgłosiło" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  # (b) usunięcie jawnego fail-path również jest stratą.
-  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nlet proof = maybe.expect("proof");\n' > "$wt/src-tauri/tests/spec_one.rs"
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/c.tsv"
-  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/c.tsv'" | grep -q 'spec_one.rs: 5 assertion lines -> 4'; then
-    echo "specyfikacja straciła rustowy fail-path, a porównanie tego nie zgłosiło" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  # (c) zamiana `expect` na równoważny jawny fail-path zachowuje odcisk.
-  printf 'assert_eq!(a, b);\nlet z = 1;\nassert!(x);\nassert_ne!(c, d);\nif proof.is_empty() {\n    return Err("missing proof".into());\n}\nif other.is_empty() {\n    return Err("missing other".into());\n}\n' > "$wt/src-tauri/tests/spec_one.rs"
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/d.tsv"
-  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/d.tsv'")" ]; then
-    echo "równoważna zamiana expect na rustowy fail-path wygląda jak strata" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  # (d) przybyło → cisza. Bez tego strażnik przechodziłby także wtedy, gdyby porównanie
-  #     krzyczało zawsze, czyli gdyby nie mierzyło niczego.
-  printf 'assert_eq!(a, b);\nassert!(x);\nassert_ne!(c, d);\nassert!(more);\nassert!(yet);\nassert!(again);\n' \
-    > "$wt/src-tauri/tests/spec_one.rs"
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/e.tsv"
-  if [ -n "$(bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/e.tsv'")" ]; then
-    echo "specyfikacja ZYSKAŁA asercje, a porównanie zgłosiło stratę" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  # (e) skasowany plik to strata wszystkich jego asercji, a nie brak wpisu. Bez tego
-  #     najprostsza droga na skróty — usuń specyfikację — byłaby niewidoczna.
-  rm "$wt/src-tauri/tests/spec_one.rs"
-  WT="$wt" bash -c "$src; assertion_fingerprint" > "$sandbox/f.tsv"
-  if ! bash -c "$src; assertions_lost '$sandbox/a.tsv' '$sandbox/f.tsv'" | grep -q 'spec_one.rs: 5 assertion lines -> 0'; then
-    echo "skasowana specyfikacja nie liczy się jako strata asercji" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  rm -rf "$sandbox"
-  echo "specs: makra, expect i rustowy fail-path są chronione przed ubytkiem"
-}
-
-# ── gałąź ma być sądzona przez ORACLE Z TRUNKA, nie przez własną starą kopię ──
-# Zmierzone dwa razy. 2026-08-15: trzy z pierwszych czterech zatrzymań pętli były fałszywymi
-# alarmami z nieaktualnej kopii `checks/` na gałęzi. 2026-08-16: poprawka sufitu w gate.py,
-# napisana dokładnie dla biegu T-06, była dla niego **nieosiągalna** — `worktree.sh` wycina
-# cały katalog roboczy, więc gałąź niesie własne `harness/`, i ta stara kopia oddała exit 3
-# tam, gdzie nowa oddaje 1. Routing wznowienia zobaczył 3, odmówił, bieg skończył się dwójką.
-#
-# Strażnik pyta o dwie rzeczy, bo defekt miał dwie połowy: funkcja musi działać, i musi być
-# wołana ZANIM cokolwiek osądzi. Druga połowa jest asercją o kolejności w pliku — i tak ma
-# być: `ship.sh` JEST grafem biegu, więc kolejność etapów to jego zachowanie, nie jego
-# formatowanie.
-branch_is_judged_by_the_trunks_oracle() {
-  local sandbox g wt
-  sandbox="$(mktemp -d)" || return 1
-  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
-
-  # ── połowa pierwsza: czy funkcja podciąga oracle ──
-  mkdir -p "$sandbox/repo/harness"
-  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
-  echo "old oracle" > "$sandbox/repo/harness/gate.py"
-  $g add -A && $g commit -q -m "trunk v1"
-  $g branch run-probe
-  # trunk idzie do przodu: NOWY oracle
-  echo "new oracle" > "$sandbox/repo/harness/gate.py"
-  $g add -A && $g commit -q -m "trunk v2"
-  wt="$sandbox/wt"
-  $g worktree add -q "$wt" run-probe
-  # Kontrakt zyje TYLKO na galezi -- tak jak w prawdziwym biegu, gdzie pisze go etap planu.
-  echo "the contract of this run" > "$wt/TASK.md"
-  git -c user.email=ci@loadout -c user.name=ci -C "$wt" add TASK.md
-  git -c user.email=ci@loadout -c user.name=ci -C "$wt" commit -q -m "docs(run): contract"
-
-  python3 - ship.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
-import io, sys
-lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
-head = [k for k, l in enumerate(lines) if l.startswith("refresh_harness_from_trunk()")]
-if len(head) != 1:
-    sys.exit("refresh_harness_from_trunk() wystepuje %d razy" % len(head))
-i = head[0]
-j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
-io.open(sys.argv[2], "w", encoding="utf-8").write(
-    "note() { printf '   %s\\n' \"$*\"; }\n" + "\n".join(lines[i:j + 1]) + "\n")
-EXTRACT
-
-  WT="$wt" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 'w tescie'" >/dev/null
-  if [ "$(cat "$wt/harness/gate.py")" != "new oracle" ]; then
-    echo "gałąź po odświeżeniu NADAL sądzi się starą bramką" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  # Kontrola po drugiej stronie, i to ona zastapila caly straznik o zamrazaniu tasks/.
-  # Do 2026-08-28 kontrakt mieszkal w tasks/<ID>.md, czyli NA TRUNKU, wiec odswiezenie
-  # potrafilo przyniesc na galaz nowsza wersje jej wlasnej umowy -- a bieg zmienialby wtedy
-  # warunki wlasnego zaliczenia (N-08). Teraz kontrakt powstaje w worktree i trunk go nie
-  # niesie, wiec merge nie ma czym go nadpisac. Ta asercja pilnuje, ze to naprawde tak jest,
-  # zamiast wierzyc, ze jest, bo tak wynika z ukladu katalogow.
-  if [ "$(cat "$wt/TASK.md")" != "the contract of this run" ]; then
-    echo "odświeżenie oracle'a ruszyło KONTRAKT gałęzi — bieg zmieniłby warunki własnego zaliczenia" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-  rm -rf "$sandbox"
-
-  # ── połowa druga: czy odświeżenie wyprzedza pierwszy osąd ──
-  python3 - ship.sh <<'ORDER' || return 1
-import io, sys
-
-lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
-
-def first(pred, what):
-    for k, l in enumerate(lines):
-        if pred(l):
-            return k
-    sys.exit("nie znalazlem %s w ship.sh" % what)
-
-refresh = first(lambda l: l.strip().startswith('refresh_harness_from_trunk "'),
-                "wywolania refresh_harness_from_trunk")
-# WYLACZNIE prawdziwe wywolania bramki. Prompty pisarza mowia o "./verify.sh before" proza,
-# i gdyby pred lapal tez je, straznik mierzylby kolejnosc AKAPITOW, nie etapow.
-judges = first(lambda l: "gate before" in l and not l.lstrip().startswith("#"),
-               "pierwszego etapu, ktory sadzi")
-if judges < refresh:
-    sys.exit("pierwszy osad (linia %d) wyprzedza odswiezenie oracle'a (linia %d): galaz "
-             "bylaby sadzona przez wlasna, stara kopie bramki -- dokladnie to zatrzymalo "
-             "T-06 2026-08-16" % (judges + 1, refresh + 1))
-ORDER
-
-  echo "oracle: gałąź sądzi się bramką z trunka, kontrakt gałęzi tego nie odczuwa"
-}
-
-# ── konflikt na kręgosłupie rozwiązuje się ZACHOWANIEM OBU DEKLARACJI ─────────
-# `src-tauri/src/lib.rs` zbiera po jednym `pub mod` od każdego zadania tworzącego moduł, więc
-# przy dwóch gałęziach naraz konflikt jest PEWNY — zdarzył się przy T-11 i T-12, a potem
-# zablokował odświeżanie harnessu na T-06, przez co gałąź sądziła się własną, starą bramką.
-# `.gitattributes` zapisuje jedyne poprawne rozwiązanie jako regułę (`merge=union`), zamiast
-# kazać je powtarzać ręcznie i ryzykować, że ktoś kiedyś „wybierze stronę".
-#
-# Kontrola przeciw pustej asercji jest tu obowiązkowa: bez niej ten strażnik przechodziłby
 # także wtedy, gdyby git scalał te wiersze sam z siebie, i nie mierzyłby reguły.
 spine_merges_keep_both_declarations() {
   local sandbox g rule
@@ -778,194 +342,44 @@ spine_merges_keep_both_declarations() {
 # Jedyna naprawa bez wady jest taka, że zbędne sprawdzenie się nie odpala.
 #
 # Strażnik pilnuje OBU stron: że w `full` schodzi z drogi, i że poza `full` biegnie normalnie.
-# Sama pierwsza połowa przechodziłaby na checku, który nie robi już nic nigdzie.
-one_clippy_at_the_full_tier() {
-  local out sandbox
-  out="$(LOADOUT_TIER=full bash checks/quick-clippy.sh 2>&1)"
-  if ! printf '%s' "$out" | grep -q 'superseded'; then
-    echo "quick-clippy nie schodzi z drogi w tierze full — dwa clippy będą się biły o muteks" >&2
-    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
-    return 1
-  fi
-
-  # Druga połowa: poza `full` ma biec normalnie. Piaskownica BEZ zrodel Rusta, zeby nie
-  # odpalac prawdziwego clippy — check ma wtedy wlasna, nazwana galaz „nie ma czego lintowac".
-  sandbox="$(mktemp -d)" || return 1
-  mkdir -p "$sandbox/checks" "$sandbox/src-tauri/src"
-  cp checks/quick-clippy.sh checks/_cargo-serialize.sh "$sandbox/checks/"
-  out="$(cd "$sandbox" && LOADOUT_TIER=before bash checks/quick-clippy.sh 2>&1)"
-  rm -rf "$sandbox"
-  if printf '%s' "$out" | grep -q 'superseded'; then
-    echo "quick-clippy schodzi z drogi także POZA tierem full — czyli nie sprawdza już nic" >&2
-    return 1
-  fi
-  if ! printf '%s' "$out" | grep -q 'nothing to lint'; then
-    echo "quick-clippy poza tierem full nie doszedł do swojej właściwej gałęzi:" >&2
-    printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
-    return 1
-  fi
-
-  echo "clippy: jedno w tierze full, normalne poza nim"
-}
-
-# ── czekanie na muteks nie ma prawa ladowac w budzecie czekajacego ────────────
-# Zmierzone 2026-08-17 na T-36: `full-test` trzymal muteks cargo 512 s, a `full-clippy`,
-# puszczony przez bramke w tej samej fali, PRZESPAL na nim 242,88 s na WLASNYM zegarze,
-# oddal 2 i cala bramka zaswiecila sie "MISCONFIGURED". Kod byl poprawny, oba kryteria
-# przeszly -- bramka nie osadzila go przez wlasna kolejke.
+# ── każdy check z checks/ musi być ZADEKLAROWANY w checks.json ────────────────
+# To rola, którą do 2026-08-28 pełnił `checks/MANIFEST`, i jest to blizna (N-13,
+# audyt 2026-08-15): bramka odkrywała checki po nazwie pliku, więc plik, który zgubił
+# prefiks warstwy, dostawał notkę — ale plik SKASOWANY nie produkował nic. Zmierzone:
+# usunięcie `checks/quick-permissions.sh` dało „7 checks, 0 failed" i exit 0. Zniknęło
+# sprawdzenie napisane po incydencie za 6,98 USD, a bramka tego nie zauważyła, bo iterowała
+# po plikach, które istnieją.
 #
-# Sufitem czekania tego nie da sie naprawic: zeby full-clippy doczekal, cap musi byc >=512 s,
-# a zeby zmiescil sie we wlasnym budzecie (600 s) razem z zimnym buildem -- <=360 s. Warunki
-# sprzeczne, wiec zmienna do ruszenia jest ROWNOLEGLOSC, a nie cap.
-#
-# Ten straznik pyta o BUDZET, nie o nakladanie sie. Pierwsza wersja pytala o nakladanie
-# i przechodzila TAKZE przed poprawka -- bo nakladania i tak zawsze bronil sam muteks.
-queueing_never_lands_in_the_waiters_budget() {
-  local t work=3
-  t="$(mktemp -d)"
-  mkdir -p "$t/harness" "$t/checks"
-  # Podmiana bramki istnieje po to, zeby dalo sie POKAZAC, ze ten straznik ma zeby (sadzimy
-  # nim bramke sprzed poprawki i musi zaswiecic). Mowi o tym glosno: straznik sadzacy po cichu
-  # nie ten plik, o ktory go pytano, czyta sie identycznie jak straznik, ktory przeszedl.
-  if [ -n "${LOADOUT_GUARD_GATE:-}" ]; then
-    echo "UWAGA: straznik sadzi $LOADOUT_GUARD_GATE, a nie harness/gate.py" >&2
-  fi
-  cp "${LOADOUT_GUARD_GATE:-harness/gate.py}" "$t/harness/gate.py"
-  cp checks/_cargo-serialize.sh "$t/checks/_cargo-serialize.sh"
+# Teraz checki wybiera `.loadout/h/checks.json` po zmienionych ścieżkach, więc pytanie jest
+# dwustronne: czy każdy plik w `checks/` jest zadeklarowany, i czy każda deklaracja wskazuje
+# na plik, który istnieje. Cichy rozjazd w obie strony to ten sam brak sprawdzenia.
+checks_are_declared() {
+  python3 - <<'PY' || return 1
+import json, os, re, sys
 
-  local n
-  for n in heavya heavyb lighta lightb; do
-    {
-      echo '#!/usr/bin/env bash'
-      echo 'set -euo pipefail'
-      echo 'cd "$(dirname "${BASH_SOURCE[0]}")/.."'
-      case "$n" in heavy*)
-        echo '. checks/_cargo-serialize.sh'
-        echo 'cargo_serialize || exit 2' ;;
-      esac
-      echo "printf '%s IN %s\n' \"\$(date +%s.%N)\" 'quick-$n' >> \"\$LANE_LOG\""
-      echo "sleep $work"
-      echo "printf '%s OUT %s\n' \"\$(date +%s.%N)\" 'quick-$n' >> \"\$LANE_LOG\""
-      echo "echo '$n done'"
-    } > "$t/checks/quick-$n.sh"
-  done
-  printf 'quick-heavya\nquick-heavyb\nquick-lighta\nquick-lightb\n' > "$t/checks/MANIFEST"
+cfg = json.load(open(".loadout/h/checks.json", encoding="utf-8"))
+declared, missing = set(), []
+for group in ("checks", "manual_only"):
+    for cid, spec in cfg[group].items():
+        if cid.startswith("_"):
+            continue
+        for m in re.finditer(r"checks/([\w.-]+\.sh)", spec["cmd"]):
+            declared.add(m.group(1))
+            if not os.path.isfile(os.path.join("checks", m.group(1))):
+                missing.append("%s deklaruje checks/%s, ktorego nie ma" % (cid, m.group(1)))
 
-  # TMPDIR wlasny: zamek straznika nie ma prawa dotknac zamka prawdziwego biegu obok.
-  LANE_LOG="$t/lane.log" ; : > "$LANE_LOG" ; export LANE_LOG
-  ( cd "$t" && TMPDIR="$t" python3 harness/gate.py quick --jobs 4 ) >"$t/out.txt" 2>&1 || true
-
-  python3 - "$t/out.txt" "$t/lane.log" "$work" <<'PY'
-import sys, re, collections
-measured, span = {}, collections.defaultdict(dict)
-for line in open(sys.argv[1]):
-    m = re.match(r"\s+(ok|FAIL|MISC)\s+(\S+)\s+([0-9.]+)s", line)
-    if m:
-        measured[m.group(2)] = float(m.group(3))
-for line in open(sys.argv[2]):
-    t, ev, name = line.split()
-    span[name]["in" if ev == "IN" else "out"] = float(t)
-work = float(sys.argv[3])
-
-need = ["quick-heavya", "quick-heavyb", "quick-lighta", "quick-lightb"]
-missing = [n for n in need if n not in measured or len(span[n]) < 2]
+on_disk = {f for f in os.listdir("checks") if f.endswith(".sh") and not f.startswith("_")}
+orphans = sorted(on_disk - declared)
+if orphans:
+    missing += ["checks/%s istnieje, ale zaden check w checks.json go nie wola" % f for f in orphans]
 if missing:
-    sys.exit("straznik nic nie zmierzyl dla: %s -- bramka nie odkryla sprawdzen sondy"
-             % ", ".join(missing))
-
-for n in ("quick-heavya", "quick-heavyb"):
-    queued = measured[n] - work
-    if queued > 1.2:
-        sys.exit("%s przesiedzialo %.2fs cudzego czasu na WLASNYM zegarze -- dokladnie tak "
-                 "full-clippy oddal 2 przy T-36, majac poprawny kod" % (n, queued))
-
-# Kontrola negatywna. Bez niej asercja wyzej przechodzi takze wtedy, gdy poprawka zabila
-# rownoleglosc CALEJ bramki: nikt nigdy nie czeka, bo nikt nigdy nie biegnie obok.
-A, B = span["quick-lighta"], span["quick-lightb"]
-if min(A["out"], B["out"]) - max(A["in"], B["in"]) <= 0:
-    sys.exit("lekkie sprawdzenia tez sie nie nakladaja -- bramka jest szeregowa CALA, wiec "
-             "asercja wyzej nie dowodzi niczego o lane szeregowym")
+    sys.stderr.write("checks/ i checks.json sie rozjechaly:\n")
+    for m in missing:
+        sys.stderr.write("  %s\n" % m)
+    sys.stderr.write("Skasowany check nie produkuje nic i czyta sie jak zdany (N-13).\n")
+    raise SystemExit(1)
+print("checks: %d plikow, kazdy zadeklarowany w checks.json" % len(on_disk))
 PY
-  local rc=$?
-  if [ "$rc" != 0 ]; then
-    # Straznik, ktory mowi tylko "czerwone", jest tym monitoringiem, ktory to repo skasowalo.
-    echo "kolejka po muteks cargo lezy w budzecie czekajacego sprawdzenia" >&2
-    echo "--- co zobaczyla bramka sondy ---" >&2
-    sed -n '1,20p' "$t/out.txt" >&2 || true
-    rm -rf "$t"
-    return 1
-  fi
-  rm -rf "$t"
-  echo "gate: czekanie na muteks poza budzetem, rownoleglosc reszty zyje"
-}
-
-# ── dwie bramki `full` naraz nie istnieja, a czekanie na to nic nie kosztuje ──
-# Lane szeregowy w gate.py usuwa kolizje WEWNATRZ fali. Muteks cargo jest jednak wspolny dla
-# CALEJ maszyny, wiec dwie bramki `full` obok siebie odtwarzaja incydent T-36 co do joty:
-# przegrany przesiaduje cudze 512 s na wlasnym zegarze i oddaje 2.
-#
-# Naprawa nie moze polegac na dluzszym czekaniu W sprawdzeniu -- wtedy czekanie i tak zjada
-# budzet, ktory jest twierdzeniem o KODZIE. Bramka czeka wiec przed pierwszym zegarem.
-# Straznik sprawdza OBIE polowy: ze czekala, i ze nikt za to nie zaplacil.
-two_full_gates_never_overlap() {
-  local t work=2 hold=6
-  t="$(mktemp -d)"
-  mkdir -p "$t/harness" "$t/checks" "$t/tests"
-  cp "${LOADOUT_GUARD_GATE:-harness/gate.py}" "$t/harness/gate.py"
-
-  printf '#!/usr/bin/env bash\nset -euo pipefail\nsleep %s\necho "slow done"\n' "$work" \
-    > "$t/checks/full-slow.sh"
-  printf 'full-slow\n' > "$t/checks/MANIFEST"
-  printf '#!/usr/bin/env bash\necho "test result: ok. 1 passed; 0 failed"\n' \
-    > "$t/tests/probe.spec.js"
-  # Bramka `full` odmawia biegu bez kontraktu, wiec sonda go ma. Przedmiotem pomiaru jest
-  # sprawdzenie projektowe `full-slow`, nie to kryterium.
-  {
-    echo '# sonda zamka bramki'
-    echo
-    echo '## AC-1 kryterium, ktore tylko musi istniec'
-    echo 'check: bash tests/probe.spec.js'
-    echo 'expect: (\d+) passed'
-  } > "$t/TASK.md"
-
-  # Cudza bramka trzyma zamek i ZYJE przez $hold sekund.
-  mkdir -p "$t/loadout-gate-full.lock"
-  ( sleep "$hold" ) & local holder=$!
-  echo "$holder" > "$t/loadout-gate-full.lock/pid"
-
-  local start end
-  start=$(python3 -c 'import time; print(time.time())')
-  ( cd "$t" && TMPDIR="$t" python3 harness/gate.py full --jobs 4 ) > "$t/out.txt" 2>&1 || true
-  end=$(python3 -c 'import time; print(time.time())')
-  wait "$holder" 2>/dev/null || true
-
-  python3 - "$t/out.txt" "$start" "$end" "$work" "$hold" <<'PY'
-import sys, re
-out = open(sys.argv[1]).read()
-wall = float(sys.argv[3]) - float(sys.argv[2])
-work, hold = float(sys.argv[4]), float(sys.argv[5])
-m = re.search(r"\s+(ok|FAIL|MISC)\s+full-slow\s+([0-9.]+)s", out)
-if not m:
-    sys.exit("straznik nic nie zmierzyl -- bramka nie odkryla sprawdzenia sondy")
-measured = float(m.group(2))
-if wall < hold:
-    sys.exit("bramka NIE czekala na cudzy zamek (%.1fs < %.0fs) -- dwie bramki full bieglyby "
-             "naraz i muteks cargo znowu by kogos zaglodzil" % (wall, hold))
-if measured > work + 1.2:
-    sys.exit("czekanie weszlo w BUDZET sprawdzenia (%.2fs przy %.0fs pracy) -- dokladnie to, "
-             "czemu ten zamek ma zapobiegac" % (measured, work))
-if "waiting OUTSIDE" not in out:
-    sys.exit("bramka czekala po cichu -- cicha kolejka czyta sie jak wolna maszyna")
-PY
-  local rc=$?
-  if [ "$rc" != 0 ]; then
-    echo "zamek poziomu full nie chroni maszyny przed druga bramka" >&2
-    sed -n '1,20p' "$t/out.txt" >&2 || true
-    rm -rf "$t"
-    return 1
-  fi
-  rm -rf "$t"
-  echo "gate: jedna bramka full na maszyne, a kolejka poza zegarem sprawdzen"
 }
 
 # ── dyspozytor ────────────────────────────────────────────────────────────────
@@ -979,7 +393,6 @@ web) web_lane ;;
 full)
   rust_lane
   web_lane
-  report_gate_only_checks
   guards_lane
   ;;
 esac

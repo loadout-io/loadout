@@ -102,7 +102,10 @@ describe('clicking Create in Workflows leaves a workflow on the screen', () => {
   it('crosses into Rust once and draws a tile where the empty state was', async () => {
     /* Lista złota, której nie dało się wczytać, jest pustym zbiorem — a wtedy „każda nazwa jest
      * z listy" byłoby prawdą o niczym i całe kryterium zamieniłoby się w ozdobę. */
-    expect(known.size, 'src-tauri/commands.golden.txt has to name at least one command').toBeGreaterThan(0);
+    expect(
+      known.size,
+      'src-tauri/commands.golden.txt has to name at least one command',
+    ).toBeGreaterThan(0);
     expect(
       known.has(WRITE_COMMAND),
       WRITE_COMMAND +

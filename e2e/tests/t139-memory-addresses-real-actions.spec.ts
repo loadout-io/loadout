@@ -121,11 +121,7 @@ function addressedScene(): Readonly<Record<string, readonly TauriReply[]>> {
 function changingWorkspaceScene(): Readonly<Record<string, readonly TauriReply[]>> {
   return {
     list_workspaces: copies([WORKSPACE_A, WORKSPACE_B, WORKSPACE_C]),
-    list_notes: [
-      { deferred: 'catalog-a' },
-      { deferred: 'catalog-b' },
-      { deferred: 'catalog-c' },
-    ],
+    list_notes: [{ deferred: 'catalog-a' }, { deferred: 'catalog-b' }, { deferred: 'catalog-c' }],
     list_handoffs: copies([]),
     move_note_to_project: [{ deferred: 'move-from-b' }],
   };

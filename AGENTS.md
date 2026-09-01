@@ -21,98 +21,67 @@ w `docs/research/projects/` i jest wiążąca jako lista rzeczy, których nie po
 
 ## 2. Pętla pracy
 
-Zadania nie ma. Jest **prompt** — jedno zdanie albo kilka akapitów, które właściciel podaje
-`ship.sh`. Kontrakt, po którym bieg jest sądzony, pisze **etap planu**, w worktree, dla tego
-jednego biegu.
+Zadania nie ma. Jest **prompt**, który właściciel podaje harnessowi:
 
-```
-./ship.sh "co ma zrobić"            ← prompt JEST zadaniem; nie ma pliku do napisania
-   │
-   ▼  worktree                       ← własna kopia repo, własna gałąź (robi to ship.sh)
-   │
-   ▼  plan                           ← agent pisze TASK.md: plan, 1–3 kryteria, OWNS,
-   │                                    a do tego specyfikacje i szkielet, który je łamie
-   ▼  ./verify.sh before             ← kryteria MUSZĄ być czerwone, i to z właściwego powodu
-   │                                    zielone „before" = kryterium nic nie sprawdza
-   ▼  implementacja
-   │
-   ▼  ./verify.sh task               ← ~40 s: kryteria TEGO biegu + fmt, clippy --lib, typy,
-   │                                    zakres, słownictwo, tokeny
-   ▼  naprawa Z PARAGONU             ← najwyżej dwie rundy, ten sam pisarz, powody z runs/last.json
-   │
-   ▼  ./integrate.sh <gałąź>         ← jedna gałąź naraz, i TU biegnie suita całego repo
+```bash
+scripts/h run <id> --prompt "co ma powstać"
 ```
 
-Druga opinia (`./review.sh`, albo `ship.sh --review`) jest **na żądanie**. Nie biegnie
-domyślnie i nie odpala rundy naprawczej.
+```
+worktree → plan → implementacja → checki + weryfikacja
+                       ↑                    │
+                       └──── max 2 poprawki ┘
+```
 
-Cztery rzeczy, które w tej pętli są nienegocjowalne:
+Weryfikator (inny vendor niż piszący, decyzja D3) odpowiada na JEDNO pytanie: czy zadanie
+zostało zrobione i czy ta funkcjonalność działa. Trzy wyjścia: `DZIALA`, `NIE_DZIALA`
++ co konkretnie, `NIE_WIEM`. Nie recenzuje kodu, nie żąda dowodów, nie proponuje ulepszeń.
+Przy `NIE_DZIALA` poprawia **ten sam** agent, przez `claude --continue`. Po dwóch nieudanych
+poprawkach STOP i pytanie do człowieka.
 
-- **`before` musi być czerwone z właściwego powodu.** Bramka zna ~24 sposoby, na jakie
-  sprawdzenie wykłada się, nie uruchamiając niczego (brak modułu, brak komendy,
-  `Tests N skipped (N)`, rc 124/127). To nie liczy się jako czerwone.
-- **Kontrakt jest zamrożony w commicie planu.** Kryterium dopisane albo rozluźnione po nim
-  jest czerwone (`checks/quick-scope.sh`, kod 1) i jest defektem kontraktu
-  (`harness/gate.py`, kod 2). Bieg nie zmienia warunków własnego zaliczenia.
-- **Specyfikacja może zyskać asercję i nie może żadnej stracić.** Mierzone między etapami,
-  nie proszone w promptcie. To jedyny sposób, w jaki zielona bramka kłamie bez śladu:
-  kryterium dalej biegnie, dalej melduje „1 passed" i przestaje pytać o to, po co powstało.
-- **Naprawę prowadzi paragon, nie opinia.** Recenzent nie może zatwierdzić ani zablokować —
-  jego schemat odpowiedzi ma `verdict ∈ {concern, none}`. Do 2026-08-28 uwaga recenzenta
-  odpalała rundę naprawczą; zmierzone na 121 biegach: 97 recenzji na 105 zwracało uwagę,
-  więc „doradcza" runda była obowiązkowa w 81% biegów i regularnie trwała dłużej niż
-  implementacja.
+Pełne okablowanie: [`.loadout/h/README.md`](.loadout/h/README.md). Reguły niżej są wiążące
+niezależnie od tego, kto je wykonuje.
 
-Suita całego repo (`full-test`, `full-clippy --all-targets`) **nie należy do pętli biegu**.
-Zmierzone 2026-08-28: `verify.sh full` to 319 s, z czego 280 s (88%) to suita całego repo,
-a wszystkie czternaście tanich sprawdzeń razem to 9,6 s. Bieg wołał ją dwa razy, żeby
-przebudować rzeczy, których nie tknął. Jej miejsce jest w `integrate.sh` i w `scripts/ci.sh`.
+Cztery rzeczy w tej pętli są nienegocjowalne:
+
+- **Test z sekcji „Test" planu musi paść na starym kodzie, ZANIM powstanie poprawka.**
+  Test, który przechodził od początku, niczego nie dowodzi. To jedyna rzecz, której harness
+  nie egzekwuje mechanicznie — sprawdza ją weryfikator, patrząc na diff.
+- **Zielone wymaga licznika przejść.** `exit 0` bez ani jednego zameldowanego przejścia jest
+  czerwone (niezmiennik 19). Kod testowany biegnie w tym samym procesie, którego kod wyjścia
+  czytasz. Pilnuje tego `PASS_COUNT` w `.loadout/h/h.py` i to jedyna rzecz, która została
+  z całej dawnej maszynerii dowodowej.
+- **Kryterium dotyczy zdania, które widzi CZŁOWIEK**, nie wartości zwróconej przez funkcję
+  (niezmiennik 29). Zielone kryterium nad martwą funkcją jest wadą, dla której to repo powstało.
+- **Wyrocznia jest dla biegu niezapisywalna.** `.loadout/h/`, `checks/`, `scripts/`,
+  `AGENTS.md` i `docs/DECISIONS-LOCKED.md` są w `deny` — bieg nie ma jak osłabić tego, co go
+  sądzi. Jeśli check jest zły, mówi to (§7), a nie zmienia.
+
+Suita całego repo nie należy do pętli zadania. Biegnie raz, przy lądowaniu:
+`scripts/h land <id>` robi merge i odpala `scripts/ci.sh full`.
 
 ## 2a. Kontrakt kryterium — wszystko, co musisz o nim wiedzieć
 
-Nie czytaj `harness/gate.py`, żeby się tego dowiedzieć. Całość jest tutaj.
+1. **Test rustowy jest MODUŁEM jedynego celu integracyjnego, nigdy nowym plikiem wprost
+   w `src-tauri/tests/`.** Plik w `src-tauri/tests/it/<nazwa>.rs`, deklaracja `mod <nazwa>;`
+   w `src-tauri/tests/it/main.rs`, wywołanie `cargo test --test it <nazwa>::`.
 
-1. **Jedno kryterium, jedna linia `check:`, dokładnie jedna wskazana specyfikacja.**
-   Front wskazuje **plik**: `npx --no-install vitest run <ścieżka>.test.tsx`.
-   Rust wskazuje **moduł jedynego celu integracyjnego**: plik leży w `src-tauri/tests/it/`,
-   jest zadeklarowany przez `mod <nazwa>;` w `src-tauri/tests/it/main.rs`, a linia brzmi
-   `check: cargo test --test it <nazwa>::`.
-
-   **Nowego pliku wprost w `src-tauri/tests/` nie zakładamy.** To nie jest kwestia gustu, tylko
-   pomiar: Rust robi z każdego pliku w `tests/` osobne binarium, które statycznie linkuje całą
-   bibliotekę razem z 527 skrzyniami Tauri — ~60 s za sztukę, przy 6,0 s wykonania wszystkich
-   testów razem. Reguła „jeden plik na kryterium" zamówiła w 2026 roku **462 takie binaria**
-   i tak `full-test` dorósł do budżetu 9000 s. Moduł w celu `it` daje tę samą liczbę testów,
-   te same asercje i **jeden** link.
-
-   Filtr po nazwie podany **flagą** (`-t`, `--grep`, `--test-name`) jest nadal zakazany:
-   bramka nie umie odwzorować go na ścieżkę specyfikacji, więc kryterium przestałoby być
-   przypisane do czegokolwiek. Pozycyjny filtr modułu cargo jest w porządku, bo bramka czyta
-   z niego ścieżkę (`harness/gate.py`, `CARGO_TARGET`), a reguła dowodu i tak odrzuca
-   `0 passed` — filtr, który nic nie dopasował, jest czerwony z punktu 4, nie z zakazu.
-2. **Ścieżki specyfikacji nie powtarzają się w obrębie jednego biegu.** Do 2026-08-28 reguła
-   mówiła „globalnie unikalna we wszystkich plikach zadań" i to był jedyny powód, dla którego
-   równoległe zadania były bezpieczne. Pliki zadań odeszły: kontrakt powstaje w worktree, dla
-   jednego biegu, więc nie ma dwóch umów, które mogłyby ścigać się o ten sam plik. Równoległość
-   jest bezpieczna, bo każdy bieg ma **własny worktree**.
-3. **Numeracja `## AC-n` biegnie 1..n bez luk.**
-4. **Zielone wymaga licznika przejść w wyjściu.** Exit 0 bez „N passed" / „Ran N tests" jest
-   czerwone — kod testowany biegnie w tym samym procesie, którego kod wyjścia czytasz.
-   `expect: none` to jedyna, recenzowalna furtka.
-5. **W warstwie `before` kryterium musi paść dlatego, że BRAKUJE ZACHOWANIA** — nie dlatego, że
-   sprawdzenie nie ruszyło. „Brak modułu", „nie znaleziono plików testowych", „nie da się wczytać
-   manifestu" i ~30 innych podpisów nie liczą się jako czerwone.
-   **W Ruście oznacza to: najpierw sygnatura z `todo!()`**, żeby test się skompilował i padł
-   w czasie wykonania. Test, który się nie kompiluje, niczego nie uruchomił.
-
-   **W TypeScripcie to samo, tylko pułapka jest inna.** `vitest` przewraca się już na
-   **zbieraniu** plików: brakujący `src/state/skills.ts` daje „Failed to load … Cannot find
-   module", a to jest podpis z `NOT_A_REAL_RED`, nie czerwień. Więc zanim odpalisz
-   `./verify.sh before`, każdy moduł i komponent, który test importuje, **musi istnieć jako
-   pusty szkielet**: funkcja rzucająca `throw new Error("not implemented")`, hook zwracający
-   akcje, które jeszcze nic nie robią, komponent renderujący pusty fragment. Import ma się
-   rozwiązać, a test paść **na asercji**. To jest dokładny odpowiednik `todo!()` i obowiązuje
-   tak samo — kryterium frontendowe bez szkieletu spala rundę identycznie jak rustowe.
+   To nie jest kwestia gustu, tylko pomiar: Rust robi z każdego pliku w `tests/` osobne
+   binarium, które statycznie linkuje całą bibliotekę razem z 527 skrzyniami Tauri — ~60 s za
+   sztukę, przy 6,0 s wykonania wszystkich testów razem. Stara reguła („globalnie unikalna
+   ścieżka pliku na kryterium") zamówiła 462 takie binaria i tak `full-test` dorósł do budżetu
+   9000 s. Moduł w celu `it` daje tę samą liczbę testów, te same asercje i **jeden** link.
+   Pilnuje tego `checks/tests-listed.sh`: plik bez wiersza `mod` nie jest kompilowany ani razu,
+   a test nieobecny czyta się dokładnie jak zdany.
+2. **Front wskazuje plik po ścieżce:** `npx --no-install vitest run <ścieżka>.test.tsx`.
+3. **Zawężenie nie może zazielenić checka.** Filtr, który nic nie dopasował, da `0 passed`
+   i polegnie na liczniku przejść. Dlatego zawężanie jest bezpieczne.
+4. **W Ruście: najpierw sygnatura z `todo!()`**, żeby test się skompilował i padł w czasie
+   wykonania. Test, który się nie kompiluje, niczego nie uruchomił. W TypeScripcie ta sama
+   zasada, inna pułapka: `vitest` przewraca się już na **zbieraniu** plików, więc każdy moduł,
+   który test importuje, musi istnieć jako pusty szkielet — funkcja rzucająca
+   `throw new Error("not implemented")`, komponent renderujący pusty fragment. Import ma się
+   rozwiązać, a test paść **na asercji**.
 
 ## 3. Reguły wiążące
 
@@ -265,7 +234,7 @@ a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
 | `panic!` w silniku | zwróć `Err`; panika w agentowym runtime zabiera cały bieg |
 | Globalny `AtomicBool` na anulowanie | monotoniczna generacja `AtomicU64` (niezmiennik 7) |
 | `Err(Cancelled)` | wariant wartości `Outcome::Cancelled` |
-| `cargo clippy --all-targets` w pętli | `cargo clippy --lib`; pełna forma tylko w bramce |
+| `cargo test --tests` albo cały katalog vitesta w pętli | zawężone polecenie: `cargo test --test it <moduł>::`, pojedynczy plik spec |
 | Nowy kolor semantyczny | jeden z czterech istniejących, albo brak koloru |
 | Hex w kodzie komponentu | token z `src/styles/theme.css` |
 | Trait z jedną implementacją | konkretny typ, dopóki nie ma drugiej |
@@ -274,9 +243,9 @@ a przesunięcie o jeden zamienia wszystkie cytowania w ciche kłamstwo.*
 | Wiersze transkryptu rozwinięte domyślnie | zwinięte; wyjątki to proza, pytania, błędy, struktura |
 | Enum z drutu jako tekst w UI | zdanie po angielsku z tabeli tłumaczeń |
 | „Sprawdzenie", które sprawdza samo siebie | uczciwy stan „no checks configured" |
-| Recenzent, który blokuje | uwaga bez mocy sprawczej; decyduje bramka |
+| Recenzent, który blokuje albo recenzuje kod poza zadaniem | jedno pytanie: DZIAŁA / NIE_DZIAŁA + konkret |
 | Komenda złożona: `a; b; c` w jednym Bashu | **jedna komenda na wywołanie.** Claude Code rozbija złożone i pyta o zgodę na każdy człon; w biegu bez człowieka nie ma kto jej dać, więc to jest stracona tura. Zmierzone: 13 odmów w jednej fazie |
-| Czytanie `harness/gate.py`, żeby poznać kontrakt kryterium | kontrakt jest w §2a tego pliku, w pięciu zdaniach. 34 KB Pythona to nie jest specyfikacja |
+| Dopisanie czegokolwiek do `.loadout/h/` bez sprawdzenia w `runs/`, czy to kiedykolwiek złapało realny błąd | poprzedni harness miał 9323 linie i to jest powód, dla którego go nie ma |
 
 ---
 
@@ -290,12 +259,11 @@ docs/design/DESIGN.md         tokeny i komponenty; theme.css jest jego lustrem
 docs/research/projects/       rekonesans trzech repo źródłowych + synteza
 docs/research/topics/         osiem raportów tematycznych + ADR-y
 docs/patterns/<nn>-<nazwa>.md wzorce, które zadania cytują po nazwie pliku
-TASK.md                       kontrakt JEDNEGO biegu; pisze go etap planu w worktree,
-                              bramka parsuje z niego WYŁĄCZNIE `## AC-n`, `check:` i OWNS.
-                              Na trunku go nie ma i nie ma prawa być
-harness/                      bramka, schemat recenzji, snapshoty
-checks/                       pojedyncze sprawdzenia; nazwa pliku steruje odkrywaniem
-runs/last.json                paragon ostatniego uruchomienia bramki
+.loadout/h/                   CAŁY harness: h.py, checks.json, trzy prompty, guards.sh
+.loadout/h/checks.json        zmienione ścieżki -> checki. Jedyne miejsce, gdzie się je dodaje
+checks/*.sh                   sprawdzenia WŁASNE (niezmienniki, D1, D5); jednolinijkowce
+                              stoją wprost w checks.json
+runs/<id>/                     transkrypty biegu; `.git/h/<id>.json` trzyma jego stan
 ```
 
 ---
@@ -308,19 +276,13 @@ npm install && cargo fetch     # pierwsze uruchomienie
 npm run app                    # aplikacja (Tauri dev)
 npm run dev                    # sam frontend w przeglądarce, bez Rusta
 
-./ship.sh "co ma zrobić"       # cały bieg: plan, before, implementacja, bramka, naprawa
-./ship.sh -f prompt.md         # dłuższy prompt z pliku
-./ship.sh --dry-run "..."      # co by zrobił: korzeń, gałąź, katalog paragonów
-
-./verify.sh before             # dowiedź, że kryteria są czerwone
-./verify.sh quick              # ~20 s: fmt, clippy --lib, tsc, zakres plików — higiena
-./verify.sh task               # to samo + kryteria TEGO biegu; odmawia, gdy ich nie ma
-./verify.sh full               # wszystko + suita całego repo; miejsce: lądowanie i CI
-./verify.sh task --only AC-3   # jedno kryterium
+scripts/h run <id> --prompt "co ma powstać"     # cały bieg
+scripts/h check                # checki dla zmienionych ścieżek (to woła hak Stop)
+scripts/h check density        # jeden check po nazwie, także manualny
+scripts/h land <id>            # merge gałęzi + PEŁNE CI na trunku
+scripts/h list | status <id> | clean <id>
 
 ./worktree.sh <nazwa>          # wypisuje ścieżkę do nowej kopii repo — to cały interfejs
-./review.sh codex              # druga opinia, na żądanie
-./integrate.sh <gałąź>         # jedna gałąź, pełna bramka po każdej
 ```
 
 `scripts/ci.sh` jest jedynym źródłem prawdy o tym, co znaczy „zielone".
@@ -331,7 +293,7 @@ Workflow GitHuba tylko go opakowuje.
 ## 7. Kiedy przestać i zapytać człowieka
 
 - Bramka jest czerwona po jednej rundzie poprawek.
-- Zadanie wymaga dotknięcia ścieżki, której nie ma w jego bloku `<!-- OWNS -->`.
-- Trzeba zmienić coś w `harness/`, `checks/`, `verify.sh` albo w `docs/DECISIONS-LOCKED.md`.
+- Zadanie wymaga dotknięcia pliku, którego plan nie przewidywał, a nie da się go pominąć.
+- Trzeba zmienić coś w `.loadout/h/`, `checks/`, `scripts/` albo w `docs/DECISIONS-LOCKED.md`.
 - Kryterium akceptacji da się przejść w sposób, który jego zdaniem jest oszustwem.
   **Powiedz to zamiast tak zrobić.** To najcenniejsza rzecz, jaką możesz zgłosić.

@@ -44,7 +44,7 @@ import {
 import measuredZero from './fixtures/measured-zero.json';
 import missingMetric from './fixtures/missing-metric.json';
 
-const CHECK = '_quick-density.sh';
+const CHECK = 'density.sh';
 const NO_RATCHET = {};
 
 /** Zapadka, w której stoi JEDNA metryka. Pozostałe sześć jest pierwszym pomiarem. */
@@ -73,7 +73,7 @@ describe('the judge tells a measured zero apart from a metric nobody measured', 
   });
 });
 
-describe('quick-density.sh answers with four different exit codes', () => {
+describe('density.sh answers with four different exit codes', () => {
   let dir = '';
 
   /*

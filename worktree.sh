@@ -172,7 +172,7 @@ fi
 # zniknął między zapisem a os.replace, a dwa check-then-append splotły sekcje
 # config.toml tak, że oba wywołania Codeksa odmówiły przed pierwszą turą. Jeden
 # helper trzyma blokadę na stabilnym pliku obok konfiguracji i podmienia ją atomowo.
-python3 "$ROOT/harness/trust-workspace.py" "$DEST" \
+python3 "$ROOT/.loadout/h/trust-workspace.py" "$DEST" \
   || echo "note: could not mark the workspace trusted for both vendors" >&2
 
 echo "port $PORT (read it from $GITDIR/loadout-port)" >&2

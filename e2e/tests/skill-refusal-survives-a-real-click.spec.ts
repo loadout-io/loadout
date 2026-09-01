@@ -188,10 +188,7 @@ function scene(
 }
 
 /** Otwiera aplikację i czeka, aż ekran pracy naprawdę ma co uruchomić. */
-async function openWork(
-  answer: TauriReply,
-  agents: readonly unknown[],
-): Promise<RunningApp> {
+async function openWork(answer: TauriReply, agents: readonly unknown[]): Promise<RunningApp> {
   const app = await openApp({ replies: scene(answer, agents) });
   await app.page.locator(WORK).waitFor({ state: 'attached', timeout: APPEARS });
   await app.page

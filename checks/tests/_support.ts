@@ -12,7 +12,7 @@
  *
  *   2. TMPDIR wskazuje piaskownicę przy KAŻDYM uruchomieniu. `_cargo-serialize.sh` bierze
  *      zamek w `${TMPDIR:-/tmp}/loadout-cargo.lock`; bez podmiany kopia sięgnęłaby po ten
- *      sam zamek, który trzyma zewnętrzny `full-test.sh` — a on odpala vitesta, czyli nas.
+ *      sam zamek, który trzyma zewnętrzny check `rust-test` — a on odpala vitesta, czyli nas.
  *      To jest zakleszczenie na 300 s (cap `LOADOUT_CARGO_LOCK_WAIT`), które czyta się jak
  *      losowy timeout. Niezmiennik 26.
  *
@@ -24,7 +24,7 @@
  *
  * Piaskownice leżą w `.loadout/scratch/` WEWNĄTRZ worktree. Nie w `$TMPDIR`: ścieżki spoza
  * worktree bywają odmawiane przez sandbox nieprzewidywalnie (zmierzone na S-1), a
- * `.loadout/scratch` jest na liście ścieżek generowanych w checks/quick-scope.sh, więc
+ * `.loadout/scratch` jest na liście ścieżek generowanych w checks/boundary.sh i checks/tests-listed.sh, więc
  * piaskownica nie czyta się jak zapis poza zakresem zadania.
  */
 import { spawnSync } from 'node:child_process';
@@ -106,7 +106,7 @@ export function copyCheck(dir: string, name: string): void {
  *
  * Ta sama zasada, co `copyCheck(dir, '_cargo-serialize.sh')` w kryteriach wołających cargo,
  * i ten sam powód: skopiowane sprawdzenie liczy ROOT z BASH_SOURCE, więc szuka SWOICH
- * zależności pod piaskownicą. Bez tej linii `checks/quick-density.sh` nie miałby w drzewie
+ * zależności pod piaskownicą. Bez tej linii `checks/density.sh` nie miałby w drzewie
  * testu sędziego, którego woła — a jedyną alternatywą byłoby wpisanie drugiej kopii sędziego
  * do samego sprawdzenia. Dwie kopie parsera sufitu to dokładnie ta awaria, przed którą stoi
  * niezmiennik 18: po pierwszej edycji jednej z nich bramka pilnuje liczby, której nikt

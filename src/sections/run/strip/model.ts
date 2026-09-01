@@ -95,30 +95,76 @@ const WENT_WRONG: ReadonlySet<StepState> = new Set<StepState>(['failed']);
 const ENDED: ReadonlySet<StepState> = new Set<StepState>(['failed', 'cancelled', 'skipped']);
 
 /**
+ * Zdanie z decyzji D7 — co do znaku, bo to jest napis, który czyta człowiek.
+ *
+ * „Co musi przetrwać nawet przy zerowej ceremonii": przy workflow bez sprawdzeń UI mówi to
+ * wprost i nie pokazuje zieleni. Brak ceremonii ma znaczyć „nikt tego nie sprawdził", nigdy
+ * „sprawdzone i dobrze" — i to jest ta sama linia, na której stoi cały produkt: co agent
+ * powiedział kontra co się stało [00-SYNTHESIS §2.1].
+ *
+ * Kropka rozdzielająca należy do stałej, bo zdanie zawsze dokleja się do podpisu, który już
+ * stoi — nowy rząd chrome nie wchodzi w grę: `docs/ARCHITECTURE.md` §7 daje 96 px nad pierwszą
+ * treścią, a ekran pracy wydaje 90 na karty i ten pasek.
+ */
+const NO_CHECKS = ' · no checks configured';
+
+/**
+ * Czy o tym planie WIADOMO, że nikt w nim niczego nie sprawdza.
+ *
+ * TRZY STANY ŚWIATA, DWIE ODPOWIEDZI, i granica między nimi jest tu wszystkim. „W tym planie nie
+ * ma sprawdzeń" jest zdaniem o biegu; „nie wiemy, z czego ten plan się składa" nie jest zdaniem
+ * o nim wcale. Krok bez rodzaju daje więc `false`, czyli ciszę — a taki krok istnieje: plan
+ * jednego kroku, który okno składa samo dla `/ask` (`../io.ts`), niesie sam identyfikator, nazwę
+ * i stan. Napis „no checks configured" postawiony nad nim mówiłby o tym biegu rzecz, której
+ * z danych nie widać (niezmiennik 17).
+ *
+ * PUNKT KONTROLNY NIE JEST SPRAWDZENIEM, i ta funkcja mówi to przez to, czego w niej nie ma:
+ * kafelek „zapytaj mnie" zatrzymuje bieg i pyta człowieka, więc sam nie mierzy niczego. Sprawdza
+ * wyłącznie kafelek `check` — ten, który liczy wynik z kodu wyjścia I dowodu w wyjściu
+ * [D6, „Trzeci rodzaj: sprawdź"], czyli z tego, co się stało, a nie z tego, co ktoś powiedział.
+ */
+function nothingChecksThisPlan(plan: readonly Step[]): boolean {
+  if (plan.length === 0) return false;
+  return plan.every((step) => step.kind !== undefined && step.kind !== 'check');
+}
+
+/**
  * Podpis paska.
  *
  * Trzy zdania, bo bieg równoległy jest zwykłym biegiem, nie wyjątkiem (niezmiennik 11):
  * „krok 2 z 4" ma sens dokładnie wtedy, kiedy biegnie jeden krok, a przy dwóch jest już
  * wyborem, który z nich nazwać ważniejszym. Bez ani jednego biegnącego kroku nie ma numeru,
  * na który można wskazać, więc podpis mówi tylko, ile kroków ma workflow.
+ *
+ * 2026-08-28 — ZDANIE Z D7 DOKLEJA SIĘ DO WSZYSTKICH TRZECH, nie tylko do tego ostatniego.
+ * „Ten bieg nikogo nie prosi o pomiar" jest faktem o PLANIE, więc nie ma prawa zależeć od tego,
+ * czy akurat coś biegnie: wersja dopisująca je wyłącznie przy postoju gasi zdanie w sekundzie,
+ * w której człowiek naciska Start, i zapala z powrotem po ostatnim kroku. Fakt z migającym
+ * nośnikiem czyta się jak awaria ekranu, a nie jak własność workflow — a przez cały bieg
+ * ekran wracałby do milczenia, czyli do tego jednego stanu, którego D7 zabrania.
+ *
+ * Podpis jest JEDYNYM miejscem tego zdania (niezmiennik 13). Rodzaje kroków dojeżdżają tu
+ * `planOf` → `src/state/run.ts` → `stripFor`, i ta droga jest cała: bez niej pasek widziałby
+ * kafelek „sprawdź" i kafelek agenta jako to samo.
  */
-function captionFor(workflow: string, blocks: readonly Block[]): string {
+function captionFor(workflow: string, blocks: readonly Block[], plan: readonly Step[]): string {
   const total = blocks.length;
   /* Bieg, którego nie ma, nie ma czego podpisywać. „· 0 steps" opisywałoby workflow o zerowej
    * długości, czyli rzecz, której nie da się zbudować. */
   if (total === 0) return '';
 
+  const admission = nothingChecksThisPlan(plan) ? NO_CHECKS : '';
   const running = blocks.filter((block) => block.state === 'now').length;
   if (running === 1) {
     /* Numer kroku jest jego pozycją w grafie, nie liczbą tych, które się skończyły: przy
      * biegu, który przeskoczył krok, „step 2 of 4" i „drugi blok" muszą być tym samym blokiem. */
     const at = blocks.findIndex((block) => block.state === 'now') + 1;
-    return `${workflow} · step ${at} of ${total}`;
+    return `${workflow} · step ${at} of ${total}${admission}`;
   }
   if (running > 1) {
-    return `${workflow} · ${running} of ${total} running`;
+    return `${workflow} · ${running} of ${total} running${admission}`;
   }
-  return `${workflow} · ${total} steps`;
+  return `${workflow} · ${total} steps${admission}`;
 }
 
 /** Sekundy w milisekundzie — jedyne miejsce, w którym ta zamiana tu żyje. */
@@ -221,5 +267,9 @@ export function stripFor(workflow: string, steps: readonly Step[], spend = ''): 
     wentWrong: WENT_WRONG.has(step.state),
   }));
 
-  return { blocks, caption: captionFor(workflow, blocks), spend };
+  /* Podpis dostaje KROKI, nie same bloki: rodzaj kafelka jest faktem o planie, a blok mówi
+   * wyłącznie o tym, jak się rysuje. Przewiezienie `kind` przez `Block` dołożyłoby polu tylko
+   * jednego czytelnika — ten podpis — a `strip.tsx` niósłby wtedy w propsach wartość, której
+   * nie rysuje. Bloki i kroki są tu jeden do jednego, więc podpis nic na tym nie traci. */
+  return { blocks, caption: captionFor(workflow, blocks, steps), spend };
 }

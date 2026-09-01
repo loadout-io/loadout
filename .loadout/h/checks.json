@@ -1,0 +1,90 @@
+{
+  "_comment": "Zmienione sciezki -> checki. Kolejnosc kluczy = kolejnosc uruchomienia (najtansze pierwsze).",
+  "scope_limit": 6,
+  "checks": {
+    "boundary": {
+      "when": ["src-tauri/src/**/*.rs"],
+      "cmd": "bash checks/boundary.sh",
+      "budget_s": 30
+    },
+    "vocabulary": {
+      "when": ["src/**/*.ts", "src/**/*.tsx", "docs/research/projects/00-SYNTHESIS.md"],
+      "cmd": "bash checks/vocabulary.sh",
+      "budget_s": 60
+    },
+    "tokens": {
+      "when": ["src/**/*.tsx", "src/**/*.css", "docs/design/DESIGN.md"],
+      "cmd": "bash checks/tokens.sh",
+      "budget_s": 30
+    },
+    "invoke-args": {
+      "when": ["src/**/*.ts", "src/**/*.tsx", "src-tauri/src/ipc.rs"],
+      "cmd": "bash checks/invoke-args.sh",
+      "budget_s": 30
+    },
+    "suppressions": {
+      "when": ["src/**", "src-tauri/src/**"],
+      "cmd": "bash checks/suppressions.sh",
+      "budget_s": 30
+    },
+    "wired": {
+      "when": ["src-tauri/src/**/*.rs"],
+      "cmd": "bash checks/wired.sh",
+      "budget_s": 30
+    },
+    "tests-listed": {
+      "when": ["src-tauri/tests/**"],
+      "cmd": "bash checks/tests-listed.sh",
+      "budget_s": 30
+    },
+    "rust-fmt": {
+      "when": ["src-tauri/**/*.rs"],
+      "cmd": "cargo fmt --check",
+      "cwd": "src-tauri",
+      "budget_s": 60
+    },
+    "web-fmt": {
+      "when": ["src/**", "e2e/**", "*.ts", "*.json"],
+      "cmd": "npx --no-install prettier --check .",
+      "budget_s": 120
+    },
+    "web-types": {
+      "when": ["src/**", "e2e/**", "tsconfig*.json"],
+      "cmd": "npx --no-install tsc -p checks/tsconfig.strict.json --noEmit",
+      "budget_s": 180
+    },
+    "web-test": {
+      "when": ["src/**", "e2e/**"],
+      "cmd": "npx --no-install vitest run",
+      "scoped": "vitest",
+      "counts_tests": true,
+      "budget_s": 600
+    },
+    "rust-clippy": {
+      "when": ["src-tauri/**/*.rs", "src-tauri/Cargo.toml"],
+      "cmd": "cargo clippy --lib --tests -- -D warnings",
+      "cwd": "src-tauri",
+      "budget_s": 900
+    },
+    "rust-test": {
+      "when": ["src-tauri/**/*.rs", "src-tauri/Cargo.toml"],
+      "_why_single_threaded": "ZMIERZONE 2026-08-28: rownolegle 31 s ale TRZY testy padaja na Elapsed (driver_codex_finish, driver_codex_resume, started_processes_die_with_the_window -- spawnuja prawdziwe procesy i mierza czasy, wiec pod obciazeniem wychodza na timeout). Jednowatkowo 88 s i 818 passed, 0 failed. 57 s za werdykt, ktory mowi o kodzie, a nie o tym, czy maszyna byla wolna.",
+      "cmd": "cargo test --tests -- --test-threads=1",
+      "cwd": "src-tauri",
+      "scoped": "cargo",
+      "counts_tests": true,
+      "budget_s": 3600
+    }
+  },
+  "manual_only": {
+    "_comment": "Odpalasz recznie: scripts/h check <nazwa>. Kazda pozycja ma powod, dla ktorego nie leci automatycznie.",
+    "density": {
+      "_why": "Sufit gestosci z docs/ARCHITECTURE.md §7 (niezmiennik 18). Nie byl w MANIFEST bramki i tak, wiec nie lecial automatycznie takze przed przebudowa. Baseline moze tylko malec, wiec to decyzja czlowieka, nie warunek zaliczenia biegu.",
+      "cmd": "bash checks/density.sh"
+    },
+    "worktree-trust-race": {
+      "_why": "Sprawdza wyscig przy nadawaniu zaufania workspace'owi. Dotyczy worktree.sh, nie kodu zadania -- odpalaj po zmianie worktree.sh albo trust-workspace.py.",
+      "cmd": "bash checks/worktree-trust-race.sh"
+    }
+  }
+}

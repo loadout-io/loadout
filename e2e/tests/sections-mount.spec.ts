@@ -86,60 +86,66 @@ afterAll(async () => {
 
 describe('every section mounts its own screen, clicked through in a browser', () => {
   for (const id of EXPECTED) {
-    it('mounts the ' + id + ' screen and stops showing its registry sentence', async () => {
-      const entry = sectionEntry(id);
+    it(
+      'mounts the ' + id + ' screen and stops showing its registry sentence',
+      async () => {
+        const entry = sectionEntry(id);
 
-      /* Puste zdanie w rejestrze zamieniłoby asercję niżej w twierdzenie o niczym — każdy tekst
-       * „zawiera" pusty łańcuch. Ta sama uwaga dotyczy etykiety, którą porównujemy z nagłówkiem. */
-      expect(
-        entry.empty.trim().length,
-        'sectionEntry("' + id + '").empty has to be a sentence somebody can read',
-      ).toBeGreaterThan(0);
-      expect(
-        entry.label.trim().length,
-        'sectionEntry("' + id + '").label has to name the section',
-      ).toBeGreaterThan(0);
-
-      const app = await openApp();
-      try {
-        const page = app.page;
-        await page.click('[data-section-switch="' + id + '"]');
-
-        const main = page.locator('main[data-section="' + id + '"]');
-        await main.waitFor({ state: 'attached', timeout: MOUNTS }).catch(() => undefined);
+        /* Puste zdanie w rejestrze zamieniłoby asercję niżej w twierdzenie o niczym — każdy tekst
+         * „zawiera" pusty łańcuch. Ta sama uwaga dotyczy etykiety, którą porównujemy z nagłówkiem. */
         expect(
-          await main.count(),
-          'clicking the ' +
-            id +
-            ' switch has to put that section in the shell. Without this line every fact below ' +
-            'could be read off whichever screen happened to still be open.',
-        ).toBe(1);
-
-        /* `textContent`, nie `innerText`: zdanie schowane arkuszem stylów DALEJ jest w dokumencie,
-         * a „zamontowane i schowane" jest tą samą awarią, co „nie zamontowane" (niezmiennik 15). */
-        const text = await page.evaluate(() => document.body.textContent ?? '');
+          entry.empty.trim().length,
+          'sectionEntry("' + id + '").empty has to be a sentence somebody can read',
+        ).toBeGreaterThan(0);
         expect(
-          text.includes(entry.empty),
-          'the ' +
-            id +
-            ' screen is not mounted: the document still carries the registry sentence ' +
-            JSON.stringify(entry.empty) +
-            '. That sentence is what the shell shows for a section that has no screen at all — ' +
-            'it is the five blank rectangles a person saw on 2026-08-16 under five green tests.',
-        ).toBe(false);
+          entry.label.trim().length,
+          'sectionEntry("' + id + '").label has to name the section',
+        ).toBeGreaterThan(0);
 
-        const headings = (await page.locator(HEADINGS).allInnerTexts()).map((line) => line.trim());
-        expect(
-          headings,
-          'the ' +
-            id +
-            ' screen has to head itself with its own name. A screen that draws content without ' +
-            'saying which section you are on passes "something mounted" and answers nothing.',
-        ).toContain(entry.label);
-      } finally {
-        await app.close();
-      }
-    }, 60_000);
+        const app = await openApp();
+        try {
+          const page = app.page;
+          await page.click('[data-section-switch="' + id + '"]');
+
+          const main = page.locator('main[data-section="' + id + '"]');
+          await main.waitFor({ state: 'attached', timeout: MOUNTS }).catch(() => undefined);
+          expect(
+            await main.count(),
+            'clicking the ' +
+              id +
+              ' switch has to put that section in the shell. Without this line every fact below ' +
+              'could be read off whichever screen happened to still be open.',
+          ).toBe(1);
+
+          /* `textContent`, nie `innerText`: zdanie schowane arkuszem stylów DALEJ jest w dokumencie,
+           * a „zamontowane i schowane" jest tą samą awarią, co „nie zamontowane" (niezmiennik 15). */
+          const text = await page.evaluate(() => document.body.textContent ?? '');
+          expect(
+            text.includes(entry.empty),
+            'the ' +
+              id +
+              ' screen is not mounted: the document still carries the registry sentence ' +
+              JSON.stringify(entry.empty) +
+              '. That sentence is what the shell shows for a section that has no screen at all — ' +
+              'it is the five blank rectangles a person saw on 2026-08-16 under five green tests.',
+          ).toBe(false);
+
+          const headings = (await page.locator(HEADINGS).allInnerTexts()).map((line) =>
+            line.trim(),
+          );
+          expect(
+            headings,
+            'the ' +
+              id +
+              ' screen has to head itself with its own name. A screen that draws content without ' +
+              'saying which section you are on passes "something mounted" and answers nothing.',
+          ).toContain(entry.label);
+        } finally {
+          await app.close();
+        }
+      },
+      60_000,
+    );
   }
 
   it('walks all five switches in one session, and each one lands on its own screen', async () => {

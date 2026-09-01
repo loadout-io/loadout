@@ -160,7 +160,8 @@ async function projectAlreadyChosen(app: RunningApp, folder: string): Promise<vo
     (seed: { readonly handle: string; readonly folder: string }) => {
       const host = globalThis as unknown as Record<string, unknown>;
       const store = host[seed.handle] as { setState?: (next: unknown) => void } | undefined;
-      if (store?.setState === undefined) return 'the store of saved projects never reached the page';
+      if (store?.setState === undefined)
+        return 'the store of saved projects never reached the page';
       store.setState({
         all: [{ id: seed.folder, name: 'ledger-ui', folder: seed.folder }],
         activeId: seed.folder,
@@ -273,7 +274,7 @@ describe('the plus sign opens a terminal where the person already works', () => 
         'after opening a terminal the caret sits on ' +
           JSON.stringify(on) +
           ' instead of the command line. Opening a terminal is asking to type in it, and a ' +
-        'browser leaves the caret on whatever button was pressed — so this costs one more ' +
+          'browser leaves the caret on whatever button was pressed — so this costs one more ' +
           'click before every first line, which is the defect the owner reported on 2026-08-20.',
       ).toBe('Command line');
 

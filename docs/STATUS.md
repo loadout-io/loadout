@@ -4,6 +4,48 @@ Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Praw
 jego `TASK.md` na gałęzi i `runs/<id>/`; tutaj jest wyłącznie to, czego z nich nie widać:
 co już stoi w trunku, co stanęło i dlaczego.
 
+## 2026-08-28, później — harness ścięty z 9323 linii do 861, na wzór Murmura
+
+Polecenie właściciela: „lekki mały harness bez overheadu, zobacz jak w murmur przerobiłem".
+Wzorzec: `~/Projects/meetnotes`, `.agents/h/` — 1523 linie razem z promptami, po przebudowie
+z 38 226.
+
+Wejście: `scripts/h run <id> --prompt "co ma powstać"`. Pętla:
+`worktree → plan → implementacja → checki + weryfikacja → max 2 poprawki`.
+
+**Co zniknęło i za ile:** `gate.py` 1072 · `ship.sh` 837 · `ci.sh` −639 · `checks/` −1425
+(9 plików + MANIFEST) · `review.sh` 365 · `process-group*.sh` 348 · `integrate.sh` 179 ·
+`verify.sh` 17 · guardy skasowanych checków 138. Razem **−5859 linii**, +1256.
+
+**Co zastąpiło:** `.loadout/h/` — `h.py` 587, `checks.json` 89, trzy prompty po ~30 linii,
+`README.md` 88, `guards.sh` 378, `trust-workspace.py` 105. Plus osiem **własnych** checków
+w `checks/`, bo pilnują niezmienników produktu, nie ceremonii.
+
+**Trzy rzeczy warte zapamiętania z tej przebudowy:**
+
+1. **Checki są deklaratywne.** `checks.json` mapuje glob ścieżki na komendę i budżet.
+   Check biegnie tylko wtedy, gdy jego ścieżki się zmieniły, i jest zawężany do zmienionych
+   modułów. To zastąpiło poziomy `before/quick/task/full`, odkrywanie po prefiksie nazwy pliku
+   i `MANIFEST`.
+2. **Symlinku `target/` NIE skopiowałem z Murmura, mimo że tam jest lewarem nr 1.**
+   Powód jest o poprawności i odtworzony właśnie w meetnotes: jeden `CARGO_TARGET_DIR` dla
+   dwóch checkoutów o tej samej nazwie pakietu daje jeden odcisk metadanych, więc
+   `build A; build B; build A` melduje A jako `Fresh`, choć rlib zbudowano ze źródeł B.
+   Check osądza wtedy cudzy kod i świeci zielono. Plus zmierzone tu 2026-08-17: 24 worktree
+   na jeden `target/` = 66 GB i 886 645 plików.
+3. **Dwie klasy wad zniknęły przez konstrukcję, nie przez strażnika.** Prompty są plikami
+   `.md`, więc bash ich nie interpoluje — `prompt_backticks` i `prompt_dollars` nie mają czego
+   pilnować, a każda z tych klas kosztowała kiedyś bieg. Podobnie przypinanie skryptu:
+   python czyta plik w całości, więc edycja w trakcie biegu nie przewraca procesu.
+
+Z całej dawnej maszynerii dowodowej zostało **15 linii**: `PASS_COUNT` w `h.py`
+(niezmiennik 19). To jednocześnie jest to, co czyni zawężanie checka bezpiecznym — filtr,
+który nic nie dopasował, daje `0 passed` i pada.
+
+Strażnicy: **8 wystrzeliło, 0 misfire'ów, 0 bez strażnika, 1 nieadekwatny z nazwanym powodem**
+(`density`, manualny). Nowy `checks_are_declared` przejął rolę `MANIFEST`-u i w pierwszej
+minucie życia złapał mój własny błąd po zmianie nazwy pliku.
+
 ## 2026-08-28 — stary harness usunięty, pętla przepisana na prompt
 
 Decyzja właściciela po audycie: bieg trwał za długo, a narzut nie zwracał się w niczym, co

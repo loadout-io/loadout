@@ -110,10 +110,7 @@ afterAll(async () => {
 describe('Run never starts from a workflow revision older than the visible edit', () => {
   it('waits for an older save and at least the visible revision before run_workflow crosses', async () => {
     const replies = baseScene();
-    replies['save_workflow'] = [
-      { deferred: 'older-save' },
-      { deferred: 'visible-save' },
-    ];
+    replies['save_workflow'] = [{ deferred: 'older-save' }, { deferred: 'visible-save' }];
     replies['run_workflow'] = [{ value: null }];
     const app = await openEditor(replies);
     try {
@@ -152,9 +149,10 @@ describe('Run never starts from a workflow revision older than the visible edit'
         whileVisibleWasPending.filter((call) => call.cmd === 'run_workflow').length,
         'run_workflow crossed before the visible revision had finished saving',
       ).toBe(0);
-      expect(runs.length, 'Run never started after at least the visible revision was confirmed').toBe(
-        1,
-      );
+      expect(
+        runs.length,
+        'Run never started after at least the visible revision was confirmed',
+      ).toBe(1);
       expect(runs[0]?.args['fileName']).toBe(PATH);
       expect(savePositions.length).toBeGreaterThanOrEqual(2);
       expect(savePositions[0]).toBeLessThan(savePositions[1] ?? -1);
@@ -166,10 +164,7 @@ describe('Run never starts from a workflow revision older than the visible edit'
 
   it('keeps a refused Run in the editor and a later successful save unlocks it', async () => {
     const replies = baseScene();
-    replies['save_workflow'] = [
-      { error: 'T151 injected save refusal' },
-      { value: null },
-    ];
+    replies['save_workflow'] = [{ error: 'T151 injected save refusal' }, { value: null }];
     replies['run_workflow'] = [{ value: null }];
     const app = await openEditor(replies);
     try {

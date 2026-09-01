@@ -1,4 +1,4 @@
-/* AC-8 dla T-38 — `checks/quick-invoke-args.sh` UMIE ŚWIECIĆ NA CZERWONO, a nie tylko istnieje.
+/* AC-8 dla T-38 — `checks/invoke-args.sh` UMIE ŚWIECIĆ NA CZERWONO, a nie tylko istnieje.
  *
  * DLACZEGO TO KRYTERIUM W OGÓLE JEST. 2026-08-17 okno wołało `run_workflow` z dwoma kluczami
  * z trzech. Tauri dopasowuje argumenty PO NAZWIE i deserializuje je, ZANIM wejdzie w ciało
@@ -10,7 +10,7 @@
  * promptem i zawiodła mimo poprawnego brzmienia, ma się stać sprawdzeniem.
  *
  * SŁABA WERSJA TEGO KRYTERIUM, i jest nią dokładnie to, co kusi najbardziej: uruchomić
- * `quick-invoke-args.sh` na prawdziwym drzewie i sprawdzić, że oddaje zero. Zielone byłoby
+ * `invoke-args.sh` na prawdziwym drzewie i sprawdzić, że oddaje zero. Zielone byłoby
  * wtedy także sprawdzenie, które nie robi NIC — a takim właśnie kształtem commit kontraktowy
  * stawia ten plik. Odróżnia je to, że tutaj każdy przypadek stoi na ZASADZONYM naruszeniu
  * i wymaga kodu niezerowego oraz nazwy komendy i konkretnego klucza w wyjściu (niezmiennik 20).
@@ -38,7 +38,7 @@ import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { REPO, copyCheck, plant, runCheck, sandbox } from './_support';
 
-const CHECK = 'quick-invoke-args.sh';
+const CHECK = 'invoke-args.sh';
 const IPC = 'src-tauri/src/ipc.rs';
 const FRONT = 'src/sections/run/io.ts';
 const ASIDE = 'src/sections/memory/io.ts';
@@ -130,7 +130,7 @@ beforeAll(() => {
   plant(dir, ASIDE, ASIDE_FIXTURE);
 });
 
-describe('quick-invoke-args.sh compares invoke() keys against the signatures in ipc.rs', () => {
+describe('invoke-args.sh compares invoke() keys against the signatures in ipc.rs', () => {
   it('the planted fixture really carries the signature these cases are judged against', () => {
     const written = slurp(join(dir, IPC));
 
@@ -265,21 +265,33 @@ describe('quick-invoke-args.sh compares invoke() keys against the signatures in 
     plant(dir, IPC, IPC_FIXTURE);
   });
 
-  it('case f: checks/MANIFEST carries quick-invoke-args, or the gate reports a drift and exits 2', () => {
-    const listed = slurp(join(REPO, 'checks', 'MANIFEST'))
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !line.startsWith('#'));
+  /* 2026-08-28: pin przeniesiony z `checks/MANIFEST` do `.loadout/h/checks.json`.
+   *
+   * Powod istnienia tej asercji jest bez zmian i jest blizna (N-13): check odkrywany po nazwie
+   * pliku, ktory zostanie SKASOWANY, nie produkuje nic -- a bramka melduje czysty przebieg.
+   * Zmierzone: usuniecie `checks/quick-permissions.sh` dalo „7 checks, 0 failed" i exit 0.
+   *
+   * Zmienil sie WYLACZNIE plik, w ktorym stoi pin. `checks.json` jest teraz jedynym miejscem,
+   * z ktorego harness wie, ze ten check istnieje i kiedy go odpalic, a `checks_are_declared`
+   * w `scripts/ci.sh` pilnuje rozjazdu W OBIE STRONY. */
+  it('case f: .loadout/h/checks.json declares invoke-args, or nothing would run it at all', () => {
+    const cfg = JSON.parse(slurp(join(REPO, '.loadout', 'h', 'checks.json')));
+    const commands = [
+      ...Object.entries(cfg.checks ?? {}),
+      ...Object.entries(cfg.manual_only ?? {}),
+    ]
+      .filter(([id]) => !id.startsWith('_'))
+      .map(([, spec]) => (spec as { cmd?: string }).cmd ?? '');
 
     expect(
-      listed.length,
-      'checks/MANIFEST parsed to zero entries, so the assertion below would pass or fail on an ' +
+      commands.length,
+      'checks.json parsed to zero commands, so the assertion below would pass or fail on an ' +
         'empty list rather than on the pin it is supposed to read',
     ).toBeGreaterThan(0);
     expect(
-      listed,
-      'a check absent from checks/MANIFEST is a drift the gate exits 2 on, and a check deleted ' +
-        'without the pin produces nothing at all while the gate still reports a clean run',
-    ).toContain(CHECK.replace(/\.sh$/, ''));
+      commands.some((cmd) => cmd.includes(`checks/${CHECK}`)),
+      `no check in checks.json runs checks/${CHECK}, so the file exists and nothing ever ` +
+        'executes it -- which reads exactly like a check that passes',
+    ).toBe(true);
   });
 });

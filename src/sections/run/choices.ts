@@ -37,9 +37,23 @@ export interface Listed {
  * obrysem, nie obietnicą — to blok wypełniony obiecuje, że krok się udał [DESIGN §2], więc plan
  * pokazany od pierwszej sekundy nie mówi nic nieprawdziwego o tym, co się już wydarzyło.
  * Dalsze stany dowozi rodzaj `stepState` z drutu, przez `src/state/run.ts`.
+ *
+ * 2026-08-28 — RODZAJ KAFELKA JEDZIE RAZEM Z NIMI, i to jest jedyna krawędź, którą ten rodzaj
+ * ma do widoku biegu. Bez tej jednej linii zdanie z decyzji D7 („no checks configured") nie ma
+ * z czego powstać: pasek loadoutu widzi wyłącznie to, co przepisze ta funkcja, więc kafelek
+ * „sprawdź" i kafelek agenta były dla niego tym samym. Przepisujemy `kind` surowo — pytanie
+ * „czy w tym planie ktokolwiek cokolwiek sprawdza" należy do paska, a nie do tej funkcji,
+ * bo to on ma na to jedno zdanie w podpisie (`./strip/model.ts`, niezmiennik 13).
+ *
+ * `instructions` dalej NIE jedzie i to jest osobny, zapisany brak (`./session/layout.ts`).
  */
 export function planOf(steps: readonly FileStep[]): readonly RunStep[] {
-  return steps.map((step) => ({ id: step.id, name: step.name, state: 'pending' as const }));
+  return steps.map((step) => ({
+    id: step.id,
+    name: step.name,
+    state: 'pending' as const,
+    kind: step.kind,
+  }));
 }
 
 /** Pozycje listy z tego, co leży w katalogu workflow. */

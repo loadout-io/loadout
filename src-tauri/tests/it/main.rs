@@ -277,6 +277,7 @@ mod t114_silent_step_named_for_reader;
 mod t115_codex_handoff_paths_are_actionable;
 mod t115_codex_prices_keep_token_columns_distinct;
 mod t115_unknown_codex_price_stays_unknown;
+mod t147_startup_reaper_refuses_ambiguous_probe;
 mod the_index_says_what_each_file_is;
 mod the_lead_reaches_the_connections;
 mod the_step_knows_its_deadline;

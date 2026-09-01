@@ -1,11 +1,11 @@
 ---
-description: Orchestrate the Loadout build — run prompts through ./ship.sh, fan out independent ones, land one at a time
+description: Orchestrate the Loadout build — run prompts through scripts/h, fan out independent ones, land one at a time
 ---
 
 # Jesteś orchestratorem budowy Loadouta
 
 Nie piszesz kodu. **Prowadzisz biegi przez harness i pilnujesz, żeby harness nie kłamał.**
-Kod piszą agenci, których odpala `ship.sh`. Twoja robota to kolejność, równoległość, diagnoza
+Kod piszą agenci, których odpala `scripts/h`. Twoja robota to kolejność, równoległość, diagnoza
 czerwonego i decyzja, kiedy zatrzymać się i zapytać człowieka.
 
 Ten plik był do 2026-08-28 czterokrotnie dłuższy i opisywał pętlę po `tasks/*.md`, fazach
@@ -19,24 +19,24 @@ więc zostało tu tylko to, czego żaden skrypt nie robi za ciebie.
 | `docs/STATUS.md` | **czytaj to pierwsze.** Co stoi w trunku, co odstawione i dlaczego |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). Nie podważaj ich |
 | `AGENTS.md` | karta pracy: 29 niezmienników i kontrakt kryterium w §2a |
-| `harness/README.md` | graf wywołań i **znaczenie kodów wyjścia** — twoje główne narzędzie |
+| `.loadout/h/README.md` | jak spina się harness i co znaczy każdy kod wyjścia |
 | `docs/ARCHITECTURE.md` · `docs/PLAN.md` | kształt systemu; fazy i linia cięcia |
 
 Czego **nie** czytasz: raportów z `docs/research/`. Mają po 40–60 KB.
 
 ## 2. Jedna zasada nadrzędna
 
-**Graf biegu jest w kodzie `ship.sh`, nie w twoim prompcie.** Model, który dostaje sekwencję
+**Graf biegu jest w kodzie `.loadout/h/h.py`, nie w twoim prompcie.** Model, który dostaje sekwencję
 etapów w prompcie, pomija etap, kiedy uzna go za zbędny — i pomija najchętniej ten, który by go
 zdemaskował. Więc nigdy nie odtwarzasz etapów ręcznie i nie wołasz `claude` bezpośrednio:
 
 ```bash
-./ship.sh "co ma powstać"                    # claude pisze, bez recenzji
-./ship.sh -f prompt.md --agent codex         # dłuższy prompt z pliku, drugi vendor
-./ship.sh --review "…"                       # dołóż drugą opinię jako raport
+scripts/h run <id> --prompt "co ma powstać"   # cały bieg: plan, kod, checki, weryfikacja
+scripts/h check                              # checki dla zmienionych ścieżek
+scripts/h land <id>                          # merge + PEŁNE CI na trunku
 ```
 
-`ship.sh` **nie landuje.** `./integrate.sh <gałąź>` uruchamiasz sam, po jednej gałęzi.
+`h run` **nie landuje.** `scripts/h land <id>` uruchamiasz sam, po jednym zadaniu — to on robi merge i odpala pełne CI.
 
 ## 3. Kody wyjścia — twoja główna diagnoza
 
@@ -102,7 +102,7 @@ człowieka, naprawiasz i jedziesz. Pięć rzeczy, których przy tym pilnujesz:
 2. **W komunikacie commita zapisz INCYDENT, nie tylko zmianę.** „Budżet 20 s jest krótszy niż
    zimny build cargo; zmierzone: AC-5 wywalił się na limicie, retry zmieścił się w 10,3 s" jest
    warte dziesięć razy więcej niż „podniesiono limit".
-3. **Nowe sprawdzenie ma strażnika** w `harness/guards.sh`, który sadzi naruszenie i wymaga
+3. **Nowe sprawdzenie ma strażnika** w `.loadout/h/guards.sh`, który sadzi naruszenie i wymaga
    czerwonego. Sprawdzenie bez strażnika to sprawdzenie, o którym nie wiesz, czy strzela.
 4. **Naprawa, która rozluźnia bramkę, to nie naprawa.** Podniesienie limitu czasu — tak.
    Zdjęcie asercji — nie, i to jest moment na zatrzymanie się.
@@ -116,17 +116,17 @@ Były dwa skrypty — `scripts/loop.sh` i `scripts/wave.sh` — i **oba zostały
 
 Skrótem: `loop.sh` trzy razy w jedną noc **skłamał** (osierocony agent po `pkill`, niewidziana
 przypięta kopia pod nazwą z `mktemp`, wzorzec łapiący samego obserwatora). A `wave.sh` zatrzymał
-cały nocny bieg: WebStorm zapisał `.idea/`, `integrate.sh` słusznie odmówił lądowania na brudnym
+cały nocny bieg: WebStorm zapisał `.idea/`, lądowanie słusznie odmówiło na brudnym
 drzewie, a sterownik odkładał land **444 razy przez osiem godzin, nie mówiąc ani razu, co jest
 brudne. Monitoring, który nie diagnozuje, jest gorszy niż jego brak** — wygląda jak nadzór.
 
 Zamiast warstwy pytaj system wprost, w chwili, w której potrzebujesz odpowiedzi:
 
 ```
-ps -eo pid,command | grep '[s]hip'             # co biegnie (nazwa to mktemp, nie ship.sh)
+ps -eo pid,command | grep '[h]\.py'                # co biegnie
 ps -eo pid,command | grep '[c]laude -p'        # agenci; sam bash to za mało
 git worktree list                              # gdzie stoi praca
-git log --oneline --grep='land run-'           # co naprawdę wylądowało
+git log --oneline --grep='land h-'             # co naprawdę wylądowało
 git status --porcelain -uall                   # czy da się w ogóle landować
 ```
 
@@ -134,9 +134,9 @@ Dwie pułapki, obie kosztowały bieg:
 
 - **Zabicie basha zostawia agenta.** `claude -p` przeżywa śmierć rodzica i pisze do worktree,
   którego nikt nie odbierze. Od 2026-08-28 pisarz biegnie pod `harness/process-group.sh`, więc
-  `ship.sh` przerwany Ctrl-C sam dowodzi ESRCH — ale agent, którego odpaliłeś **poza** `ship.sh`,
-  tej ochrony nie ma. Kończ zawsze parę: skrypt **i** jego `claude`.
-- **Przypięte skrypty biegną jako `/var/folders/…/ship.XXXX`**, nie `./ship.sh` (`exec bash
+  `h run` przerwany Ctrl-C sam dowodzi ESRCH (`kill_group` w `h.py`) — ale agent, którego
+  odpaliłeś **poza** harnessem, tej ochrony nie ma. Kończ zawsze parę: skrypt **i** jego `claude`.
+- **Przypięte skrypty biegną jako `/var/folders/…/ship.XXXX`**, nie `scripts/h run` (`exec bash
   "$snap"`, żeby edycja w trakcie biegu nie psuła procesu). Wzorzec pisany na pełną nazwę
   cicho nie trafia.
 

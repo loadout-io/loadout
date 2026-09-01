@@ -24,6 +24,12 @@
 import { create, useStore } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { Line } from '../ipc/types';
+/* WYŁĄCZNIE TYP, i to jest cała treść tego importu. Rodzajów kafelka jest cztery i mieszkają
+ * w `./workflows` (niezmiennik 13); druga ich lista, wpisana tutaj, rozjechałaby się przy piątym.
+ * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc magazyn biegu nie zyskuje ani
+ * jednej zależności W CZASIE WYKONANIA — a to jest ten sam powód, dla którego `FeedLine` stoi
+ * w tym pliku, a nie w sekcji. */
+import type { Step as FileStep } from './workflows';
 /* ZAKRES PRACY MA JEDNO ŹRÓDŁO (niezmiennik 13) i jest nim ten magazyn — `activeId` jest
  * kluczem sesji. Import idzie w tę stronę i nigdy w drugą: magazyn zakresów nie wie, że
  * istnieją biegi, a gdyby wiedział, przełączenie zakresu musiałoby coś o biegu decydować. */
@@ -65,6 +71,27 @@ export interface Step {
   readonly id: string;
   readonly name: string;
   readonly state: StepState;
+  /**
+   * Rodzaj kafelka, z którego ten krok powstał — albo BRAK POLA, kiedy nie wiadomo.
+   *
+   * 2026-08-28 — PO CO TO POWSTAŁO. Decyzja D7 obiecuje, że bieg, którego plan nie ma ani
+   * jednego sprawdzenia, mówi to na ekranie („no checks configured"). Rodzaj kroku nie
+   * dojeżdżał tu wcale: `planOf` w `src/sections/run/choices.ts` przepisywało z pliku workflow
+   * `id`, `name` i `state`, więc pasek loadoutu nie miał czym odróżnić kafelka „sprawdź" od
+   * agenta, a zdania z D7 nie było w `src/` w ogóle.
+   *
+   * BRAK POLA ZNACZY „NIE WIEMY", a nie „ten bieg nic nie sprawdza" — i ta różnica jest tu
+   * całą robotą. Plan biegu z pliku workflow przychodzi przez `planOf` i rodzaj ma; plan
+   * jednego kroku, który okno składa samo dla `/ask`, nie ma go i mieć nie może
+   * (`src/sections/run/io.ts` stawia tam krok z trzech pól, bo klucz kroku rodzi się w Ruście).
+   * Zdanie o braku sprawdzeń dopisane takiemu planowi byłoby zdaniem o czymś, czego w danych
+   * nie ma (niezmiennik 17) — ekran wtedy MILCZY i milczenie jest jedyną uczciwą odpowiedzią.
+   *
+   * Opcjonalne, a nie `| undefined` z jawnym kluczem: `exactOptionalPropertyTypes` odróżnia
+   * „klucza nie ma" od „klucz niesie undefined", a cudze kryteria stawiają kroki z trzech pól
+   * i mają dalej dostawać podpis paska bez ani jednego dopisanego słowa.
+   */
+  readonly kind?: FileStep['kind'];
 }
 
 /** Kto to powiedział — trzy wartości, nie osiem [00-SYNTHESIS §2.2]. */

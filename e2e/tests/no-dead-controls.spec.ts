@@ -188,107 +188,111 @@ describe('no button on any screen is dead', () => {
   }, 60_000);
 
   for (const id of EXPECTED) {
-    it('every visible button on the ' + id + ' screen does something', async () => {
-      for (const entry of EXCUSED) {
-        expect(
-          entry.why.trim().length,
-          'the exception for ' +
-            JSON.stringify(entry.name) +
-            ' on ' +
-            entry.section +
-            ' carries no reason. An exception without one is where a dead button goes to hide.',
-        ).toBeGreaterThan(0);
-      }
-
-      /* ── kontrola: dokument stoi w miejscu, kiedy nikt nie klika ───────────────────────── */
-      let names: string[] = [];
-      const quiet = await openAt(id);
-      try {
-        names = await buttonNames(quiet);
-        const first = await snapshot(quiet);
-        await quiet.page.waitForTimeout(SETTLE);
-        const second = await snapshot(quiet);
-        expect(
-          second.html === first.html && second.calls === first.calls,
-          'the ' +
-            id +
-            ' screen changes on its own within ' +
-            String(SETTLE) +
-            'ms of doing nothing. Until that is true, "the document changed after the click" ' +
-            'is a statement about the application moving by itself, and every dead button on ' +
-            'this screen passes on it.',
-        ).toBe(true);
-      } finally {
-        await quiet.close();
-      }
-
-      /* ── każdy przycisk z osobna, każdy na świeżo otwartej aplikacji ───────────────────── */
-      let usable = 0;
-      for (let index = 0; index < names.length; index += 1) {
-        const name = names[index] ?? '';
-        const excuse = excuseFor(id, name);
-        if (excuse !== undefined) continue;
-
-        const app = await openAt(id);
-        try {
-          /* KONTROLKA WYŁĄCZONA JEST SĄDZONA, NIE KLIKANA — zapisane 2026-08-18 (T-39).
-           *
-           * Kliknięcie w `[disabled]` nie jest możliwe ani dla tego przyrządu, ani dla
-           * człowieka: Playwright czeka, aż przycisk się włączy, i po limicie rzuca —
-           * czyli mierzyłby czas oczekiwania, a nie kontrolkę. Do dziś stał tu wyjątek
-           * per przycisk (`EXCUSED` dla `Start`), czyli ta sama decyzja, tylko zapisana
-           * raz na kontrolkę i widoczna wyłącznie dla tego, kto czytał listę.
-           *
-           * Reguła jest WĘŻSZA od wpisu, który zastąpiła, i o to chodzi: pominięcie ma
-           * cenę, którą płaci asercja niżej — ekran, na którym KAŻDY przycisk odmawia,
-           * jest czerwony. To właśnie był stan ekranu Run przed T-39 (jeden przycisk,
-           * wyłączony) i to jest awaria produktu, o której mówi DESIGN §6, a nie stan,
-           * który wolno przemilczeć.
-           *
-           * Czego ta reguła NIE przykrywa: przycisku, który jest włączony i nic nie robi.
-           * Ten dalej przechodzi całą drogę niżej. */
-          if (!(await app.page.locator(BUTTONS).nth(index).isEnabled())) continue;
-          usable += 1;
-
-          let sawDialog = false;
-          app.page.on('dialog', (dialog) => {
-            sawDialog = true;
-            void dialog.dismiss();
-          });
-
-          const before = await snapshot(app);
-          await app.page.locator(BUTTONS).nth(index).click();
-          await app.page.waitForTimeout(SETTLE);
-          const after = await snapshot(app);
-
-          const happened = after.html !== before.html || after.calls > before.calls || sawDialog;
+    it(
+      'every visible button on the ' + id + ' screen does something',
+      async () => {
+        for (const entry of EXCUSED) {
           expect(
-            happened,
-            'the button ' +
-              JSON.stringify(name === '' ? 'button #' + String(index) : name) +
-              ' on the ' +
+            entry.why.trim().length,
+            'the exception for ' +
+              JSON.stringify(entry.name) +
+              ' on ' +
+              entry.section +
+              ' carries no reason. An exception without one is where a dead button goes to hide.',
+          ).toBeGreaterThan(0);
+        }
+
+        /* ── kontrola: dokument stoi w miejscu, kiedy nikt nie klika ───────────────────────── */
+        let names: string[] = [];
+        const quiet = await openAt(id);
+        try {
+          names = await buttonNames(quiet);
+          const first = await snapshot(quiet);
+          await quiet.page.waitForTimeout(SETTLE);
+          const second = await snapshot(quiet);
+          expect(
+            second.html === first.html && second.calls === first.calls,
+            'the ' +
               id +
-              ' screen is dead: after clicking it the document is unchanged, nothing went to ' +
-              'Rust and no dialog opened. A control with no handler does not go into this repo ' +
-              '(invariant 16) — poprzedni prototyp has three of them, and all three are in places nobody ' +
-              'clicked twice. Either wire it up, or write it into EXCUSED with a reason.',
+              ' screen changes on its own within ' +
+              String(SETTLE) +
+              'ms of doing nothing. Until that is true, "the document changed after the click" ' +
+              'is a statement about the application moving by itself, and every dead button on ' +
+              'this screen passes on it.',
           ).toBe(true);
         } finally {
-          await app.close();
+          await quiet.close();
         }
-      }
 
-      expect(
-        names.length === 0 || usable > 0,
-        'every visible button on the ' +
-          id +
-          ' screen is disabled, so this screen refuses everything a person can reach: ' +
-          JSON.stringify(names) +
-          '. A screen made entirely of refusals passes "no dead controls" on a technicality ' +
-          'and invites nobody to anything — DESIGN §6 says an empty screen is an invitation, ' +
-          'not a notice that there is no data. This is the exact state the Run screen was in ' +
-          'on 2026-08-18, under a green suite.',
-      ).toBe(true);
-    }, 120_000);
+        /* ── każdy przycisk z osobna, każdy na świeżo otwartej aplikacji ───────────────────── */
+        let usable = 0;
+        for (let index = 0; index < names.length; index += 1) {
+          const name = names[index] ?? '';
+          const excuse = excuseFor(id, name);
+          if (excuse !== undefined) continue;
+
+          const app = await openAt(id);
+          try {
+            /* KONTROLKA WYŁĄCZONA JEST SĄDZONA, NIE KLIKANA — zapisane 2026-08-18 (T-39).
+             *
+             * Kliknięcie w `[disabled]` nie jest możliwe ani dla tego przyrządu, ani dla
+             * człowieka: Playwright czeka, aż przycisk się włączy, i po limicie rzuca —
+             * czyli mierzyłby czas oczekiwania, a nie kontrolkę. Do dziś stał tu wyjątek
+             * per przycisk (`EXCUSED` dla `Start`), czyli ta sama decyzja, tylko zapisana
+             * raz na kontrolkę i widoczna wyłącznie dla tego, kto czytał listę.
+             *
+             * Reguła jest WĘŻSZA od wpisu, który zastąpiła, i o to chodzi: pominięcie ma
+             * cenę, którą płaci asercja niżej — ekran, na którym KAŻDY przycisk odmawia,
+             * jest czerwony. To właśnie był stan ekranu Run przed T-39 (jeden przycisk,
+             * wyłączony) i to jest awaria produktu, o której mówi DESIGN §6, a nie stan,
+             * który wolno przemilczeć.
+             *
+             * Czego ta reguła NIE przykrywa: przycisku, który jest włączony i nic nie robi.
+             * Ten dalej przechodzi całą drogę niżej. */
+            if (!(await app.page.locator(BUTTONS).nth(index).isEnabled())) continue;
+            usable += 1;
+
+            let sawDialog = false;
+            app.page.on('dialog', (dialog) => {
+              sawDialog = true;
+              void dialog.dismiss();
+            });
+
+            const before = await snapshot(app);
+            await app.page.locator(BUTTONS).nth(index).click();
+            await app.page.waitForTimeout(SETTLE);
+            const after = await snapshot(app);
+
+            const happened = after.html !== before.html || after.calls > before.calls || sawDialog;
+            expect(
+              happened,
+              'the button ' +
+                JSON.stringify(name === '' ? 'button #' + String(index) : name) +
+                ' on the ' +
+                id +
+                ' screen is dead: after clicking it the document is unchanged, nothing went to ' +
+                'Rust and no dialog opened. A control with no handler does not go into this repo ' +
+                '(invariant 16) — poprzedni prototyp has three of them, and all three are in places nobody ' +
+                'clicked twice. Either wire it up, or write it into EXCUSED with a reason.',
+            ).toBe(true);
+          } finally {
+            await app.close();
+          }
+        }
+
+        expect(
+          names.length === 0 || usable > 0,
+          'every visible button on the ' +
+            id +
+            ' screen is disabled, so this screen refuses everything a person can reach: ' +
+            JSON.stringify(names) +
+            '. A screen made entirely of refusals passes "no dead controls" on a technicality ' +
+            'and invites nobody to anything — DESIGN §6 says an empty screen is an invitation, ' +
+            'not a notice that there is no data. This is the exact state the Run screen was in ' +
+            'on 2026-08-18, under a green suite.',
+        ).toBe(true);
+      },
+      120_000,
+    );
   }
 });

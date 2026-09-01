@@ -24,7 +24,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 # Sufit na pojedyncze uruchomienie checka. Zimne clippy potrafi iść minuty, a każdy
@@ -53,7 +53,20 @@ if [ -n "$(git status --porcelain -uall)" ]; then
   exit 2
 fi
 
-CHECKS=( checks/before-*.sh checks/quick-*.sh checks/full-*.sh )
+# Wszystkie checki z checks/ POZA manualnymi. Do 2026-08-28 stalo tu
+# `checks/before-*.sh checks/quick-*.sh checks/full-*.sh`, bo nazwa pliku niosla poziom
+# bramki; poziomy odeszly razem z gate.py, a checki wybiera teraz `.loadout/h/checks.json`
+# po zmienionych sciezkach.
+#
+# Manualne pomijamy JAWNIE i z nazwy. Nie sa warunkiem zaliczenia biegu (czlowiek odpala je
+# sam), wiec ich straznikiem jest czlowiek patrzacy na wynik -- ale cichy skip jest tu
+# zabroniony tak samo jak wszedzie indziej w tym pliku, wiec kazdy jest wypisany.
+# Lista checkow z checks/. Decyzja "manualny bez guarda -> pomin" NIE moze byc tutaj:
+# rejestr guardow jest definiowany NIZEJ, wiec `declare -F` w tym miejscu nie widzi jeszcze
+# ani jednego. Zmierzone: caly pas zameldowal "MANUAL, bez guarda" o checkach, ktore guarda
+# maja. Decyzja mieszka wiec w petli, gdzie funkcje juz istnieja.
+MANUAL="$(python3 -c "import json;print(' '.join(k for k in json.load(open('.loadout/h/checks.json'))['manual_only'] if not k.startswith('_')))")"
+CHECKS=( checks/*.sh )
 if [ "${#CHECKS[@]}" -eq 0 ]; then
   echo "no checks discovered under checks/ -- this gate can only report on itself" >&2
   exit 2
@@ -131,80 +144,12 @@ crate_root() {   # wypisuje korzeń crate'a Rusta albo zwraca 1
 # zasadził naruszenie w pliku poza zasięgiem checka, jest gorszy niż jego brak:
 # raportuje "nie strzelił" o checku, który nie miał czego zobaczyć.
 
-guard_quick_scope() {
-  # quick-scope pomija się na trunku (zakres jest własnością gałęzi), a guards biegnie
-  # właśnie na trunku. Podstawiamy nazwę, której żadna gałąź nie nosi, żeby sprawdzenie
-  # oceniało plant zamiast wychodzić zerem na samej nazwie gałęzi.
-  export LOADOUT_TRUNK=__guard_never_a_branch__
-  # Dwie drogi zapisu poza dozwolone drzewa. Druga jest ta ciekawsza: plik
-  # przemycony przez wpis w .gitignore. Check ma czytać status z
-  # `-c core.excludesFile=/dev/null --ignored=matching`, więc ma to zobaczyć.
-  plant_new harness/_guard_out_of_scope.txt <<'EOF'
-planted by harness/guards.sh
-EOF
-  plant_append .gitignore <<'EOF'
-_guard_laundered.rs
-EOF
-  plant_new _guard_laundered.rs <<'EOF'
-fn _guard() {}
-EOF
-}
 
-guard_quick_fmt() {
-  local planted=1 root
-  if [ -d node_modules ]; then
-    plant_new src/_guard_fmt.ts <<'EOF'
-export const guard   =    {a:1,   b   :2}
-EOF
-    planted=0
-  fi
-  if root="$(crate_root)"; then
-    plant_append "$root" <<'EOF'
 
-pub fn _guard_fmt(){let x=1;let _=x;}
-EOF
-    planted=0
-  fi
-  if [ "$planted" -ne 0 ]; then
-    NA_REASON="no node_modules and no Rust crate root to plant into"
-    return 1
-  fi
-}
 
-guard_quick_types() {
-  if [ ! -d node_modules ]; then
-    NA_REASON="node_modules is missing, tsc cannot run"
-    return 1
-  fi
-  plant_new src/_guard_types.ts <<'EOF'
-export const guardCount: number = 'not a number';
-EOF
-}
 
-guard_quick_clippy() {
-  local root
-  if ! root="$(crate_root)"; then
-    NA_REASON="no Rust crate root yet (src-tauri/src/{lib,main}.rs)"
-    return 1
-  fi
-  if ! command -v cargo >/dev/null 2>&1; then
-    NA_REASON="cargo is not installed"
-    return 1
-  fi
-  # `unwrap_used` jest w Cargo.toml zadeklarowany jako deny, więc to jest
-  # naruszenie polityki tego repo, a nie dowolny lint z półki.
-  plant_append "$root" <<'EOF'
 
-pub fn _guard_clippy(v: Option<i32>) -> i32 {
-    let x = v.unwrap();
-    return x;
-}
-EOF
-}
-
-guard_full_clippy() { guard_quick_clippy; }
-
-guard_quick_vocabulary() {
+guard_vocabulary() {
   # Żargon w tekście widocznym dla użytkownika (niezmiennik 14, tabela z
   # 00-SYNTHESIS §2.2). Sadzimy i w treści JSX, i w etykiecie w stringu, bo
   # check może skanować tylko jedno z dwóch.
@@ -217,7 +162,7 @@ export function GuardPanel() {
 EOF
 }
 
-guard_quick_boundary() {
+guard_boundary() {
   # checks/quick-boundary.sh egzekwuje TRZY granice naraz (niezmienniki 1, 2 i 3),
   # więc guard sadzi po jednym naruszeniu każdej. Jedno by wystarczyło do czerwonego
   # i dokładnie dlatego nie wystarcza: check, który stracił dwie reguły z trzech,
@@ -245,7 +190,7 @@ pub fn _guard(c: &rusqlite::Connection) {
 EOF
 }
 
-guard_quick_suppressions() {
+guard_suppressions() {
   # Jedna linia wewnątrz OWNS wyłącza bramkę typów. Plant musi być w src/, bo tam check patrzy,
   # i musi być w PLIKU NOWYM — modyfikacja istniejącego .ts nie istnieje, bo src/ ma dziś
   # wyłącznie theme.css.
@@ -255,34 +200,20 @@ export const guardValue: number = "not a number";
 EOF
 }
 
-guard_quick_permissions() {
-  # Nie da się tego zasadzić przez plant_append: doklejenie czegokolwiek do JSON-a robi
-  # z niego śmieć, a wtedy check woła exit 2 („nasza konfiguracja"), nie exit 1 („czerwone").
-  # Guard musi wywołać CZERWONE, więc podmieniamy treść na poprawny JSON ze złą regułą —
-  # dokładnie tą, która 2026-08-15 kosztowała 55 tur i $6,98.
-  python3 - <<'PY'
-import json
-p = '.claude/settings.json'
-cfg = json.load(open(p))
-cfg['permissions']['deny'].insert(0, 'Write(~/**)')
-json.dump(cfg, open(p, 'w'), indent=2)
-PY
-  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} .claude/settings.json )
-}
 
-guard_quick_worktree_trust_race() {
+guard_worktree_trust_race() {
   # Prawdziwe naruszenie: helper konczy sie sukcesem, ale nie zapisuje zaufania.
   # Check ma oceniac wynik dwunastu rownoleglych wywolan, nie obecność blokady.
   python3 - <<'PY'
 from pathlib import Path
 
-path = Path('harness/trust-workspace.py')
+path = Path('.loadout/h/trust-workspace.py')
 path.write_text('#!/usr/bin/env python3\nraise SystemExit(0)\n')
 PY
-  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} harness/trust-workspace.py )
+  PLANTED_MOD=( ${PLANTED_MOD[@]+"${PLANTED_MOD[@]}"} .loadout/h/trust-workspace.py )
 }
 
-guard_quick_tokens() {
+guard_tokens() {
   # Obie połowy checks/quick-tokens.sh. Połowa 2 (literał w komponencie) jest tą,
   # która dziś jeszcze nic nie ogląda — src/ nie ma ani jednego .tsx — więc plant
   # jest jedynym dowodem, że w ogóle strzela.
@@ -291,36 +222,63 @@ export const guardStyle = { color: '#5c7a8a', fontSize: 13 };
 EOF
 }
 
-guard_full_test() {
-  local planted=1 root
-  if [ -d node_modules ]; then
-    plant_new src/_guard.test.ts <<'EOF'
-import { expect, test } from 'vitest';
 
-test('planted by harness/guards.sh', () => {
-  expect(1).toBe(2);
-});
-EOF
-    planted=0
-  fi
-  if root="$(crate_root)" && command -v cargo >/dev/null 2>&1; then
-    plant_append "$root" <<'EOF'
-
-#[cfg(test)]
-mod _guard_tests {
-    #[test]
-    fn planted_by_guards_sh() {
-        assert_eq!(1, 2);
-    }
-}
-EOF
-    planted=0
-  fi
-  if [ "$planted" -ne 0 ]; then
-    NA_REASON="neither vitest nor cargo has anything to run here yet"
+guard_tests_listed() {
+  # Plik w tests/it/ jest MODULEM jednego celu, nie celem. Bez wiersza `mod <nazwa>;`
+  # w main.rs nie jest nigdy kompilowany ani uruchamiany -- a test nieobecny czyta sie
+  # dokladnie tak samo jak test zdany. Sadzimy wiec plik BEZ deklaracji.
+  #
+  # Dlaczego nie sadzimy odwrotnej polowy (deklaracja bez pliku): check lapie oba warunki
+  # tym samym `comm`, wiec jedna strona wystarczy do dowodu, ze porownanie zachodzi.
+  # Sadzenie obu naraz dawaloby czerwone, ktorego zrodla nie da sie przypisac.
+  if [ ! -f src-tauri/tests/it/main.rs ]; then
+    NA_REASON="src-tauri/tests/it/main.rs nie istnieje, wiec nie ma gdzie zabraknac deklaracji"
     return 1
   fi
+  plant_new src-tauri/tests/it/_guard_orphan.rs <<'EOF'
+#[test]
+fn _guard_orphan_never_declared() {
+    assert!(true, "planted by .loadout/h/guards.sh");
 }
+EOF
+}
+
+guard_wired() {
+  # Funkcja, ktorej nikt nie wola i ktorej zaden kontrakt nie obiecuje. Plant jest plikiem
+  # NIESLEDZONYM w src-tauri/src: check czyta wlasnie takze pliki nieslledzone, bo szew
+  # martwy od godziny jest tak samo martwy jak zacommitowany.
+  #
+  # Nazwa musi byc dluga i unikalna: check przepuszcza symbol, ktory pojawia sie GDZIEKOLWIEK
+  # w TASK.md, i przepuszcza symbole z src-tauri/commands.golden.txt. Krotka nazwa moglaby
+  # trafic przypadkiem w oba.
+  if [ ! -d src-tauri/src ]; then
+    NA_REASON="src-tauri/src nie istnieje, wiec nie ma czego nie podlaczyc"
+    return 1
+  fi
+  plant_new src-tauri/src/_guard_wired.rs <<'EOF'
+pub fn _guard_orphan_with_no_caller_anywhere() {}
+EOF
+}
+
+guard_invoke_args() {
+  # Klucze `invoke('<nazwa>', { ... })` kontra lista parametrow tej komendy z ipc.rs.
+  # Plant wola PRAWDZIWA komende z niewlasciwym kluczem -- to jest ta wada, ktora check
+  # powstal lapac: literowka w nazwie argumentu przechodzi typy, kompiluje sie po obu
+  # stronach i pada dopiero w rekach czlowieka.
+  if [ ! -f src-tauri/src/ipc.rs ] || [ ! -d src ]; then
+    NA_REASON="brak src/ albo src-tauri/src/ipc.rs, wiec nazwy argumentow nie maja wyroczni"
+    return 1
+  fi
+  plant_new src/_guard_invoke_args.ts <<'EOF'
+import { invoke } from "@tauri-apps/api/core";
+
+// `scan_setup` bierze `workspace`; ten klucz nie istnieje po stronie Rusta.
+export async function _guardInvokeArgs() {
+  return invoke("scan_setup", { workspaceDirectory: "/tmp/_guard" });
+}
+EOF
+}
+
 
 # ── pętla ────────────────────────────────────────────────────────────────────
 
@@ -346,11 +304,30 @@ for script in "${CHECKS[@]}"; do
   fi
 
   if ! declare -F "$fn" >/dev/null; then
+    # Manualny check bez guarda to zadeklarowana luka, nie porazka: nie jest warunkiem
+    # zaliczenia biegu, wiec jego straznikiem jest czlowiek patrzacy na wynik. Wypisujemy
+    # go z nazwy, bo cichy skip jest tu zabroniony tak samo jak wszedzie indziej.
+    case " $MANUAL " in
+      *" $id "*)
+        na=$((na + 1))
+        NA_LINES=( ${NA_LINES[@]+"${NA_LINES[@]}"} "$id: manualny, bez guarda -- czlowiek patrzy na wynik" )
+        printf '  %-44s MANUAL, bez guarda (nie jest warunkiem biegu)\n' "$id"
+        continue ;;
+    esac
     no_guard=$((no_guard + 1))
-    say_fail "$id" "NO GUARD -- add $fn() to harness/guards.sh"
+    say_fail "$id" "NO GUARD -- add $fn() to .loadout/h/guards.sh"
     continue
   fi
 
+  # Zmienna wyeksportowana przez JEDNEGO guarda nie ma prawa dojechac do nastepnego.
+  # Zmierzone 2026-08-28, przy pierwszym uruchomieniu nowego `guard_wired`:
+  # `guard_quick_scope` eksportuje LOADOUT_TRUNK=__guard_never_a_branch__ (slusznie -- inaczej
+  # quick-scope wyszedlby zerem na samej nazwie galezi), a `export` w funkcji zyje do konca
+  # skryptu. Kolejnosc jest alfabetyczna, wiec quick-wired biegl juz z tym podstawieniem,
+  # nie znajdowal punktu odgalezienia i wychodzil ZEREM z komunikatem "no branch point to
+  # compare against" -- czyli guard meldowal DID NOT FIRE o checku, ktory nie mial czego
+  # zobaczyc. To ta sama klasa, ktorej pilnuje caly ten plik, tylko wewnatrz niego samego.
+  unset LOADOUT_TRUNK
   NA_REASON=""
   if ! "$fn"; then
     restore
