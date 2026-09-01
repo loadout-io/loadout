@@ -284,6 +284,38 @@ export function understand(typed: string): Command | null {
 }
 
 /**
+ * Czy ta linia zaczyna się ukośnikiem z nazwą umiejętności, którą Loadout w tym folderze widzi.
+ *
+ * # Po co to istnieje
+ *
+ * Bo umiejętność wykonuje się wyłącznie wtedy, gdy ukośnik ZACZYNA linię. Zmierzone 2026-09-01
+ * na żywym `claude` 2.1.257: linia `/harbor-inventory` (i `/harbor-inventory zrób mi X`) rozwija
+ * się po stronie klienta, zanim ruszy tura modelu, i działa bez dokładania czegokolwiek do listy
+ * narzędzi. Ten sam ukośnik postawiony w środku zdania — „Please use /harbor-inventory to answer
+ * this." — skończył się czternastoma wywołaniami Glob i Grep i odpowiedzią, że takiej
+ * umiejętności nie ma. Z tego wynika reguła wiążąca dla całej tej drogi: **Loadout nie owija
+ * linii człowieka w żadne własne zdanie**. Znak w znak, razem z wiodącym ukośnikiem.
+ *
+ * ROZSTRZYGA PIERWSZE SŁOWO, dokładnie jak [`understand`]: ogon zadania po nazwie jest w porządku
+ * i jedzie razem z nią.
+ *
+ * PRZEDROSTEK PLUGINU JEST OPCJONALNY — `/loadout-skills:harbor-inventory` działa tak samo jak
+ * `/harbor-inventory` — ale porównujemy z nazwami BEZ przedrostka, bo tylko takie ta sekcja zna
+ * (`list_skills` oddaje nazwę katalogu). Linia z przedrostkiem odbija się dziś od wiersza jak
+ * literówka i to jest granica podpowiedzi, nie nowa wada.
+ *
+ * @param skills nazwy widziane w tym folderze (`src/state/skills.ts`, `installed`). Puste znaczy
+ *   „nic nie przeczytano" i wtedy ta gałąź się nie zapala — czyli wiersz zachowuje się dokładnie
+ *   tak, jak przed tą zmianą.
+ */
+export function skillLine(typed: string, skills: readonly string[] = []): boolean {
+  const first = typed.trim().split(/\s+/)[0] ?? '';
+  if (!first.startsWith('/')) return false;
+  const named = first.slice(1);
+  return named !== '' && skills.includes(named);
+}
+
+/**
  * Komendy, które pasują do tego, co człowiek już wpisał.
  *
  * 2026-08-18 — PO CO TO ISTNIEJE, zgłoszone przez właściciela ze zrzutu ekranu: „tu mi komend nie
@@ -476,6 +508,22 @@ export interface EntryProps {
    * więc lista jest osiągalna, tylko o jedno naciśnięcie dalej.
    */
   readonly agents?: readonly Named[];
+  /**
+   * Nazwy umiejętności, które Loadout widzi w tym folderze — te, po których ukośnik przestaje
+   * być literówką ([`skillLine`]).
+   *
+   * Propsem, nie własnym odczytem, z tego samego powodu, co [`EntryProps::workflows`]: „jakie
+   * umiejętności leżą na tej maszynie" jest pytaniem do adaptera (`sections/skills/io.ts`),
+   * a komponent, który zadaje je sam, jest drugim miejscem, w którym mieszka ta odpowiedź
+   * (niezmiennik 13).
+   *
+   * SAME NAZWY, nie [`Named`]: tu nie ma czego podpowiadać. Podpowiadanie i Tab po ukośniku są
+   * świadomie poza tym zadaniem, a lista pozycji z opisem sugerowałaby, że Tab coś uzupełni.
+   *
+   * Wartość domyślna jest MOSTEM dla cudzych kryteriów, które montują ten wiersz bez tego propsa
+   * (`caret.test.tsx`, `suggests-workflows.test.ts`) — tak samo jak przy [`EntryProps::workflows`].
+   */
+  readonly skills?: readonly string[];
   /** Wymagany: wybór folderu, czyli dołożenie zakresu — ten sam handler, co pod zaproszeniem. */
   readonly onOpenFolder: () => void;
   /**
@@ -541,6 +589,7 @@ export function Entry({
   onShowInStream = () => undefined,
   fieldRef,
   agents = [],
+  skills = [],
 }: EntryProps): ReactElement {
   const [draft, setDraft] = useState<EntryDraft>({ text: '', images: [] });
   const draftRef = useRef(draft);
@@ -735,16 +784,27 @@ export function Entry({
     const line = snapshot.text.trim();
     if (line === '' && snapshot.images.length === 0) return;
 
+    const command = understand(snapshot.text);
+    /* CZY TA LINIA JEST ZDANIEM DO LIDERA. Zdanie bez ukośnika było nią zawsze; od 2026-09-02
+     * jest nią też ukośnik z nazwą umiejętności, którą Loadout w tym folderze widzi.
+     *
+     * KOMENDA BIJE UMIEJĘTNOŚĆ, i to jest cała rola `command === null` w tym warunku. Umiejętność
+     * nazwana `run` przejęłaby inaczej `/run` — czyli jeden plik zapisany na dysku odbierałby
+     * wierszowi komendę, którą ten wiersz obiecuje w swojej zachęcie (niezmiennik 16).
+     *
+     * Sama reguła mieszka w [`skillLine`], razem z pomiarem, z którego wynika: linia jedzie do
+     * lidera ZNAK W ZNAK, z wiodącym ukośnikiem, bo tylko wtedy umiejętność się wykonuje. */
+    const toTheLead = !line.startsWith('/') || (command === null && skillLine(line, skills));
+
     /* Obraz nie może po cichu wypaść z komendy. Komendy mają osobne protokoły bez obrazów, więc
-     * zatrzymujemy je jeszcze przed historią, echem i IPC, zachowując kompletny szkic. */
-    if (snapshot.images.length > 0 && line.startsWith('/')) {
+     * zatrzymujemy je jeszcze przed historią, echem i IPC, zachowując kompletny szkic. Ukośnika
+     * z nazwą umiejętności to nie dotyczy: on jedzie drogą prozy, a ta obrazy niesie. */
+    if (snapshot.images.length > 0 && !toTheLead) {
       showTheAnswer(IMAGES_WITH_COMMANDS);
       return;
     }
 
-    const command = understand(snapshot.text);
-
-    if (!line.startsWith('/')) {
+    if (toTheLead) {
       /* Ref jest zatrzaskiem synchronicznym. Stan Reacta nie zdążyłby się przerysować między
        * dwoma Enterami, więc sam `disabled` nie chroni przed dwiema płatnymi turami. */
       if (sending.current) return;
@@ -1004,7 +1064,10 @@ export function Entry({
              * `/run zzz`, jest odpowiedzią na pytanie, którego nie zadał — komendę zna, nie zna
              * nazwy. Wtedy milczymy tutaj, a pełną odmowę z listą nazw daje Enter
              * (`run-command.ts`, `noSuchWorkflow`), bo to ona ma miejsce na wypisanie nazw. */
-            understand(typed) === null ? (
+            /* TEN SAM TEST, CO PRZY ENTERZE (2026-09-02). Bez drugiego warunku wiersz stałby na
+               „not known" nad linią, którą za sekundę przyjmie i doręczy — a zdanie pod polem
+               jest UPRZEDZENIEM tego, co zrobi Enter, nie osobną odpowiedzią (niezmiennik 13). */
+            understand(typed) === null && !skillLine(typed, skills) ? (
               <p className="lead" data-tone="attend">
                 {NOT_KNOWN}
               </p>

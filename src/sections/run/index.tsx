@@ -61,6 +61,7 @@ import { sectionEntry } from '../../ui/sections';
 import type { FeedLine, Step } from '../../state/run';
 import type { Link } from '../../state/workflows';
 import { runFor, useRun } from '../../state/run';
+import { useSkills } from '../../state/skills';
 import { useWorkspaces } from '../../state/workspaces';
 import { addresseeOf } from './addressee';
 import { saidOf } from './entry/echo';
@@ -693,6 +694,31 @@ export default function Run(): ReactElement {
   const choices = ready.choices;
   const lastRun = lastRunIn(ready, folder);
   const namesToRun = useMemo<readonly Named[]>(() => workflowNames(choices), [choices]);
+
+  /* CO LEŻY W KATALOGACH NARZĘDZI AGENTOWYCH — nazwy, po których ukośnik w wierszu wejścia
+   * przestaje być literówką (`./entry/entry.tsx`, `skillLine`).
+   *
+   * 2026-09-02 — TEN ODCZYT MUSIAŁ TU DOJŚĆ, i bez niego nowa gałąź nigdy się nie zapala.
+   * `useSkills.load()` wołał do tego dnia WYŁĄCZNIE ekran Knowledge (`../knowledge/index.tsx`),
+   * więc zbiór nazw był w tym ekranie pusty, a `/harbor-inventory` odbijało się od wiersza jako
+   * nieznana komenda — mechanizm żywy przy martwej drodze (niezmiennik 29).
+   *
+   * PRZY ZMIANIE FOLDERU TAKŻE, bo lista odpowiada na pytanie „co widzi agent pracujący TUTAJ":
+   * `list_skills` czyta półki projektu razem z globalnymi (`commands::skills::list_skills_in`),
+   * więc przełączenie zakresu zmienia odpowiedź. Odmowa nie leci w górę i nie ma tu czego łapać —
+   * obsługuje ją magazyn i zostawia w swoim stanie zdanie dla człowieka. */
+  useEffect(() => {
+    void useSkills.getState().load();
+  }, [folder]);
+  const installedSkills = useSyncExternalStore(
+    useSkills.subscribe,
+    useSkills.getState,
+    useSkills.getState,
+  ).installed;
+  const skillNames = useMemo<readonly string[]>(
+    () => installedSkills.map((one) => one.name),
+    [installedSkills],
+  );
 
   /**
    * KTÓRY WORKFLOW RUSZY, KIEDY CZŁOWIEK NACIŚNIE `Run` — ta sama funkcja nad tym samym
@@ -1681,6 +1707,10 @@ export default function Run(): ReactElement {
                  zamiast pozwolić człowiekowi wysłać je w ciemno. */
               talkingTo={listening}
               workflows={namesToRun}
+              /* NAZWY UMIEJĘTNOŚCI, po których ukośnik przestaje być literówką i jedzie do lidera
+                 znak w znak. Powód, dla którego odczyt mieszka w tym ekranie, stoi przy
+                 `skillNames`. */
+              skills={skillNames}
               /* ŚLAD PO KAŻDEJ WYSŁANEJ LINII. Wiersz składa `entry/echo.ts`, a ten ekran wie
                  tylko, DO KTÓREJ sesji strumienia on należy — powód przy `showInStream`. */
               onShowInStream={showInStream}

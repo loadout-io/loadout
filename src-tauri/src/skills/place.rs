@@ -93,6 +93,41 @@ pub enum Removed {
     },
 }
 
+/// Skąd wzięła się jedna umiejętność — i czy ta sama nazwa leży jeszcze gdzie indziej.
+///
+/// 2026-09-02 — CZTERY POLA, BO CZŁOWIEK MA TU DWA RÓŻNE PYTANIA. „Skąd to jest" jest pytaniem
+/// o zaufanie: umiejętność leżąca w cudzym repozytorium i umiejętność zapisana w bibliotece
+/// Loadouta to dwie różne treści pod jedną nazwą. „Czy jest tego więcej niż jedno" jest pytaniem
+/// o wybór — a wybór dokonany po cichu jest tym, co potem wygląda jak agent, który „nie umiał".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Whence {
+    /// Nazwa, znak w znak taka, jak stoi w definicji agenta.
+    pub name: String,
+    /// Katalog, z którego pojadą bajty.
+    pub dir: PathBuf,
+    /// Czy to kanoniczna kopia z biblioteki Loadouta — czyli jedyne miejsce, którego to
+    /// rozwiązywanie pytało, zanim doszły do niego półki vendorów.
+    pub from_the_library: bool,
+    /// Pozostałe katalogi, w których ta sama nazwa też jest umiejętnością nadającą się do
+    /// użycia, w kolejności pytania. Pusto znaczy „ta nazwa leży dokładnie w jednym miejscu".
+    pub also: Vec<PathBuf>,
+}
+
+/// Umiejętności, które ktoś naprawdę dostanie, RAZEM z odpowiedzią „skąd".
+///
+/// Dwa pola, nie jedno, i to jest ta sama różnica, co w [`StepSkills`]: `skills` jedzie do
+/// [`crate::inherit::rewrite::plugin_dir_from_the_library`], a `whence` jest tym, co ma
+/// zobaczyć CZŁOWIEK (niezmiennik 29). Zbiór bez tego drugiego pola każe wołającemu drugi raz
+/// zgadywać, z którego katalogu przyszła kopia — a to jest ta sama reguła zapisana dwa razy
+/// (niezmiennik 23).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Found {
+    /// Nazwy i katalogi, w kolejności z definicji agenta.
+    pub skills: StepSkills,
+    /// Po jednym wpisie na nazwę, w tej samej kolejności co `skills.names`.
+    pub whence: Vec<Whence>,
+}
+
 /// Czy vendor naprawdę widzi umiejętność [T5 §6.3, poziom 3].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Discovery {
@@ -122,10 +157,22 @@ impl StepSkills {
     /// Efektywny zbiór umiejętności jednego kroku: agent, zawężony nadpisaniem kroku.
     ///
     /// `data` to korzeń danych aplikacji (`~/.loadout`), czyli ten sam, który [`Roots::data`]
-    /// wskazuje przy instalacji — kanoniczna kopia leży pod `<data>/skills/<nazwa>/`. Pytamy
-    /// **biblioteki**, a nie katalogów vendorów, i to jest cała treść tego argumentu: katalogi
-    /// vendorów bywają cudze (człowiek mógł napisać tam własną umiejętność ręcznie), a bieg ma
-    /// podać agentowi wyłącznie to, co Loadout naprawdę posiada.
+    /// wskazuje przy instalacji — kanoniczna kopia leży pod `<data>/skills/<nazwa>/`.
+    ///
+    /// # 2026-09-02 — TO NIE JEST JUŻ SAMA BIBLIOTEKA, I TO BYŁA WADA, NIE OSTROŻNOŚĆ
+    ///
+    /// Do tego dnia stało tu zdanie „pytamy biblioteki, a nie katalogów vendorów", z powodem:
+    /// katalog vendora bywa cudzy. Powód był prawdziwy i odpowiadał na inne pytanie niż to, które
+    /// zadaje człowiek. Umiejętność napisaną we WŁASNYM repozytorium (`<projekt>/.claude/skills/`)
+    /// widać na liście w sekcji Knowledge — `commands::skills::list_skills_in` czyta obie półki —
+    /// i **nie dało się jej podać nikomu**: ani krokowi, ani liderowi. Wybór, który widać
+    /// i którego nie da się użyć, jest kontrolką bez skutku (niezmiennik 16) po obu stronach.
+    ///
+    /// Ta droga zostaje z niezmienionym podpisem i pyta [`StepSkills::wherever_they_lie`] o korzeń
+    /// bez projektu: krok biegu nie dostaje półek repozytorium, w którym pracuje, bo o materiał
+    /// gospodarza pyta się osobno i jawnie (`inherit::wire::from_the_host`, kafelek „Borrow from
+    /// this project"). Zostają więc półki globalne tego człowieka i kanoniczna kopia — a kolejność
+    /// stawia bibliotekę OSTATNIĄ, czyli tam, gdzie jej odpowiedź jest tą samą, co przed zmianą.
     ///
     /// `agent` to `Agent.skills` z definicji efektywnej, `step` to `Overrides.skills` tego
     /// kroku: `None` znaczy „brak klucza", czyli **weź to, co ma agent** — dokładnie tak, jak
@@ -146,6 +193,41 @@ impl StepSkills {
         step: Option<&[String]>,
         step_name: &str,
     ) -> std::result::Result<Self, Missing> {
+        // `data.parent()`, czyli katalog domowy — dokładnie tak, jak składa go
+        // `commands::skills::roots_for` przy instalacji i przy liście (niezmiennik 23). `data`
+        // bez rodzica jest korzeniem systemu plików i wtedy półki globalne wypadają na siebie
+        // samych; to stan nieosiągalny z produktu, ale nie ma prawa panikować.
+        let roots = Roots {
+            home: data.parent().unwrap_or(data).to_path_buf(),
+            project: None,
+            data: data.to_path_buf(),
+        };
+        Self::wherever_they_lie(&roots, agent, step, step_name).map(|found| found.skills)
+    }
+
+    /// Te same reguły, ale nad WSZYSTKIMI półkami, które ten człowiek ma — i z odpowiedzią
+    /// „skąd" dla każdej nazwy.
+    ///
+    /// 2026-09-02 — DODATKOWA DROGA, NIE ZMIANA PODPISU TAMTEJ. [`StepSkills::for_the_step`]
+    /// pinuje dziewięć modułów w `tests/it/`, a pytanie „gdzie ta nazwa leży" ma dziś dwóch
+    /// pytających o różnym zasięgu: krok biegu (bez półek repozytorium, powód przy tamtej
+    /// funkcji) i lider rozmowy, który pracuje wprost w folderze człowieka i ma sięgać po to,
+    /// co ten człowiek w tym folderze napisał.
+    ///
+    /// KOLEJNOŚĆ JEST REGUŁĄ i mieszka w [`shelves_of`]: bliższa wygrywa, biblioteka jest
+    /// ostatnia. Kiedy ta sama nazwa leży w dwóch miejscach, wybór ma być **widoczny**, nie
+    /// cichy — dlatego [`Whence::also`] niesie pozostałe katalogi, a nie sam werdykt.
+    ///
+    /// Odmowa pada tutaj, przy budowie zbioru, z tego samego powodu i w tych samych dwóch
+    /// odmianach, co przed tą zmianą: nazwy nie ma nigdzie ([`Why::NotInTheLibrary`]) albo jest,
+    /// tylko pod tą nazwą nie leży umiejętność ([`Why::Unusable`]). Te dwie rzeczy naprawia się
+    /// inaczej i dlatego są dwoma zdaniami.
+    pub fn wherever_they_lie(
+        roots: &Roots,
+        agent: &[String],
+        step: Option<&[String]>,
+        step_name: &str,
+    ) -> std::result::Result<Found, Missing> {
         let refuse = |skill: &str, why: Why| Missing {
             step: step_name.to_owned(),
             skill: skill.to_owned(),
@@ -177,37 +259,70 @@ impl StepSkills {
         }
 
         let mut dirs = Vec::with_capacity(names.len());
+        let mut whence = Vec::with_capacity(names.len());
         for name in &names {
             // Nazwa z definicji WYZNACZA CZYTANĄ ŚCIEŻKĘ, a definicję agenta człowiek pisze
-            // ręcznie: `..` albo `a/b` w tym polu znaczyłoby odczyt poza biblioteką. Pytamy
+            // ręcznie: `..` albo `a/b` w tym polu znaczyłoby odczyt poza półkami. Pytamy
             // [`is_slug`], czyli tą samą regułą, którą [`validate_strict`] wymusza na każdej
-            // zapisanej umiejętności — nazwa, która jej nie spełnia, nie może w bibliotece leżeć.
+            // zapisanej umiejętności — nazwa, która jej nie spełnia, nie może nigdzie leżeć.
             if !is_slug(name) {
                 return Err(refuse(name, Why::NotInTheLibrary));
             }
-            let dir = data.join(SKILLS_DIR).join(name);
-            // DWA RÓŻNE STANY, DWA RÓŻNE ZDANIA. Katalogu nie ma → tej umiejętności po prostu nie
-            // zapisano. Katalog jest, a pliku nie da się przeczytać albo nie przechodzi
-            // walidatora → jest, tylko nie jest umiejętnością; te dwie rzeczy naprawia się
-            // inaczej. `symlink_metadata`, nie `exists()`: dowiązanie w tym miejscu też jest
-            // czymś, co tam stoi.
-            if fs::symlink_metadata(&dir).is_err() {
-                return Err(refuse(name, Why::NotInTheLibrary));
+
+            // DWA RÓŻNE STANY, DWA RÓŻNE ZDANIA, i po dołożeniu półek trzeba je liczyć nad CAŁĄ
+            // listą, a nie nad pierwszym katalogiem: nazwa, której nigdzie nie ma, jest innym
+            // brakiem niż nazwa, która stoi w trzech miejscach i w żadnym nie jest umiejętnością.
+            let mut usable: Vec<PathBuf> = Vec::new();
+            let mut stood_somewhere = false;
+            for dir in shelves_of(roots, name) {
+                // `symlink_metadata`, nie `exists()`: dowiązanie w tym miejscu też jest czymś,
+                // co tam stoi.
+                if fs::symlink_metadata(&dir).is_err() {
+                    continue;
+                }
+                stood_somewhere = true;
+                let Ok(text) = fs::read_to_string(dir.join(SKILL_FILE)) else {
+                    continue;
+                };
+                // PYTAMY „CZY TO JEST UMIEJĘTNOŚĆ", NIE „CZY TRZYMA SIĘ SPECYFIKACJI". Powód
+                // w całości stoi przy [`validate_usable`]: reguła wydawnicza w tym miejscu
+                // wywracała bieg na pliku, który jest poprawną umiejętnością Claude Code
+                // i różni się od specyfikacji jednym polem w nagłówku (niezmiennik 5).
+                if validate_usable(name, &read_doc(&text)).is_err() {
+                    continue;
+                }
+                usable.push(dir);
             }
-            let Ok(text) = fs::read_to_string(dir.join(SKILL_FILE)) else {
-                return Err(refuse(name, Why::Unusable));
+
+            // PIERWSZY UŻYWALNY WYGRYWA, bo [`shelves_of`] pyta od najbliższego. Katalog, który
+            // stoi, ale umiejętnością nie jest, nie odbiera miejsca temu, który nią jest —
+            // inaczej cudzy `pdf/` w katalogu domowym unieruchamiałby własny w repozytorium.
+            let Some(dir) = usable.first().cloned() else {
+                return Err(refuse(
+                    name,
+                    if stood_somewhere {
+                        Why::Unusable
+                    } else {
+                        Why::NotInTheLibrary
+                    },
+                ));
             };
-            // PYTAMY „CZY TO JEST UMIEJĘTNOŚĆ", NIE „CZY TRZYMA SIĘ SPECYFIKACJI". Powód
-            // w całości stoi przy [`validate_usable`]: reguła wydawnicza w tym miejscu wywracała
-            // bieg na pliku, który jest poprawną umiejętnością Claude Code i różni się od
-            // specyfikacji jednym polem w nagłówku (niezmiennik 5).
-            if validate_usable(name, &read_doc(&text)).is_err() {
-                return Err(refuse(name, Why::Unusable));
-            }
+            let from_the_library = dir == roots.data.join(SKILLS_DIR).join(name);
+            whence.push(Whence {
+                name: name.clone(),
+                dir: dir.clone(),
+                from_the_library,
+                // Wszystko poza zwycięzcą, w kolejności pytania: to jest lista miejsc, o których
+                // człowiek ma usłyszeć, zamiast domyślać się, którą kopię dostał.
+                also: usable.split_off(1),
+            });
             dirs.push(dir);
         }
 
-        Ok(Self { names, dirs })
+        Ok(Found {
+            skills: Self { names, dirs },
+            whence,
+        })
     }
 
     /// Kładzie te umiejętności w katalogu roboczym kroku, pod `.agents/skills/<nazwa>/`.
@@ -458,6 +573,41 @@ pub fn destinations(scope: Scope, home: &Path, project: Option<&Path>) -> [PathB
         Scope::Project => project.unwrap_or(Path::new("")),
     };
     DESTINATION_DIRS.map(|dir| root.join(dir))
+}
+
+/// Katalogi, w których ta nazwa może leżeć — w kolejności pytania.
+///
+/// 2026-09-02 — BLIŻSZA WYGRYWA, A BIBLIOTEKA JEST OSTATNIA, i obie połowy tej kolejności mają
+/// powód. Umiejętność napisana w repozytorium, w którym człowiek pracuje, jest tą, którą miał na
+/// myśli, kiedy wpisywał jej nazwę — ta sama nazwa w katalogu domowym bywa czymś zupełnie innym
+/// (`pdf` jest oczywistą nazwą i ktoś mógł napisać swoją ręcznie). Biblioteka na końcu znaczy, że
+/// odpowiedź sprzed dołożenia półek zostaje odpowiedzią wszędzie tam, gdzie półki milczą.
+///
+/// Ścieżki półek liczy WYŁĄCZNIE [`destinations`] (niezmiennik 23): drugie miejsce, w którym stoi
+/// `.claude/skills`, rozjechałoby się z pierwszym przy pierwszym vendorze, którego dołożymy.
+///
+/// Zakres projektu bez korzenia daje ścieżki WZGLĘDNE, czyli „tutaj" — a „tutaj" jest katalogiem
+/// roboczym procesu aplikacji, nie żadnym repozytorium. Dlatego pytamy o niego dopiero wtedy, gdy
+/// korzeń naprawdę jest; to ta sama ostrożność, którą [`plan`] wyraża zwrotem
+/// [`Error::NoProjectRoot`].
+fn shelves_of(roots: &Roots, name: &str) -> Vec<PathBuf> {
+    let mut shelves: Vec<PathBuf> = Vec::new();
+    if roots.project.is_some() {
+        shelves.extend(destinations(
+            Scope::Project,
+            &roots.home,
+            roots.project.as_deref(),
+        ));
+    }
+    shelves.extend(destinations(
+        Scope::Global,
+        &roots.home,
+        roots.project.as_deref(),
+    ));
+
+    let mut looking: Vec<PathBuf> = shelves.iter().map(|shelf| shelf.join(name)).collect();
+    looking.push(roots.data.join(SKILLS_DIR).join(name));
+    looking
 }
 
 /// Reguły walidatora referencyjnego, przepisane w Ruście [T5 §6.2].

@@ -26,6 +26,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -50,8 +51,11 @@ use crate::evidence::{
     ConversationMetadata, ConversationVendor, EvidenceFailureKind, EvidenceTarget, ImageFact,
     SafeInputManifest, TurnCounters,
 };
+use crate::inherit::rewrite;
 use crate::ipc::LineSink;
 use crate::library::agents::{Agent, Tools, effort_level, policy_of};
+use crate::skills::place::Whence;
+use crate::skills::{Roots, StepSkills};
 
 /// Pod jaką nazwą orchestrator mówi w strumieniu.
 ///
@@ -1526,13 +1530,18 @@ impl Threads {
         /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
          * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna. Tutaj nie ma ani
          * jednej gałęzi: actor dostaje jedną wartość z pliku i zachowuje kolejność tur. */
-        let driver = as_the_step_is_configured(
+        let configured = as_the_step_is_configured(
             drivers(lead.agent.runs_with),
             lead,
             library.as_deref(),
             &terminal.folder,
             bridge.as_deref(),
+            /* CZY TA TURA ZAKŁADA ROZMOWĘ. Umiejętności jadą wyłącznie wtedy — powód w całości
+             * stoi przy `as_the_step_is_configured`. Actor odpowiada tym samym pytaniem po swojej
+             * stronie (`session.is_none()`), więc druga tura i tak nie ogląda tego sterownika. */
+            !thread.is_live(),
         )?;
+        let driver = configured.driver;
         /* PYTANIE ZADANE PRZED PRZEKAZANIEM STEROWNIKA, bo `say_with_images` bierze go przez
          * wartość. „Czy ten vendor umie zawężać listę" jest faktem o sterowniku i musi zostać
          * odczytane, póki jest co pytać. */
@@ -1549,6 +1558,20 @@ impl Threads {
                     agent: LEAD.to_owned(),
                     text: problem,
                     resets_at: None,
+                });
+        }
+        /* TĄ SAMĄ CHWILĄ I Z TEGO SAMEGO POWODU jadą zdania o umiejętnościach: „skąd lider ją
+         * wziął" jest odpowiedzią, którą człowiek czyta PRZED pierwszą odpowiedzią lidera, a nie
+         * pod nią. `Note`, nie `Problem`: to nie jest awaria, tylko wybór, który padł — a wybór
+         * pokazany jako czerwień uczy ignorować czerwień. */
+        for note in configured.said {
+            let _ = lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .send(Line::Note {
+                    agent: LEAD.to_owned(),
+                    text: note,
+                    body: Vec::new(),
                 });
         }
         thread
@@ -1753,6 +1776,10 @@ async fn read_along(
 /// naprawdę pójdzie do `start_conversation`. Odwrócenie jest niewidoczne: wszystko się
 /// kompiluje, rozmowa rusza, a znika albo `--mcp-config`, albo plik dowodu.
 ///
+/// 2026-09-02 — ŚRODKOWY CZŁON TEJ KOLEJNOŚCI NAPRAWDĘ TU STOI. Do tego dnia zdanie wyżej
+/// opisywało trzy kroki, a ta funkcja wykonywała dwa: dziedziczenia nie było w niej wcale, więc
+/// `Agent.skills` było dla lidera martwą kontrolką. Wykonuje je [`with_the_skills_it_was_given`].
+///
 /// # Dlaczego to jest opakowanie, a nie pole w [`RunSpec`]
 ///
 /// `RunSpec` nie ma `Default` i konstruuje go w tym drzewie ponad trzydzieści miejsc, więc nowe
@@ -1773,27 +1800,226 @@ fn as_the_step_is_configured(
     library: Option<&Path>,
     folder: &Path,
     bridge: Option<&Bridge>,
-) -> Result<Arc<dyn AgentDriver>, ChatError> {
+    beginning: bool,
+) -> Result<Configured, ChatError> {
     let mut configuration = connections_of(lead, library, folder, driver.id(), bridge)?;
     configuration
         .arguments
         .extend(driver.effort_argv(lead.effort()));
-    if configuration.arguments.is_empty() {
+    let carrying = if configuration.arguments.is_empty() {
         // Nic do niesienia i nie ma o co pytać: rozmowa bez połączeń i bez szczebla startuje
         // dokładnie tak, jak startowała — co do bajtu.
-        return Ok(driver);
+        driver
+    } else {
+        match driver.configured(&configuration) {
+            Some(configured) => configured,
+            // ZATWIERDZONE POŁĄCZENIE MA TYLKO TĘ JEDNĄ DROGĘ, więc vendor, który jej nie zna,
+            // nie dostanie go wcale — i wtedy rozmowa nie rusza. Sam szczebel takiej wagi nie ma.
+            None if !lead.agent.connections.is_empty() => {
+                return Err(ChatError::CouldNotStart(
+                    "this agent app cannot use the approved Connections. Loadout stopped the \
+                     conversation instead of starting it without them."
+                        .to_owned(),
+                ));
+            }
+            None => driver,
+        }
+    };
+
+    /* DZIEDZICZENIE STOI TU, MIĘDZY CONNECTIONS A DOWODAMI, i to jest ta sama kolejność, którą
+     * nagłówek tej funkcji opisywał, zanim ktokolwiek ją tu wykonał. Dowody nakłada dopiero
+     * [`begin_thread`], czyli po powrocie stąd.
+     *
+     * WYŁĄCZNIE W TURZE, KTÓRA ZAKŁADA ROZMOWĘ. `--plugin-dir` czyta się przy starcie procesu,
+     * więc druga tura nie ma czego tą drogą dowieźć — a katalog przebudowany pod żywym procesem
+     * zabierałby mu pliki, po które model sięga w trakcie odpowiedzi (umiejętność bywa katalogiem
+     * ze skryptami, nie jednym plikiem). */
+    if !beginning {
+        return Ok(Configured {
+            driver: carrying,
+            said: Vec::new(),
+        });
     }
-    match driver.configured(&configuration) {
-        Some(configured) => Ok(configured),
-        // ZATWIERDZONE POŁĄCZENIE MA TYLKO TĘ JEDNĄ DROGĘ, więc vendor, który jej nie zna, nie
-        // dostanie go wcale — i wtedy rozmowa nie rusza. Sam szczebel takiej wagi nie ma.
-        None if !lead.agent.connections.is_empty() => Err(ChatError::CouldNotStart(
-            "this agent app cannot use the approved Connections. Loadout stopped the \
-             conversation instead of starting it without them."
+    with_the_skills_it_was_given(carrying, lead, library, folder)
+}
+
+/// Sterownik rozmowy i zdania, które przy jego składaniu trzeba było powiedzieć człowiekowi.
+///
+/// Para, nie sam sterownik, i to jest ten sam wybór, co przy [`Told`]: fakt powstaje TUTAJ,
+/// a widzieć go musi CZŁOWIEK (niezmiennik 29). Wersja bez tego pola miała dwa wyjścia i oba
+/// złe — odmówić rozmowy albo przemilczeć, z którego katalogu przyjechała umiejętność.
+///
+/// Lista, nie [`Option`]: lider z trzema umiejętnościami z trzech różnych półek ma trzy różne
+/// rzeczy do powiedzenia, a jedno wspólne zdanie o „kilku miejscach" nie mówi, która skąd.
+struct Configured {
+    /// Ten, który naprawdę pójdzie do `start_conversation`.
+    driver: Arc<dyn AgentDriver>,
+    /// Zdania na ekran, w kolejności powstania. Puste jest normalnym stanem.
+    said: Vec<String>,
+}
+
+/// Katalog umiejętności lidera w folderze człowieka — ta sama reguła, co przy [`connections_of`].
+///
+/// Leży pod `<folder>/.loadout/skills/<agent>/`, czyli w JEDYNYM miejscu tego folderu, które
+/// należy do nas (`docs/ARCHITECTURE.md` §8). Po identyfikatorze agenta, nie po terminalu: dwie
+/// karty tego samego lidera opisują ten sam zestaw umiejętności, więc drugi katalog byłby drugą
+/// kopią jednego faktu.
+const SKILLS: &str = "skills";
+
+/// Sterownik niosący umiejętności, które ten lider naprawdę dostaje — tym samym szwem, co krok
+/// biegu (`commands::run::carrying_what_we_inherited`).
+///
+/// # 2026-09-02 — DO TEGO DNIA `Agent.skills` BYŁO DLA LIDERA MARTWĄ KONTROLKĄ
+///
+/// `spec_for` składa sesję z modelu, polityki, sieci, listy narzędzi i briefu — i nie ma w niej
+/// ani pola na umiejętności, ani wywołania [`AgentDriver::inheriting`]. Lider z niepustym
+/// `Agent.skills` dostawał więc zero: żadnego `--plugin-dir`, żadnej półki. Człowiek zaznaczał
+/// umiejętność w formularzu agenta, ekran ją pokazywał, a rozmowa jej nie miała — czyli
+/// dokładnie ta cicha porażka, przed którą stoi cały moduł `skills`.
+///
+/// # Odmowa pada wtedy i tylko wtedy, gdy nie ma czego dowieźć
+///
+/// Nazwa, której nie ma na żadnej półce ani w bibliotece, jest odmową ([`Missing`] jest już
+/// zdaniem napisanym dla człowieka i mówi „nothing started" — więc naprawdę nic nie startuje).
+/// Vendor bez tego szwu odmową **nie jest**: rozmowa idzie dalej, a człowiek dostaje zdanie
+/// zamiast odpowiedzi wyglądającej na poinformowaną. To ta sama asymetria i ten sam powód, co
+/// przy liście narzędzi ponad dialem w [`spec_for`] — bieg startuje sześciu agentów bez nadzoru,
+/// a rozmowa to jedna tura z człowiekiem patrzącym na ekran, więc odebranie mu jej zabiera
+/// zarazem jedyne miejsce, w którym mógłby zapytać dlaczego.
+///
+/// [`Missing`]: crate::skills::Missing
+fn with_the_skills_it_was_given(
+    driver: Arc<dyn AgentDriver>,
+    lead: &Lead,
+    library: Option<&Path>,
+    folder: &Path,
+) -> Result<Configured, ChatError> {
+    if lead.agent.skills.is_empty() {
+        // Pusty wybór nie ma czego dowieźć i **nie zakłada katalogu**: pusty katalog podany
+        // vendorowi to plugin, który ładuje się i rejestruje zero umiejętności — ta sama cicha
+        // zieleń, przed którą stoi `inherit::rewrite`.
+        return Ok(Configured {
+            driver,
+            said: Vec::new(),
+        });
+    }
+
+    /* CZY TEN PROGRAM UMIE PRZYJĄĆ KATALOG PLUGINU — pytane PUSTYM fragmentem i pytane PRZED
+     * pierwszym zapisem, dokładnie jak w `run::borrowing_is_possible`. Pytamy sterownika, nie
+     * nazwy vendora: nazwa w tym miejscu byłaby drugim zestawem reguł po stronie rdzenia
+     * (niezmiennik 23). Vendor bez szwu nie dostanie katalogu żadną drogą, więc zbudowanie go
+     * zostawiłoby w folderze człowieka pliki, których nikt nigdy nie przeczyta
+     * (niezmiennik 21). */
+    if driver.inheriting(&[]).is_none() {
+        return Ok(Configured {
+            said: vec![no_way_to_take_skills(driver.id())],
+            driver,
+        });
+    }
+
+    let Some(library) = library else {
+        return Err(ChatError::CouldNotStart(
+            "this agent was given skills, and Loadout does not know yet where they are saved. \
+             Reopen the work screen and try again."
                 .to_owned(),
-        )),
-        None => Ok(driver),
+        ));
+    };
+    /* PÓŁKI TEGO FOLDERU, PÓŁKI GLOBALNE, POTEM BIBLIOTEKA — kolejność mieszka w `skills::place`
+     * i tylko tam. Lider pracuje wprost w folderze człowieka, więc umiejętność napisana w tym
+     * repozytorium jest tą, którą ten człowiek miał na myśli; krok biegu pyta węziej i ma na to
+     * własny powód (`StepSkills::for_the_step`). */
+    let roots = Roots {
+        home: library.parent().unwrap_or(library).to_path_buf(),
+        project: Some(folder.to_path_buf()),
+        data: library.to_path_buf(),
+    };
+    // Nazwa AGENTA, nie kroku: odmowa ma nazwać to, czego człowiek szuka na ekranie, a kafelka
+    // w rozmowie nie ma (niezmiennik 29).
+    let found = StepSkills::wherever_they_lie(&roots, &lead.agent.skills, None, &lead.agent.name)
+        .map_err(|refusal| ChatError::CouldNotStart(refusal.to_string()))?;
+
+    let into = folder
+        .join(OURS)
+        .join(SKILLS)
+        .join(lead.agent.id.to_string());
+    /* OD NOWA, NIE „DOŁÓŻ BRAKUJĄCE". Umiejętność zdjęta z definicji agenta zostawałaby inaczej
+     * w tym katalogu na zawsze i dalej ogłaszała się przy każdym starcie — czyli lider znałby
+     * coś, czego człowiek mu już nie dał. Katalog jest wyjściem builda i wolno go skasować bez
+     * straty (niezmiennik 4): źródłem są półki i biblioteka. Katalogu nie ma → nie ma czego
+     * kasować i nie jest to awaria. */
+    match fs::remove_dir_all(&into) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(ChatError::CouldNotStart(error.to_string())),
     }
+    let carried = rewrite::plugin_dir_from_the_library(&found.skills, &into)
+        .map_err(|error| ChatError::CouldNotStart(error.to_string()))?;
+
+    let mut said: Vec<String> = found
+        .whence
+        .iter()
+        /* MILCZYMY O TYM, CO SIĘ NIE ZMIENIŁO. Jedna kopia w bibliotece jest odpowiedzią, którą
+         * ten produkt dawał od zawsze, i nie jest nowiną. Zdanie pada, kiedy bajty przyszły
+         * skądinąd albo kiedy ta sama nazwa leży w dwóch miejscach — bo wtedy padł WYBÓR. */
+        .filter(|one| !one.from_the_library || !one.also.is_empty())
+        .map(where_it_came_from)
+        .collect();
+
+    let flags = rewrite::plugin_argv(&carried);
+    // Ten sam sterownik odpowiedział wyżej, że szew ma. Sterownik, który zmienia zdanie między
+    // jednym pytaniem a drugim, nie ma prawa ani uciszyć rozmowy, ani przemilczeć tego, czego
+    // lider nie dostał — więc druga odmowa daje to samo zdanie, co pierwsza.
+    let Some(carrying) = driver.inheriting(&flags) else {
+        said.push(no_way_to_take_skills(driver.id()));
+        return Ok(Configured { driver, said });
+    };
+    Ok(Configured {
+        driver: carrying,
+        said,
+    })
+}
+
+/// Zdanie o programie, który nie umie przyjąć umiejętności ŻADNĄ drogą.
+///
+/// Nazywa vendora, bo to po nim człowiek pozna, czy odznaczyć umiejętność, czy przełączyć
+/// program — ta sama treść i ten sam powód, co przy `run::borrowing_is_possible`. Nazwę bierze
+/// ta sama funkcja, co tam (niezmiennik 23): druga tabela „claude" → „Claude Code" byłaby tą,
+/// która zostaje stara.
+fn no_way_to_take_skills(vendor: &str) -> String {
+    format!(
+        "This lead agent was given skills, and {} has no way to be handed one. It is talking \
+         without them: Loadout says so here instead of leaving you with an answer that reads as \
+         though it had them. Either take the skills off this agent or give it one that runs on a \
+         different app.",
+        crate::workflow::check::vendor_name(vendor)
+    )
+}
+
+/// Zdanie o tym, skąd wzięła się jedna umiejętność.
+///
+/// Ścieżka, nie nazwa półki: człowiek szuka katalogu, nie identyfikatora — ten sam wybór, co
+/// przy [`crate::skills::Why::WouldWriteIntoYourFolder`]. Przy kilku miejscach zdanie wymienia
+/// **wszystkie**, bo pytanie brzmi „którą kopię dostałem", a odpowiedź bez przegranych nie mówi,
+/// że w ogóle był wybór.
+fn where_it_came_from(one: &Whence) -> String {
+    let came = format!(
+        "The skill \"{}\" came from {}.",
+        one.name,
+        one.dir.display()
+    );
+    if one.also.is_empty() {
+        return came;
+    }
+    let elsewhere: Vec<String> = one
+        .also
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect();
+    format!(
+        "{came} The same name is also saved in {}, and the one nearest this folder is the one \
+         this lead agent got.",
+        elsewhere.join(", ")
+    )
 }
 
 /// Katalog zatwierdzonych połączeń w bibliotece — ta sama nazwa, którą czyta bieg
