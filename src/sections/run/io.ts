@@ -763,6 +763,9 @@ export interface PastStep {
   readonly name: string;
   readonly agent: string;
   readonly state: string;
+  /** Czy ciało logicznej próby ruszyło. `null` w starym receipt pozostaje nieznane — frontend
+   * nigdy nie zgaduje tego faktu ze statusu, czasu, PID-u ani kosztu. */
+  readonly executed: boolean | null;
   /** Jedno zdanie, które ten krok po sobie zostawił. Puste, kiedy żadnego nie zostawił. */
   readonly summary: string;
   /** Powód, jeśli coś poszło nie tak. */

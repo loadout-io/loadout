@@ -64,6 +64,13 @@ export const GIVEN_TO_THIS_STEP = 'Given to this step';
 export const LEFT_OUT_FOR_LENGTH = "Left out because it exceeded this run's length limit.";
 export const NO_FROZEN_MEMORY = 'No frozen memory was recorded for this step.';
 
+/** Jawny fakt z receipt. `unknown` jest wartością, nie zaproszeniem do zgadywania po statusie. */
+function executionFact(executed: boolean | null): string {
+  if (executed === true) return 'Attempted';
+  if (executed === false) return 'Not attempted';
+  return 'Attempt unknown';
+}
+
 /** `button-quiet` z DESIGN §6, ta sama fraza co na ekranie agenta (`../session/session.tsx`). */
 const QUIET = 'h-7 rounded-sm border border-line px-3 text-ui text-body';
 
@@ -279,6 +286,9 @@ function Step({
           {step.name}
         </span>
         <StateWord state={step.state} />
+        <span data-step-executed className="font-mono text-mono whitespace-nowrap text-muted">
+          {executionFact(step.executed)}
+        </span>
         <span className="ml-auto font-mono text-mono text-muted">{costText(step.costUsd)}</span>
         {/* KONTYNUACJA STOI PRZY KROKU, a nie w nagłówku biegu, bo to jest wybór KROKU:
             „od którego miejsca ciągniemy dalej". Jeden przycisk nad całym biegiem musiałby ten

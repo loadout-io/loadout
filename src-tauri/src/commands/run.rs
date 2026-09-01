@@ -4698,8 +4698,11 @@ fn make_or_recover_tree(
         /* Kopia plikowa punktu startu nie zna i znać nie może: bez gita nie ma gałęzi, na której
          * poprzedni bieg mógłby cokolwiek zostawić. Wznowienie w projekcie bez repozytorium
          * dostaje więc to, co dostawało zawsze — kopię tego, co leży w projekcie. */
-        let made = make_or_recover_file_copy(project, cwd, branch, marker.is_some())?;
+        // 2026-08-28 (T-152 repair) — kopiowanie może utworzyć część `cwd`, zanim zwróci błąd.
+        // Po dowodzie ścieżki guard musi więc przejąć cel przed pierwszym zapisem; cleanup braku
+        // ścieżki jest idempotentny.
         provisional.owns_file_copy(cwd.to_path_buf());
+        let made = make_or_recover_file_copy(project, cwd, branch, marker.is_some())?;
         return Ok(made);
     }
     make_or_recover_git_tree(
@@ -6303,8 +6306,6 @@ struct Handed {
     /// Czym ten plik jest dla kroku, który go czyta. Powód całego pola stoi przy
     /// [`IS_WHAT_THE_STEP_BEFORE_LEFT`].
     what: WhatItIs,
-    /// Publiczny powód, kiedy poprzednik nie przeszedł, ale polityka puściła pracę dalej.
-    failed_because: Option<String>,
 }
 
 /// Czym jest plik wymieniony w indeksie — z punktu widzenia kroku, który ten indeks czyta.
@@ -8625,12 +8626,11 @@ impl Live {
             // ETYKIETA STOI W TYM SAMYM WIERSZU, CO ŚCIEŻKA, i to jest wymóg, nie układ: odnośnik
             // i to, czym on jest, czytane z dwóch osobnych list są dwiema listami do zestawienia
             // w głowie — a agent, który tego nie zrobi, otwiera wszystkie pliki po kolei.
+            // 2026-08-28 (T-152 repair) — POWÓD PORAŻKI ZOSTAJE W TREŚCI PRZEKAZANIA. Powtórzony
+            // tutaj rozpychał 50-znakową etykietę relacji do 163 znaków i łamał sufit T-87.
             let mut label = hand.what.said();
             if hand.left_nothing {
                 label.push_str("; left nothing");
-            }
-            if let Some(failed_because) = &hand.failed_because {
-                let _ = write!(label, "; {failed_because}");
             }
             if let Some(full) = &hand.attachment {
                 let metadata = fs::symlink_metadata(full)?;
@@ -8790,20 +8790,17 @@ impl Live {
                 // Bez dowodu sukcesu nie nazywamy przejętej pustki udanym wynikiem.
                 left_nothing: false,
                 what: WhatItIs::FromAnEarlierRun,
-                failed_because: None,
             })
             .collect();
         index.extend(wanted.into_iter().filter_map(|step| {
             let written = filed.get(step)?.as_ref()?;
-            let failed_because = unpassed.get(step).cloned().flatten();
-            let succeeded = failed_because.is_none();
+            let succeeded = unpassed.get(step).is_none_or(Option::is_none);
             Some(Handed {
                 from: self.plan.steps.get(step)?.name.clone(),
                 path: written.path.clone(),
                 attachment: written.attachment.clone(),
                 left_nothing: succeeded && written.left_nothing,
                 what: self.what_it_is(id, step, &unpassed),
-                failed_because,
             })
         }));
         index

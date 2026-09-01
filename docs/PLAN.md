@@ -179,10 +179,10 @@ worktree nie mają pełnego resource envelope.
 | **T-153** | Równoległe gałęzie składają pliki i zachowują fizyczną lineage kopii | full | T-201 |
 | **T-154** | Rerun, prompt i capability używają dokładnie zadeklarowanego stagingu | direct | T-151, T-153, T-155, T-156, T-210 |
 | **T-155** | Backend ma jeden adresowany bieg per workspace i jeden globalny limiter | full | T-151, T-152, T-153, T-156, T-201, T-203, T-210 |
-| **T-156** | Native output, evidence i zamknięte zasoby mają skończony lifecycle | full | T-201, T-210 |
+| **T-156** | Native output, evidence i zamknięte zasoby mają skończony lifecycle | full | T-153, T-201, T-210 |
 | **T-157** | Connection odmawia literalnych sekretów w args i URL | direct | T-150 |
 | **T-158** | Lokalny log jest prywatny, rotowany i ograniczony także po upgrade | direct | T-210 |
-| **T-201** | Naturalny i wymuszony koniec zachowuje ownership do ESRCH | full | T-152 |
+| **T-201** | Naturalny i wymuszony koniec zachowuje ownership do ESRCH | full | T-152, T-158, T-203 |
 | **T-202** | Jeden durable publisher obsługuje workflow, agenta, handoff i attachment | full | T-150 |
 | **T-210** | Równoległy writer handoffu nie usuwa aktywnego tempa sąsiada | direct, stacked | implementacja T-202 |
 | **T-203** | Zepsuta definicja jest osobnym problemem, a zdrowa biblioteka działa | direct | T-210 |
@@ -211,11 +211,13 @@ Fala I:   T-208  || T-209
 ```
 
 T-153 i T-156 są semantycznie niezależne po T-201, ale oba aktualizują
-`docs/ARCHITECTURE.md`, więc nie powstają jako równoległe worktree. T-158 korzysta już z rdzenia
-T-210 i ma rozłączne `OWNS` z T-152/T-203, dlatego domyka log równolegle w fali B. T-206 używa
-polityki sekretów T-205 i współdzieli z nim `commands/run.rs`; prywatny transport ląduje więc
-przed kwarantanną triggera. To są jawne cięcia semantyczne albo wynikające z `OWNS`, nie sztuczne
-zależności produktu.
+`docs/ARCHITECTURE.md` oraz `src-tauri/src/commands/run.rs`. Dlatego Fala D2 ma operacyjną
+zależność od D1: worktree T-156 powstaje z exact SHA po integracji T-153 i oba nigdy nie mają
+równoległych writerów ani niezależnie przygotowanych branchy do późniejszego scalenia. T-158
+korzysta już z rdzenia T-210 i ma rozłączne `OWNS` z T-152/T-203, dlatego domyka log równolegle
+w fali B. T-206 używa polityki sekretów T-205 i współdzieli z nim `commands/run.rs`; prywatny
+transport ląduje więc przed kwarantanną triggera. To są jawne cięcia semantyczne albo wynikające
+z `OWNS`, nie sztuczne zależności produktu.
 
 Kod i lekkie testy w jednej fali mogą zachodzić na siebie. Każde Cargo, `verify.sh` oraz
 `integrate.sh` wchodzi do jednej kolejki. Worktree następnej zależnej fali powstaje z exact SHA po
@@ -263,7 +265,7 @@ odtworzyć. Element `Can't be reproduced` pozostaje widoczny do czasu takiej jaw
 | **T-161** | Długi workflow zostaje wewnątrz ekranu Run | — | Wąska geometria paska kroków; może lądować bez czekania na Rust |
 | **T-162** | NOW pokazuje wyłącznie pracę, która trwa | T-156 | Lifecycle feedu ma jednego właściciela po domknięciu retencji |
 | **T-163** | Settings wybiera domyślnego Lead i przypina rozmowę | T-158, T-208 | Jeden globalny wybór Agenta oraz naprawa polityki Codex App Server po zmianach IPC/private transport |
-| **T-164** | Workflow należy do workspace, w którym będzie uruchomiony | T-163, T-209, T-76, T-78, T-82 | Jedna zmiana scope dla CRUD, Run, historii, triggerów i importu |
+| **T-164** | Workflow należy do workspace, w którym będzie uruchomiony | T-163, T-206, T-209, T-76, T-78, T-82 | Jedna zmiana scope dla CRUD, Run, historii, triggerów i importu |
 | **T-165** | Refleksja mówi, co robi i co zrobiła | T-164 | Tylko objaśnienie oraz istniejący receipt w historii, bez nowego etapu |
 
 ### Fale bez konfliktów `OWNS`
@@ -273,7 +275,7 @@ Teraz:   T-161               ||  przygotowanie T-78 bez ciężkiego Cargo
 Rdzeń:   fale z §6c
 Boki:    T-162 po T-156 i przed T-204  ||  T-78 → T-82 → T-76
 Finał:   T-163 po T-158/T-208
-         T-164 po T-163/T-209 oraz importerze
+         T-164 po T-163/T-206/T-209 oraz importerze
          T-165
 ```
 

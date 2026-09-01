@@ -40,7 +40,7 @@ impl Bench {
         let run_dir = project.join(".loadout/runs").join(FOLDER);
         fs::create_dir_all(&run_dir)?;
         let boot = machine_booted_at().unwrap_or_default();
-        let (run_status, step_status, pid, pgid) = match path {
+        let (run_status, step_status, process_id, process_group_id) = match path {
             PathUnderTest::ParkedQuestion => ("paused", "pending", Value::Null, Value::Null),
             PathUnderTest::RunningProcess => {
                 ("running", "running", Value::from(PGID), Value::from(PGID))
@@ -57,9 +57,9 @@ impl Bench {
             "title": "T152 recovery",
             "status": run_status,
             "concurrency": 1,
-            "created_at": 1787922000000_i64,
+            "created_at": 1_787_922_000_000_i64,
             "boot_id": boot,
-            "started_at": 1787922000001_i64,
+            "started_at": 1_787_922_000_001_i64,
             "ended_at": null,
             "error": null,
             "unknownRunKey": { "bytes": "must survive" },
@@ -72,9 +72,9 @@ impl Bench {
                 "depends_on": [],
                 "status": step_status,
                 "attempt": 0,
-                "pid": pid,
-                "pgid": pgid,
-                "started_at": 1787922000001_i64,
+                "pid": process_id,
+                "pgid": process_group_id,
+                "started_at": 1_787_922_000_001_i64,
                 "ended_at": null,
                 "error": null,
                 "unknownStepKey": ["also", "kept"]
@@ -182,7 +182,7 @@ fn commit_point_failure_exposes_only_old_or_complete_new_json() -> Result<(), Bo
             after == before || parsed.get("ended_at").is_some_and(|value| !value.is_null()),
             "{path:?} exposed neither the exact old receipt nor a complete reconciled receipt"
         );
-        assert_unknown_fields(&parsed)?;
+        assert_unknown_fields(&parsed);
         assert_no_temps(&bench.run_dir)?;
 
         drop(scope);
@@ -202,7 +202,7 @@ fn successful_reconcile_is_complete_preserves_unknowns_and_is_idempotent()
         bench.reconcile(path, matches!(path, PathUnderTest::RunningProcess));
         let once = bench.bytes()?;
         let parsed: Value = serde_json::from_slice(&once)?;
-        assert_unknown_fields(&parsed)?;
+        assert_unknown_fields(&parsed);
         assert!(
             parsed.get("ended_at").is_some_and(|value| !value.is_null()),
             "reconciled receipt has no end time: {parsed:?}"
@@ -230,7 +230,7 @@ fn successful_reconcile_is_complete_preserves_unknowns_and_is_idempotent()
     Ok(())
 }
 
-fn assert_unknown_fields(run: &Value) -> Result<(), Box<dyn Error>> {
+fn assert_unknown_fields(run: &Value) {
     assert_eq!(
         run.pointer("/unknownRunKey/bytes").and_then(Value::as_str),
         Some("must survive")
@@ -245,14 +245,18 @@ fn assert_unknown_fields(run: &Value) -> Result<(), Box<dyn Error>> {
             .and_then(Value::as_str),
         Some("kept")
     );
-    Ok(())
 }
 
 fn assert_no_temps(run_dir: &Path) -> Result<(), Box<dyn Error>> {
     let leftovers: Vec<String> = fs::read_dir(run_dir)?
         .filter_map(Result::ok)
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.starts_with(".loadout-writing-") || name.ends_with(".tmp"))
+        .filter(|name| {
+            name.starts_with(".loadout-writing-")
+                || Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"))
+        })
         .collect();
     assert!(
         leftovers.is_empty(),
