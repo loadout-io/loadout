@@ -683,69 +683,61 @@ function turnsFrom(typed: string): number {
   return Math.min(10, Math.max(1, value));
 }
 
-/** Przełącznik „Fresh copy of the files" — makieta, linia 620-621.
- *
- * 2026-08-19 — PO CO POWSTAŁ. Reguła `one_folder_two_steps` mówi krokom, które mogą biec
- * równocześnie w jednym folderze: „Give one of them a fresh copy". Do dziś aplikacja nie miała
- * ANI JEDNEGO miejsca, w którym dałoby się to zrobić: pole `folder` jest w schemacie od T-12,
- * jest w makiecie od początku, i nie miało kontrolki nigdzie w `src/`. Walidator kazał więc
- * zrobić rzecz, której to okno nie umiało — a jedynym wyjściem było ręczne poprawienie pliku
- * w edytorze tekstu. Zmierzone na workflow właściciela „Reaserch + implement": dwa kroki
- * researchu wchodzące do jednego kroku syntezy, czyli najzwyklejszy wachlarz, i ślepy zaułek.
- *
- * PRZEŁĄCZNIK, NIE ÓSMY WIERSZ Z ETYKIETĄ. Makieta stawia to w rzędzie przełączników pod
- * siedmioma polami — razem z „Let it use skills" — i tam też stoi tutaj. Kryterium
- * `overrides.test.tsx` („dokładnie siedem wierszy, żadnego ósmego") mierzy pola z etykietą
- * i broni się przed dosypywaniem ustawień, których makieta nie zna; ten przełącznik jest w niej
- * od początku i niesie pole schematu, więc kryterium zostaje nietknięte, a nie objechane.
- *
- * DWIE WARTOŚCI, NIE TRZY. `Folder::Pick { path }` istnieje w schemacie, ale nie ma go
- * w makiecie i nie da się go dziś nigdzie wskazać. Przełącznik przestawia WYŁĄCZNIE między
- * `project` a `fresh-copy`; krok z ręcznie wpisaną ścieżką pokazuje się jako wyłączony
- * i włączenie go jest świadomym „chcę własną kopię". Trzecia wartość udawana dwustanową
- * kontrolką kasowałaby cudzą ścieżkę bez pytania. */
-/** Folder po jednym kliknięciu przełącznika.
- *
- * Osobna funkcja, bo to jest jedyna DECYZJA tego wiersza, a w tym repo nie ma jsdom — komponent
- * da się sprawdzić tylko przez statyczny render, który klika w nic. Rozstrzygnięcie o trzeciej
- * wartości (`pick`) zostałoby wtedy bez kryterium i skasowałby je pierwszy refaktor.
- *
- * `pick` wychodzi na `fresh-copy`, a nie na `project`: przełącznik pokazuje się dla niego jako
- * WYŁĄCZONY, więc jedyne kliknięcie, jakie ma sens, znaczy „chcę własną kopię". Wyjście
- * na `project` kasowałoby ręcznie wpisaną ścieżkę i robiłoby to pod pozorem włączania czegoś. */
-export function nextFolder(value: Folder): Folder {
-  return value.use === 'fresh-copy' ? { use: 'project' } : { use: 'fresh-copy' };
-}
+/** Trzy jawne miejsca pracy, które schema umie zachować bez dodatkowej ścieżki. */
+const FOLDER_CHOICES: ReadonlyArray<{ folder: Folder; label: string; note: string }> = [
+  {
+    folder: { use: 'project' },
+    label: 'Work in the project folder',
+    note: 'Use the files already open for this project.',
+  },
+  {
+    folder: { use: 'fresh-copy' },
+    label: 'Start in a new copy of the files',
+    note: 'This prevents two independent steps from overwriting one another.',
+  },
+  {
+    folder: { use: 'same-copy' },
+    label: 'Continue in the same files as the previous step',
+    note: 'Use the work left by the step immediately before this one.',
+  },
+];
 
-function FreshCopyRow({
+/** Jedna wzajemnie wykluczająca się decyzja zamiast binarnego przełącznika.
+ *
+ * 2026-08-28 (T-151): `same-copy` było prawdziwą wartością pliku i nie miało kontrolki, więc
+ * zamontowany panel kłamał o istniejącym workflow. Trzy radia są jednym faktem o `folder`:
+ * kliknięcie zapisuje dokładnie jedną wartość, a ponowne otwarcie zaznacza dokładnie tę samą.
+ * Ręcznie wpisane `pick` pozostaje nietknięte, dopóki człowiek jawnie nie wybierze jednej z
+ * trzech wspieranych opcji — żadne samo otwarcie panelu nie kasuje cudzej ścieżki. */
+function FolderChoiceRow({
   value,
   onEditStep,
 }: {
   value: Folder;
   onEditStep: (fields: AgentStepFields) => void;
 }): ReactElement {
-  const on = value.use === 'fresh-copy';
-
   return (
-    <label className="flex items-baseline gap-2 text-body text-ink">
-      <input
-        type="checkbox"
-        checked={on}
-        onChange={() => {
-          onEditStep({ folder: nextFolder(value) });
-        }}
-      />
-      <span className="flex flex-col gap-0.5">
-        <span>Fresh copy of the files</span>
-        {/* Zdanie z makiety, słowo w słowo — łącznie z drugą połową. Bez niej ktoś weźmie to
-            za piaskownicę bezpieczeństwa, a to jest wyłącznie ochrona przed nadpisywaniem
-            plików przez dwa kroki naraz. */}
-        <span className={FROM_AGENT}>
-          This step gets its own copy so it can&apos;t collide with another step. Not a security
-          sandbox.
-        </span>
-      </span>
-    </label>
+    <fieldset className="flex flex-col gap-2">
+      <legend className={LABEL}>Where it works</legend>
+      {FOLDER_CHOICES.map((choice) => (
+        <label key={choice.folder.use} className="flex items-baseline gap-2 text-body text-ink">
+          <input
+            type="radio"
+            name="step-folder"
+            value={choice.folder.use}
+            aria-label={choice.label}
+            checked={value.use === choice.folder.use}
+            onChange={() => {
+              onEditStep({ folder: choice.folder });
+            }}
+          />
+          <span className="flex flex-col gap-0.5">
+            <span>{choice.label}</span>
+            <span className={FROM_AGENT}>{choice.note}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
   );
 }
 
@@ -1071,10 +1063,9 @@ export function PanelForStep({
         onReset={onReset}
       />
 
-      {/* Przełącznik własnej kopii plików, w rzędzie przełączników pod siedmioma polami —
-          dokładnie tam, gdzie stawia go makieta (linia 620), i z tego samego powodu, dla którego
-          stoi tu Skills: to nie jest pole z etykietą, tylko przełącznik. */}
-      <FreshCopyRow value={step.folder} onEditStep={onEditStep} />
+      {/* Jedna decyzja o miejscu pracy, obejmująca wszystkie trzy wartości, które człowiek może
+          wybrać w oknie. Nie jest nadpisaniem agenta, więc jedzie przez `onEditStep` i autosave. */}
+      <FolderChoiceRow value={step.folder} onEditStep={onEditStep} />
 
       {/* Liczba rund powrotu — tylko na kroku, z którego powrót wychodzi. */}
       {wayBack === null ? null : <TriesRow value={wayBack} onEditWayBack={onEditWayBack} />}

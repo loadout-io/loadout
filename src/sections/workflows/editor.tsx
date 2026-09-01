@@ -88,6 +88,11 @@ function counted(count: number, noun: string): string {
   return count === 1 ? `1 ${noun}` : `${String(count)} ${noun}s`;
 }
 
+/** Odmowa zapisu jako fakt widoczny dla człowieka, także gdy Rust oddał tylko techniczny powód. */
+function visibleSaveRefusal(said: string): string {
+  return said.toLowerCase().includes('not saved') ? said : `This workflow was not saved. ${said}`;
+}
+
 export function WorkflowEditor({
   path,
   document,
@@ -198,7 +203,7 @@ export function WorkflowEditor({
           data-could-not-save
           className="shrink-0 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
         >
-          {state.couldNotSave}
+          {visibleSaveRefusal(state.couldNotSave)}
         </p>
       )}
 
@@ -210,7 +215,17 @@ export function WorkflowEditor({
             notes={state.notes}
             onChange={state.commit}
             onRun={() => {
-              onRun(path);
+              /* 2026-08-28 (T-151): Run dostaje wyłącznie nazwę pliku, więc jedynym sposobem
+               * zagwarantowania widocznej rewizji jest poczekać, aż store potwierdzi co najmniej
+               * tę rewizję. `saveNow` stoi w tym samym szeregowym ogonie co autosave; odmowa
+               * zostawia ten ekran zamontowany i sama wystawia zdanie powyżej. */
+              void store
+                .getState()
+                .saveNow()
+                .then(() => {
+                  onRun(path);
+                })
+                .catch(() => undefined);
             }}
             onOpenPanel={setOpenStepId}
             /* AUTO-FIX. Biblioteka jedzie argumentem, tą samą drogą co przy `editStep`:

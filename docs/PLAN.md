@@ -152,75 +152,132 @@ w [`docs/PLAN-AGENTS-CONTEXT.md`](PLAN-AGENTS-CONTEXT.md); tutaj tylko kolejnoś
 
 ## 6c. Faza 8 — domknięcie produkcyjne po audycie 2026-08-27
 
-Audyt aktualnego kodu i pięciu faktycznych workflowów potwierdził prawdziwą współbieżność
-wewnątrz jednego biegu oraz działający tekstowy handoff. Ujawnił jednocześnie dwa braki rdzenia:
-równoległe kopie nie składają zmian w plikach, a aplikacja ma jeden globalny uchwyt biegu.
-Pozostałe zadania zamykają utratę nowszych bajtów, pre-start cleanup, nieograniczone bufory,
-retencję zamkniętych sesji, prywatny transport oraz operacyjne mnożenie odmów.
+Audyt kodu, pięciu produkcyjnych workflowów i realnego receipt potwierdził overlap agentów oraz
+tekstowy handoff. Nie potwierdził fizycznego fan-in: downstream ratował się czytaniem katalogów
+rodzeństwa. Dodatkowo naturalny sukces nie dowodzi śmierci całej grupy procesu, globalny RunControl
+blokuje wiele workspace'ów, prywatne instrukcje trafiają do argv/receipt, a output, koszt i aktywne
+worktree nie mają pełnego resource envelope.
 
-### Tryb wykonania całej fazy
+### Dwa tryby wykonania
 
-- Pisarz: **Codex**. Druga opinia: osobny **Codex na innym modelu**, tylko do odczytu. Jest to
-  jawnie zatwierdzony przez właściciela wariant D3 z powodu małego budżetu Claude'a.
-- Zadania idą bez `ship-task.sh`: osobny worktree, uczciwe czerwone `before`, implementacja,
-  quick/full, `./review.sh --agent codex --reviewer codex`, najwyżej jedna naprawa przez
-  `./repair.sh --agent codex --reviewer codex` i pojedyncze `integrate.sh`.
-- Nie powstaje żadne zadanie zmieniające `harness/`, `checks/` ani `verify.sh`. Ręczna korekta
-  lokalnych JSON-ów jest operacją po kodzie, nie fikcyjnym artefaktem w repo.
-- Worktree mogą powstawać równolegle wyłącznie przy rozłącznym `OWNS`; ciężkie Cargo zawsze
-  biegnie szeregowo (niezmiennik 26).
+- **Direct small/medium:** osobny worktree i `OWNS`, celowany test najpierw czerwony i potem
+  zielony, `./verify.sh quick`, read-only review diffu i pojedyncze `integrate.sh`. Bez
+  `ship-task.sh`, `review.sh` i `repair.sh`; pełna bramka nadal stoi na jedynym lądowaniu.
+- **Full Harness large/high-risk:** uczciwe `./verify.sh before`, quick/full, read-only review,
+  najwyżej jedna repair i pojedyncze `integrate.sh`. Dotyczy procesów, crash consistency,
+  Git fan-in, wspólnego bounded/private stream i rejestru wielu biegów.
+- Żaden task nie zmienia `harness/`, `checks/`, `verify.sh` ani decyzji zablokowanych. Worktree
+  mogą pisać równolegle tylko przy rozłącznym `OWNS`; ciężkie Cargo i integracje są zawsze
+  szeregowe (niezmiennik 26).
+- Koordynator utrzymuje task → branch → worktree → terminal oraz trwałe claimy poza drzewem.
+  Obca sesja może zająć pakiet, ale nie może spowodować dwóch writerów tych samych ścieżek.
 
-| ID | Zadanie | Zależy od | Dlaczego osobno |
+| ID | Zadanie | Tryb | Zależy od |
 |---|---|---|---|
-| **T-151** | Nowsze bajty wygrywają, a Run używa widocznej rewizji | T-150, T-152 | Jeden kontrakt świeżości dla pamięci i plikowej prawdy; jawnie zastępuje wadliwą część T-139 |
-| **T-152** | Każda próba biegu rozlicza się raz i sprząta przygotowanie | T-150 | Transakcja izolacji, jedna polityka start-error, bounded cleanup i uczciwy receipt |
-| **T-153** | Równoległe gałęzie składają się w jedno działające drzewo | T-152 | Główna obietnica produktu: fizyczny fan-in + poprawna lineage kopii, bez nowego rodzaju kafelka |
-| **T-154** | Receipt, prompt i capability opisują ten sam kontekst | T-151, T-153, T-156 | Fail-closed rerun, zamrożone skills i exact per-step context |
-| **T-155** | Jeden bieg na workspace, wiele workspace'ów naraz | T-154 | Realizuje etap B świadomie odłożony przez T-69/T-71/T-65, zachowując jeden globalny limiter |
-| **T-156** | Bufory i zamknięte sesje mają skończony lifecycle | — | Niezależna fala: Check/driver bounds, Serve reap, terminal sinks i frontend eviction |
-| **T-157** | Prywatne instrukcje i sekrety nie trafiają do argv ani evidence | T-155 | Jedna wspólna granica prywatnego transportu i redakcji obu vendorów |
-| **T-158** | Błędne tło nie mnoży prób ani logu bez końca | T-155 | Typed quarantine, kompaktowanie trigger ledgeru i rotacja lokalnego logu |
+| **T-151** | Nowsze bajty wygrywają, Run czeka na widoczną rewizję, a agent może wybrać ciągłość plików | direct | T-150 |
+| **T-152** | Przygotowanie próby jest transakcją, start-error respektuje politykę, no-work jest uczciwe | full | T-150, T-202 |
+| **T-153** | Równoległe gałęzie składają pliki i zachowują fizyczną lineage kopii | full | T-201 |
+| **T-154** | Rerun, prompt i capability używają dokładnie zadeklarowanego stagingu | direct | T-151, T-153, T-155, T-156, T-202 |
+| **T-155** | Backend ma jeden adresowany bieg per workspace i jeden globalny limiter | full | T-151, T-152, T-153, T-156, T-201, T-202, T-203 |
+| **T-156** | Native output, prywatny stan i zamknięte zasoby mają skończony lifecycle | full | T-201, T-202 |
+| **T-157** | Connection odmawia literalnych sekretów w args i URL | direct | T-150 |
+| **T-158** | Lokalny log jest prywatny, rotowany i ograniczony | direct | T-155 |
+| **T-201** | Naturalny i wymuszony koniec zachowuje ownership do ESRCH | full | T-152 |
+| **T-202** | Jeden durable publisher obsługuje workflow, agenta, handoff i attachment | full | T-150 |
+| **T-203** | Zepsuta definicja jest osobnym problemem, a zdrowa biblioteka działa | direct | T-202 |
+| **T-204** | Frontend kluczuje stan terminalem, workspace'em, runem i fizycznym krokiem | direct | T-154, T-155, T-156 |
+| **T-205** | Instrukcje i rozwiązane sekrety mają prywatny, bounded transport | full | T-154, T-156, T-157 |
+| **T-206** | Deterministyczna odmowa triggera przechodzi w durable quarantine | direct | T-155 |
+| **T-207** | Receipt rozdziela terminalność/evidence i dowodzi provenance oraz kosztu | direct | T-154, T-155, T-201, T-205, T-206 |
+| **T-208** | Każdy start ma jawny cost limit i bezpieczny próg dysku | full | T-204, T-206, T-207 |
+| **T-209** | Historyczne izolacje są odzyskiwane wyłącznie z dowodem | full | T-153, T-155, T-201, T-207 |
 
 ### Fale bez konfliktów `OWNS`
 
 ```text
-Gotowe:  T-150 (wylądowało na main jako f665256)
-Fala 0:  T-152               ||  T-156
-Fala 1:  T-151               ||  T-153
-Fala 2:  T-154
-Fala 3:  T-155
-Fala 4:  T-157               ||  T-158
+Gotowe:   T-150
+Fala A:   T-151  || T-157 || T-202
+Fala B:   T-152  || T-203
+Fala C:   T-201
+Fala D1:  T-153
+Fala D2:  T-156
+Fala E:   T-155
+Fala F:   T-154  || T-158
+Fala G1:  T-204  || T-205
+Fala G2:  T-206
+Fala H:   T-207
+Fala I:   T-208  || T-209
 ```
+
+T-153 i T-156 są semantycznie niezależne po T-201, ale oba aktualizują
+`docs/ARCHITECTURE.md`, więc nie powstają jako równoległe worktree. T-205 i T-206 współdzielą
+`commands/run.rs`; najpierw ląduje prywatny transport, potem kwarantanna triggera. To są jawne
+cięcia wynikające z `OWNS`, nie sztuczne zależności produktu.
+
+Kod i lekkie testy w jednej fali mogą zachodzić na siebie. Każde Cargo, `verify.sh` oraz
+`integrate.sh` wchodzi do jednej kolejki. Worktree następnej zależnej fali powstaje z exact SHA po
+integracji wszystkich poprzedników.
 
 ### Operacyjne domknięcie — bez taska i bez Harnessu
 
-1. Pierwszą czynnością operatora jest wyłączenie triggera `Urc` i zapisanie, czy wcześniej był
-   włączony. Pozostaje wyłączony do końca tej checklisty.
-2. Po T-153/T-154 Codex robi timestampowany backup całego `~/.loadout/workflows`, a potem
-   przygotowuje wszystkie pięć zmian jako jedną transakcję z rollbackiem:
-   - `Murmur-1`: Combine i QA kontynuują zintegrowaną pracę w plikach;
-   - `Urc`: Serve stoi po integracji i sprawdzeniu kodu, nie jako niezależny root;
-   - `Reaserch + implement`: C1/C2 używają osobnych kopii, a Implement kontynuuje ich fan-in;
-   - `Deep reaserch`: każda para kopii używa `{{copy}}`/`{{copies}}` i własnej lineage;
-   - `Easy`: pozostaje proste; realny Check dochodzi tylko wtedy, gdy workflow ma dostarczać kod.
-3. Każdy kandydat przechodzi `jq -e`, produkcyjny save/reload i pełny preflight. Błąd dowolnego
-   pliku przywraca cały backup. Drugi Codex porównuje backup i wynik wyłącznie read-only.
-4. Trigger pozostaje wyłączony przez T-155/T-158. Po zielonym T-151…T-158 current-SHA smoke
-   uruchamia tymczasową kopię `Murmur-1` na disposable repo/worktree z Codex writer + Codex
-   reviewer. Nie mutuje globalnych agentów. Receipt musi być przypięty do SHA, a kontrola obejmuje
-   overlap, finalne pliki, kontekst, brak sierot i cleanup.
-5. `Urc` wraca do poprzedniego stanu wyłącznie po zielonym preflight i smoke; jeśli wcześniej był
-   wyłączony, pozostaje wyłączony.
+1. Operator zapisuje stan `Urc`, wyłącza go przez produkcyjną drogę i potwierdza quiet window
+   dłuższe niż jeden cadence. Pozostaje wyłączony do końca checklisty.
+2. Po T-206 robi timestampowany backup całego `~/.loadout/workflows`. Wszystkie pięć zmian jest
+   jedną transakcją z rollbackiem i wspólnym pełnym dry-preflight:
+   - `Murmur-1`: Combine scala rodziców, QA kontynuuje jego fizyczne drzewo;
+   - `Urc`: integracja i Check poprzedzają Serve, a Serve używa tego samego drzewa;
+   - `Reaserch + implement`: C1/C2 mają osobne kopie, Implement składa ich fan-in;
+   - `Deep reaserch`: kopie mają `{{copy}}`/`{{copies}}` i własną lineage;
+   - `Easy`: pozostaje proste; Check dochodzi wyłącznie przy dostarczaniu kodu.
+3. Każdy kandydat przechodzi `jq -e`, produkcyjny save/reload i ten sam preflight co Run. Błąd
+   jednego pliku przywraca cały backup. Drugi Codex porównuje backup i wynik read-only.
+4. Po zielonym current-SHA full gate działa minimalny capped smoke na disposable repo: dwóch
+   prawdziwych rodziców, multi-parent fan-in, Check, osobna odmowa konfliktu, addressed Stop,
+   exact context/private sentinel, cleanup i receipt przypięty do build SHA. Pełny Murmur-1 jest
+   późniejszym opt-in canary, nie kosztowną bramką release.
+5. `Urc` wraca do wcześniejszego stanu tylko po zielonym preflight i smoke.
 
-Nie powstaje teraz osobny task soak/release: T-149, pełna bramka i powyższy current-SHA smoke
-dają istniejące oracles bez ich duplikowania. Task dystrybucyjny powstanie dopiero przy realnej
-instalacji u drugiej osoby; wtedy kontrakt obejmie provenance SHA, podpisanie/notaryzację dokładnej
-aplikacji wewnątrz DMG i bezpieczny transport poświadczeń Apple.
+Nie powstaje osobny soak/release task. Raw evidence, handoffy i zamknięte rozmowy są trwałą
+historią; T-209 sprząta wyłącznie udowodnione izolacje. Przed publiczną dystrybucją właściciel
+nadal wybiera Delete, quota/retention albo świadomie akceptuje nieograniczoną historię.
 
-Raw evidence, handoffy i zamknięte rozmowy Lead są trwałą historią użytkownika, więc ich liczba
-nie wraca do baseline'u w tej fazie. Przed publiczną dystrybucją właściciel musi wybrać jawne
-Delete, quota/retention albo świadomie zaakceptować nieograniczoną historię; automatyczne kasowanie
-bez tej decyzji łamałoby zasadę „pliki są prawdą".
+## 6d. Faza 9 — codzienna obsługa wielu workspace'ów
+
+Pierwszy długi Murmur-1 potwierdził, że graf i cross-vendor działają, ale ujawnił cztery rzeczy,
+które przeszkadzają już w samym patrzeniu i uruchamianiu: pasek długiego grafu wypycha ekran,
+NOW trzyma zakończonych agentów, wybór Lead żyje przy każdym Run zamiast w Settings, a jedna
+globalna biblioteka workflow przecieka między workspace'ami. Receipt refleksji istnieje, lecz
+ekran nie tłumaczy ani wyboru, ani wyniku.
+
+Importer domykamy istniejącymi kontraktami zamiast dodawać piątą warstwę migracji: T-78 daje
+jedną typowaną pozycję i odwracalny receipt, T-82 usuwa fiksturę jednego workflow, a T-76 dopiero
+na tym fundamencie pozwala agentowi wyjaśnić zachowania, których deterministyczny skan nie umie
+odtworzyć. Element `Can't be reproduced` pozostaje widoczny do czasu takiej jawnej analizy;
+`Leave out all unresolved items` nie jest twierdzeniem, że zachowanie zostało zaimportowane.
+
+| ID | Zadanie | Zależy od | Dlaczego osobno |
+|---|---|---|---|
+| **T-161** | Długi workflow zostaje wewnątrz ekranu Run | — | Wąska geometria paska kroków; może lądować bez czekania na Rust |
+| **T-162** | NOW pokazuje wyłącznie pracę, która trwa | T-156 | Lifecycle feedu ma jednego właściciela po domknięciu retencji |
+| **T-163** | Settings wybiera domyślnego Lead i przypina rozmowę | T-158, T-208 | Jeden globalny wybór Agenta oraz naprawa polityki Codex App Server po zmianach IPC/private transport |
+| **T-164** | Workflow należy do workspace, w którym będzie uruchomiony | T-163, T-209, T-76, T-78, T-82 | Jedna zmiana scope dla CRUD, Run, historii, triggerów i importu |
+| **T-165** | Refleksja mówi, co robi i co zrobiła | T-164 | Tylko objaśnienie oraz istniejący receipt w historii, bez nowego etapu |
+
+### Fale bez konfliktów `OWNS`
+
+```text
+Teraz:   T-161               ||  przygotowanie T-78 bez ciężkiego Cargo
+Rdzeń:   fale z §6c
+Boki:    T-162 po T-156 i przed T-204  ||  T-78 → T-82 → T-76
+Finał:   T-163 po T-158/T-208
+         T-164 po T-163/T-209 oraz importerze
+         T-165
+```
+
+Ciężkie targety Cargo pozostają globalnie szeregowe także między tymi strumieniami. T-161 może
+przejść browserowy `before` i implementację równolegle; żadna zielona bramka nie jest jednak
+deklarowana na podstawie działającej aplikacji albo starego receipt — każdy task przechodzi
+własne current-SHA quick/full i review.
 
 ## 7. Linia cięcia
 

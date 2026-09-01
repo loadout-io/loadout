@@ -85,6 +85,56 @@ pub struct Mapping {
     pub message: String,
 }
 
+/// Rola pliku źródłowego w jednej pozycji importu.
+///
+/// 2026-08-28 (T-78) — pozycja może powstać z więcej niż jednego pliku (na przykład bundle
+/// skilla). Sama ścieżka nie mówi, który plik definiuje pozycję, a który tylko jedzie z nią.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportSourceRole {
+    Definition,
+    Behavior,
+    Dependency,
+}
+
+/// Jeden plik, z którego powstaje typowana pozycja importu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSource {
+    pub provider: SourceKind,
+    pub path: PathBuf,
+    pub hash: String,
+    pub role: ImportSourceRole,
+}
+
+/// Stan planu po domknięciu zależności, a nie wyłącznie zgodność formatu źródła.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportStatus {
+    Ready,
+    NeedsChoice,
+    Unsupported,
+    MissingDependencies,
+}
+
+/// Jedna pozycja od skanu aż do zapisu.
+///
+/// Pola opcjonalne nie udają wygenerowanego celu ani treści dla formatu, którego Loadout nie
+/// potrafi odtworzyć. T-78 wypełni ten model z `SourceItem`; na etapie kontraktu wektor jest
+/// świadomie pustym szkieletem, żeby kryterium padało na zachowaniu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportItem {
+    pub id: String,
+    pub kind: ItemKind,
+    pub sources: Vec<ImportSource>,
+    pub target: Option<PathBuf>,
+    pub dependencies: Vec<String>,
+    pub status: ImportStatus,
+    pub status_message: String,
+    pub generated_hash: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompatibilityReport {
@@ -152,6 +202,9 @@ pub struct MemoryNote {
 pub struct MigrationDraft {
     pub root: PathBuf,
     pub source_hashes: BTreeMap<PathBuf, String>,
+    /// Typowane pozycje są źródłem planu; stare wektory zostają na czas addytywnego przejścia.
+    #[serde(default)]
+    pub items: Vec<ImportItem>,
     pub agents: Vec<Agent>,
     pub skills: Vec<SkillDraft>,
     pub connections: Vec<Connection>,
@@ -165,7 +218,15 @@ pub struct MigrationDraft {
 impl MigrationDraft {
     #[must_use]
     pub fn runnable(&self) -> bool {
-        self.report.blockers() == 0
+        if self.items.is_empty() {
+            // Addytywne przejście T-78: stary zapis bez `items` nadal czyta swój dotychczasowy
+            // raport. Świeży Scan zawsze ma pozycje i wtedy jedyną odpowiedzią jest ich stan.
+            self.report.blockers() == 0
+        } else {
+            self.items
+                .iter()
+                .all(|item| item.status == ImportStatus::Ready)
+        }
     }
 }
 

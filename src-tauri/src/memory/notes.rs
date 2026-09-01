@@ -1053,11 +1053,26 @@ pub fn stop_using(root: &Path, id: &NoteId, at: &str) -> Result<Note> {
 /// więc odczyt po zapisie byłby odczytem dla nikogo (niezmiennik 21).
 pub fn mark_used(path: &Path, at: &str) -> Result<()> {
     let raw = fs::read_to_string(path)?;
-    mark_used_from_snapshot(path, &raw, at)
+    stamp_last_used_at(path, &raw, at)
 }
 
-/// Stempluje dokładną migawkę, z której bieg złożył prompt, bez ponownego odczytu pliku.
-pub(crate) fn mark_used_from_snapshot(path: &Path, raw: &str, at: &str) -> Result<()> {
+/// Stempluje bieżący plik po użyciu zamrożonej migawki przez bieg.
+///
+/// 2026-08-28 (T-151): `_snapshot` pozostaje argumentem, bo receipt i prompt nadal opisują
+/// dokładnie te starsze bajty. Nie wolno ich jednak zapisać z powrotem: człowiek mógł już
+/// poprawić, przenieść albo odrzucić notatkę. Brak starej ścieżki jest autorytatywny i kończy
+/// stemplowanie bez odtworzenia pliku; istniejąca ścieżka jest czytana ponownie, a w jej
+/// bieżących bajtach zmienia się wyłącznie `last_used_at`.
+pub(crate) fn mark_used_from_snapshot(path: &Path, _snapshot: &str, at: &str) -> Result<()> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    stamp_last_used_at(path, &raw, at)
+}
+
+fn stamp_last_used_at(path: &Path, raw: &str, at: &str) -> Result<()> {
     if !raw.starts_with("---\n") {
         return Err(super::Error::NoFrontMatter {
             path: path.to_owned(),
@@ -1079,9 +1094,9 @@ pub(crate) fn mark_used_from_snapshot(path: &Path, raw: &str, at: &str) -> Resul
             .split_once(':')
             .is_some_and(|(key, _)| key.trim() == "last_used_at")
         {
-            // 2026-08-26 (T-137): bieg musi ostemplować dokładnie bajty, które wysłał do
-            // promptu. Renderowanie sparsowanego nagłówka kanonizowałoby każdy jego wiersz,
-            // w tym nieznane klucze, mimo że zmienia się wyłącznie ten jeden fakt.
+            // 2026-08-28 (T-151): renderowanie sparsowanego nagłówka kanonizowałoby każdy
+            // bieżący wiersz, w tym nieznane klucze. Podmieniamy więc wyłącznie ten jeden fakt
+            // w surowych bajtach ponownie odczytanych spod aktualnej ścieżki.
             let mut stamped = raw.to_owned();
             stamped.replace_range(
                 line_start..line_end,
@@ -1098,7 +1113,7 @@ pub(crate) fn mark_used_from_snapshot(path: &Path, raw: &str, at: &str) -> Resul
 
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        "the note snapshot has no last_used_at line",
+        "the note has no last_used_at line",
     )
     .into())
 }

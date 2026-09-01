@@ -1,7 +1,8 @@
 //! Złożenie inventory w raport zgodności i natywny graf.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -17,7 +18,8 @@ pub use crate::workflow::{CheckOutcome, Condition, ConditionalLink, RouteEvidenc
 use super::adapters::{self, adapt, check_command, knows_ship_ui, take_connections};
 use super::discover::{Inspection, scan};
 use super::{
-    ADAPTER_VERSION, CompatibilityReport, ImportPreview, ItemKind, MigrationDraft, Result,
+    ADAPTER_VERSION, Compatibility, CompatibilityReport, ImportItem, ImportPreview, ImportSource,
+    ImportSourceRole, ImportStatus, ItemKind, Mapping, MigrationDraft, Result, SourceItem,
 };
 
 /// Pełny Scan: odczyt i translacja w jednym backendowym przebiegu, zanim dane trafią do okna.
@@ -56,9 +58,11 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
         .map(|item| (item.path.clone(), item.hash.clone()))
         .collect();
     let workflows = imported_workflows(&inspection, &adapted.agents);
-    let draft = MigrationDraft {
+    let items = typed_items(&inspection, &adapted, &workflows);
+    let mut draft = MigrationDraft {
         root: inspection.snapshot.root.clone(),
         source_hashes,
+        items,
         agents: adapted.agents,
         skills: adapted.skills,
         connections: adapted.connections,
@@ -70,10 +74,663 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
             mappings: adapted.mappings,
         },
     };
+    // Wektory przejściowe są materializacją wybranych pozycji. Dziś wszystkie są wybrane;
+    // ta sama funkcja biegnie po decyzjach człowieka tuż przed `apply`.
+    keep_selected_outputs(&mut draft);
+    refresh_statuses(&mut draft);
     ImportPreview {
         snapshot: inspection.snapshot,
         draft,
     }
+}
+
+/// Przelicza gotowość po każdej zmianie planu — także po włączeniu Connections.
+pub fn refresh_statuses(draft: &mut MigrationDraft) {
+    let mappings: BTreeMap<_, _> = draft
+        .report
+        .mappings
+        .iter()
+        .map(|mapping| {
+            (
+                mapping.item_id.clone(),
+                (mapping.compatibility, mapping.message.clone()),
+            )
+        })
+        .collect();
+    for item in &mut draft.items {
+        let Some((compatibility, message)) = mappings.get(&item.id) else {
+            item.status = ImportStatus::Unsupported;
+            "Loadout has no compatibility result for this item."
+                .clone_into(&mut item.status_message);
+            continue;
+        };
+        item.status = match compatibility {
+            Compatibility::Exact | Compatibility::Adjusted => ImportStatus::Ready,
+            Compatibility::NeedsChoice => ImportStatus::NeedsChoice,
+            Compatibility::Unsupported => ImportStatus::Unsupported,
+        };
+        message.clone_into(&mut item.status_message);
+    }
+
+    /* 2026-08-28, review T-78: sam obiekt w starym `draft.agents` nie jest dowodem, że jego
+     * typowana pozycja została wybrana i domknięta. Startujemy wyłącznie od pozycji Ready,
+     * a potem monotonicznie usuwamy te, których zależność nie należy do tego samego zbioru.
+     * Dzięki temu A -> B -> brakujące C nie zależy od kolejności w inventory. */
+    let mut ready: BTreeSet<String> = draft
+        .items
+        .iter()
+        .filter(|item| item.status == ImportStatus::Ready)
+        .map(|item| item.id.clone())
+        .collect();
+    loop {
+        let unavailable: Vec<_> = draft
+            .items
+            .iter()
+            .filter(|item| ready.contains(&item.id))
+            .filter(|item| {
+                item.dependencies
+                    .iter()
+                    .any(|dependency| !dependency_is_ready(draft, &ready, dependency))
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        if unavailable.is_empty() {
+            break;
+        }
+        for id in unavailable {
+            ready.remove(&id);
+        }
+    }
+
+    let missing: BTreeMap<_, Vec<_>> = draft
+        .items
+        .iter()
+        .filter(|item| item.status == ImportStatus::Ready && !ready.contains(&item.id))
+        .map(|item| {
+            let dependencies = item
+                .dependencies
+                .iter()
+                .filter(|dependency| !dependency_is_ready(draft, &ready, dependency))
+                .cloned()
+                .collect();
+            (item.id.clone(), dependencies)
+        })
+        .collect();
+    for item in &mut draft.items {
+        let Some(dependencies) = missing.get(&item.id) else {
+            continue;
+        };
+        item.status = ImportStatus::MissingDependencies;
+        item.status_message = format!(
+            "Blocked because {} will not be imported or enabled.",
+            dependencies.join(", ")
+        );
+    }
+}
+
+fn dependency_is_ready(draft: &MigrationDraft, ready: &BTreeSet<String>, dependency: &str) -> bool {
+    let Some((kind, name)) = dependency.split_once(':') else {
+        return false;
+    };
+    match kind {
+        "skill" => draft
+            .skills
+            .iter()
+            .find(|skill| skill.name.eq_ignore_ascii_case(name))
+            .is_some_and(|skill| {
+                let target = PathBuf::from("skills").join(&skill.name);
+                draft.items.iter().any(|item| {
+                    ready.contains(&item.id)
+                        && item.kind == ItemKind::Skill
+                        && item.target.as_deref().is_some_and(|item_target| {
+                            item_target == target.as_path() || item_target.starts_with(&target)
+                        })
+                })
+            }),
+        "agent" => draft
+            .agents
+            .iter()
+            .find(|agent| {
+                agent.id.to_string().eq_ignore_ascii_case(name)
+                    || agent.name.eq_ignore_ascii_case(name)
+            })
+            .is_some_and(|agent| {
+                let target = agent_target(agent);
+                draft.items.iter().any(|item| {
+                    ready.contains(&item.id)
+                        && item.kind == ItemKind::Agent
+                        && item.target.as_deref() == Some(target.as_path())
+                })
+            }),
+        "connection" => draft
+            .connections
+            .iter()
+            .filter(|connection| connection.enabled)
+            .find(|connection| {
+                connection.id.eq_ignore_ascii_case(name)
+                    || connection.name.eq_ignore_ascii_case(name)
+            })
+            .is_some_and(|connection| {
+                // Osobiste połączenia są wybierane osobnym przełącznikiem i nie mają SourceItem.
+                connection.source == Path::new(".claude.json")
+                    || draft.items.iter().any(|item| {
+                        ready.contains(&item.id)
+                            && item.kind == ItemKind::Connection
+                            && item
+                                .sources
+                                .iter()
+                                .any(|source| source.path == connection.source)
+                    })
+            }),
+        _ => false,
+    }
+}
+
+/// Po odznaczeniu pozycji stare wektory nie mogą zachować pliku, którego w planie już nie ma.
+pub fn keep_selected_outputs(draft: &mut MigrationDraft) {
+    draft
+        .agents
+        .retain(|agent| owns_target(&draft.items, &agent_target(agent)));
+    draft.skills.retain(|skill| {
+        let target = PathBuf::from("skills").join(&skill.name);
+        owns_target_or_child(&draft.items, &target)
+    });
+    draft.connections.retain(|connection| {
+        // Osobiste zakresy nie mają SourceItem w repo. Są jawnie pokazane jako "yours" i ich
+        // osobny przełącznik nadal jest decyzją człowieka, więc brak repo-itemu ich nie usuwa.
+        connection.source == Path::new(".claude.json")
+            || draft.items.iter().any(|item| {
+                item.sources
+                    .iter()
+                    .any(|source| source.path == connection.source)
+            })
+    });
+    draft.workflows.retain(|workflow| {
+        let target = PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)));
+        owns_target(&draft.items, &target)
+    });
+    draft.notes.retain(|note| {
+        draft.items.iter().any(|item| {
+            item.kind == ItemKind::Memory
+                && item.sources.iter().any(|source| {
+                    source.path == note.source
+                        || source.path.parent().is_some_and(|parent| {
+                            !parent.as_os_str().is_empty() && note.source.starts_with(parent)
+                        })
+                })
+        })
+    });
+}
+
+fn typed_items(
+    inspection: &Inspection,
+    adapted: &adapters::AdapterOutput,
+    workflows: &[WorkflowFile],
+) -> Vec<ImportItem> {
+    let mappings: BTreeMap<_, _> = adapted
+        .mappings
+        .iter()
+        .map(|mapping| (mapping.item_id.as_str(), mapping))
+        .collect();
+    inspection
+        .files
+        .iter()
+        .map(|file| {
+            let mapping = mappings.get(file.item.id.as_str()).copied();
+            let agent = agent_for(&file.item, &adapted.agents);
+            let skill = (file.item.kind == ItemKind::Skill)
+                .then(|| {
+                    adapted
+                        .skills
+                        .iter()
+                        .find(|skill| skill.name.eq_ignore_ascii_case(&file.item.name))
+                })
+                .flatten();
+            let connections: Vec<_> = if file.item.kind == ItemKind::Connection {
+                adapted
+                    .connections
+                    .iter()
+                    .filter(|connection| connection.source == file.item.path)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let workflow = workflow_for(file, workflows);
+            let notes: Vec<_> = if file.item.kind == ItemKind::Memory {
+                adapted
+                    .notes
+                    .iter()
+                    .filter(|note| memory_item_covers(&file.item, &note.source))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let sources = sources_for(inspection, &file.item, skill, &notes);
+            let target = target_for(&file.item, agent, skill, &connections, workflow, &notes);
+            let dependencies = dependencies_for(&file.item, agent, workflow);
+            let generated_hash = generated_hash_for(agent, skill, &connections, workflow, &notes);
+            let (status, status_message) = initial_status(mapping);
+            ImportItem {
+                id: file.item.id.clone(),
+                kind: file.item.kind,
+                sources,
+                target,
+                dependencies,
+                status,
+                status_message,
+                generated_hash,
+            }
+        })
+        .collect()
+}
+
+fn initial_status(mapping: Option<&Mapping>) -> (ImportStatus, String) {
+    mapping.map_or_else(
+        || {
+            (
+                ImportStatus::Unsupported,
+                "Loadout has no compatibility result for this item.".to_owned(),
+            )
+        },
+        |mapping| {
+            let status = match mapping.compatibility {
+                Compatibility::Exact | Compatibility::Adjusted => ImportStatus::Ready,
+                Compatibility::NeedsChoice => ImportStatus::NeedsChoice,
+                Compatibility::Unsupported => ImportStatus::Unsupported,
+            };
+            (status, mapping.message.clone())
+        },
+    )
+}
+
+fn sources_for(
+    inspection: &Inspection,
+    item: &SourceItem,
+    skill: Option<&super::SkillDraft>,
+    notes: &[&super::MemoryNote],
+) -> Vec<ImportSource> {
+    let mut sources = vec![ImportSource {
+        provider: item.source,
+        path: item.path.clone(),
+        hash: item.hash.clone(),
+        role: ImportSourceRole::Definition,
+    }];
+    if let Some(skill) = skill {
+        for path in files_below(&skill.source_dir) {
+            let Ok(relative) = path.strip_prefix(&inspection.snapshot.root) else {
+                continue;
+            };
+            if relative == item.path {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            sources.push(ImportSource {
+                provider: item.source,
+                path: relative.to_path_buf(),
+                hash: super::discover::content_hash(&bytes),
+                role: ImportSourceRole::Dependency,
+            });
+        }
+    }
+    for note in notes {
+        if note.source != item.path && !sources.iter().any(|source| source.path == note.source) {
+            sources.push(ImportSource {
+                provider: note.app,
+                path: note.source.clone(),
+                hash: note.source_hash.clone(),
+                role: ImportSourceRole::Behavior,
+            });
+        }
+    }
+    sources.sort_by(|left, right| left.path.cmp(&right.path));
+    sources
+}
+
+fn target_for(
+    item: &SourceItem,
+    agent: Option<&Agent>,
+    skill: Option<&super::SkillDraft>,
+    connections: &[&crate::connections::Connection],
+    workflow: Option<&WorkflowFile>,
+    notes: &[&super::MemoryNote],
+) -> Option<PathBuf> {
+    match item.kind {
+        ItemKind::Agent => agent.map(agent_target),
+        ItemKind::Skill => {
+            skill.map(|skill| PathBuf::from("skills").join(&skill.name).join("SKILL.md"))
+        }
+        ItemKind::Connection if connections.len() == 1 => {
+            Some(PathBuf::from("connections").join(format!("{}.json", connections[0].id)))
+        }
+        ItemKind::Connection if !connections.is_empty() => Some(PathBuf::from("connections")),
+        ItemKind::Workflow => workflow.map(|workflow| {
+            PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)))
+        }),
+        ItemKind::Memory if notes.len() == 1 => Some(memory_target(&notes[0].title)),
+        ItemKind::Memory if !notes.is_empty() => Some(PathBuf::from("memory/notes")),
+        ItemKind::Hook
+        | ItemKind::Rule
+        | ItemKind::Unknown
+        | ItemKind::Memory
+        | ItemKind::Connection => None,
+    }
+}
+
+fn dependencies_for(
+    item: &SourceItem,
+    agent: Option<&Agent>,
+    workflow: Option<&WorkflowFile>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(agent) = agent {
+        out.extend(agent.skills.iter().map(|name| format!("skill:{name}")));
+        out.extend(
+            agent
+                .connections
+                .iter()
+                .map(|name| format!("connection:{name}")),
+        );
+    }
+    if let Some(workflow) = workflow {
+        out.extend(workflow.steps.iter().filter_map(|step| match step {
+            Step::Agent(step) => Some(format!("agent:{}", step.agent)),
+            Step::Check(_) | Step::Checkpoint(_) | Step::Serve(_) => None,
+        }));
+    } else if item.kind == ItemKind::Workflow {
+        // Znany koordynator bez jednej z tych ról nie generuje grafu, ale brak musi stać w planie.
+        // Te trzy nazwy są częścią rozpoznawanego szablonu `ship_ui`, nie ogólną polityką silnika.
+        out.extend(
+            ["frontend-dev", "design-qa", "code-reviewer"]
+                .into_iter()
+                .map(|name| format!("agent:{name}")),
+        );
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn generated_hash_for(
+    agent: Option<&Agent>,
+    skill: Option<&super::SkillDraft>,
+    connections: &[&crate::connections::Connection],
+    workflow: Option<&WorkflowFile>,
+    notes: &[&super::MemoryNote],
+) -> Option<String> {
+    let mut files = Vec::new();
+    if let Some(agent) = agent
+        && let Some(bytes) = render_agent(agent)
+    {
+        files.push((agent_target(agent), bytes));
+    }
+    if let Some(skill) = skill {
+        for source in files_below(&skill.source_dir) {
+            let Ok(relative) = source.strip_prefix(&skill.source_dir) else {
+                continue;
+            };
+            if let Ok(bytes) = fs::read(&source) {
+                files.push((
+                    PathBuf::from("skills").join(&skill.name).join(relative),
+                    bytes,
+                ));
+            }
+        }
+    }
+    for connection in connections {
+        if let Some(bytes) = pretty_json_bytes(*connection) {
+            files.push((
+                PathBuf::from("connections").join(format!("{}.json", connection.id)),
+                bytes,
+            ));
+        }
+    }
+    if let Some(workflow) = workflow
+        && let Some(bytes) = pretty_json_bytes(workflow)
+    {
+        files.push((
+            PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name))),
+            bytes,
+        ));
+    }
+    for note in notes {
+        if let Ok(bytes) = serde_json::to_vec(note) {
+            files.push((memory_target(&note.title), bytes));
+        }
+    }
+    aggregate_hash(files)
+}
+
+fn aggregate_hash(mut files: Vec<(PathBuf, Vec<u8>)>) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    if files.len() == 1 {
+        return Some(super::discover::content_hash(&files[0].1));
+    }
+    let mut bytes = Vec::new();
+    for (path, content) in files {
+        bytes.extend_from_slice(path.to_string_lossy().as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&content);
+        bytes.push(0);
+    }
+    Some(super::discover::content_hash(&bytes))
+}
+
+fn agent_for<'a>(item: &SourceItem, agents: &'a [Agent]) -> Option<&'a Agent> {
+    if item.kind != ItemKind::Agent {
+        return None;
+    }
+    agents
+        .iter()
+        .find(|agent| agent.name.eq_ignore_ascii_case(&item.name))
+        .or_else(|| (agents.len() == 1).then(|| &agents[0]))
+}
+
+fn workflow_for<'a>(
+    file: &super::discover::InspectedFile,
+    workflows: &'a [WorkflowFile],
+) -> Option<&'a WorkflowFile> {
+    (file.item.kind == ItemKind::Workflow && knows_ship_ui(&file.content))
+        .then(|| workflows.first())
+        .flatten()
+}
+
+fn memory_item_covers(item: &SourceItem, source: &Path) -> bool {
+    item.kind == ItemKind::Memory
+        && (item.path == source
+            || item.path.parent().is_some_and(|directory| {
+                !directory.as_os_str().is_empty() && source.starts_with(directory)
+            }))
+}
+
+fn files_below(root: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut out = Vec::new();
+    while let Some(at) = pending.pop() {
+        let Ok(read) = fs::read_dir(at) else {
+            continue;
+        };
+        let mut entries: Vec<_> = read.flatten().collect();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn owns_target(items: &[ImportItem], target: &Path) -> bool {
+    items
+        .iter()
+        .any(|item| item.target.as_deref() == Some(target))
+}
+
+fn owns_target_or_child(items: &[ImportItem], parent: &Path) -> bool {
+    items.iter().any(|item| {
+        item.target
+            .as_deref()
+            .is_some_and(|target| target == parent || target.starts_with(parent))
+    })
+}
+
+fn memory_target(title: &str) -> PathBuf {
+    PathBuf::from("memory")
+        .join("notes")
+        .join(format!("{}.md", crate::memory::slugify(title)))
+}
+
+fn slug(value: &str) -> String {
+    let mut out = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            out.push(character.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_owned()
+}
+
+fn agent_target(agent: &Agent) -> PathBuf {
+    let name = slug(&agent.name);
+    PathBuf::from("agents").join(format!(
+        "{}.md",
+        if name.is_empty() {
+            agent.id.to_string()
+        } else {
+            name
+        }
+    ))
+}
+
+fn pretty_json_bytes(value: &impl serde::Serialize) -> Option<Vec<u8>> {
+    let mut text = serde_json::to_string_pretty(value).ok()?;
+    text.push('\n');
+    Some(text.into_bytes())
+}
+
+/// Ten renderer jest lustrzanym rachunkiem istniejącego `write_agent_file`; AC-1 porównuje jego
+/// hash z plikiem po prawdziwym zapisie, więc każda przyszła zmiana formatu przewróci import,
+/// zamiast zostawić cicho nieaktualny `generatedHash`.
+fn render_agent(agent: &Agent) -> Option<Vec<u8>> {
+    const FRONT: [&str; 15] = [
+        "schema",
+        "id",
+        "name",
+        "summary",
+        "color",
+        "runsWith",
+        "model",
+        "thinking",
+        "fileAccess",
+        "giveUpAfterMinutes",
+        "writeResultsTo",
+        "tools",
+        "skills",
+        "connections",
+        "vendorOptions",
+    ];
+    let Value::Object(mut fields) = serde_json::to_value(agent).ok()? else {
+        return None;
+    };
+    let body = fields
+        .remove("instructions")
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let mut text = String::from("---\n");
+    for name in FRONT {
+        if let Some(value) = fields.remove(name) {
+            text.push_str(&agent_setting(name, &value));
+        }
+    }
+    for (name, value) in fields {
+        text.push_str(&agent_setting(&name, &value));
+    }
+    text.push_str("---\n");
+    text.push_str(&body);
+    Some(text.into_bytes())
+}
+
+fn agent_setting(name: &str, value: &Value) -> String {
+    match value {
+        Value::String(text) if plain_agent_text(text) => format!("{name}: {text}\n"),
+        Value::String(text) => format!("{name}: {}\n", Value::String(text.clone())),
+        other => format!("{name}: {other}\n"),
+    }
+}
+
+fn plain_agent_text(text: &str) -> bool {
+    if text.is_empty()
+        || text.trim() != text
+        || text.contains(['\n', '\r', '\t', '#', '"', '\'', '\\'])
+        || text.contains(": ")
+        || text.ends_with(':')
+        || text.starts_with([
+            '-', '?', ':', ',', '[', ']', '{', '}', '&', '*', '!', '|', '>', '%', '@', '`',
+        ])
+    {
+        return false;
+    }
+    agent_scalar(text) == Value::String(text.to_owned())
+}
+
+fn agent_scalar(text: &str) -> Value {
+    if text.is_empty() || text == "null" || text == "~" {
+        return Value::Null;
+    }
+    if text == "true" {
+        return Value::Bool(true);
+    }
+    if text == "false" {
+        return Value::Bool(false);
+    }
+    if text.starts_with(['{', '[', '"']) {
+        if let Ok(value) = serde_json::from_str::<Value>(text) {
+            return value;
+        }
+        if let Some(items) = agent_flow_list(text) {
+            return Value::Array(items);
+        }
+        return Value::String(text.to_owned());
+    }
+    if let Ok(number) = text.parse::<u64>() {
+        return Value::Number(number.into());
+    }
+    if let Ok(number) = text.parse::<i64>() {
+        return Value::Number(number.into());
+    }
+    if let Ok(number) = text.parse::<f64>()
+        && let Some(number) = serde_json::Number::from_f64(number)
+    {
+        return Value::Number(number);
+    }
+    Value::String(text.to_owned())
+}
+
+fn agent_flow_list(text: &str) -> Option<Vec<Value>> {
+    let inner = text.strip_prefix('[')?.strip_suffix(']')?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    Some(
+        inner
+            .split(',')
+            .map(|item| agent_scalar(item.trim()))
+            .collect(),
+    )
 }
 
 fn imported_workflows(inspection: &Inspection, agents: &[Agent]) -> Vec<WorkflowFile> {

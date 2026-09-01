@@ -400,6 +400,23 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
    * Zapisywalny stan tego ekranu to `document` i nic poza nim (niezmiennik 13). */
   let autosave: ReturnType<typeof setTimeout> | null = null;
 
+  /* Monotoniczna rewizja i jeden ogon zapisu NA TEN OTWARTY PLIK.
+   *
+   * 2026-08-28 (T-151): sam debounce nie serializuje IO. Kiedy pierwszy `save_workflow`
+   * czekał po drugiej stronie IPC, kliknięcie Run uruchamiało drugi zapis równolegle, a ich
+   * zakończenia mogły odwrócić kolejność bajtów na dysku. Store powstaje raz na otwarty plik,
+   * więc ten ogon ma dokładnie właściwy zakres: nie blokuje innych workflow i nie przeżywa
+   * zamknięcia edytora.
+   *
+   * `revision` nazywa stan widoczny, `savedRevision` — co najmniej ten stan potwierdzony przez
+   * IO. Operacja czyta najnowszy dokument dopiero po dojściu do początku ogona, dlatego kilka
+   * zmian czekających za wolnym zapisem koaleskuje się do najnowszej. Wołający czekający na
+   * starszą rewizję może dostać nowszą, ale nigdy starszą — dokładnie tyle potrafi obiecać
+   * protokół Run, który przekazuje nazwę pliku, nie snapshot jego bajtów. */
+  let revision = 0;
+  let savedRevision = 0;
+  let saveTail: Promise<void> = Promise.resolve();
+
   return create<WorkflowState>()((set, get) => ({
     document: open,
     notes: [],
@@ -415,6 +432,7 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
      * a nie przy `editStep`, `resetRow` i `chooseSkills` z osobna: akcja dopisana jutro bez
      * własnej linijki zapisu daje zmianę, która żyje wyłącznie na ekranie. */
     commit: (next: WorkflowFile) => {
+      revision += 1;
       set({ document: next });
 
       /* Debounce, nie throttle: przeciągnięcie kafelka albo wpisywanie nazwy to seria commitów,
@@ -435,11 +453,12 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
          *
          * `.catch(console.error)` byłby tym samym defektem z wierszem w konsoli, której nikt nie
          * otwiera. Zdanie idzie więc do stanu, a ekran ma obowiązek je pokazać (`editor.tsx`). */
+        /* `saveNow` samo zapisuje odmowę w stanie przed ponownym odrzuceniem. Tutaj wyłącznie
+         * domykamy obietnicę autosave'u: drugie ustawienie po `.catch` mogłoby przywrócić starą
+         * odmowę już po tym, jak nowsza rewizja zdążyła zapisać się poprawnie. */
         void get()
           .saveNow()
-          .catch((error: unknown) => {
-            set({ couldNotSave: why(error, COULD_NOT_SAVE) });
-          });
+          .catch(() => undefined);
       }, AUTOSAVE_MS);
     },
 
@@ -454,13 +473,33 @@ export function createWorkflowStore(io: WorkflowIo, open: WorkflowFile) {
      * nie wyszedł. Autosave, który po cichu nie zapisał, jest gorszy niż jego brak: plik jest
      * prawdą, a użytkownik ma wtedy dwie różne prawdy i nie wie o żadnej. */
     saveNow: async () => {
-      /* Zapamiętujemy DOKŁADNIE ten obiekt, który poszedł na dysk, a nie `get().document`
-       * odczytany po `await`: w oknie oczekiwania człowiek zdąży wpisać kolejną literę, a wtedy
-       * „ekran to plik" byłoby zdaniem o dokumencie, którego nikt nie zapisał. */
-      const saving = get().document;
-      await io.save(saving);
-      set({ savedDocument: saving, couldNotSave: null });
-      await get().recheck();
+      const wantedRevision = revision;
+
+      /* Każde wywołanie dopina się do jednego ogona. Odrzucenie poprzednika jest rozliczone
+       * w `saveTail`, żeby następna poprawna edycja mogła spróbować ponownie bez restartu;
+       * własny `queued` nadal odrzuca, więc wołający Run nie pomyli odmowy z zapisem. */
+      const queued = saveTail.then(async () => {
+        if (savedRevision >= wantedRevision) return;
+
+        /* Czytamy dopiero TERAZ, nie przy kliknięciu. Jeśli za starszym zapisem czekają trzy
+         * rewizje, zapisujemy najnowszą i potwierdzamy wszystkie trzy naraz. Referencję trzymamy
+         * przez `await`, żeby `savedDocument` opisywał dokładnie bajty wysłane do IO, nawet gdy
+         * człowiek zdąży w tym czasie zrobić kolejną zmianę. */
+        const writingRevision = revision;
+        const saving = get().document;
+        await io.save(saving);
+        savedRevision = writingRevision;
+        set({ savedDocument: saving, couldNotSave: null });
+        await get().recheck();
+      });
+      saveTail = queued.catch(() => undefined);
+
+      try {
+        await queued;
+      } catch (error: unknown) {
+        set({ couldNotSave: why(error, COULD_NOT_SAVE) });
+        throw error;
+      }
     },
 
     rename: (name: string) => {

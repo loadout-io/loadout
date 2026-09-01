@@ -21,8 +21,19 @@ pub struct ImportReceipt {
     pub source_hashes: BTreeMap<PathBuf, String>,
     pub workflow_hashes: BTreeMap<PathBuf, String>,
     pub written: Vec<PathBuf>,
+    /// Docelowy plik -> źródło i oba odciski potrzebne do bezpiecznego reimportu.
+    #[serde(default)]
+    pub files: BTreeMap<PathBuf, ImportedFileReceipt>,
     pub enabled_connections: Vec<String>,
     pub vendor_configurations: crate::connections::runtime::VendorConfigurations,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedFileReceipt {
+    pub source_path: PathBuf,
+    pub source_hash: String,
+    pub written_hash: String,
 }
 
 /// Zapisuje cały zaakceptowany setup albo nie zostawia żadnego z jego plików.
@@ -40,7 +51,16 @@ where
     F: FnMut(usize) -> std::result::Result<(), String>,
 {
     if !draft.runnable() {
-        return Err(ImportError::Blocked(draft.report.blockers()));
+        let blockers = if draft.items.is_empty() {
+            draft.report.blockers()
+        } else {
+            draft
+                .items
+                .iter()
+                .filter(|item| item.status != super::ImportStatus::Ready)
+                .count()
+        };
+        return Err(ImportError::Blocked(blockers));
     }
     let fresh = translate::preview(&draft.root)?;
     if fresh.draft.source_hashes != draft.source_hashes {
@@ -112,92 +132,12 @@ fn preflight(home: &Path, draft: &MigrationDraft) -> Result<()> {
 fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<ImportReceipt> {
     let mut written = Vec::new();
     let mut workflow_hashes = BTreeMap::new();
-
-    for agent in &draft.agents {
-        let path = write_agent_file(&stage.join("agents"), agent)
-            .map_err(|error| ImportError::Save(error.to_string()))?;
-        written.push(relative(stage, &path)?);
-    }
-
-    for skill in &draft.skills {
-        let imported = ingest::from_folder(&skill.source_dir)
-            .map_err(|error| ImportError::Save(error.to_string()))?;
-        let destination = stage.join("skills").join(&skill.name);
-        fs::create_dir_all(&destination).map_err(save_error)?;
-        // Review rozstrzyga bezpieczeństwo bundle, ale import jest migawką. Ponowna emisja
-        // frontmatteru gubiłaby komentarze i formatowanie, choć raport obiecuje zachowanie pliku.
-        fs::copy(
-            skill.source_dir.join("SKILL.md"),
-            destination.join("SKILL.md"),
-        )
-        .map_err(save_error)?;
-        written.push(PathBuf::from("skills").join(&skill.name).join("SKILL.md"));
-        for bundled in &imported.skill.files {
-            let target = destination.join(&bundled.relative);
-            let parent = target.parent().ok_or_else(|| {
-                ImportError::Save("A bundled skill file has no parent folder.".to_owned())
-            })?;
-            fs::create_dir_all(parent).map_err(save_error)?;
-            fs::copy(&bundled.source, &target).map_err(save_error)?;
-            written.push(
-                PathBuf::from("skills")
-                    .join(&skill.name)
-                    .join(&bundled.relative),
-            );
-        }
-    }
-
-    for connection in &draft.connections {
-        let relative = PathBuf::from("connections").join(format!("{}.json", connection.id));
-        write_json(&stage.join(&relative), connection)?;
-        written.push(relative);
-    }
-
-    // Pamięć cudzego projektu jako PLIKI NOTATEK (2026-08-22, T-80). Draft jest wartością
-    // w pamięci; pytanie brzmi „czy w bibliotece leży notatka", a na to odpowiada wyłącznie
-    // dysk (niezmiennik 4). Zegar stoi jeden na cały import: dwie notatki przywiezione jednym
-    // kliknięciem, które różnią się o sekundę, czytają się jak dwa zdarzenia.
-    let at = crate::commands::now_utc();
-    for note in &draft.notes {
-        let written_note = crate::memory::notes::record_imported(
-            &crate::commands::memory::notes_root(stage),
-            crate::memory::notes::NoteDraft {
-                title: note.title.clone(),
-                rule: note.rule.clone(),
-                because: note.because.clone(),
-                scope: scope_from_word(&note.scope),
-                // Rodzaj zdania rozstrzyga człowiek, nie zgadywanie po treści: `fact` jest tym,
-                // czym jest zdanie, które ktoś zapisał jako prawdę o swoim projekcie.
-                kind: crate::memory::notes::Kind::Fact,
-                // Czytane i wyrzucane przez pisarza notatek — import przywozi zdanie, nie zgodę
-                // na nie (ARCHITECTURE §2 pyt. 5).
-                status: crate::memory::notes::Status::Suggested,
-                at: at.clone(),
-            },
-            note.agent.as_deref(),
-            &crate::memory::notes::Origin {
-                from: super::project_name(&draft.root),
-                source: note.source.clone(),
-                source_hash: note.source_hash.clone(),
-                app: app_word(note.app).to_owned(),
-            },
-        )
-        .map_err(|error| ImportError::Save(error.to_string()))?;
-        written.push(relative(stage, &written_note.path)?);
-    }
-
-    for workflow in &draft.workflows {
-        let relative = PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)));
-        let target = stage.join(&relative);
-        create_parent(&target)?;
-        crate::workflow::file::save(workflow, &target)
-            .map_err(|error| ImportError::Save(error.to_string()))?;
-        workflow_hashes.insert(
-            relative.clone(),
-            fingerprint(&fs::read(&target).map_err(save_error)?),
-        );
-        written.push(relative);
-    }
+    let mut files = BTreeMap::new();
+    stage_agents(stage, draft, &mut written, &mut files)?;
+    stage_skills(stage, draft, &mut written, &mut files)?;
+    stage_connections(stage, draft, &mut written, &mut files)?;
+    stage_notes(stage, draft, &mut written, &mut files)?;
+    stage_workflows(stage, draft, &mut written, &mut files, &mut workflow_hashes)?;
 
     written.sort();
     let mut enabled_connections: Vec<String> = draft
@@ -215,11 +155,231 @@ fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<I
         source_hashes: draft.source_hashes.clone(),
         workflow_hashes,
         written,
+        files,
         enabled_connections,
         vendor_configurations: crate::connections::runtime::for_connections(&draft.connections),
     };
     write_json(&stage.join(&receipt_path), &receipt)?;
     Ok(receipt)
+}
+
+fn stage_agents(
+    stage: &Path,
+    draft: &MigrationDraft,
+    written: &mut Vec<PathBuf>,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+) -> Result<()> {
+    for agent in &draft.agents {
+        let path = write_agent_file(&stage.join("agents"), agent)
+            .map_err(|error| ImportError::Save(error.to_string()))?;
+        let target = relative(stage, &path)?;
+        if let Some(source) = source_for_target(draft, &target)? {
+            record_file(stage, draft, &target, &source.path, &source.hash, files)?;
+        }
+        written.push(target);
+    }
+    Ok(())
+}
+
+fn stage_skills(
+    stage: &Path,
+    draft: &MigrationDraft,
+    written: &mut Vec<PathBuf>,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+) -> Result<()> {
+    for skill in &draft.skills {
+        let imported = ingest::from_folder(&skill.source_dir)
+            .map_err(|error| ImportError::Save(error.to_string()))?;
+        let destination = stage.join("skills").join(&skill.name);
+        fs::create_dir_all(&destination).map_err(save_error)?;
+        // Review rozstrzyga bezpieczeństwo bundle, ale import jest migawką. Ponowna emisja
+        // frontmatteru gubiłaby komentarze i formatowanie, choć raport obiecuje zachowanie pliku.
+        let source = skill.source_dir.join("SKILL.md");
+        let target = PathBuf::from("skills").join(&skill.name).join("SKILL.md");
+        fs::copy(&source, destination.join("SKILL.md")).map_err(save_error)?;
+        record_source_file(stage, draft, &target, &source, files)?;
+        written.push(target);
+        for bundled in &imported.skill.files {
+            let target = destination.join(&bundled.relative);
+            let parent = target.parent().ok_or_else(|| {
+                ImportError::Save("A bundled skill file has no parent folder.".to_owned())
+            })?;
+            fs::create_dir_all(parent).map_err(save_error)?;
+            fs::copy(&bundled.source, &target).map_err(save_error)?;
+            let relative = PathBuf::from("skills")
+                .join(&skill.name)
+                .join(&bundled.relative);
+            record_source_file(stage, draft, &relative, &bundled.source, files)?;
+            written.push(relative);
+        }
+    }
+    Ok(())
+}
+
+fn stage_connections(
+    stage: &Path,
+    draft: &MigrationDraft,
+    written: &mut Vec<PathBuf>,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+) -> Result<()> {
+    for connection in &draft.connections {
+        let target = PathBuf::from("connections").join(format!("{}.json", connection.id));
+        write_json(&stage.join(&target), connection)?;
+        record_file(
+            stage,
+            draft,
+            &target,
+            &connection.source,
+            &connection.source_hash,
+            files,
+        )?;
+        written.push(target);
+    }
+    Ok(())
+}
+
+fn stage_notes(
+    stage: &Path,
+    draft: &MigrationDraft,
+    written: &mut Vec<PathBuf>,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+) -> Result<()> {
+    // Pamięć cudzego projektu jako PLIKI NOTATEK (2026-08-22, T-80). Draft jest wartością
+    // w pamięci; pytanie brzmi „czy w bibliotece leży notatka", a na to odpowiada wyłącznie
+    // dysk (niezmiennik 4). Zegar stoi jeden na cały import: dwie notatki przywiezione jednym
+    // kliknięciem, które różnią się o sekundę, czytają się jak dwa zdarzenia.
+    let at = crate::commands::now_utc();
+    for note in &draft.notes {
+        let written_note = crate::memory::notes::record_imported(
+            &crate::commands::memory::notes_root(stage),
+            crate::memory::notes::NoteDraft {
+                title: note.title.clone(),
+                rule: note.rule.clone(),
+                because: note.because.clone(),
+                scope: scope_from_word(&note.scope),
+                kind: crate::memory::notes::Kind::Fact,
+                status: crate::memory::notes::Status::Suggested,
+                at: at.clone(),
+            },
+            note.agent.as_deref(),
+            &crate::memory::notes::Origin {
+                from: super::project_name(&draft.root),
+                source: note.source.clone(),
+                source_hash: note.source_hash.clone(),
+                app: app_word(note.app).to_owned(),
+            },
+        )
+        .map_err(|error| ImportError::Save(error.to_string()))?;
+        let target = relative(stage, &written_note.path)?;
+        record_file(
+            stage,
+            draft,
+            &target,
+            &note.source,
+            &note.source_hash,
+            files,
+        )?;
+        written.push(target);
+    }
+    Ok(())
+}
+
+fn stage_workflows(
+    stage: &Path,
+    draft: &MigrationDraft,
+    written: &mut Vec<PathBuf>,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+    workflow_hashes: &mut BTreeMap<PathBuf, String>,
+) -> Result<()> {
+    for workflow in &draft.workflows {
+        let relative = PathBuf::from("workflows").join(format!("{}.json", slug(&workflow.name)));
+        let target = stage.join(&relative);
+        create_parent(&target)?;
+        crate::workflow::file::save(workflow, &target)
+            .map_err(|error| ImportError::Save(error.to_string()))?;
+        workflow_hashes.insert(
+            relative.clone(),
+            fingerprint(&fs::read(&target).map_err(save_error)?),
+        );
+        if let Some(source) = source_for_target(draft, &relative)? {
+            record_file(stage, draft, &relative, &source.path, &source.hash, files)?;
+        }
+        written.push(relative);
+    }
+    Ok(())
+}
+
+fn source_for_target<'a>(
+    draft: &'a MigrationDraft,
+    target: &Path,
+) -> Result<Option<&'a super::ImportSource>> {
+    if draft.items.is_empty() {
+        // Addytywna ścieżka dla ręcznie składanych draftów sprzed T-78. Świeży Scan zawsze
+        // ma `items`, więc produkt nigdy nie zapisuje nowego pliku bez provenance.
+        return Ok(None);
+    }
+    draft
+        .items
+        .iter()
+        .find(|item| item.target.as_deref() == Some(target))
+        .and_then(|item| {
+            item.sources
+                .iter()
+                .find(|source| source.role == super::ImportSourceRole::Definition)
+                .or_else(|| item.sources.first())
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            ImportError::Save(format!(
+                "{} has no source in the accepted import plan.",
+                target.display()
+            ))
+        })
+}
+
+fn record_source_file(
+    stage: &Path,
+    draft: &MigrationDraft,
+    target: &Path,
+    source: &Path,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+) -> Result<()> {
+    let source_path = relative(&draft.root, source)?;
+    let source_hash = fingerprint(&fs::read(source).map_err(save_error)?);
+    record_file(stage, draft, target, &source_path, &source_hash, files)
+}
+
+fn record_file(
+    stage: &Path,
+    draft: &MigrationDraft,
+    target: &Path,
+    source_path: &Path,
+    known_source_hash: &str,
+    files: &mut BTreeMap<PathBuf, ImportedFileReceipt>,
+) -> Result<()> {
+    if draft.items.is_empty() {
+        return Ok(());
+    }
+    let source_hash = fs::read(draft.root.join(source_path)).map_or_else(
+        |_| known_source_hash.to_owned(),
+        |bytes| fingerprint(&bytes),
+    );
+    let written_hash = fingerprint(&fs::read(stage.join(target)).map_err(save_error)?);
+    let previous = files.insert(
+        target.to_path_buf(),
+        ImportedFileReceipt {
+            source_path: source_path.to_path_buf(),
+            source_hash,
+            written_hash,
+        },
+    );
+    if previous.is_some() {
+        return Err(ImportError::Save(format!(
+            "{} was staged twice during one import.",
+            target.display()
+        )));
+    }
+    Ok(())
 }
 
 fn commit<F>(

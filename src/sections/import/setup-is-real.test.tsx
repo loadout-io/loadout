@@ -41,6 +41,7 @@ describe('Import setup', () => {
       },
       draft: {
         sourceHashes: { '.claude/agents/build.md': 'abc' },
+        items: [],
         agents: [{ id: 'a', name: 'Build' }],
         skills: [],
         connections: [{ id: 'browser', name: 'Browser', enabled: false }],
@@ -99,6 +100,7 @@ describe('Import setup', () => {
       },
       draft: {
         sourceHashes: { '.claude/agents/build.md': 'abc' },
+        items: [],
         agents: [{ id: 'a', name: 'Build' }],
         skills: [],
         connections: [],
@@ -145,6 +147,7 @@ describe('Import setup', () => {
       },
       draft: {
         sourceHashes: { '.claude/agents/build.md': 'abc' },
+        items: [],
         agents: [{ id: 'a', name: 'Build' }],
         skills: [],
         connections: [
@@ -211,6 +214,7 @@ describe('Import setup', () => {
       snapshot: { root: '/project', items: [] },
       draft: {
         sourceHashes: {},
+        items: [],
         agents: [],
         skills: [],
         connections: [],

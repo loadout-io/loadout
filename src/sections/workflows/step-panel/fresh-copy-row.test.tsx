@@ -1,4 +1,4 @@
-/* Przełącznik „Fresh copy of the files" — jedyne miejsce, w którym da się spełnić odmowę Startu.
+/* Trzy miejsca pracy agenta — jeden wybór, który przeżywa statyczny render panelu.
  *
  * PO CO ISTNIEJE, zmierzone 2026-08-19 na workflow właściciela „Reaserch + implement": dwa kroki
  * researchu wchodzące do jednego kroku syntezy, czyli najzwyklejszy wachlarz. Walidator mówi
@@ -9,20 +9,14 @@
  * niż brak zdania: człowiek szuka kontrolki, której nie ma, i kończy w edytorze tekstu.
  *
  * CZEGO TU NIE MA I DLACZEGO. Kliknięcia. W repo nie ma jsdom [T3 §2.3, ryzyko 7], więc komponent
- * sprawdzamy statycznym renderem, a jedyną DECYZJĘ tego wiersza — osobną funkcją czystą. Podział
- * jest treścią, nie wygodą: bez niej rozstrzygnięcie o trzeciej wartości schematu (`pick`)
- * nie miałoby kryterium i skasowałby je pierwszy refaktor.
- *
- * SŁABĄ WERSJĄ jest sprawdzenie samego `nextFolder` na dwóch wartościach. Przechodzi ją
- * implementacja, która renderuje przełącznik ZAWSZE wyłączony — czyli kontrolka kłamiąca
- * o stanie kroku, który sama przed chwilą zapisała. Dlatego oba stany są renderowane i czytane
- * z markupu.
+ * sprawdzamy statycznym renderem. Każda z trzech wartości musi jednak zaznaczyć dokładnie swoje
+ * radio; kontrolka zawsze wyłączona albo binarny przełącznik nie przejdą tego kryterium.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Agent } from '../../../state/agents';
 import type { AgentStep, Folder } from '../../../state/workflows';
-import { PanelForStep, nextFolder } from './panel';
+import { PanelForStep } from './panel';
 
 function riczi(): Agent {
   return {
@@ -87,48 +81,43 @@ function markup(folder: Folder): string {
   );
 }
 
-/** Czy pole wyboru w markupie jest zaznaczone. */
-function checked(html: string): boolean {
-  return /<input[^>]*type="checkbox"[^>]*checked[^>]*>/.test(html);
+/** Wszystkie radia z markupu, bez zakładania kolejności atrybutów renderera. */
+function radios(html: string): string[] {
+  return html.match(/<input\b[^>]*type="radio"[^>]*>/g) ?? [];
 }
 
-describe('fresh copy of the files', () => {
-  it('is a control the panel actually has, worded as the mockup words it', () => {
+function checked(html: string, use: string): boolean {
+  return radios(html).some(
+    (input) => input.includes(`value="${use}"`) && /\bchecked(?:="")?/.test(input),
+  );
+}
+
+describe('where an agent works', () => {
+  it('offers all three choices in plain language', () => {
     const html = markup({ use: 'project' });
 
-    expect(
-      html,
-      'the validator tells the person to give a step a fresh copy; a window with no such ' +
-        'control sends them to a text editor to satisfy its own refusal',
-    ).toContain('Fresh copy of the files');
-    expect(
-      html,
-      'the second half of the mockup sentence is the half that prevents a wrong belief: ' +
-        'this is protection from two steps overwriting one another, not a security boundary',
-    ).toContain('Not a security sandbox.');
+    expect(html).toContain('Work in the project folder');
+    expect(html).toContain('Start in a new copy of the files');
+    expect(html).toContain('Continue in the same files as the previous step');
+    expect(html.toLowerCase()).not.toContain('worktree');
+    expect(html.toLowerCase()).not.toContain('branch');
+    expect(html.toLowerCase()).not.toContain('automatically merge');
   });
 
-  it('shows the state the step is really in, in both directions', () => {
-    expect(checked(markup({ use: 'fresh-copy' }))).toBe(true);
-    expect(
-      checked(markup({ use: 'project' })),
-      'a switch rendered always-off lies about the value it just wrote, and the person turns ' +
-        'it on twice wondering why nothing sticks',
-    ).toBe(false);
+  it('shows exactly one selected choice for every supported file value', () => {
+    for (const use of ['project', 'fresh-copy', 'same-copy'] as const) {
+      const html = markup({ use });
+      expect(radios(html)).toHaveLength(3);
+      expect(radios(html).filter((input) => /\bchecked(?:="")?/.test(input))).toHaveLength(1);
+      expect(checked(html, use)).toBe(true);
+    }
   });
 
-  it('turns the project folder into an own copy, and back', () => {
-    expect(nextFolder({ use: 'project' })).toEqual({ use: 'fresh-copy' });
-    expect(nextFolder({ use: 'fresh-copy' })).toEqual({ use: 'project' });
-  });
-
-  it('never quietly throws away a hand-written path', () => {
-    /* `pick` nie ma kontrolki i powstaje wyłącznie z ręcznej poprawki pliku. Przełącznik
-     * pokazuje go jako wyłączony, więc jedyne kliknięcie, jakie ma sens, znaczy „chcę własną
-     * kopię" — wyjście na `project` kasowałoby cudzą ścieżkę pod pozorem włączania czegoś. */
+  it('does not pretend a hand-written path is one of the three choices', () => {
     const picked: Folder = { use: 'pick', path: '/Users/x/api' };
+    const html = markup(picked);
 
-    expect(checked(markup(picked))).toBe(false);
-    expect(nextFolder(picked)).toEqual({ use: 'fresh-copy' });
+    expect(radios(html)).toHaveLength(3);
+    expect(radios(html).filter((input) => /\bchecked(?:="")?/.test(input))).toHaveLength(0);
   });
 });

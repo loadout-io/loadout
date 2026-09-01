@@ -17,6 +17,12 @@ pub struct ApplySetup {
     /// Elementy `needs_choice`, które człowiek jawnie postanowił zostawić poza migracją.
     #[serde(default)]
     pub leave_out: Vec<String>,
+    /// Pozycje, których człowiek nie chce zapisać. Osobne od usunięcia jednego zachowania.
+    #[serde(default)]
+    pub excluded_items: Vec<String>,
+    /// Pozycje zachowane w planie, ale bez zachowania wymagającego rozstrzygnięcia.
+    #[serde(default)]
+    pub without_behavior: Vec<String>,
 }
 
 pub fn scan_setup_inner(home: &Path, workspace: &Path) -> Result<ImportPreview> {
@@ -70,14 +76,63 @@ pub fn apply_setup_inner(
                 .to_owned(),
         ));
     }
+    let excluded_items: BTreeSet<&str> =
+        request.excluded_items.iter().map(String::as_str).collect();
+    let known_items: BTreeSet<&str> = preview
+        .draft
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    if !excluded_items.is_subset(&known_items) {
+        return Err(ImportError::Save(
+            "The import tried to exclude an item that was not in the latest Scan.".to_owned(),
+        ));
+    }
+    let without_behavior: BTreeSet<&str> = request
+        .without_behavior
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let behavior_choices: BTreeSet<&str> = preview
+        .draft
+        .report
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.compatibility == Compatibility::NeedsChoice)
+        .map(|mapping| mapping.item_id.as_str())
+        .collect();
+    if !without_behavior.is_subset(&behavior_choices) {
+        return Err(ImportError::Save(
+            "The import tried to remove behavior from an item that did not offer that choice in the latest Scan."
+                .to_owned(),
+        ));
+    }
+    let excluded: BTreeSet<&str> = leave_out.union(&excluded_items).copied().collect();
+    if !excluded.is_disjoint(&without_behavior) {
+        return Err(ImportError::Save(
+            "An imported item cannot be excluded and kept without behavior at the same time."
+                .to_owned(),
+        ));
+    }
     for mapping in &mut preview.draft.report.mappings {
-        if leave_out.contains(mapping.item_id.as_str()) {
+        if excluded.contains(mapping.item_id.as_str()) {
             mapping.compatibility = Compatibility::Adjusted;
-            "You chose to leave this project behavior out.".clone_into(&mut mapping.message);
+            "You chose not to import this item.".clone_into(&mut mapping.message);
+        } else if without_behavior.contains(mapping.item_id.as_str()) {
+            mapping.compatibility = Compatibility::Adjusted;
+            "This item will be imported without that project behavior."
+                .clone_into(&mut mapping.message);
         }
     }
+    preview
+        .draft
+        .items
+        .retain(|item| !excluded.contains(item.id.as_str()));
+    crate::import::translate::keep_selected_outputs(&mut preview.draft);
     for connection in &mut preview.draft.connections {
         connection.enabled = requested.contains(connection.id.as_str());
     }
+    crate::import::translate::refresh_statuses(&mut preview.draft);
     crate::import::apply::apply(home, &preview.draft)
 }

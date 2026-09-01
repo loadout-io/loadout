@@ -25,6 +25,28 @@ export interface Mapping {
   message: string;
 }
 
+export type ImportSourceRole = 'definition' | 'behavior' | 'dependency';
+export type ImportStatus = 'ready' | 'needs_choice' | 'unsupported' | 'missing_dependencies';
+
+export interface ImportSource {
+  provider: SourceKind;
+  path: string;
+  hash: string;
+  role: ImportSourceRole;
+}
+
+/** Addytywny model T-78. Stare wektory zostają do czasu, aż będą z niego materializowane. */
+export interface ImportItem {
+  id: string;
+  kind: ItemKind;
+  sources: ImportSource[];
+  target: string | null;
+  dependencies: string[];
+  status: ImportStatus;
+  statusMessage: string;
+  generatedHash: string | null;
+}
+
 /** Skąd połączenie się wzięło — lustro `connections::Origin`.
  *
  * Brak pola znaczy „plik projektu": tak wygląda każde połączenie zapisane przed 2026-08-22
@@ -42,6 +64,7 @@ export interface ImportPreview {
   snapshot: { root: string; items: SourceItem[] };
   draft: {
     sourceHashes: Record<string, string>;
+    items: ImportItem[];
     agents: Array<{ id: string; name: string }>;
     skills: Array<{ name: string }>;
     connections: ImportedConnection[];
@@ -64,7 +87,10 @@ export interface ApplyRequest {
   workspace: string;
   expectedSourceHashes: Record<string, string>;
   enableConnections: string[];
-  leaveOut: string[];
+  /** Pole przejściowe dla starego ekranu; T-78 zastępuje je dwiema decyzjami poniżej. */
+  leaveOut?: string[];
+  excludedItems?: string[];
+  withoutBehavior?: string[];
 }
 
 export interface ImportReceipt {
@@ -140,6 +166,13 @@ const KINDS: Readonly<Record<ItemKind, string>> = {
   unknown: 'Other',
 };
 
+const ITEM_STATUS: Readonly<Record<ImportStatus, string>> = {
+  ready: 'Ready',
+  needs_choice: 'Needs a choice',
+  unsupported: "Can't be reproduced",
+  missing_dependencies: 'Missing dependencies',
+};
+
 type InventoryView = 'all' | 'ready' | 'attention';
 
 function sourceLabel(item: SourceItem): string {
@@ -153,6 +186,80 @@ function sourceLabel(item: SourceItem): string {
 
 function kindLabel(item: SourceItem): string {
   return item.kind === undefined ? KINDS.unknown : KINDS[item.kind];
+}
+
+function typedExcludedIn(preview: ImportPreview): string[] {
+  return preview.draft.items.filter((item) => item.status !== 'ready').map((item) => item.id);
+}
+
+function hasDependency(
+  preview: ImportPreview,
+  dependency: string,
+  excludedItems: readonly string[],
+  enabledConnections: readonly string[],
+): boolean {
+  const divider = dependency.indexOf(':');
+  if (divider < 1) return false;
+  const kind = dependency.slice(0, divider);
+  const name = dependency.slice(divider + 1).toLocaleLowerCase();
+  if (kind === 'connection') {
+    return preview.draft.connections.some(
+      (connection) =>
+        enabledConnections.includes(connection.id) &&
+        (connection.id.toLocaleLowerCase() === name ||
+          connection.name.toLocaleLowerCase() === name),
+    );
+  }
+  if (kind === 'skill') {
+    const exists = preview.draft.skills.some((skill) => skill.name.toLocaleLowerCase() === name);
+    const selected = preview.draft.items
+      .filter((item) => item.kind === 'skill')
+      .some(
+        (item) =>
+          !excludedItems.includes(item.id) &&
+          (item.target?.toLocaleLowerCase().includes(`/skills/${name}/`) === true ||
+            item.target?.toLocaleLowerCase().startsWith(`skills/${name}/`) === true),
+      );
+    return exists && selected;
+  }
+  if (kind === 'agent') {
+    const exists = preview.draft.agents.some(
+      (agent) => agent.id.toLocaleLowerCase() === name || agent.name.toLocaleLowerCase() === name,
+    );
+    const selected = preview.draft.items
+      .filter((item) => item.kind === 'agent')
+      .some(
+        (item) =>
+          !excludedItems.includes(item.id) &&
+          item.target?.toLocaleLowerCase().startsWith(`agents/${name}`) === true,
+      );
+    return exists && selected;
+  }
+  return false;
+}
+
+function typedBlockers(
+  preview: ImportPreview,
+  excludedItems: readonly string[],
+  withoutBehavior: readonly string[],
+  enabledConnections: readonly string[],
+): number {
+  return preview.draft.items.filter((item) => {
+    if (excludedItems.includes(item.id)) return false;
+    if (item.status === 'unsupported') return true;
+    if (item.status === 'needs_choice' && !withoutBehavior.includes(item.id)) return true;
+    return item.dependencies.some(
+      (dependency) => !hasDependency(preview, dependency, excludedItems, enabledConnections),
+    );
+  }).length;
+}
+
+function itemCounts(items: readonly ImportItem[]): string[] {
+  const counts = new Map<ItemKind, number>();
+  for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+  return [...counts.entries()].map(
+    ([kind, count]) => `${String(count)} ${kind}${count === 1 ? '' : 's'}`,
+  );
 }
 
 function blockers(preview: ImportPreview, leaveOut: readonly string[]): number {
@@ -202,11 +309,23 @@ export function ImportSetup({
   const [leaveOut, setLeaveOut] = useState<string[]>(
     initialPreview === undefined ? [] : unresolvedIn(initialPreview),
   );
+  const [excludedItems, setExcludedItems] = useState<string[]>(
+    initialPreview === undefined ? [] : typedExcludedIn(initialPreview),
+  );
+  const [withoutBehavior, setWithoutBehavior] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saved, setSaved] = useState<ImportReceipt | null>(null);
   const [inventoryView, setInventoryView] = useState<InventoryView>('all');
-  const blocked = preview === null ? 0 : blockers(preview, leaveOut);
+  const hasTypedItems = preview !== null && preview.draft.items.length > 0;
+  const selectedTypedItems =
+    preview?.draft.items.filter((item) => !excludedItems.includes(item.id)) ?? [];
+  const blocked =
+    preview === null
+      ? 0
+      : hasTypedItems
+        ? typedBlockers(preview, excludedItems, withoutBehavior, enabled)
+        : blockers(preview, leaveOut);
   const hasItems = preview !== null && preview.snapshot.items.length > 0;
   const unresolved = preview === null ? [] : unresolvedIn(preview);
   /* Ile pozycji naprawdę zostanie poza importem — liczone z listy pominięć, nie z `unresolved`:
@@ -215,12 +334,19 @@ export function ImportSetup({
   const mappings = new Map(
     preview?.draft.report.mappings.map((mapping) => [mapping.itemId, mapping]) ?? [],
   );
-  const visibleItems =
-    preview?.snapshot.items.filter((item) => {
-      const compatibility = mappings.get(item.id)?.compatibility ?? 'unsupported';
-      const ready = compatibility === 'exact' || compatibility === 'adjusted';
+  const sourceItems = new Map(preview?.snapshot.items.map((item) => [item.id, item]) ?? []);
+  const visibleTypedItems =
+    preview?.draft.items.filter((item) => {
+      const ready = item.status === 'ready';
       return inventoryView === 'all' || (inventoryView === 'ready' ? ready : !ready);
     }) ?? [];
+  const visibleItems = hasTypedItems
+    ? []
+    : (preview?.snapshot.items.filter((item) => {
+        const compatibility = mappings.get(item.id)?.compatibility ?? 'unsupported';
+        const ready = compatibility === 'exact' || compatibility === 'adjusted';
+        return inventoryView === 'all' || (inventoryView === 'ready' ? ready : !ready);
+      }) ?? []);
 
   const scan = (event: FormEvent): void => {
     event.preventDefault();
@@ -236,6 +362,8 @@ export function ImportSetup({
         /* Świeży skan wraca z domyślnym pominięciem, tak samo jak pierwsze otwarcie: inaczej
          * jedno kliknięcie „Scan" cofałoby ekran do stanu, w którym import jest zablokowany. */
         setLeaveOut(unresolvedIn(next));
+        setExcludedItems(typedExcludedIn(next));
+        setWithoutBehavior([]);
       })
       .catch((error: unknown) => {
         setRefusal(why(error, 'Loadout could not inspect that folder.'));
@@ -254,7 +382,9 @@ export function ImportSetup({
         workspace: preview.snapshot.root,
         expectedSourceHashes: preview.draft.sourceHashes,
         enableConnections: enabled,
-        leaveOut,
+        leaveOut: hasTypedItems ? [] : leaveOut,
+        excludedItems: hasTypedItems ? excludedItems : [],
+        withoutBehavior: hasTypedItems ? withoutBehavior : [],
       })
       .then((saved) => {
         setSaved(saved);
@@ -327,19 +457,35 @@ export function ImportSetup({
           <>
             <div className="grid grid-cols-4 gap-2 border-y border-line py-3 text-center">
               <span>
-                <b className="block text-heading text-ink">{preview.draft.agents.length}</b>
+                <b className="block text-heading text-ink">
+                  {hasTypedItems
+                    ? selectedTypedItems.filter((item) => item.kind === 'agent').length
+                    : preview.draft.agents.length}
+                </b>
                 <small className="text-muted">Agents</small>
               </span>
               <span>
-                <b className="block text-heading text-ink">{preview.draft.skills.length}</b>
+                <b className="block text-heading text-ink">
+                  {hasTypedItems
+                    ? selectedTypedItems.filter((item) => item.kind === 'skill').length
+                    : preview.draft.skills.length}
+                </b>
                 <small className="text-muted">Skills</small>
               </span>
               <span>
-                <b className="block text-heading text-ink">{preview.draft.connections.length}</b>
+                <b className="block text-heading text-ink">
+                  {hasTypedItems
+                    ? selectedTypedItems.filter((item) => item.kind === 'connection').length
+                    : preview.draft.connections.length}
+                </b>
                 <small className="text-muted">Connections</small>
               </span>
               <span>
-                <b className="block text-heading text-ink">{preview.draft.workflows.length}</b>
+                <b className="block text-heading text-ink">
+                  {hasTypedItems
+                    ? selectedTypedItems.filter((item) => item.kind === 'workflow').length
+                    : preview.draft.workflows.length}
+                </b>
                 <small className="text-muted">Workflows</small>
               </span>
             </div>
@@ -376,57 +522,134 @@ export function ImportSetup({
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleItems.map((item) => {
-                    const mapping = mappings.get(item.id);
-                    const unresolvedItem =
-                      mapping?.compatibility === 'needs_choice' ||
-                      mapping?.compatibility === 'unsupported';
-                    return (
-                      <tr key={item.id} className="border-t border-line align-top">
-                        <td className="px-3 py-2">
-                          <b className="block truncate text-body text-ink">{item.name}</b>
-                          <span className="block truncate font-mono text-meta text-muted">
-                            {item.path}
-                          </span>
-                          <span className="block text-note text-body">
-                            {mapping?.message ?? item.summary}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-body text-ink">{kindLabel(item)}</td>
-                        <td className="px-3 py-2 text-body text-muted">{sourceLabel(item)}</td>
-                        <td className="px-3 py-2 text-body text-muted">
-                          {mapping === undefined
-                            ? "Can't be reproduced"
-                            : STATUS[mapping.compatibility]}
-                        </td>
-                        <td className="px-3 py-2">
-                          {unresolvedItem ? (
-                            <label className="flex items-center gap-2 text-body text-ink">
-                              <input
-                                type="checkbox"
-                                aria-label={
-                                  mapping.compatibility === 'unsupported'
-                                    ? 'Leave this item out of the import'
-                                    : 'Import without this behavior'
-                                }
-                                checked={leaveOut.includes(item.id)}
-                                onChange={(event) => {
-                                  setLeaveOut((now) =>
-                                    event.target.checked
-                                      ? [...now, item.id]
-                                      : now.filter((id) => id !== item.id),
-                                  );
-                                }}
-                              />
-                              Skip
-                            </label>
-                          ) : (
-                            <span className="text-body text-muted">Yes</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {hasTypedItems
+                    ? visibleTypedItems.map((item) => {
+                        const sourceItem = sourceItems.get(item.id);
+                        const definition =
+                          item.sources.find((source) => source.role === 'definition') ??
+                          item.sources[0];
+                        return (
+                          <tr key={item.id} className="border-t border-line align-top">
+                            <td className="px-3 py-2">
+                              <b className="block truncate text-body text-ink">
+                                {sourceItem?.name ?? item.target ?? item.id}
+                              </b>
+                              {definition === undefined ? null : (
+                                <span className="block truncate font-mono text-meta text-muted">
+                                  {definition.path}
+                                </span>
+                              )}
+                              <span className="block text-note text-body">
+                                {item.statusMessage}
+                              </span>
+                              {item.target === null ? null : (
+                                <span className="block font-mono text-meta text-muted">
+                                  Target: {item.target}
+                                </span>
+                              )}
+                              {item.dependencies.length === 0 ? null : (
+                                <span className="block text-note text-muted">
+                                  Requires: {item.dependencies.join(', ')}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-body text-ink">{KINDS[item.kind]}</td>
+                            <td className="px-3 py-2 text-body text-muted">
+                              {definition === undefined
+                                ? SOURCES.unknown
+                                : SOURCES[definition.provider]}
+                            </td>
+                            <td className="px-3 py-2 text-body text-muted">
+                              {ITEM_STATUS[item.status]}
+                            </td>
+                            <td className="px-3 py-2">
+                              <label className="flex items-center gap-2 text-body text-ink">
+                                <input
+                                  type="checkbox"
+                                  aria-label="Import this item"
+                                  checked={!excludedItems.includes(item.id)}
+                                  onChange={(event) => {
+                                    setExcludedItems((now) =>
+                                      event.target.checked
+                                        ? now.filter((id) => id !== item.id)
+                                        : [...now, item.id],
+                                    );
+                                  }}
+                                />
+                                Import
+                              </label>
+                              {item.status !== 'needs_choice' ? null : (
+                                <label className="mt-2 flex items-start gap-2 text-note text-ink">
+                                  <input
+                                    type="checkbox"
+                                    aria-label="Import without this behavior"
+                                    checked={withoutBehavior.includes(item.id)}
+                                    onChange={(event) => {
+                                      setWithoutBehavior((now) =>
+                                        event.target.checked
+                                          ? [...now, item.id]
+                                          : now.filter((id) => id !== item.id),
+                                      );
+                                    }}
+                                  />
+                                  Without behavior
+                                </label>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    : visibleItems.map((item) => {
+                        const mapping = mappings.get(item.id);
+                        const unresolvedItem =
+                          mapping?.compatibility === 'needs_choice' ||
+                          mapping?.compatibility === 'unsupported';
+                        return (
+                          <tr key={item.id} className="border-t border-line align-top">
+                            <td className="px-3 py-2">
+                              <b className="block truncate text-body text-ink">{item.name}</b>
+                              <span className="block truncate font-mono text-meta text-muted">
+                                {item.path}
+                              </span>
+                              <span className="block text-note text-body">
+                                {mapping?.message ?? item.summary}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-body text-ink">{kindLabel(item)}</td>
+                            <td className="px-3 py-2 text-body text-muted">{sourceLabel(item)}</td>
+                            <td className="px-3 py-2 text-body text-muted">
+                              {mapping === undefined
+                                ? "Can't be reproduced"
+                                : STATUS[mapping.compatibility]}
+                            </td>
+                            <td className="px-3 py-2">
+                              {unresolvedItem ? (
+                                <label className="flex items-center gap-2 text-body text-ink">
+                                  <input
+                                    type="checkbox"
+                                    aria-label={
+                                      mapping.compatibility === 'unsupported'
+                                        ? 'Leave this item out of the import'
+                                        : 'Import without this behavior'
+                                    }
+                                    checked={leaveOut.includes(item.id)}
+                                    onChange={(event) => {
+                                      setLeaveOut((now) =>
+                                        event.target.checked
+                                          ? [...now, item.id]
+                                          : now.filter((id) => id !== item.id),
+                                      );
+                                    }}
+                                  />
+                                  Skip
+                                </label>
+                              ) : (
+                                <span className="text-body text-muted">Yes</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                 </tbody>
               </table>
             </div>
@@ -473,8 +696,19 @@ export function ImportSetup({
                 ))}
               </fieldset>
             )}
+            {!hasTypedItems ? null : (
+              <section className="flex flex-col gap-2 border-t border-line pt-3">
+                <h3 className="text-subhead text-ink">Proposed files</h3>
+                <p className="text-note text-muted">{itemCounts(selectedTypedItems).join(' · ')}</p>
+                <ul className="flex flex-col gap-1 text-meta text-muted">
+                  {selectedTypedItems.flatMap((item) =>
+                    item.target === null ? [] : [<li key={item.id}>{item.target}</li>],
+                  )}
+                </ul>
+              </section>
+            )}
             <div className="flex items-center gap-3 border-t border-line pt-3">
-              {unresolved.length === 0 ? null : (
+              {hasTypedItems || unresolved.length === 0 ? null : (
                 <button
                   type="button"
                   className={BUTTON}
@@ -490,10 +724,16 @@ export function ImportSetup({
                 {!hasItems
                   ? 'No setup files were found in this project.'
                   : blocked > 0
-                    ? `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
-                    : leftOut === 0
-                      ? 'Ready to import.'
-                      : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
+                    ? hasTypedItems
+                      ? `${String(blocked)} item(s) still need attention.`
+                      : `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
+                    : hasTypedItems
+                      ? excludedItems.length === 0
+                        ? 'Ready to import.'
+                        : `Ready to import. ${String(excludedItems.length)} item(s) will not be imported.`
+                      : leftOut === 0
+                        ? 'Ready to import.'
+                        : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
               </p>
               <button
                 type="button"

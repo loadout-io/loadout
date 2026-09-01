@@ -1,56 +1,115 @@
-# T-161 — Długi workflow zostaje wewnątrz ekranu Run
+# T-151 — Widoczna rewizja nie jest cofana przed Run
 
-Pasek kroków ma własne przewijanie, ale jego dzieci nadal potrafią narzucić szerokość całemu
-ekranowi. Przy długim grafie albo szerokich kontrolkach prawa kolumna Agents wypada poza
-viewport, a globalne `overflow: hidden` tylko ukrywa skutek. To zadanie ustala jedną twardą
-granicę geometrii: nadmiar zostaje wewnątrz paska, a dwukolumnowy ekran nigdy się od niego
-nie rozszerza.
+Dzisiejszy stempel pamięci zapisuje z powrotem zamrożony snapshot notatki, więc potrafi skasować
+edycję wykonaną już po ułożeniu promptu. Osobno edytor workflowu ma 400 ms debounce i nie łączy
+kliknięcia Run z zakończeniem zapisu: bieg może dostać poprzednią rewizję, a starszy zapis
+in-flight może później wygrać z nowszym. Trzeci brak jest czysto prezentacyjny — model danych zna
+`project | fresh-copy | same-copy`, lecz panel pokazuje tylko binarny wybór folder/kopia.
 
-Zadanie nie przenosi ustawień biegu, nie wybiera Lead, nie zmienia semantyki kroków i nie
-naprawia listy NOW. Dzięki temu nie współdzieli ścieżek z T-151…T-160 ani z przyszłym Settings.
+Zadanie domyka te trzy małe granice świeżości i widocznej konfiguracji. Nie publikuje innych
+plików atomowo, nie zmienia listowania bibliotek i nie implementuje wielorodzicowego fan-in;
+te odpowiedzialności należą odpowiednio do T-202 i T-153.
 
-**Zależy od:** brak.
+**Zależy od:** T-150.
 
-**Read first:** `AGENTS.md` niezmienniki 13, 17, 18 i 29 ·
-`docs/ARCHITECTURE.md` §7 · `docs/design/DESIGN.md` §2 ·
-`src/sections/run/index.tsx` (`WORK_COLUMNS`, `FEED_ROWS`) ·
-`src/sections/run/strip/strip.tsx` · `src/sections/run/rail/rail.tsx` ·
-`src-tauri/tauri.conf.json` · `e2e/harness.ts`.
+**Read first:** `AGENTS.md` §2a oraz niezmienniki 4, 12, 13, 16, 19, 24 i 29 ·
+`tasks/T-139.md` · `src-tauri/src/memory/notes.rs` (`mark_used_from_snapshot`, `persist`) ·
+`src-tauri/tests/t139_two_roots_snapshot_and_tombstones.rs` · `src/state/workflows.ts` ·
+`src/sections/workflows/{index,editor}.tsx` ·
+`src/sections/workflows/step-panel/panel.tsx`.
 
-## Tryb wykonania
+## Tryb wykonania — DIRECT / medium
 
-- Codex w osobnym worktree, bez osobnego Harnessu.
-- Obowiązuje uczciwe czerwone `before`, quick/full i read-only review.
-- Bez zmian w `index.tsx`, `start.tsx`, railu, ustawieniach ani `e2e/harness.ts`.
+1. Codex tworzy osobny worktree przez `./worktree.sh T-151`; nie używa `ship-task.sh`,
+   `review.sh` ani `repair.sh`.
+2. Przed implementacją dodaje wszystkie trzy kompletne targety i najwęższe kompilowalne
+   szkielety. Każdy target uruchamia osobno, a `before` zapisuje czerwień na asercji starego
+   zachowania.
+3. Po implementacji uruchamia trzy wskazane targety i `./verify.sh quick`; osobny Codex robi
+   lekki read-only review diffu bez `review.sh`. Jedyne lądowanie to pojedyncze
+   `./integrate.sh <gałąź>`, które wykonuje pełną bramkę.
+4. Nie zmienia `harness/`, `checks/`, `verify.sh`, lokalnych workflowów ani receiptów operatora.
+   Ciężkie Cargo nie biegnie równolegle z innym zadaniem.
 
 ## Uczciwe `before`
 
-Target istnieje przed `./verify.sh before` i montuje prawdziwą aplikację w Chromium. Ładuje
-workflow z co najmniej trzydziestoma długimi nazwami kroków, ustawia wspierane minimum
-`1100 × 700` i doprowadza prawdziwy pasek do stanu z krokiem biegnącym blisko końca grafu.
-Przed poprawką pada na asercji geometrii railu albo overflow całego ekranu. Brak Vite,
-Chromium, fixture, railu lub zero testów nie są czerwienią.
+Wszystkie trzy dokładne pliki testów istnieją przed `./verify.sh before`. Rustowy target kompiluje
+się i przechodzi przez produkcyjny snapshot oraz stempel. Oba browserowe targety korzystają z
+istniejącego `e2e/harness.ts`, prawdziwego edytora i kliknięć; nie wywołują store, `saveNow` ani
+handlera Run bezpośrednio. Padają odpowiednio na cofniętych bajtach, złej kolejności taśmy i braku
+trzeciej kontrolki. Brak modułu, collection error, compile error, zero testów, timeout i sztuczny
+sentinel nie są czerwienią.
 
-## AC-1 Pasek zatrzymuje własny nadmiar, a reszta Run pozostaje dostępna
-check: npx --no-install vitest run e2e/tests/t161-long-workflow-stays-inside-run.spec.ts
+## AC-1 Stempel zmienia wyłącznie aktualny plik
+check: cargo test --test t151_note_stamp_uses_current_file
 expect: (\d+) passed
 
-Spec wykonuje scenę przy `1100 × 700` i kontrolę przy `1440 × 900`. W obu rozmiarach:
+Target zamraża prawdziwy prompt z notatką, po czym przed stemplem zmienia jej body, `modified`
+i nieznany klucz front matter. Produkcyjny stempel ponownie czyta plik spod aktualnej ścieżki
+i aktualizuje w tych **bieżących** bajtach wyłącznie `last_used_at`; nowsze body, metadane i
+nieznany klucz przeżywają. Zamrożony `RunSpec.prompt` oraz receipt nadal opisują starszy snapshot,
+więc kontekst biegu nie zmienia się w połowie.
 
-- dokument, sekcja Run i dwukolumnowy obszar pracy nie mają poziomego overflow;
-- prawy brzeg `[data-rail]` mieści się w widocznym `main`, a rail ma niezerową szerokość;
-- pole `Command line` pozostaje widoczne w pionowym viewport;
-- `[data-strip]` zachowuje dokładnie `STRIP_HEIGHT` i nie tworzy drugiego rzędu chrome;
-- wszystkie kroki pozostają w DOM, a ich nadmiar przewija wyłącznie `[data-blocks]`;
-- pierwszy naprawdę biegnący blok jest wewnątrz widocznego wycinka bez płynnej animacji;
-- prawdziwe kontrolki paska pozostają osiągalne i klikalne — poprawka nie może ich ukryć,
-  przeskalować, uciąć bez drogi dostępu ani przesunąć poza ekran.
+Osobne sceny wykonują Move i Discard po zamrożeniu. Brak starej ścieżki jest stanem
+autorytatywnym: stempel nie odtwarza snapshotu, nie nadpisuje celu Move i nie wskrzesza odrzuconej
+notatki. T-139 zostaje zmieniony tylko w asercjach, które dziś wymagają utraty
+`T139-EDITED-AFTER-PROMPT`; wszystkie pozostałe fakty jego scenariusza zostają.
 
-Test mierzy `scrollWidth`, `clientWidth` i bounding boxy prawdziwego DOM; nie asertuje samych
-nazw klas.
+Notatka nie ma trwałego ID ani fingerprintu niezależnego od ścieżki. Ten task nie udaje więc,
+że rozpozna arbitralną podmianę pliku pod tą samą nazwą: w takim przypadku aktualny plik jest
+prawdą i wolno zmienić wyłącznie jego `last_used_at`. Wykrywanie innej tożsamości wymagałoby
+najpierw osobnej decyzji o trwałym ID.
+
+## AC-2 Run nie może zobaczyć rewizji starszej niż widoczna
+check: npx --no-install vitest run e2e/tests/t151-run-uses-visible-workflow-revision.spec.ts
+expect: (\d+) passed
+
+Spec zmienia widoczne pole workflowu i natychmiast klika Run, przed upływem 400 ms. Produkcyjna
+taśma dowodzi, że zapis rewizji widocznej w chwili kliknięcia zakończył się przed
+`run_workflow`, a ten dostaje nazwę pliku wskazującą na co najmniej tę rewizję. Backend może
+zobaczyć tę samą albo jeszcze nowszą zapisaną wersję, nigdy starszą.
+
+Ten task nie dodaje snapshotu workflowu do żądania Run. Dzisiejszy protokół przekazuje tylko
+nazwę pliku, a ekran Run montuje się dopiero po opuszczeniu edytora. Obietnica dokładnie tych
+samych bajtów mimo późniejszej edycji wymagałaby osobnego, wersjonowanego kontraktu
+frontend → IPC → planner → receipt; nie wolno jej sugerować samym debounce'em.
+
+Store ma jedną monotoniczną, serializowaną kolejkę zapisu per otwarty workflow. Nowsza rewizja
+jest koaleskowana, ale nigdy nie wyprzedza wcześniejszego zapisu tak, aby starsze zakończenie
+mogło nadpisać ją na dysku. Test zatrzymuje starszy autosave in-flight, wykonuje nowszą edycję
+i klika Run. Nowszy zapis rusza dopiero po rozliczeniu starszego, a `run_workflow` dopiero po
+rozliczeniu nowszego; po obu loader widzi najnowsze bajty. Run czeka na potwierdzenie co najmniej
+swojej captured revision, nie na dowolny pending zapis.
+
+Odmowa zapisu zostawia człowieka w edytorze, pokazuje po angielsku, że zmian nie zapisano,
+i nie wywołuje `run_workflow`. Kolejne poprawne zapisanie tej samej lub nowszej rewizji odblokowuje
+Run bez restartu. Test nie omija produkcyjnego debounce, IO ani prawdziwego kliknięcia.
+
+## AC-3 Agent ma trzy jednoznaczne wybory pracy w plikach
+check: npx --no-install vitest run e2e/tests/t151-agent-folder-choice-round-trips.spec.ts
+expect: (\d+) passed
+
+Prawdziwy panel agenta pokazuje trzy wzajemnie wykluczające się kontrolki odpowiadające dokładnie
+`project`, `fresh-copy` i `same-copy`. Angielskie etykiety mówią odpowiednio o pracy w folderze
+projektu, rozpoczęciu w nowej kopii oraz kontynuowaniu wcześniejszej pracy w plikach; nie używają
+żargonu worktree/branch i nie obiecują automatycznego lądowania zmian do projektu.
+
+Spec wybiera po kolei każdą wartość, zapisuje workflow, zamyka go, ładuje ponownie produkcyjnym IO
+i widzi ten sam pojedynczy wybór. Zmiana jednego wariantu wyłącza pozostałe, a istniejące pliki
+z każdym z trzech wariantów otwierają się bez migracji. Wielorodzicowy `same-copy` nadal może
+zostać odmówiony przez dzisiejszy preflight do czasu T-153; ta kontrolka zapisuje intencję,
+nie implementuje Git fan-in.
 
 <!-- OWNS
-tasks/T-161.md
-src/sections/run/strip/strip.tsx
-e2e/tests/t161-long-workflow-stays-inside-run.spec.ts
+tasks/T-151.md
+src-tauri/src/memory/notes.rs
+src-tauri/tests/t139_two_roots_snapshot_and_tombstones.rs
+src-tauri/tests/t151_note_stamp_uses_current_file.rs
+src/state/workflows.ts
+src/sections/workflows/index.tsx
+src/sections/workflows/editor.tsx
+src/sections/workflows/step-panel/panel.tsx
+src/sections/workflows/step-panel/fresh-copy-row.test.tsx
+e2e/tests/t151-run-uses-visible-workflow-revision.spec.ts
+e2e/tests/t151-agent-folder-choice-round-trips.spec.ts
 -->

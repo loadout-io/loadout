@@ -592,8 +592,8 @@ impl FrozenFixture {
 
     fn assert_stamp(&self) -> Result<(), Box<dyn StdError>> {
         let stamped = fs::read_to_string(&self.note_path)?;
-        assert_eq!(restore_null_stamp(&stamped)?, self.original);
-        assert!(!stamped.contains("T139-EDITED-AFTER-PROMPT"));
+        assert_eq!(restore_null_stamp(&stamped)?, self.edited);
+        assert!(stamped.contains("T139-EDITED-AFTER-PROMPT"));
         Ok(())
     }
 }
