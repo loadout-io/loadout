@@ -102,7 +102,7 @@ Loadout treats orchestration failures as product failures, not terminal noise:
 
 Loadout is packaged for Apple Silicon Macs.
 
-1. Download [`Loadout_0.2.2_aarch64.dmg`](https://github.com/loadout-io/loadout/releases/latest).
+1. Download [`Loadout_0.2.3_aarch64.dmg`](https://github.com/loadout-io/loadout/releases/latest).
 2. Open the DMG and drag Loadout to Applications.
 3. Launch it normally — the app and DMG are signed with Apple Developer ID, notarized, and
    stapled.
@@ -112,8 +112,8 @@ Verify the download against the SHA-256 published with that release, then check 
 yourself:
 
 ```bash
-shasum -a 256 ~/Downloads/Loadout_0.2.2_aarch64.dmg
-spctl --assess --type open --context context:primary-signature -v ~/Downloads/Loadout_0.2.2_aarch64.dmg
+shasum -a 256 ~/Downloads/Loadout_0.2.3_aarch64.dmg
+spctl --assess --type open --context context:primary-signature -v ~/Downloads/Loadout_0.2.3_aarch64.dmg
 ```
 
 The checksum lives in the [release notes](https://github.com/loadout-io/loadout/releases/latest)
