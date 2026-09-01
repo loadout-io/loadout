@@ -100,11 +100,15 @@ MUST_NOT_WRITE = [
     # w `.claude/settings.json` (commit 533eab8, "na prosbe wlasciciela"). Zdjecie jest
     # BEZPIECZNE i to jest cale uzasadnienie: kontraktem, ktorego pisarz nie ma prawa
     # tknac, jest `TASK.md` w jego worktree -- a `Edit(TASK.md)` i `Write(TASK.md)` sa
-    # w `deny` NADAL, oba czasowniki. `tasks/*.md` to rejestr na trunku, ktory prowadzi
-    # czlowiek i orchestrator; pisarz go nie widzi, bo pracuje w kopii.
+    # w `deny` NADAL, oba czasowniki. Katalog `tasks/` odszedl 2026-08-28 razem ze starym
+    # harnessem; kontrakt powstaje teraz w worktree i tam jest zamrozony.
     # Zostawiony kanarek swiecil czerwono na KAZDYM biegu i nie dalo sie go zgasic
     # zadna dozwolona sciezka -- zmierzone na T-53, ktore skonczylo 4/4 zielone.
-    "verify.sh", "ship-task.sh",
+    #
+    # `ship.sh` zastapil tu `ship-task.sh` 2026-08-28. Powod jest ten sam, dla ktorego ta
+    # linia w ogole istnieje: graf biegu jest w kodzie WLASNIE po to, zeby bieg nie mogl
+    # pominac etapu, a etap da sie pominac jedna edycja tego pliku.
+    "verify.sh", "ship.sh",
     "Cargo.toml", "package.json", "rust-toolchain.toml",
 ]
 owned_now = {o for o in owns}

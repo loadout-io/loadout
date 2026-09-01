@@ -136,7 +136,7 @@ if orphans:
         "\na function used only from tests/ is NOT dead code to clippy -- integration tests\n"
         "are separate crates, so dead_code stays silent and the thing rots green. That is how\n"
         "engine::limits::Limiter landed with a passing test and zero production callers.\n"
-        "Wire it, or write the task that will -- naming the function in tasks/*.md.\n")
+        "Wire it, or promise it by name in the TASK.md of the run that will.\n")
     raise SystemExit(1)
 
 print("wired: %d new pub fn, every one called from %s, registered as a command, or owned "

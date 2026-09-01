@@ -125,16 +125,16 @@ for branch in "$@"; do
       exit 1
     fi
 
-    # TASK.md to nie praca, tylko historia, którą gałąź dostała na wejściu.
-    # ship-task.sh kopiuje tasks/<id>.md na TASK.md na KAŻDEJ gałęzi, więc każde
-    # drugie lądowanie konfliktuje na ścieżce, której żadne zadanie nie dotyka
+    # TASK.md to nie praca, tylko kontrakt, który gałąź napisała sobie na wejściu.
+    # KAŻDY bieg zostawia go w korzeniu gałęzi (pisze go etap planu w ship.sh), więc
+    # każde drugie lądowanie konfliktuje na ścieżce, której żadna praca nie dotyka
     # i której żaden czytelnik nie potrzebuje. Kopia z trunka wygrywa,
     # deterministycznie — a konflikt, który zostanie, jest już prawdziwy.
     if [ "$unmerged" = "TASK.md" ]; then
       git checkout --ours TASK.md
       git add TASK.md
       git commit -q --no-edit
-      echo "  (TASK.md resolved to trunk's copy -- the branch's story stays in tasks/)"
+      echo "  (TASK.md resolved to trunk's copy -- the branch keeps its own in its history)"
     else
       echo "MERGE CONFLICT landing $branch -- two tasks claimed the same lines:" >&2
       printf '%s\n' "$unmerged" | sed 's/^/  /' >&2
@@ -151,13 +151,13 @@ for branch in "$@"; do
   # przestrzeni ("a second run there cannot prove the criteria red"). Pętla stanęła na
   # następnym zadaniu, dwie sekundy po starcie, z kodem 2.
   #
-  # Trwałym źródłem kontraktu jest tasks/<ID>.md, które i tak leży w repo. Kasujemy więc kopię
-  # i doszywamy to do commita lądowania, żeby trunk nigdy nie miał tego pliku ani przez chwilę
-  # — także dla bramki, która biegnie zaraz niżej.
+  # Trwałym śladem kontraktu jest commit planu na gałęzi (i runs/<id>/ w głównym repo).
+  # Kasujemy więc kopię i doszywamy to do commita lądowania, żeby trunk nigdy nie miał tego
+  # pliku ani przez chwilę — także dla bramki, która biegnie zaraz niżej.
   if git ls-files --error-unmatch TASK.md >/dev/null 2>&1; then
     git rm -q TASK.md
     git commit -q --amend --no-edit
-    echo "  (TASK.md removed from trunk -- it is a branch artifact; tasks/ holds the contract)"
+    echo "  (TASK.md removed from trunk -- it is a branch artifact; the plan commit holds it)"
   fi
 
   rc=0; gate || rc=$?

@@ -14,7 +14,7 @@ Co jeszcze jest wrażliwe na moment:
 | `checks/*.sh` | zmieniają bramkę pod zadaniem, które jest przez nią właśnie sądzone |
 | `harness/gate.py` | to samo, plus `integrate.sh` sądzi trunk przed merge'em. A jeśli **musisz** (orchestrator naprawiający bramkę w trakcie fali): zapisuj przez `tmp` + `os.replace`. `verify.sh` robi `exec python3 harness/gate.py` przy **każdym** wywołaniu, więc zapis częściowy daje bramce śmieci zamiast oracle'a. Zwykły zapis Pythona gubi też bit wykonywalności — `chmod 755` po |
 | cokolwiek, gdy biegną strażnicy | `harness/guards.sh` przerywa się kodem 2 na brudnym drzewie, meldując „restore failed" — czyli twoja edycja wygląda jak wada strażnika |
-| `tasks/*.md` | plik zadania jest bajt w bajt porównywany z `TASK.md` gałęzi (N-08) |
+| `TASK.md` gałęzi | jest bajt w bajt porównywany z wersją z commita planu (kod 1 i kod 2) |
 
 Bezpieczne w każdym momencie: `docs/**`, `AGENTS.md`, `.claude/**` (proces agenta wczytał
 ustawienia przy starcie), nowe pliki, których nikt jeszcze nie woła.
@@ -54,7 +54,25 @@ sprawdzenie ciche ma zginac.
 
 ## Q-7 — 122 cele testowe to 122 linkowania tej samej biblioteki
 
-**Stan: OTWARTE. Zmierzone 2026-08-17, naniesiona tylko kalibracja budzetu.**
+**Stan: ZAMKNIETE 2026-08-28 — regula kontraktu, nie kalibracja budzetu.**
+
+Kalibracja (budzet 9000 s) usuwala objaw i wracala, bo PRZYCZYNA byla w kontrakcie kryterium:
+AGENTS.md §2a regula 2 wymagala globalnie unikalnej SCIEZKI PLIKU na kazde kryterium, a kazdy
+plik wprost w `src-tauri/tests/` to osobne binarium linkujace cala biblioteke. Scalenie do
+jednego celu `it` zrobiono 2026-08-17 (122 -> 1) i **odroslo do 60**, bo regula zamawiala nowy
+plik przy kazdym kolejnym zadaniu; w `tasks/*.md` bylo w sumie **462** takie linie.
+
+Naprawa: §2a regula 1 mowi teraz, ze kryterium rustowe wskazuje MODUL jedynego celu
+(`check: cargo test --test it <modul>::`), a nowego pliku wprost w `src-tauri/tests/` nie
+zakladamy. Bramka umiala to czytac od 2026-08-17 (`CARGO_TARGET` w gate.py mapuje
+`--test it <modul>::` na `src-tauri/tests/it/<modul>.rs`) — brakowalo wylacznie reguly,
+ktora KAZE tak pisac. Etap planu w `ship.sh` dostaje ta instrukcje wprost, z pomiarem.
+
+Co zostaje do zrobienia raz, na spokojna glowe: przeniesc 60 istniejacych celow z
+`src-tauri/tests/*.rs` do `src-tauri/tests/it/` jako moduly. Kazdy przeniesiony cel to
+~60 s mniej w `full-test` przy kazdym ladowaniu.
+
+*Zapis ponizej zostaje jako historia pomiaru.*
 
 `src-tauri/tests/` ma 122 pliki, a kazdy plik w `tests/` to OSOBNE binarium, ktore linkuje cala
 biblioteke razem z zaleznosciami Tauri. Zmierzone dwoma sposobami: pelny przebieg to ~2 h, a

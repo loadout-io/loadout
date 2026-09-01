@@ -6,33 +6,46 @@ Reguły wiążące są w [`AGENTS.md`](../AGENTS.md); tutaj jest wyłącznie oka
 ## Graf wywołań
 
 ```
-  ship-task.sh <ID>                         graf biegu zapisany w kodzie
+  ship.sh "<prompt>"                        graf biegu zapisany w kodzie
     ├─ worktree.sh <gałąź>                  → stdout: JEDNA linia, ścieżka worktree
     │    port: <git-dir worktree>/loadout-port   (nigdy <drzewo>/.port)
-    ├─ cp tasks/<ID>.md → <wt>/TASK.md, commit jako PIERWSZY commit gałęzi
-    ├─ verify.sh before      (pre-flight; exit 2 = brak kontraktu → stop przed wydatkiem)
-    ├─ pisarz: faza kontraktowa (tylko pliki z linii `check:`)   prompt na STDIN
+    ├─ merge trunka w gałąź                 gałąź sądzi się bramką z TRUNKA, nie własną kopią
+    ├─ pisarz: PLAN → <wt>/TASK.md (plan, `## AC-n` + `check:`, OWNS)
+    │           + specyfikacje + szkielet    prompt na STDIN, commit = commit kontraktowy
     ├─ verify.sh before      (egzekwowane; musi być czerwono z właściwego powodu)
-    ├─ pisarz: implementacja                                     prompt na STDIN
-    ├─ verify.sh full        → exit 2 = NASZA konfiguracja → stop, bez rundy naprawczej
-    ├─ review.sh --agent A --reviewer B   → runs/review.json (schema-bound) + stdout
-    ├─ repair.sh --agent A --reviewer B   ← runs/last.json (`failed`) + runs/review.json
-    │    planista (recenzent, read-only) → runs/repair-plan.txt → pisarz wykonuje
-    └─ verify.sh full        → kod wyjścia ship-task.sh
+    │    └─ na jedynce: JEDNA runda naprawy kontraktu, powody z runs/last.json
+    ├─ pisarz: implementacja                 prompt na STDIN
+    ├─ verify.sh task        → exit 2 = NASZA konfiguracja → stop, bez rundy naprawczej
+    ├─ pisarz: naprawa ×≤N   ← runs/last.json (`failed`); N z --rounds, domyślnie 2
+    │    po każdej rundzie: verify.sh task + odcisk asercji
+    ├─ review.sh --agent A --reviewer B      TYLKO na --review; raport, nie brama
+    └─ kod wyjścia ship.sh = kod bramki `task`
 
-  verify.sh [before|quick|full] [--only AC-n] [--report] [--ids] [--jobs N]
+  verify.sh [before|quick|task|full] [--only AC-n] [--report] [--ids] [--jobs N]
     ├─ harness/snapshot.sh   refs/snapshots/<epoch>, bufor 40, drzewa NIE rusza
     └─ exec python3 harness/gate.py "$@"
          ├─ checks/<before|quick|full>-<id>.sh   ranga <= poziom → `bash <ścieżka>`
+         │    `task` ma rangę `quick`: te same tanie sprawdzenia, 9,6 s na czternaście
          ├─ TASK.md `## AC-n` + `check:`         kryteria, szerokość <= 2
          └─ runs/last.json                       paragon, tmp + os.replace
 
   integrate.sh <gałąź>...    bramka RAZ na trunku (exit 2 = brak TASK.md, jedziemy),
                              potem merge --no-ff + verify.sh full po KAŻDEJ gałęzi
   scripts/ci.sh [rust|web|full]   to woła CI. NIE verify.sh full: na trunku nie ma TASK.md
-  .claude/hooks/stop-gate.sh      Stop hook → verify.sh full; exit 2 blokuje model
+  .claude/hooks/stop-gate.sh      Stop hook → verify.sh quick; exit 2 blokuje model
   harness/guards.sh               sadzi naruszenie w każdym checks/*.sh, wymaga czerwieni
 ```
+
+**Cztery poziomy, i różnica między dwoma środkowymi jest cała treścią zmiany z 2026-08-28.**
+`quick` i `task` uruchamiają DOKŁADNIE te same sprawdzenia projektowe. Różnią się jednym:
+`task` **odmawia (exit 2), kiedy nie ma kryteriów**, a `quick` mówi wtedy uczciwie „higiena".
+Zielone `task` znaczy „ten bieg zrobił, co obiecał"; zielone `quick` nie twierdzi nic o pracy.
+`full` dokłada suitę całego repo i jest dla trunka: lądowanie i CI.
+
+Powód jest mierzony. `verify.sh full` to 319 s, z czego `full-test` 280 s (88%) i
+`full-clippy --all-targets` 38 s; wszystkie czternaście tanich sprawdzeń razem to 9,6 s.
+Stary `ship-task.sh` wołał `full` DWA razy na bieg, czyli 640 s na przebudowanie rzeczy,
+których bieg nie tknął.
 
 ## Kody wyjścia — identyczne w całym harnessie
 
@@ -41,9 +54,9 @@ Reguły wiążące są w [`AGENTS.md`](../AGENTS.md); tutaj jest wyłącznie oka
 | `0` | przeszło | wszystkie |
 | `1` | sprawdzenie padło — uczciwa porażka kodu | gate.py, ci.sh, integrate.sh, guards.sh |
 | `2` | **my** jesteśmy źle skonfigurowani — nigdy mylone z 1 | wszystkie |
-| `3` | przerwane (SIGINT/SIGTERM) albo sufit czasu | gate.py, ci.sh, ship-task.sh, guards.sh |
+| `3` | przerwane (SIGINT/SIGTERM) albo sufit czasu | gate.py, ci.sh, ship.sh, guards.sh |
 
-Kod `2` to: brak sprawdzeń, brak `## AC-n` w TASK.md, defekt kontraktu zadania, brak
+Kod `2` to: brak sprawdzeń, brak `## AC-n` w TASK.md, defekt kontraktu biegu, brak
 narzędzia (`prettier`, `cargo`, `python3`), brudne drzewo tam, gdzie ma być czyste.
 Sprawdzenie projektowe, które wyszło dwójką, **przewraca cały poziom na 2**, a nie na 1:
 „nie umiem sprawdzić" to inna wiadomość niż „jest źle", i tylko jedna z nich jest o kodzie.
@@ -79,16 +92,32 @@ zatwierdzić. Ten sam plik jest `--output-schema` dla codeksa i wzorcem dla wali
 liczby żywych worktree), `node_modules` jako klon APFS, `target/` jako symlink do wspólnego
 cache'u, zaufanie workspace'u dla obu vendorów. Na stdout leci jedna linia: ścieżka.
 
-**`ship-task.sh`** — cały graf biegu w kodzie, nie w promptcie: model, który dostaje sekwencję
-w promptcie, pomija etap, kiedy uzna go za zbędny. Pisarz jest wołany dwa razy (kontrakt, potem
-implementacja), bo inaczej `verify.sh before` nie jest egzekwowalne, tylko poproszone.
+**`ship.sh`** — cały graf biegu w kodzie, nie w promptcie: model, który dostaje sekwencję
+w promptcie, pomija etap, kiedy uzna go za zbędny — a pomija najchętniej ten, który by go
+zdemaskował. Pisarz jest wołany dwa razy (plan, potem implementacja), bo inaczej
+`verify.sh before` nie jest egzekwowalne, tylko poproszone. Prompt zawsze STDIN-em
+(niezmiennik 9). Naprawa czyta `runs/last.json` (klucz `failed`) i biegnie najwyżej
+`--rounds` razy, domyślnie dwa; po każdej rundzie sprawdzany jest odcisk asercji, bo
+najtańsza droga do zielonego jest asertować mniej.
 
-**`review.sh` / `repair.sh`** — druga opinia i DOKŁADNIE jedna runda poprawek. Domyślnie
-cross-vendor; przy same-vendor recenzent dostaje inny model i jawną rolę. Prompt zawsze STDIN-em
-(niezmiennik 9), agent w WŁASNEJ grupie procesów. `harness/process-group.sh` jest jedyną polityką
-jej życia: timeout i INT/TERM robią SIGTERM → łaska → SIGKILL, a powrót wymaga dowodu ESRCH
-(niezmiennik 6). Dzięki temu przerwany `repair.sh` nie zostawia pisarza pod PID 1.
-`repair.sh` czyta `runs/last.json` (klucz `failed`) i `runs/review.json`, i kończy kodem bramki.
+Przyjmuje PROMPT, nie identyfikator zadania. Do 2026-08-28 brał `<ID>` i kopiował
+`tasks/<ID>.md` na gałąź; ten katalog liczył 26 617 linii kontraktów pisanych ręcznie przed
+biegiem i był tym, co w tej pętli kosztowało człowieka najwięcej. Kontrakt pisze teraz etap
+planu, w worktree, dla jednego biegu — a zamrożenie go pilnują dwie reguły o tej samej treści:
+`checks/quick-scope.sh` (kod 1) i `harness/gate.py` (kod 2), obie porównujące `TASK.md`
+z wersją z commita, który go dodał.
+
+**`review.sh`** — druga opinia, **na żądanie** (`ship.sh --review` albo wprost). Domyślnie
+cross-vendor; przy same-vendor recenzent dostaje inny model i jawną rolę. Prompt zawsze
+STDIN-em (niezmiennik 9), agent we WŁASNEJ grupie procesów. `harness/process-group.sh` jest
+jedyną polityką jej życia: timeout i INT/TERM robią SIGTERM → łaska → SIGKILL, a powrót
+wymaga dowodu ESRCH (niezmiennik 6).
+
+Do 2026-08-28 recenzja była etapem KAŻDEGO biegu, a jej uwaga odpalała rundę naprawczą —
+`repair.sh`, w którym recenzent planował, a pisarz wykonywał plan, którego nie napisał.
+Zmierzone na 121 biegach: 97 recenzji na 105 zwracało uwagę, więc runda „doradcza" była
+obowiązkowa w 81% biegów i regularnie trwała dłużej niż implementacja. `repair.sh` odszedł;
+naprawę prowadzi paragon bramki, bo tylko on odróżnia „sprawdzenie padło" od „ktoś ma zdanie".
 
 **`integrate.sh`** — merge `--no-ff` po jednej gałęzi, pełna bramka po każdej. Konflikt na
 `TASK.md` rozwiązuje kopia z trunka; każdy inny zostaje człowiekowi. Czerwień zostawia merge

@@ -140,9 +140,16 @@ impl Bench {
                 .map_err(|_| "the execution-fact workflow exceeded its bounded patience")?;
         let report = report?;
         let answered = answered?;
+        let folder = report
+            .dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("a run report must name its own directory")?
+            .to_owned();
         let run_file = serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
         Ok(RunResult {
             run_file,
+            folder,
             starts: lock(&self.starts).clone(),
             processes,
             answered,
@@ -153,6 +160,7 @@ impl Bench {
 #[derive(Debug)]
 struct RunResult {
     run_file: Value,
+    folder: String,
     starts: Vec<String>,
     processes: Arc<Processes>,
     answered: bool,
@@ -241,9 +249,8 @@ async fn receipt_records_every_physical_execution_path() -> Result<(), Box<dyn E
         .run(bench.workflow("execution-paths", &workflow)?, true)
         .await?;
 
-    // A Serve step releases the graph as soon as spawn succeeds. Give the real
-    // child a bounded chance to execute its first instruction before cleanup;
-    // otherwise a fast scheduler can kill a correctly spawned process first.
+    // Serve zwalnia graf zaraz po udanym spawn. Przed cleanupem czekamy w ograniczonym oknie
+    // na pierwszą instrukcję prawdziwego potomka; scheduler nie musi sztucznie usypiać produkcji.
     let serve_started = tokio::time::timeout(Duration::from_secs(8), async {
         while !served.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -264,6 +271,18 @@ async fn receipt_records_every_physical_execution_path() -> Result<(), Box<dyn E
     assert_facts(row(&result.run_file, "Check process")?, true, true);
     assert_facts(row(&result.run_file, "Serve process")?, true, true);
     assert_facts(row(&result.run_file, "Skipped child")?, false, false);
+
+    let history = serde_json::to_value(read_run_inner(&bench.project, &result.folder)?)?;
+    assert_eq!(
+        row(&history, "Agent process")?.get("executed"),
+        Some(&Value::Bool(true)),
+        "history dropped a true execution fact from the current receipt"
+    );
+    assert_eq!(
+        row(&history, "Skipped child")?.get("executed"),
+        Some(&Value::Bool(false)),
+        "history dropped a false execution fact from the current receipt"
+    );
 
     assert!(
         !result

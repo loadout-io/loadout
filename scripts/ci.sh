@@ -269,7 +269,7 @@ report_gate_only_checks() {
 #
 # N-12 (audyt 2026-08-15): harness/guards.sh nie był wołany przez NIC. Występował
 # w harness/README.md, w docs/, w tasks/T-22.md i w samym sobie — ale nie w verify.sh,
-# nie w gate.py, nie w ship-task.sh, nie tutaj i nie w haku Stop. Sprawdzenie sprawdzeń
+# nie w gate.py, nie w ship.sh, nie tutaj i nie w haku Stop. Sprawdzenie sprawdzeń
 # było komendą, którą człowiek musiał pamiętać. 00-SYNTHESIS §4.1 przewidywał je „przy pięciu
 # sprawdzeniach, obowiązkowo przy dziesięciu" — mamy jedenaście.
 #
@@ -295,7 +295,6 @@ guards_lane() {
   prompt_backticks
   pinned_scripts_find_the_repo
   bash harness/process-group-selftest.sh
-  task_spine_declarations
   cargo_lock_exit_code
   cargo_lock_reclaims_dead_owner
   rust_compile_failure_never_certifies_before
@@ -303,7 +302,6 @@ guards_lane() {
   spec_assertions_may_grow_never_shrink
   branch_is_judged_by_the_trunks_oracle
   spine_merges_keep_both_declarations
-  contract_freeze_touches_only_its_own_task
   one_clippy_at_the_full_tier
   queueing_never_lands_in_the_waiters_budget
   two_full_gates_never_overlap
@@ -319,7 +317,7 @@ guards_lane() {
 # składniowo to poprawne podstawienie komendy, tylko robi coś zupełnie innego.
 prompt_backticks() {
   local bad
-  bad="$(awk '/<<PROMPT/,/^PROMPT$/' ship-task.sh repair.sh review.sh 2>/dev/null \
+  bad="$(awk '/<<PROMPT/,/^PROMPT$/' ship.sh review.sh 2>/dev/null \
          | grep -n '[^\\]`' || true)"
   if [ -n "$bad" ]; then
     echo "unescaped backtick inside a writer prompt heredoc -- bash will RUN it:" >&2
@@ -365,14 +363,13 @@ cargo_lock_exit_code() {
 }
 
 # ── zadanie tworzace modul Rusta musi miec w OWNS plik z jego deklaracja ──────
-# Cialo w harness/task-spine.py (niezmiennik 23: jedna polityka, jedno miejsce).
-# Ta klasa zatrzymala petle cztery razy 2026-08-15 -- za kazdym razem z innym objawem,
-# wiec za kazdym razem diagnozowalem ja od zera. Bez `pub mod x;` w rodzicu modul nie
-# wchodzi do skrzyni, test integracyjny sie nie kompiluje, a bramka odrzuca to jako
-# falszywa czerwien (NOT_A_REAL_RED). Zadania agent nie moze wtedy wykonac ani obejsc.
-task_spine_declarations() {
-  python3 harness/task-spine.py || return 1
-}
+# 2026-08-28: `task_spine_declarations` odszedl razem z katalogiem tasks/. Cialo mieszkalo
+# w harness/task-spine.py i symulowalo KOLEJNOSC LADOWANIA plikow zadan, zeby sprawdzic, czy
+# kazde zadanie tworzace modul Rusta ma w OWNS plik z jego deklaracja. Bez wielu plikow zadan
+# nie ma czego symulowac: kontrakt powstaje w worktree, dla jednego biegu, a brak deklaracji
+# modulu lapie natychmiast `before` -- "module not found" jest podpisem z NOT_A_REAL_RED,
+# wiec bramka odrzuca to jako falszywa czerwien w tej samej minucie, w ktorej powstalo,
+# zamiast tygodnie pozniej przy ladowaniu.
 
 # ── przypięte skrypty muszą nadal znajdować korzeń repo ───────────────────────
 # Regresja z 2026-08-15, wprowadzona przez samą poprawkę przeciw edycji w trakcie biegu:
@@ -386,34 +383,29 @@ task_spine_declarations() {
 # gdzie pętla jej najbardziej potrzebuje. Stąd `unset` w obu skryptach i drugi wiersz niżej.
 pinned_scripts_find_the_repo() {
   local out
-  # ship-task.sh z nieistniejącym zadaniem ma dojść do listowania tasks/ — czyli musi
-  # najpierw poprawnie ustalić korzeń. To najtańsze wywołanie, które tego dowodzi.
-  out="$(bash ship-task.sh __ci_probe__ 2>&1 || true)"
-  if ! printf '%s' "$out" | grep -q 'no such task: tasks/__ci_probe__.md'; then
-    echo "ship-task.sh nie znajduje korzenia repo po przypięciu:" >&2
+  # ship.sh --dry-run wypisuje ROOT, ktory sam sobie ustalil -- najtansze wywolanie, ktore
+  # dowodzi przypiecia. Gdyby przypiecie bylo zepsute, ROOT bylby katalogiem w $TMPDIR
+  # i skrypt padlby wczesniej na "verify.sh is missing".
+  out="$(bash ship.sh --dry-run __ci_probe__ 2>&1 || true)"
+  if ! printf '%s\n' "$out" | grep -q "^root: *$REPO\$"; then
+    echo "ship.sh nie znajduje korzenia repo po przypieciu:" >&2
     printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
     return 1
   fi
 
-  out="$(bash scripts/build-loop.sh --dry-run 2>&1 || true)"
-  if printf '%s' "$out" | grep -q 'run me from the repo root'; then
-    echo "build-loop.sh nie znajduje korzenia repo po przypięciu" >&2
-    return 1
-  fi
-
-  # Sentinel build-loopa NIE MOŻE wyłączyć przypięcia ship-taskowi. To druga wada, nie ta
-  # sama: przy wspólnej nazwie dziecko dziedziczyło sentinel rodzica i brało jego katalog
-  # za korzeń repo. Podrzucamy tu dokładnie taką parę zmiennych i wymagamy, żeby nic się
-  # nie zmieniło — bo nazwy są rozłączne.
+  # Cudzy sentinel NIE MOZE wylaczyc przypiecia. To druga wada, nie ta sama: przy wspolnej
+  # nazwie dziecko dziedziczylo sentinel rodzica i bralo jego katalog za korzen repo, czyli
+  # obrona wylaczala sie dokladnie tam, gdzie petla jej najbardziej potrzebuje. Podrzucamy
+  # taka pare zmiennych i wymagamy, zeby nic sie nie zmienilo -- bo nazwy sa rozlaczne.
   out="$(env LOADOUT_PINNED_BUILD_LOOP=1 LOADOUT_SELF_BUILD_LOOP=/tmp \
-             bash ship-task.sh __ci_probe__ 2>&1 || true)"
-  if ! printf '%s' "$out" | grep -q 'no such task: tasks/__ci_probe__.md'; then
-    echo "cudzy sentinel wyłączył przypięcie ship-task.sh:" >&2
+             bash ship.sh --dry-run __ci_probe__ 2>&1 || true)"
+  if ! printf '%s\n' "$out" | grep -q "^root: *$REPO\$"; then
+    echo "cudzy sentinel wylaczyl przypiecie ship.sh:" >&2
     printf '%s\n' "$out" | head -3 | sed 's/^/  /' >&2
     return 1
   fi
 
-  echo "pinned scripts: oba znajdują korzeń repo, cudzy sentinel ich nie rusza"
+  echo "pinned script: ship.sh znajduje korzen repo, cudzy sentinel go nie rusza"
 }
 
 # ── zamek po martwym właścicielu ma być odzyskany, nie odczekany ──────────────
@@ -526,13 +518,13 @@ PY
 }
 
 # ── specyfikacji wolno zyskiwać asercje, nigdy żadnej zgubić ──────────────────
-# Obrona rundy naprawczej kontraktu (ship-task.sh, etap 3a). Ta faza dostaje instrukcję
+# Obrona rundy naprawczej kontraktu (ship.sh, etap 2a). Ta faza dostaje instrukcję
 # „spraw, żeby kryterium padało INACZEJ", a najtańsza droga do tego jest asertować mniej —
 # i jest to jedyna faza, w której „asertuj mniej" jest wiarygodnym ODCZYTEM instrukcji,
 # a nie jawnym oszustwem. Dlatego dostała obronę mechaniczną, a nie zdanie w promptcie
 # (niezmiennik 28). Obrona bez strażnika jest obroną, o której nikt nie wie, czy strzela.
 #
-# Strażnik wycina OBIE funkcje z ship-task.sh i uruchamia je naprawdę. Kopia asercji
+# Strażnik wycina OBIE funkcje z ship.sh i uruchamia je naprawdę. Kopia asercji
 # wklejona tutaj testowałaby kopię, nie mechanizm (niezmiennik 20).
 spec_assertions_may_grow_never_shrink() {
   local sandbox fns wt src
@@ -540,7 +532,7 @@ spec_assertions_may_grow_never_shrink() {
   fns="$sandbox/fns.sh"
   wt="$sandbox/wt"
 
-  python3 - ship-task.sh "$fns" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+  python3 - ship.sh "$fns" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
 import io, sys
 
 lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
@@ -548,7 +540,7 @@ out = []
 for want in ("assertion_fingerprint()", "assertions_lost()"):
     head = [k for k, l in enumerate(lines) if l.startswith(want)]
     if len(head) != 1:
-        sys.exit("%s wystepuje %d razy w ship-task.sh" % (want, len(head)))
+        sys.exit("%s wystepuje %d razy w ship.sh" % (want, len(head)))
     i = head[0]
     j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
     out.extend(lines[i:j + 1])
@@ -630,28 +622,30 @@ EXTRACT
 #
 # Strażnik pyta o dwie rzeczy, bo defekt miał dwie połowy: funkcja musi działać, i musi być
 # wołana ZANIM cokolwiek osądzi. Druga połowa jest asercją o kolejności w pliku — i tak ma
-# być: `ship-task.sh` JEST grafem biegu, więc kolejność etapów to jego zachowanie, nie jego
+# być: `ship.sh` JEST grafem biegu, więc kolejność etapów to jego zachowanie, nie jego
 # formatowanie.
 branch_is_judged_by_the_trunks_oracle() {
-  local sandbox g wt wt2
+  local sandbox g wt
   sandbox="$(mktemp -d)" || return 1
   g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
 
   # ── połowa pierwsza: czy funkcja podciąga oracle ──
-  mkdir -p "$sandbox/repo/harness" "$sandbox/repo/tasks"
+  mkdir -p "$sandbox/repo/harness"
   $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
   echo "old oracle" > "$sandbox/repo/harness/gate.py"
-  echo "contract v1" > "$sandbox/repo/tasks/T-99.md"
   $g add -A && $g commit -q -m "trunk v1"
-  $g branch task-T-99
-  # trunk idzie do przodu: NOWY oracle i NOWY plik zadania
+  $g branch run-probe
+  # trunk idzie do przodu: NOWY oracle
   echo "new oracle" > "$sandbox/repo/harness/gate.py"
-  echo "contract v2" > "$sandbox/repo/tasks/T-99.md"
   $g add -A && $g commit -q -m "trunk v2"
   wt="$sandbox/wt"
-  $g worktree add -q "$wt" task-T-99
+  $g worktree add -q "$wt" run-probe
+  # Kontrakt zyje TYLKO na galezi -- tak jak w prawdziwym biegu, gdzie pisze go etap planu.
+  echo "the contract of this run" > "$wt/TASK.md"
+  git -c user.email=ci@loadout -c user.name=ci -C "$wt" add TASK.md
+  git -c user.email=ci@loadout -c user.name=ci -C "$wt" commit -q -m "docs(run): contract"
 
-  python3 - ship-task.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
+  python3 - ship.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
 import io, sys
 lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
 head = [k for k, l in enumerate(lines) if l.startswith("refresh_harness_from_trunk()")]
@@ -663,47 +657,26 @@ io.open(sys.argv[2], "w", encoding="utf-8").write(
     "note() { printf '   %s\\n' \"$*\"; }\n" + "\n".join(lines[i:j + 1]) + "\n")
 EXTRACT
 
-  # $1 = 0: bieg dopiero się zaczyna, więc chcemy BIEŻĄCEGO kontraktu razem z oracle'em
-  WT="$wt" ID=T-99 bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 0 'w tescie'" >/dev/null
+  WT="$wt" bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 'w tescie'" >/dev/null
   if [ "$(cat "$wt/harness/gate.py")" != "new oracle" ]; then
     echo "gałąź po odświeżeniu NADAL sądzi się starą bramką" >&2
     rm -rf "$sandbox"; return 1
   fi
-  if [ "$(cat "$wt/tasks/T-99.md")" != "contract v2" ]; then
-    echo "odświeżenie na starcie biegu ma przynieść także bieżący kontrakt" >&2
-    rm -rf "$sandbox"; return 1
-  fi
 
-  # ID JEST CZESCIA WYWOLANIA, NIE OZDOBA. `refresh_harness_from_trunk` mrozi `tasks/$ID.md`,
-  # wiec bez `ID` mrozi `tasks/.md`, czyli nic — i robi to CICHO, bo `git diff --quiet` na
-  # nieistniejacej sciezce jest prawda. Strazik wolal ja bez `ID` od caf976c (2026-08-16),
-  # ktory zawezil zamrozenie z calego `tasks/` do wlasnego pliku zadania i tknal wylacznie
-  # ship-task.sh. Zmierzone 2026-08-22: bez ID kontrakt na galezi to `contract v2`, z ID
-  # `contract v1`; oracle w obu wypadkach `new oracle`. Mechanizm produkcyjny byl sprawny
-  # przez caly ten czas — nieaktualne bylo to wywolanie.
-  # $1 = 1: kontrakt ZAMROŻONY (N-08). Bieg nie może zmieniać warunków własnego zaliczenia,
-  # więc `tasks/` ma wrócić do wersji gałęzi, a oracle ma mimo to zostać nowy.
-  #
-  # DRUGI worktree, nie recykling pierwszego. Pierwsza wersja tego strażnika kasowała
-  # i odtwarzała tamten — `worktree remove` odmawiał, `worktree add` mówił „already exists",
-  # a asercja mierzyła stan, którego nikt nie zaplanował. Trafiła dobrze przypadkiem, co jest
-  # gorsze niż porażka: przechodziłaby też wtedy, gdyby zamrażanie w ogóle nie działało.
-  wt2="$sandbox/wt-frozen"
-  $g branch task-T-99f main~1
-  $g worktree add -q "$wt2" task-T-99f
-  WT="$wt2" ID=T-99 bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
-  if [ "$(cat "$wt2/harness/gate.py")" != "new oracle" ]; then
-    echo "zamrożony kontrakt zablokował odświeżenie ORACLE'a, a miał zamrozić tylko tasks/" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-  if [ "$(cat "$wt2/tasks/T-99.md")" != "contract v1" ]; then
-    echo "kontrakt NIE został zamrożony: bieg zmienił warunki własnego zaliczenia (N-08)" >&2
+  # Kontrola po drugiej stronie, i to ona zastapila caly straznik o zamrazaniu tasks/.
+  # Do 2026-08-28 kontrakt mieszkal w tasks/<ID>.md, czyli NA TRUNKU, wiec odswiezenie
+  # potrafilo przyniesc na galaz nowsza wersje jej wlasnej umowy -- a bieg zmienialby wtedy
+  # warunki wlasnego zaliczenia (N-08). Teraz kontrakt powstaje w worktree i trunk go nie
+  # niesie, wiec merge nie ma czym go nadpisac. Ta asercja pilnuje, ze to naprawde tak jest,
+  # zamiast wierzyc, ze jest, bo tak wynika z ukladu katalogow.
+  if [ "$(cat "$wt/TASK.md")" != "the contract of this run" ]; then
+    echo "odświeżenie oracle'a ruszyło KONTRAKT gałęzi — bieg zmieniłby warunki własnego zaliczenia" >&2
     rm -rf "$sandbox"; return 1
   fi
   rm -rf "$sandbox"
 
   # ── połowa druga: czy odświeżenie wyprzedza pierwszy osąd ──
-  python3 - ship-task.sh <<'ORDER' || return 1
+  python3 - ship.sh <<'ORDER' || return 1
 import io, sys
 
 lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
@@ -712,12 +685,13 @@ def first(pred, what):
     for k, l in enumerate(lines):
         if pred(l):
             return k
-    sys.exit("nie znalazlem %s w ship-task.sh" % what)
+    sys.exit("nie znalazlem %s w ship.sh" % what)
 
-refresh = first(lambda l: l.strip().startswith("refresh_harness_from_trunk 0"),
-                "wywolania refresh_harness_from_trunk 0")
-judges = first(lambda l: ("verify.sh before" in l or l.strip().startswith("gate before")
-                          or "gate before ||" in l) and not l.lstrip().startswith("#"),
+refresh = first(lambda l: l.strip().startswith('refresh_harness_from_trunk "'),
+                "wywolania refresh_harness_from_trunk")
+# WYLACZNIE prawdziwe wywolania bramki. Prompty pisarza mowia o "./verify.sh before" proza,
+# i gdyby pred lapal tez je, straznik mierzylby kolejnosc AKAPITOW, nie etapow.
+judges = first(lambda l: "gate before" in l and not l.lstrip().startswith("#"),
                "pierwszego etapu, ktory sadzi")
 if judges < refresh:
     sys.exit("pierwszy osad (linia %d) wyprzedza odswiezenie oracle'a (linia %d): galaz "
@@ -725,7 +699,7 @@ if judges < refresh:
              "T-06 2026-08-16" % (judges + 1, refresh + 1))
 ORDER
 
-  echo "oracle: gałąź sądzi się bramką z trunka, i to zanim cokolwiek osądzi"
+  echo "oracle: gałąź sądzi się bramką z trunka, kontrakt gałęzi tego nie odczuwa"
 }
 
 # ── konflikt na kręgosłupie rozwiązuje się ZACHOWANIEM OBU DEKLARACJI ─────────
@@ -788,73 +762,13 @@ spine_merges_keep_both_declarations() {
   echo "spine: konflikt w lib.rs rozwiązuje się zachowaniem obu deklaracji"
 }
 
-# ── zamrożenie kontraktu nie ma prawa cofać CUDZYCH plików zadań ──────────────
-# Zmierzone na T-20 (2026-08-16). `refresh_harness_from_trunk` zamrażał całe `tasks/`, więc
-# podciągnięcie trunka przed rundą naprawczą **rewertowało** na gałęzi pliki zadań zmienione
-# w międzyczasie. Dwa skutki: `quick-scope` świecił na plikach spoza OWNS (czerwień nie do
-# odróżnienia od winy pisarza — poprzedni bieg zapisał ją nawet jako „commit człowieka"),
-# a lądowanie wniosłoby revert na trunk i **po cichu** skasowało cudzą pracę. Bramka po takim
-# lądowaniu jest zielona, bo cofnięte kryterium nie psuje testów — ono je osłabia.
-#
-# N-08 chroni przed jedną rzeczą: biegiem, który zmienia warunki WŁASNEGO zaliczenia. To jest
-# pytanie o `tasks/$ID.md` i o nic więcej; potwierdza to `gate.py`, który porównuje TASK.md
-# wyłącznie z plikiem o tym samym identyfikatorze.
-contract_freeze_touches_only_its_own_task() {
-  local sandbox g wt
-  sandbox="$(mktemp -d)" || return 1
-  g="git -c user.email=ci@loadout -c user.name=ci -C $sandbox/repo"
-
-  mkdir -p "$sandbox/repo/tasks" "$sandbox/repo/harness"
-  $g init -q -b main "$sandbox/repo" 2>/dev/null || { rm -rf "$sandbox"; return 1; }
-  echo "kontrakt T-99, wersja zamrozona" > "$sandbox/repo/tasks/T-99.md"
-  echo "kontrakt T-88, wersja stara"     > "$sandbox/repo/tasks/T-88.md"
-  echo "oracle stary"                    > "$sandbox/repo/harness/gate.py"
-  $g add -A && $g commit -q -m "v1"
-  $g branch task-T-99
-  # Trunk idzie do przodu we WSZYSTKICH trzech plikach naraz.
-  echo "kontrakt T-99, wersja ULEPSZONA" > "$sandbox/repo/tasks/T-99.md"
-  echo "kontrakt T-88, wersja NOWA"      > "$sandbox/repo/tasks/T-88.md"
-  echo "oracle nowy"                     > "$sandbox/repo/harness/gate.py"
-  $g add -A && $g commit -q -m "v2"
-  wt="$sandbox/wt"
-  $g worktree add -q "$wt" task-T-99
-
-  python3 - ship-task.sh "$sandbox/fn.sh" <<'EXTRACT' || { rm -rf "$sandbox"; return 1; }
-import io, sys
-lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
-head = [k for k, l in enumerate(lines) if l.startswith("refresh_harness_from_trunk()")]
-if len(head) != 1:
-    sys.exit("refresh_harness_from_trunk() wystepuje %d razy" % len(head))
-i = head[0]
-j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
-io.open(sys.argv[2], "w", encoding="utf-8").write(
-    "note() { :; }\n" + "\n".join(lines[i:j + 1]) + "\n")
-EXTRACT
-
-  WT="$wt" ID=T-99 bash -c "source '$sandbox/fn.sh'; refresh_harness_from_trunk 1 'w tescie'" >/dev/null
-
-  # (1) oracle MA sie odswiezyc -- po to cale odswiezenie istnieje
-  if [ "$(cat "$wt/harness/gate.py")" != "oracle nowy" ]; then
-    echo "zamrożenie kontraktu zablokowało odświeżenie oracle'a" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-  # (2) WŁASNY kontrakt ma zostać zamrożony -- bieg nie zmienia warunków swojego zaliczenia
-  if [ "$(cat "$wt/tasks/T-99.md")" != "kontrakt T-99, wersja zamrozona" ]; then
-    echo "własny kontrakt biegu NIE został zamrożony (N-08)" >&2
-    rm -rf "$sandbox"; return 1
-  fi
-  # (3) CUDZY plik zadania ma iść za trunkiem. To jest ta asercja, której brakowało.
-  if [ "$(cat "$wt/tasks/T-88.md")" != "kontrakt T-88, wersja NOWA" ]; then
-    echo "zamrożenie COFNĘŁO cudzy plik zadania do wersji sprzed trunka:" >&2
-    echo "  tasks/T-88.md = $(cat "$wt/tasks/T-88.md")" >&2
-    echo "  oczekiwano wersji z trunka. Wylądowanie takiej gałęzi kasuje cudzą pracę po cichu," >&2
-    echo "  a bramka po tym lądowaniu jest ZIELONA, bo cofnięte kryterium nie psuje testów." >&2
-    rm -rf "$sandbox"; return 1
-  fi
-
-  rm -rf "$sandbox"
-  echo "kontrakt: zamrożony jest własny plik zadania, cudze idą za trunkiem"
-}
+# 2026-08-28: `contract_freeze_touches_only_its_own_task` odszedl razem z katalogiem tasks/.
+# Pilnowal, zeby zamrozenie kontraktu (N-08) cofalo na galezi WYLACZNIE jej wlasny plik
+# zadania, a nie cale `tasks/` -- bo szersza wersja rewertowala cudza prace, a ladowanie
+# wnosilo ten revert na trunk PO CICHU, przy zielonej bramce. Ta klasa wady nie ma juz
+# wejscia: kontrakt nie mieszka na trunku, wiec nie ma czego cofac. Ze odswiezenie oracle'a
+# faktycznie nie rusza kontraktu galezi, sprawdza teraz asercja w
+# `branch_is_judged_by_the_trunks_oracle` wyzej.
 
 # ── w `full` biegnie JEDNO clippy, nie dwa bijące się o muteks ────────────────
 # Zmierzone 2026-08-16 przy lądowaniu T-27, na PUSTEJ maszynie: `verify.sh full` odkrywał

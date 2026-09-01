@@ -385,6 +385,45 @@ impl PublicationRoot {
         ))
     }
 
+    /// Usuwa regularny leaf po ostatniej kontroli, że nazwa wskazuje inode przejęty przez caller.
+    /// Kontrola i `unlinkat` używają tego samego utrzymanego deskryptora parenta, więc rollback nie
+    /// podąża za podmienionym parentem ani symlinkiem. POSIX nie daje compare-and-unlink dla nazwy:
+    /// caller nadal musi serializować własnych writerów; obcy proces może trafić między kontrolę
+    /// i `unlinkat`, tak samo jak w udokumentowanej granicy compare-and-rename durable publishera.
+    #[cfg(unix)]
+    pub(crate) fn remove_regular_file_if_identity(
+        &self,
+        relative: &Path,
+        expected: PublicationIdentity,
+    ) -> io::Result<bool> {
+        use nix::unistd::{UnlinkatFlags, unlinkat};
+
+        let target = self.target(relative)?;
+        if target.regular_target_identity()? != Some(expected) {
+            return Ok(false);
+        }
+        unlinkat(
+            &target.directory,
+            Path::new(&target.file_name),
+            UnlinkatFlags::NoRemoveDir,
+        )
+        .map_err(io::Error::from)?;
+        target.sync_directory()?;
+        Ok(true)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn remove_regular_file_if_identity(
+        &self,
+        _relative: &Path,
+        _expected: PublicationIdentity,
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "identity-bound descriptor-relative removal is not implemented on Windows",
+        ))
+    }
+
     #[cfg(unix)]
     fn open_directory(&self, relative: &Path) -> io::Result<std::os::fd::OwnedFd> {
         let mut directory = nix::unistd::dup(&self.directory).map_err(io::Error::from)?;
@@ -486,6 +525,37 @@ impl PublicationTarget {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "private target identity is not implemented on Windows",
+        ))
+    }
+
+    /// Otwiera zwykły regularny leaf bez śledzenia symlinków i zwraca jego tożsamość. W
+    /// przeciwieństwie do `private_target_identity` nie narzuca trybu 0600, bo historyczne
+    /// receipts zachowują domyślne prawa plików użytkownika.
+    #[cfg(unix)]
+    pub(crate) fn regular_target_identity(&self) -> io::Result<Option<PublicationIdentity>> {
+        use nix::errno::Errno;
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::Mode;
+
+        let opened = match openat(
+            &self.directory,
+            Path::new(&self.file_name),
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(opened) => opened,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(error) => return Err(io::Error::from(error)),
+        };
+        validate_regular_fd(&opened)?;
+        Ok(Some(identity_of(&opened)?))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn regular_target_identity(&self) -> io::Result<Option<PublicationIdentity>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "regular target identity is not implemented on Windows",
         ))
     }
 
@@ -811,6 +881,22 @@ fn identity_of(file: &impl std::os::fd::AsFd) -> io::Result<PublicationIdentity>
         })?,
         inode: stat.st_ino as u64,
     })
+}
+
+/// Wiąże receipt publikacji z deskryptorem pliku tymczasowego jeszcze przed commit. Odczyt
+/// identity po nazwie docelowej zostawiałby obcemu writerowi okno na podmianę między rename
+/// a rejestracją rollbacku.
+#[cfg(unix)]
+pub(crate) fn publication_identity(file: &std::fs::File) -> io::Result<PublicationIdentity> {
+    identity_of(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn publication_identity(_file: &std::fs::File) -> io::Result<PublicationIdentity> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "publication identity is not implemented on Windows",
+    ))
 }
 
 #[cfg(unix)]

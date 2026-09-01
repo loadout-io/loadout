@@ -14,7 +14,7 @@ zero zgubionych na granicy tury.
 
 # Uzycie, z korzenia repo
 
-    python3 scripts/detach.py <plik-logu> ./ship-task.sh <ID> --agent claude --reviewer claude
+    python3 scripts/detach.py <plik-logu> ./ship.sh "<prompt>" --agent claude
 
 Zmienne srodowiska przechodza przez forki, wiec `FROM=`, `LOADOUT_TRUNK=`
 i `LOADOUT_CARGO_LOCK_WAIT=` stawia sie przed wywolaniem jak zwykle.

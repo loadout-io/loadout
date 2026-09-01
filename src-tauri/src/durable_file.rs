@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, Weak};
 
 use crate::engine::supervisor::{
-    PublicationIdentity, PublicationRoot, PublicationTarget, publication_root_key,
+    PublicationIdentity, PublicationRoot, PublicationTarget, publication_identity,
+    publication_root_key,
 };
 
 /// Jawny tryb nowych plików definicji. Istniejący cel zachowuje swój tryb przy replace.
@@ -224,9 +225,14 @@ impl PublicationBatch<'_> {
         bytes: &[u8],
         mode: ModePolicy,
     ) -> Result<(), PublishError> {
-        self.publish(target, bytes, mode, PublicationOperation::Replace, |_| {
-            Ok(())
-        })
+        self.publish(
+            target,
+            bytes,
+            mode,
+            PublicationOperation::Replace,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
     }
 
     pub(crate) fn atomic_create_if_absent(
@@ -241,19 +247,42 @@ impl PublicationBatch<'_> {
             mode,
             PublicationOperation::CreateIfAbsent,
             |_| Ok(()),
+            |_| Ok(()),
         )
     }
 
-    fn publish(
+    /// Zwraca identity dokładnie tego inode'u, który został podlinkowany pod nazwę celu.
+    /// Identity jest pobierane z utrzymanego temp-fd przed commit, nie przez ponowne
+    /// otwarcie nazwy podatne na podmianę między publikacją i rejestracją rollbacku.
+    pub(crate) fn atomic_create_if_absent_with_identity(
+        &self,
+        target: &Path,
+        bytes: &[u8],
+        mode: ModePolicy,
+    ) -> Result<PublicationIdentity, PublishError> {
+        self.publish(
+            target,
+            bytes,
+            mode,
+            PublicationOperation::CreateIfAbsent,
+            |temporary| publication_identity(temporary).map_err(PublishError::Io),
+            |_| Ok(()),
+        )
+    }
+
+    fn publish<T>(
         &self,
         target: &Path,
         bytes: &[u8],
         mode: ModePolicy,
         operation: PublicationOperation,
+        capture: impl FnOnce(&std::fs::File) -> Result<T, PublishError>,
         validate: impl Fn(&PublicationTarget) -> Result<(), PublishError>,
-    ) -> Result<(), PublishError> {
+    ) -> Result<T, PublishError> {
         let prepared = self.publisher.prepare(&self.root, target)?;
-        DurableFilePublisher::publish_prepared(&prepared, target, bytes, mode, operation, validate)
+        DurableFilePublisher::publish_prepared(
+            &prepared, target, bytes, mode, operation, capture, validate,
+        )
     }
 }
 
@@ -443,14 +472,15 @@ impl DurableFilePublisher {
         })
     }
 
-    fn publish_prepared(
+    fn publish_prepared<T>(
         prepared: &PublicationTarget,
         target: &Path,
         bytes: &[u8],
         mode: ModePolicy,
         operation: PublicationOperation,
+        capture: impl FnOnce(&std::fs::File) -> Result<T, PublishError>,
         validate: impl Fn(&PublicationTarget) -> Result<(), PublishError>,
-    ) -> Result<(), PublishError> {
+    ) -> Result<T, PublishError> {
         let faults = scoped_injector_for(target);
         let selected_mode = match (mode, prepared.target_mode()?) {
             (ModePolicy::PreserveExistingOr(_default), Some(existing)) => existing,
@@ -491,6 +521,7 @@ impl DurableFilePublisher {
                 FaultPoint::AfterFileSync,
                 target,
             )?;
+            let published = capture(&temporary)?;
             drop(temporary);
 
             check_fault(faults.as_ref(), operation, FaultPoint::BeforeCommit, target)?;
@@ -529,7 +560,7 @@ impl DurableFilePublisher {
                 target,
             )?;
             prepared.sync_directory()?;
-            Ok(())
+            Ok(published)
         })();
 
         let crashed = matches!(result, Err(PublishError::Injected { crashed: true, .. }));
@@ -856,6 +887,7 @@ impl PrivateFilePublisher {
                     bytes,
                     ModePolicy::Exact(PRIVATE_FILE_MODE),
                     operation,
+                    |_| Ok(()),
                     |prepared| {
                         if prepared.has_writing_guard()? {
                             return Err(PublishError::Io(io::Error::new(

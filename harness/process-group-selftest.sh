@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Odtwarza incydent T-129 bez prawdziwego vendora: agent ignoruje TERM i pisze dalej,
-# a zewnetrzny Ctrl-C trafia tylko do grupy review/repair. Zielone wymaga ESRCH i ciszy po exit.
+# a zewnetrzny Ctrl-C trafia tylko do grupy wolajacego. Zielone wymaga ESRCH i ciszy po exit.
+#
+# Dwa adaptery tej samej polityki, oba sprawdzane naprawde:
+#   * PISARZ z ship.sh -- `write_with` + `_loadout_spawn_writer`, wyciete z zywego pliku
+#     i uruchomione w piaskownicy. Do 2026-08-28 pisarz NIE biegl pod ta polityka (stary
+#     ship-task.sh wolal go zwyklym podshellem), czyli najdluzszy i najdrozszy proces
+#     w biegu byl jedynym bez dowodu smierci.
+#   * RECENZENT z review.sh -- przerwanie i sufit czasu.
+#
+# `repair.sh` byl tu trzecim przypadkiem do 2026-08-28; odszedl razem ze starym harnessem,
+# a jego role -- runde naprawcza -- przejal pisarz, ktory jest teraz sprawdzany wyzej.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -9,8 +19,53 @@ cleanup() { rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 
 mkdir -p "$SANDBOX/harness" "$SANDBOX/runs" "$SANDBOX/bin"
-cp "$ROOT/repair.sh" "$ROOT/review.sh" "$SANDBOX/"
+cp "$ROOT/review.sh" "$SANDBOX/"
 cp "$ROOT/harness/process-group.sh" "$ROOT/harness/review-schema.json" "$SANDBOX/harness/"
+
+# Pisarz jest WYCIETY Z ZYWEGO ship.sh, nie przepisany tutaj. Kopia promptu w selftescie
+# to dokladnie ten rodzaj testu, ktory przechodzi na wlasnej kopii i nie widzi regresji
+# w kodzie produkcyjnym (niezmiennik 20).
+python3 - "$ROOT/ship.sh" "$SANDBOX/writer.sh" <<'EXTRACT'
+import io, sys
+
+lines = io.open(sys.argv[1], encoding="utf-8").read().split("\n")
+
+def body(name):
+    head = [k for k, l in enumerate(lines) if l.startswith(name + "() {")]
+    if len(head) != 1:
+        sys.exit("%s() wystepuje %d razy w ship.sh" % (name, len(head)))
+    i = head[0]
+    j = next(k for k in range(i + 1, len(lines)) if lines[k] == "}")
+    return "\n".join(lines[i:j + 1])
+
+io.open(sys.argv[2], "w", encoding="utf-8").write("""#!/usr/bin/env bash
+# GENEROWANY przez harness/process-group-selftest.sh z zywego ship.sh. Nie edytuj.
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+cd "$ROOT"
+. "$ROOT/harness/process-group.sh"
+AGENT=codex
+WT="$ROOT"
+GIT_COMMON="$ROOT"
+LOADOUT_CODEX_MODEL=fake-model
+LOADOUT_CODEX_EFFORT=low
+LOADOUT_CLAUDE_MODEL=fake-model
+LOADOUT_CLAUDE_EFFORT=low
+%s
+
+%s
+
+%s
+
+trap ship_interrupted INT TERM
+rc=0
+write_with "$ROOT/writer.jsonl" 10 <<'PROMPT' || rc=$?
+implement the planted behaviour
+PROMPT
+exit "$rc"
+""" % (body("ship_interrupted"), body("_loadout_spawn_writer"), body("write_with")))
+EXTRACT
+chmod +x "$SANDBOX/writer.sh"
 
 cat > "$SANDBOX/TASK.md" <<'TASK'
 # process group selftest
@@ -32,8 +87,8 @@ fi
 VERIFY
 chmod +x "$SANDBOX/verify.sh"
 
-# Planista repair konczy od razu. Pisarz repair i recenzent review ignorują TERM i stale
-# pisza marker, wiec tylko poprawna eskalacja calego PGID moze zatrzymac selftest.
+# Planista (tryb read-only bez schematu) konczy od razu. Pisarz i recenzent ignoruja TERM
+# i stale pisza marker, wiec tylko poprawna eskalacja calego PGID moze zatrzymac selftest.
 cat > "$SANDBOX/bin/codex" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -154,14 +209,21 @@ def run_case(name, argv, send_interrupt=True, expected_rc=3, extra_env=None):
         raise SystemExit("%s\n--- %s log ---\n%s" % (error, name, detail))
 
 
-run_case("repair", ["bash", "repair.sh", "--agent", "codex", "--reviewer", "codex"])
+run_case("writer", ["bash", "writer.sh"])
 run_case("review", ["bash", "review.sh", "--agent", "codex", "--reviewer", "codex"])
+# Sufit czasu sprawdzamy na recenzencie, bo tam OCZEKIWANY kod wyjscia jest zdefiniowany:
+# review.sh jest zawsze-zerem poza wlasna dwojka (D3). Pisarz zabity na sufit oddaje kod
+# zabitego procesu, ktory zalezy od systemu -- asercja na nim mierzylaby platforme, nie polityke.
 run_case(
     "timeout",
-    ["bash", "repair.sh", "--agent", "codex", "--reviewer", "codex"],
+    ["bash", "review.sh", "--agent", "codex", "--reviewer", "codex"],
     send_interrupt=False,
     expected_rc=0,
-    extra_env={"LOADOUT_EXEC_BUDGET": "0.1"},
+    # review.sh ma WLASNA nazwe budzetu (LOADOUT_REVIEW_BUDGET, domyslnie 900 s);
+    # LOADOUT_EXEC_BUDGET nalezal do repair.sh i odszedl razem z nim. Podanie nie tej nazwy
+    # daje przypadek, ktory czeka 900 s i przewraca sie na watchdogu selftestu -- czyli
+    # zielone bez pomiaru byloby tu niemozliwe, ale czerwone tez nic nie mowi.
+    extra_env={"LOADOUT_REVIEW_BUDGET": "0.1"},
 )
 print("harness process groups: SIGINT, timeout, ESRCH and no post-exit writes (3 passed)")
 PY

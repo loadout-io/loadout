@@ -73,15 +73,29 @@ muszą działać:
 | Claude | Claude | inny model + rola recenzenta |
 | Codex | Codex | inny model + rola recenzenta |
 
-Domyślnie: **cross-vendor**, bo według researchu każdy realny defekt w pierwszej wersji spreadsheet
-znalazł właśnie recenzent innego vendora na **zielonej bramce** (`docs/working-with-ai.md`,
-raport `06-spreadsheet-harness.md`). Same-vendor jest wspierany, ale to słabszy tryb i tak ma być opisany.
+Kiedy recenzja biegnie, para jest domyślnie **cross-vendor**, bo według researchu każdy realny
+defekt w pierwszej wersji spreadsheet znalazł właśnie recenzent innego vendora na **zielonej
+bramce** (`docs/working-with-ai.md`, raport `06-spreadsheet-harness.md`). Same-vendor jest
+wspierany, ale to słabszy tryb i tak ma być opisany.
+
+*Zrewidowane 2026-08-28 decyzją Jakuba. Do tego dnia druga opinia była etapem KAŻDEGO biegu
+harnessu, a jej uwaga odpalała rundę naprawczą. Zmierzone na 121 biegach: 97 recenzji na 105
+zwracało uwagę, więc runda „doradcza" była obowiązkowa w 81% biegów i regularnie trwała dłużej
+niż implementacja (T-103: 2 min implementacji, 45 min naprawy). Recenzja jest teraz **na
+żądanie** — `ship.sh --review` albo `./review.sh` — i jest RAPORTEM: nie odpala rundy
+naprawczej. Naprawę prowadzi paragon bramki, bo tylko on odróżnia „sprawdzenie padło" od
+„ktoś ma zdanie".*
+
+**Co z tej decyzji nie zostało ruszone:** wszystkie cztery kombinacje pisarz/recenzent muszą
+działać, `AgentDriver` ma dwie implementacje od pierwszego dnia, recenzent nigdy nie może
+zatwierdzić ani zablokować, a „recenzent niedostępny" to `exit 0` z notatką. Zmieniło się
+wyłącznie to, **kiedy** recenzja biegnie.
 
 Konsekwencje:
 
 - `AgentDriver` ma **dwie** implementacje od początku: `ClaudeDriver` i `CodexDriver`. Trait z jedną
   implementacją to trait wymyślony; dwie sprawiają, że abstrakcja jest prawdziwa.
-- `ship-task.sh` przyjmuje `--agent <vendor>` i `--reviewer <vendor>`, obie flagi niezależne.
+- `ship.sh` przyjmuje `--agent <vendor>` i `--reviewer <vendor>`, obie flagi niezależne.
 - Recenzent **nigdy nie może zatwierdzić ani zablokować.** Schemat odpowiedzi ma `verdict ∈ {concern, none}`
   i `findings` z `maxItems: 6` — strukturalnie nie ma czego zatwierdzić.
 - **Ryzyko operacyjne:** research odnotował, że Codex był bez kredytów do 2026-08-20 `[ran]`.
@@ -98,7 +112,7 @@ UI: angielski. Przyciski, etykiety, komunikaty błędów, puste stany — `Run`,
 Powody: makieta jest po angielsku, tabela żargon→prosty-język z researchu (55 wierszy) jest po angielsku
 i jest wiążąca, a część terminów po polsku brzmi gorzej niż po angielsku.
 
-Dokumentacja, ADR-y, pliki tasków, komentarze w kodzie wyjaśniające *dlaczego*: polski.
+Dokumentacja, ADR-y, prompty biegów, komentarze w kodzie wyjaśniające *dlaczego*: polski.
 
 Sprawdzacz słownictwa (`checks/quick-vocabulary.sh`) skanuje **wyłącznie tekst widoczny dla użytkownika**
 i egzekwuje angielską tabelę z `00-SYNTHESIS.md` §2.2.

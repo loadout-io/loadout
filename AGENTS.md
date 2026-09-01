@@ -21,55 +21,80 @@ w `docs/research/projects/` i jest wiążąca jako lista rzeczy, których nie po
 
 ## 2. Pętla pracy
 
-### Wyjątek właściciela — authoring zadań
-
-Na jawne polecenie właściciela „utwórz taski” agent może utworzyć nowe `tasks/<ID>.md`
-oraz zaktualizować `docs/PLAN.md` bez wcześniejszego taska. Ten wyjątek obejmuje wyłącznie
-kontrakty zadań i dokumentację; kod produkcyjny nadal wymaga osobnego worktree, czerwonego
-`before` i `OWNS`. Dodane 2026-08-21 po wyraźnym „masz approve na wszystko, god mode”, żeby
-zgoda właściciela nie była interpretowana jako zgoda na pominięcie bramki.
+Zadania nie ma. Jest **prompt** — jedno zdanie albo kilka akapitów, które właściciel podaje
+`ship.sh`. Kontrakt, po którym bieg jest sądzony, pisze **etap planu**, w worktree, dla tego
+jednego biegu.
 
 ```
-tasks/<ID>.md                       ← zadanie już istnieje; nie wymyślasz go sam
+./ship.sh "co ma zrobić"            ← prompt JEST zadaniem; nie ma pliku do napisania
    │
-   ▼  ./worktree.sh <ID>            ← własna kopia repo, własna gałąź
+   ▼  worktree                       ← własna kopia repo, własna gałąź (robi to ship.sh)
    │
-   ▼  ./verify.sh before            ← DOWIEDŹ, że kryteria są czerwone, ZANIM cokolwiek napiszesz
-   │                                  zielone „before" = kryterium nic nie sprawdza
+   ▼  plan                           ← agent pisze TASK.md: plan, 1–3 kryteria, OWNS,
+   │                                    a do tego specyfikacje i szkielet, który je łamie
+   ▼  ./verify.sh before             ← kryteria MUSZĄ być czerwone, i to z właściwego powodu
+   │                                    zielone „before" = kryterium nic nie sprawdza
    ▼  implementacja
    │
-   ▼  ./verify.sh quick             ← w pętli, ~20 s
+   ▼  ./verify.sh task               ← ~40 s: kryteria TEGO biegu + fmt, clippy --lib, typy,
+   │                                    zakres, słownictwo, tokeny
+   ▼  naprawa Z PARAGONU             ← najwyżej dwie rundy, ten sam pisarz, powody z runs/last.json
    │
-   ▼  ./verify.sh full              ← przed oddaniem
-   │
-   ▼  ./review.sh <vendor>          ← druga opinia, innego vendora, tylko do odczytu
-   │
-   ▼  ./repair.sh                   ← DOKŁADNIE jedna runda poprawek, jeśli są uwagi
-   │
-   ▼  ./integrate.sh <gałąź>        ← jedna gałąź naraz, pełna bramka po KAŻDEJ
+   ▼  ./integrate.sh <gałąź>         ← jedna gałąź naraz, i TU biegnie suita całego repo
 ```
 
-Trzy rzeczy, które w tej pętli są nienegocjowalne:
+Druga opinia (`./review.sh`, albo `ship.sh --review`) jest **na żądanie**. Nie biegnie
+domyślnie i nie odpala rundy naprawczej.
 
-- **`before` musi być czerwone z właściwego powodu.** Bramka zna ~24 sposoby, na jakie sprawdzenie
-  wykłada się, nie uruchamiając niczego (brak modułu, brak komendy, `Tests N skipped (N)`, rc 124/127).
-  To nie liczy się jako czerwone.
-- **Recenzent nie może zatwierdzić ani zablokować.** Jego schemat odpowiedzi ma `verdict ∈ {concern, none}`.
-  Strukturalnie nie ma czego zatwierdzić. Niedostępny recenzent to `exit 0` z notatką, nie awaria.
-- **Jedna runda poprawek.** Recenzent planuje (tylko do odczytu), pisarz wykonuje plan, którego nie napisał.
-  Potem bramka. Jeśli dalej czerwono — woła człowieka.
+Cztery rzeczy, które w tej pętli są nienegocjowalne:
 
----
+- **`before` musi być czerwone z właściwego powodu.** Bramka zna ~24 sposoby, na jakie
+  sprawdzenie wykłada się, nie uruchamiając niczego (brak modułu, brak komendy,
+  `Tests N skipped (N)`, rc 124/127). To nie liczy się jako czerwone.
+- **Kontrakt jest zamrożony w commicie planu.** Kryterium dopisane albo rozluźnione po nim
+  jest czerwone (`checks/quick-scope.sh`, kod 1) i jest defektem kontraktu
+  (`harness/gate.py`, kod 2). Bieg nie zmienia warunków własnego zaliczenia.
+- **Specyfikacja może zyskać asercję i nie może żadnej stracić.** Mierzone między etapami,
+  nie proszone w promptcie. To jedyny sposób, w jaki zielona bramka kłamie bez śladu:
+  kryterium dalej biegnie, dalej melduje „1 passed" i przestaje pytać o to, po co powstało.
+- **Naprawę prowadzi paragon, nie opinia.** Recenzent nie może zatwierdzić ani zablokować —
+  jego schemat odpowiedzi ma `verdict ∈ {concern, none}`. Do 2026-08-28 uwaga recenzenta
+  odpalała rundę naprawczą; zmierzone na 121 biegach: 97 recenzji na 105 zwracało uwagę,
+  więc „doradcza" runda była obowiązkowa w 81% biegów i regularnie trwała dłużej niż
+  implementacja.
+
+Suita całego repo (`full-test`, `full-clippy --all-targets`) **nie należy do pętli biegu**.
+Zmierzone 2026-08-28: `verify.sh full` to 319 s, z czego 280 s (88%) to suita całego repo,
+a wszystkie czternaście tanich sprawdzeń razem to 9,6 s. Bieg wołał ją dwa razy, żeby
+przebudować rzeczy, których nie tknął. Jej miejsce jest w `integrate.sh` i w `scripts/ci.sh`.
 
 ## 2a. Kontrakt kryterium — wszystko, co musisz o nim wiedzieć
 
 Nie czytaj `harness/gate.py`, żeby się tego dowiedzieć. Całość jest tutaj.
 
-1. **Jedno kryterium, jedna linia `check:`, dokładnie jeden plik testu wskazany ścieżką.**
-   Nigdy filtr po nazwie (`-t`, `--grep`, `--test-name`): filtr, który nic nie dopasował,
-   raportuje sukces i tak vitest dwa razy pokonał warstwę `before` w repo źródłowym.
-2. **Ścieżka testu jest globalnie unikalna** we wszystkich plikach zadań. To jest jedyny powód,
-   dla którego równoległe zadania są bezpieczne.
+1. **Jedno kryterium, jedna linia `check:`, dokładnie jedna wskazana specyfikacja.**
+   Front wskazuje **plik**: `npx --no-install vitest run <ścieżka>.test.tsx`.
+   Rust wskazuje **moduł jedynego celu integracyjnego**: plik leży w `src-tauri/tests/it/`,
+   jest zadeklarowany przez `mod <nazwa>;` w `src-tauri/tests/it/main.rs`, a linia brzmi
+   `check: cargo test --test it <nazwa>::`.
+
+   **Nowego pliku wprost w `src-tauri/tests/` nie zakładamy.** To nie jest kwestia gustu, tylko
+   pomiar: Rust robi z każdego pliku w `tests/` osobne binarium, które statycznie linkuje całą
+   bibliotekę razem z 527 skrzyniami Tauri — ~60 s za sztukę, przy 6,0 s wykonania wszystkich
+   testów razem. Reguła „jeden plik na kryterium" zamówiła w 2026 roku **462 takie binaria**
+   i tak `full-test` dorósł do budżetu 9000 s. Moduł w celu `it` daje tę samą liczbę testów,
+   te same asercje i **jeden** link.
+
+   Filtr po nazwie podany **flagą** (`-t`, `--grep`, `--test-name`) jest nadal zakazany:
+   bramka nie umie odwzorować go na ścieżkę specyfikacji, więc kryterium przestałoby być
+   przypisane do czegokolwiek. Pozycyjny filtr modułu cargo jest w porządku, bo bramka czyta
+   z niego ścieżkę (`harness/gate.py`, `CARGO_TARGET`), a reguła dowodu i tak odrzuca
+   `0 passed` — filtr, który nic nie dopasował, jest czerwony z punktu 4, nie z zakazu.
+2. **Ścieżki specyfikacji nie powtarzają się w obrębie jednego biegu.** Do 2026-08-28 reguła
+   mówiła „globalnie unikalna we wszystkich plikach zadań" i to był jedyny powód, dla którego
+   równoległe zadania były bezpieczne. Pliki zadań odeszły: kontrakt powstaje w worktree, dla
+   jednego biegu, więc nie ma dwóch umów, które mogłyby ścigać się o ten sam plik. Równoległość
+   jest bezpieczna, bo każdy bieg ma **własny worktree**.
 3. **Numeracja `## AC-n` biegnie 1..n bez luk.**
 4. **Zielone wymaga licznika przejść w wyjściu.** Exit 0 bez „N passed" / „Ran N tests" jest
    czerwone — kod testowany biegnie w tym samym procesie, którego kod wyjścia czytasz.
@@ -91,7 +116,7 @@ Nie czytaj `harness/gate.py`, żeby się tego dowiedzieć. Całość jest tutaj.
 
 ## 3. Reguły wiążące
 
-Numerowane, bo pliki zadań je cytują („niezmiennik 6").
+Numerowane, bo kontrakty biegów i prompty cytują je po numerze („niezmiennik 6").
 
 ### Architektura
 
@@ -265,7 +290,9 @@ docs/design/DESIGN.md         tokeny i komponenty; theme.css jest jego lustrem
 docs/research/projects/       rekonesans trzech repo źródłowych + synteza
 docs/research/topics/         osiem raportów tematycznych + ADR-y
 docs/patterns/<nn>-<nazwa>.md wzorce, które zadania cytują po nazwie pliku
-tasks/<ID>.md                 zadania; bramka parsuje z nich WYŁĄCZNIE `## AC-n` i `check:`
+TASK.md                       kontrakt JEDNEGO biegu; pisze go etap planu w worktree,
+                              bramka parsuje z niego WYŁĄCZNIE `## AC-n`, `check:` i OWNS.
+                              Na trunku go nie ma i nie ma prawa być
 harness/                      bramka, schemat recenzji, snapshoty
 checks/                       pojedyncze sprawdzenia; nazwa pliku steruje odkrywaniem
 runs/last.json                paragon ostatniego uruchomienia bramki
@@ -281,13 +308,18 @@ npm install && cargo fetch     # pierwsze uruchomienie
 npm run app                    # aplikacja (Tauri dev)
 npm run dev                    # sam frontend w przeglądarce, bez Rusta
 
-./verify.sh before             # dowiedź, że kryteria są czerwone
-./verify.sh quick              # ~20 s: fmt, clippy --lib, tsc, zakres plików
-./verify.sh full               # wszystko + testy
-./verify.sh full --only AC-3   # jedno kryterium
+./ship.sh "co ma zrobić"       # cały bieg: plan, before, implementacja, bramka, naprawa
+./ship.sh -f prompt.md         # dłuższy prompt z pliku
+./ship.sh --dry-run "..."      # co by zrobił: korzeń, gałąź, katalog paragonów
 
-./worktree.sh <ID>             # wypisuje ścieżkę do nowej kopii repo — to cały interfejs
-./review.sh codex              # druga opinia
+./verify.sh before             # dowiedź, że kryteria są czerwone
+./verify.sh quick              # ~20 s: fmt, clippy --lib, tsc, zakres plików — higiena
+./verify.sh task               # to samo + kryteria TEGO biegu; odmawia, gdy ich nie ma
+./verify.sh full               # wszystko + suita całego repo; miejsce: lądowanie i CI
+./verify.sh task --only AC-3   # jedno kryterium
+
+./worktree.sh <nazwa>          # wypisuje ścieżkę do nowej kopii repo — to cały interfejs
+./review.sh codex              # druga opinia, na żądanie
 ./integrate.sh <gałąź>         # jedna gałąź, pełna bramka po każdej
 ```
 

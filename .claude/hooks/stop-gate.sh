@@ -70,8 +70,25 @@ fi
 #
 # `quick` to higiena granicy tury i ma sens na każdym etapie: format, zakres plików, typy,
 # słownictwo, tokeny, granice modułów. ~20 s. Pełna bramka należy do granic ETAPÓW
-# w ship-task.sh, gdzie już jest wołana i gdzie jej czerwień coś znaczy.
-out="$(bash verify.sh quick 2>&1)"; rc=$?
+# w ship.sh, gdzie już jest wołana i gdzie jej czerwień coś znaczy.
+#
+# 2026-08-28: `task`, KIEDY JEST KONTRAKT. To nie jest cofnięcie akapitu wyżej — `task` NIE
+# jest `full`: nie ciągnie suity całego repo ani `clippy --all-targets`, tylko tanie
+# sprawdzenia (9,6 s na czternaście) plus kryteria TEGO biegu. Argument przeciw `full` nie
+# przenosi się, bo nie czas był problemem, a 600-sekundowy sufit na każdym końcu tury.
+#
+# Powód, żeby to zrobić, jest twardy i zmierzony tego samego dnia: pisarz NIE MOŻE uruchomić
+# bramki sam. `./verify.sh`, `cargo` i `npx` są odrzucane w biegu bez człowieka, mimo reguł
+# w `allow` — Claude Code nie honoruje ich dla lokalnych skryptów i interpreterów. Instrukcja
+# "uruchom ./verify.sh w pętli" stała w prompcie pisarza od pierwszego dnia i nigdy nie była
+# wykonalna. Ten hak jest więc JEDYNYM kanałem, którym pisarz widzi bramkę — a pokazywanie mu
+# wyłącznie higieny, kiedy istnieje kontrakt z jego własnymi kryteriami, marnuje ten kanał.
+#
+# Faza planu nie jest tym dotknięta: pisze CONTRACT.md, więc TASK.md jeszcze nie istnieje
+# i hak schodzi do `quick`, a niżej i tak tylko MELDUJE, zamiast blokować.
+TIER=quick
+[ -f TASK.md ] && TIER=task
+out="$(bash verify.sh "$TIER" 2>&1)"; rc=$?
 
 if [ "$rc" -eq 0 ]; then echo 0 > "$STATE"; exit 0; fi
 
@@ -100,7 +117,7 @@ fi
 #
 # CENA, swiadoma: w sesji orkiestratora czerwien od WLASNEJ edycji tez nie zablokuje. Zostaje
 # widoczna w raporcie ponizej, formatowanie i tak lapie hak `PostToolUse`, a pelna bramka stoi
-# na granicach etapow w ship-task.sh, gdzie jej czerwien cos znaczy.
+# na granicach etapow w ship.sh, gdzie jej czerwien cos znaczy.
 if [ ! -f TASK.md ]; then
   echo 0 > "$STATE"
   { echo "stop-gate: RED (exit $rc), but there is no TASK.md here — reporting, not blocking."
@@ -131,7 +148,7 @@ fi
   printf '%s\n' "$out" | tail -40
   echo
   echo "Fix it inside this task's own paths: $where"
-  echo "Never touch TASK.md, verify.sh, harness/, checks/ or tasks/ — and never weaken an"
+  echo "Never touch TASK.md, verify.sh, harness/ or checks/ — and never weaken an"
   echo "assertion to make a check pass. If the criterion itself is wrong, say so and stop:"
   echo "that is a finding for a human (AGENTS.md §7), not a file to edit."
 } >&2

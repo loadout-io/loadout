@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import glob
 import json
 import os
 import re
@@ -36,18 +35,29 @@ TASK_PATH = os.path.join(ROOT, "TASK.md")
 # jest podzbiorem `full`, a `before` nie ciągnie fmt/clippy po drzewie, którego nie ma.
 # Coś, co MA biec także w `before` (postawienie serwera, którego kryteria potrzebują),
 # nazywa się checks/before-<id>.sh.
-TIER_RANK = {"before": 0, "quick": 1, "full": 2}
+# `task` ma RANGE QUICK, a nie wlasna: bierze te same tanie sprawdzenia projektowe
+# (9,6 s na wszystkie czternascie, zmierzone 2026-08-28 z runs/last.json) plus kryteria
+# tego biegu. Rozni sie od `quick` jedna rzecza, i to ona jest cala jego trescia:
+# `task` ODMAWIA, kiedy nie ma kryteriow (NEEDS_CRITERIA nizej), bo zielone `task` znaczy
+# "zadanie zrobione", a `quick` znaczy tylko "higiena".
+#
+# DLACZEGO powstal (audyt 2026-08-28). Petla biegu wolala `verify.sh full` DWA razy na
+# zadanie, a `full` to 319 s, z czego 280 s (88%) to `full-test` calego repo i 38 s
+# `full-clippy --all-targets`. Zadanie o trzech kryteriach placilo wiec 640 s za
+# przebudowanie i przelinkowanie rzeczy, ktorych nikt nie tykal. Suita calego repo nalezy
+# do LADOWANIA (integrate.sh) i do CI, nie do petli zadania.
+TIER_RANK = {"before": 0, "quick": 1, "task": 1, "full": 2}
 
 # Sufit poziomu -> exit 3. Wolna bramka czyni pętlę agenta nie do zniesienia, więc poziom
 # przewraca się pod własnym nazwiskiem zamiast rozpłynąć się w zewnętrznym timeoucie.
-CEILING = {"before": 60.0, "quick": 45.0, "full": 600.0}
+CEILING = {"before": 60.0, "quick": 45.0, "task": 90.0, "full": 600.0}
 
 # Ten sam katalog, co muteks cargo -- zeby oba zamki dalo sie znalezc jednym ls.
 TMPDIR = os.environ.get("TMPDIR") or "/tmp"
 
 # NA SPRAWDZENIE, nie na poziom: bez tego jedno sprawdzenie dziedziczy cały budżet poziomu
 # (w repo źródłowym siedem czekających lokatorów zrobiło z 2 s trzy i pół minuty).
-CHECK_TIMEOUT = {"before": 20.0, "quick": 20.0, "full": 90.0}
+CHECK_TIMEOUT = {"before": 20.0, "quick": 20.0, "task": 20.0, "full": 90.0}
 
 # Nadpisania per sprawdzenie, po id. Świadomie tutaj, w oracle'u, a nie w TASK.md: bieg nie
 # może podnieść sobie limitu. Wpis wolno dodać tylko ze ZMIERZONYM uzasadnieniem obok.
@@ -416,18 +426,15 @@ def contract_problems(criteria):
             problems.append("%s is run by %s -- one spec path, one criterion"
                             % (path, ", ".join(who)))
 
-    # Globalna unikalność po tasks/*.md. To jest cała reguła, która czyni równoległe zadania
-    # bezpiecznymi: dwa zadania piszące pod ten sam plik testu ścigają się o jego treść.
-    owner = {}
-    for p in sorted(glob.glob(os.path.join(ROOT, "tasks", "*.md"))):
-        stem = os.path.basename(p)[:-3]
-        for c in read_task(p):
-            for h in spec_tokens(c["check"]):
-                owner.setdefault(h, set()).add(stem)
-    for path, who in sorted(owner.items()):
-        if len(who) > 1:
-            problems.append("%s is named by tasks %s -- one spec path, one task"
-                            % (path, ", ".join(sorted(who))))
+    # Do 2026-08-28 stala tu globalna unikalnosc po `tasks/*.md`: kazda sciezka spec mogla byc
+    # wymieniona przez dokladnie jedno zadanie. Reguła odeszla razem z katalogiem `tasks/`,
+    # bo kontrakt nie jest juz plikiem, ktory czlowiek pisze przed biegiem -- pisze go etap
+    # planu, w worktree, dla JEDNEGO biegu. Nie ma wiec dwoch plikow zadan, ktore moglyby
+    # sciagac sie o ten sam plik testu; jest jedna galaz i jeden TASK.md.
+    #
+    # Co zostalo z tej ochrony: kolizja W OBREBIE biegu (petla `mine` wyzej) i `quick-scope`,
+    # ktore nie przepusci zapisu poza blokiem OWNS zamrozonym po etapie planu. Rownolegle
+    # biegi sa dalej bezpieczne, bo kazdy siedzi we wlasnym worktree.
     return problems
 
 
@@ -691,21 +698,28 @@ def run(tier, jobs, only=None):
     # Dopisanie `## AC-7 free win / check: true / expect: none` dało kryterium, które bramka
     # przyjęła z WYŁĄCZONĄ regułą dowodu — a quick-scope po commicie meldował 0 zmian.
     # Exit 2, nie 1: zepsuł się nasz kontrakt, nie kod.
+    # 2026-08-28: baza to WERSJA Z COMMITA, KTORY TASK.md DODAL, a nie `tasks/<ID>.md`.
+    # Tamten katalog odszedl razem ze starym harnessem; kontrakt pisze teraz etap planu,
+    # w worktree, i commituje go jako pierwszy commit galezi. Pytanie zostaje to samo --
+    # czy bieg zmienil warunki wlasnego zaliczenia -- zmienia sie tylko to, z czym
+    # porownujemy. Brak takiego commita (kontrakt niezacommitowany) tez jest defektem:
+    # niezacommitowanego kontraktu nie widzi ani paragon, ani integrate.sh.
     if os.path.isfile(TASK_PATH):
-        stem = ""
-        for line in open(TASK_PATH, encoding="utf-8"):
-            m = re.match(r"^#\s+([ST]-\d+)\b", line.strip())
-            if m:
-                stem = m.group(1)
-                break
-        origin = os.path.join(ROOT, "tasks", stem + ".md") if stem else ""
-        if origin and os.path.isfile(origin):
-            if open(origin, "rb").read() != open(TASK_PATH, "rb").read():
+        added = subprocess.run(
+            ["git", "log", "--diff-filter=A", "--format=%H", "--", "TASK.md"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        ).stdout.split("\n")[0].strip()
+        if added:
+            shown = subprocess.run(
+                ["git", "show", "%s:TASK.md" % added],
+                cwd=ROOT, capture_output=True, check=False,
+            ).stdout
+            if shown and shown != open(TASK_PATH, "rb").read():
                 sys.stderr.write(
-                    "TASK.md no longer matches tasks/%s.md\n" % stem +
-                    "The contract is frozen at the branch's first commit. A criterion added or\n"
-                    "relaxed here changes the terms of passing, and nothing downstream would see it.\n"
-                    "  diff tasks/%s.md TASK.md\n" % stem)
+                    "TASK.md no longer matches the plan commit %s.\n" % added[:8] +
+                    "The contract is frozen there. A criterion added or relaxed here changes the\n"
+                    "terms of passing, and nothing downstream would see it.\n"
+                    "  git diff %s -- TASK.md\n" % added[:8])
                 return 2
 
     criteria = read_task(TASK_PATH)
@@ -770,7 +784,7 @@ def run(tier, jobs, only=None):
     except Exception:
         pass
 
-    NEEDS_CRITERIA = () if on_trunk else ("before", "full")
+    NEEDS_CRITERIA = () if on_trunk else ("before", "task", "full")
     if not only and not any(c[1] == "acceptance" for c in checks):
         why = ("there is no TASK.md here" if not os.path.isfile(TASK_PATH)
                else "TASK.md declares no acceptance criteria")
@@ -1028,7 +1042,8 @@ def report():
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="verify.sh")
-    ap.add_argument("tier", nargs="?", default="quick", choices=["before", "quick", "full"])
+    ap.add_argument("tier", nargs="?", default="quick",
+                    choices=["before", "quick", "task", "full"])
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--only", default=None,
                     help="run just these acceptance checks (comma separated) plus the "

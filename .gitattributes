@@ -10,11 +10,12 @@
 # powtarzać ręcznie i ryzykować, że ktoś kiedyś wybierze stronę (niezmiennik 28: mechanizm,
 # nie zdanie w dokumentacji).
 #
-# Dlaczego to bezpieczne akurat dla tego pliku: zadania mają go w OWNS **wyłącznie** po to,
-# żeby dopisać swój wiersz („Żadnej innej zmiany w tym pliku"), a `harness/task-spine.py`
-# tego pilnuje. Tryb porażki, gdyby ktoś jednak ruszył ciało pliku, jest **głośny i
-# natychmiastowy**: union nigdy nie gubi wiersza, umie tylko zdublować — a zdublowana
-# deklaracja albo zdublowany kod to błąd kompilacji, który złapie najbliższa bramka.
+# Dlaczego to bezpieczne akurat dla tego pliku: bieg ma go w OWNS **wyłącznie** po to, żeby
+# dopisać swój wiersz. Do 2026-08-28 pilnował tego `harness/task-spine.py`, symulując kolejność
+# lądowania plików zadań; odszedł razem z katalogiem `tasks/`. Zostaje obrona, która i tak była
+# tą mocniejszą: tryb porażki, gdyby ktoś ruszył ciało pliku, jest **głośny i natychmiastowy** —
+# union nigdy nie gubi wiersza, umie tylko zdublować, a zdublowana deklaracja albo zdublowany
+# kod to błąd kompilacji, który łapie najbliższa bramka.
 # Kierunek pomyłki „za dużo" jest jedynym akceptowalnym; „za mało" byłoby ciche.
 #
 # NIE rozciągamy tego na `engine/mod.rs`, `memory/mod.rs` ani resztę: mimo nazwy niosą

@@ -1,8 +1,45 @@
 # Stan budowy — 2026-08-18, 00:40
 
-Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o zadaniu jest
-`tasks/<ID>.md`; tutaj jest wyłącznie to, czego z plików zadań nie widać: co już stoi w trunku,
-co stanęło i dlaczego.
+Ten plik jest **żywy**. Aktualizuje go orchestrator po każdym lądowaniu. Prawdą o biegu jest
+jego `TASK.md` na gałęzi i `runs/<id>/`; tutaj jest wyłącznie to, czego z nich nie widać:
+co już stoi w trunku, co stanęło i dlaczego.
+
+## 2026-08-28 — stary harness usunięty, pętla przepisana na prompt
+
+Decyzja właściciela po audycie: bieg trwał za długo, a narzut nie zwracał się w niczym, co
+widać w produkcie. Zmierzone na 121 biegach z `runs/`:
+
+- **4,0 wywołania modelu i 4–5 przebiegów bramki** na bieg, z tego **dwa razy `full`**;
+- `verify.sh full` = **319 s**, z czego `full-test` **280 s (88%)**, `full-clippy` 38 s,
+  a wszystkie czternaście tanich sprawdzeń razem **9,6 s** — czyli sprawdzenia nigdy nie
+  były problemem czasowym, mimo intuicji, że są;
+- **97 recenzji na 105** zwróciło uwagę, a warunek naprawy brzmiał „bramka czerwona LUB
+  jest uwaga", więc runda „doradcza" odpaliła się w **98 biegach na 121 (81%)** i regularnie
+  trwała dłużej niż implementacja (T-103: 2 min implementacji, 45 min naprawy);
+- `tasks/*.md` to było **26 617 linii** kontraktów pisanych ręcznie **przed** biegiem.
+
+Co się zmieniło:
+
+| Było | Jest |
+|---|---|
+| `./ship-task.sh <ID>` + `tasks/<ID>.md` napisane przez człowieka | `./ship.sh "<prompt>"`; kontrakt pisze etap planu w worktree |
+| faza kontraktowa + implementacja + recenzja + naprawa (4,0 wywołania) | plan + implementacja + naprawa z paragonu (~2,2 wywołania) |
+| `verify.sh full` dwa razy na bieg (640 s) | `verify.sh task` — nowy poziom, **16 s** na trunku |
+| recenzja w każdym biegu, jej uwaga odpalała naprawę | recenzja na `--review`, jako raport |
+| zamrożenie kontraktu = porównanie z `tasks/<ID>.md` | porównanie z wersją z **commita planu** |
+| pisarz **poza** polityką grup procesów | pisarz pod `harness/process-group.sh`, z dowodem ESRCH |
+
+Usunięte: `ship-task.sh`, `repair.sh`, `scripts/build-loop.sh`, `harness/task-spine.py`,
+cały katalog `tasks/` (179 plików). Historia zostaje w gicie.
+
+Zamknięte tą zmianą: **Q-7** z `docs/HARNESS-QUEUE.md`. Przyczyną 462 celów testowych była
+reguła kontraktu („globalnie unikalna ścieżka pliku na kryterium"), nie budżet — bramka
+umiała czytać moduł jedynego celu `it` od 2026-08-17, brakowało reguły, która każe tak pisać.
+`AGENTS.md` §2a mówi to teraz wprost, a etap planu dostaje tę instrukcję z pomiarem.
+
+Do zrobienia raz, na spokojną głowę: przenieść 60 istniejących celów z `src-tauri/tests/*.rs`
+do `src-tauri/tests/it/` jako moduły. Każdy przeniesiony cel to ~60 s mniej w `full-test`
+przy każdym lądowaniu.
 
 ## 2026-08-27, 11:24 — T-149 w trunku; faza 7 domknięta produktowo
 

@@ -175,6 +175,7 @@ use uuid::Uuid;
 use super::isolate;
 use super::triggers::{self, DeliveryState, TriggerClaim, TriggerDelivery, TriggerOrigin};
 use super::{Outcome, Part, RunControl, RunDeps, RunError, RunReport, RunRequest};
+use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError};
 use crate::engine::StepId;
 use crate::engine::dag::Dag;
 use crate::engine::drivers::claude::tool_surface;
@@ -189,7 +190,7 @@ use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Curator, Line, Seen, Status};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
-use crate::engine::supervisor::{GroupProof, MissingProgram};
+use crate::engine::supervisor::{GroupProof, MissingProgram, PublicationIdentity};
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
 use crate::inherit::rewrite;
 use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
@@ -354,13 +355,6 @@ const ISOLATION_MARKERS_DIR: &str = ".isolation";
 /// Kanał **ograniczony**, nigdy `unbounded_channel`: agent, który mówi szybciej, niż kurator
 /// nadąża, ma zaczekać, a nie rosnąć w pamięci do końca biegu.
 const EVENT_QUEUE: usize = 256;
-
-/// Krótkie okno dla świeżo uruchomionej komendy Serve, zanim krok zwolni graf.
-///
-/// 2026-08-28 (T-152): równoległy koniec biegu potrafił wejść w `Processes::close` zaraz po
-/// `spawn`, zanim shell wykonał pierwszą instrukcję. Dziesięć milisekund nie jest readiness
-/// checkiem aplikacji; wyłącznie pozwala przejętemu procesowi naprawdę rozpocząć komendę.
-const SERVE_START_OBSERVATION: Duration = Duration::from_millis(10);
 
 /// Ile znaków przepisujemy z ostatniej wypowiedzi agenta do jednolinijkowego podsumowania kroku.
 const SUMMARY_LIMIT: usize = 240;
@@ -653,13 +647,20 @@ pub enum PrestartFaultPoint {
 /// Zasób należący jeszcze do provisional guarda, zgłaszany przy każdej próbie rollbacku.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RolledBackResource {
-    Worktree(PathBuf),
-    Branch(String),
+    GitTree { path: PathBuf, branch: String },
+    FileCopy(PathBuf),
+    RunFile(PathBuf),
     RunDirectory(PathBuf),
 }
 
 /// Produkcyjny szew fault-injection dla transakcji przed pierwszym procesem.
 pub trait PrestartFaultInjector: Send + Sync {
+    /// Pozwala kryterium odtworzyć stan po awarii, zanim produkcja oceni własność katalogu.
+    /// Zwykły bieg niczego tu nie robi; przygotowany stan dalej przechodzi pełną ścieżkę Run.
+    fn before_run_directory(&self, _run_dir: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
     /// `Err` odtwarza odmowę w nazwanej granicy przygotowania.
     fn check(&self, point: PrestartFaultPoint) -> io::Result<()>;
 
@@ -681,8 +682,19 @@ impl PrestartFaultInjector for NoPrestartFaults {
 #[derive(Debug, PartialEq, Eq)]
 enum ProvisionalResource {
     RunDirectory(PathBuf),
-    Worktree { path: PathBuf, git: bool },
-    Branch(String),
+    FileCopy(PathBuf),
+    GitTree {
+        path: PathBuf,
+        branch: String,
+        head: String,
+        marker_path: PathBuf,
+    },
+    RunFile {
+        path: PathBuf,
+        run_id: String,
+        exact_bytes: Option<Vec<u8>>,
+        identity: Option<PublicationIdentity>,
+    },
 }
 
 /// Jedyny właściciel artefaktów biegu przed przekazaniem ich do [`Live`].
@@ -693,15 +705,25 @@ enum ProvisionalResource {
 struct ProvisionalRun<'a> {
     project: &'a Path,
     faults: Arc<dyn PrestartFaultInjector>,
+    bound_prestart: Option<BoundPrestart>,
+    reclaimed_run_directory: Option<PathBuf>,
+    parent_cleanup_blocked: bool,
     resources: Vec<ProvisionalResource>,
     armed: bool,
 }
 
 impl<'a> ProvisionalRun<'a> {
-    fn new(project: &'a Path, faults: Arc<dyn PrestartFaultInjector>) -> Self {
+    fn new(
+        project: &'a Path,
+        faults: Arc<dyn PrestartFaultInjector>,
+        bound_prestart: Option<BoundPrestart>,
+    ) -> Self {
         Self {
             project,
             faults,
+            bound_prestart,
+            reclaimed_run_directory: None,
+            parent_cleanup_blocked: false,
             resources: Vec::new(),
             armed: true,
         }
@@ -715,14 +737,106 @@ impl<'a> ProvisionalRun<'a> {
         self.push_once(ProvisionalResource::RunDirectory(path));
     }
 
-    fn owns_git_tree(&mut self, path: PathBuf, branch: String) {
-        // Gałąź powstaje razem z worktree, ale w LIFO musi zejść po nim.
-        self.push_once(ProvisionalResource::Branch(branch));
-        self.push_once(ProvisionalResource::Worktree { path, git: true });
+    fn owns_reclaimed_run_directory(&mut self, path: PathBuf) {
+        self.reclaimed_run_directory = Some(path.clone());
+        self.owns_run_directory(path);
+    }
+
+    fn block_reclaimed_parent_cleanup(&mut self, run_dir: &Path) {
+        if self.reclaimed_run_directory.as_deref() == Some(run_dir) {
+            self.parent_cleanup_blocked = true;
+        }
+    }
+
+    fn can_reclaim_bound_directory(&self, run_id: &str, run_dir: &Path) -> bool {
+        self.bound_prestart
+            .as_ref()
+            .is_some_and(|bound| bound.run_id == run_id && bound.run_file == run_dir.join(RUN_FILE))
+    }
+
+    fn owns_run_directory_path(&self, path: &Path) -> bool {
+        self.resources
+            .iter()
+            .any(|resource| matches!(resource, ProvisionalResource::RunDirectory(owned) if owned == path))
+    }
+
+    fn owns_directory_containing_marker(&self, marker_path: &Path) -> bool {
+        marker_path
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|run_dir| self.owns_run_directory_path(run_dir))
+    }
+
+    fn owns_work_path(&self, path: &Path) -> bool {
+        self.resources.iter().any(|resource| match resource {
+            ProvisionalResource::FileCopy(owned)
+            | ProvisionalResource::GitTree { path: owned, .. } => owned == path,
+            ProvisionalResource::RunDirectory(_) | ProvisionalResource::RunFile { .. } => false,
+        })
+    }
+
+    fn owns_git_tree(&mut self, path: PathBuf, branch: String, head: String, marker_path: PathBuf) {
+        self.push_once(ProvisionalResource::GitTree {
+            path,
+            branch,
+            head,
+            marker_path,
+        });
     }
 
     fn owns_file_copy(&mut self, path: PathBuf) {
-        self.push_once(ProvisionalResource::Worktree { path, git: false });
+        self.push_once(ProvisionalResource::FileCopy(path));
+    }
+
+    fn will_create_run_file(&mut self, path: PathBuf, run_id: String) -> io::Result<()> {
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.push_once(ProvisionalResource::RunFile {
+                    path,
+                    run_id,
+                    exact_bytes: None,
+                    identity: None,
+                });
+                Ok(())
+            }
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the first run file already exists; nothing ran",
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn authenticate_created_run_file(
+        &mut self,
+        path: &Path,
+        run_id: &str,
+        exact_bytes: Vec<u8>,
+        identity: PublicationIdentity,
+    ) -> io::Result<()> {
+        let resource = self.resources.iter_mut().find(|resource| {
+            matches!(
+                resource,
+                ProvisionalResource::RunFile {
+                    path: owned_path,
+                    run_id: owned_run_id,
+                    ..
+                } if owned_path == path && owned_run_id == run_id
+            )
+        });
+        let Some(ProvisionalResource::RunFile {
+            exact_bytes: owned_bytes,
+            identity: owned_identity,
+            ..
+        }) = resource
+        else {
+            return Err(io::Error::other(
+                "the first run file was not registered before publication",
+            ));
+        };
+        *owned_bytes = Some(exact_bytes);
+        *owned_identity = Some(identity);
+        Ok(())
     }
 
     fn push_once(&mut self, resource: ProvisionalResource) {
@@ -741,32 +855,52 @@ impl Drop for ProvisionalRun<'_> {
         if !self.armed {
             return;
         }
+        let mut children_clean = !self.parent_cleanup_blocked;
         while let Some(resource) = self.resources.pop() {
             let public = match &resource {
                 ProvisionalResource::RunDirectory(path) => {
                     RolledBackResource::RunDirectory(path.clone())
                 }
-                ProvisionalResource::Worktree { path, .. } => {
-                    RolledBackResource::Worktree(path.clone())
+                ProvisionalResource::FileCopy(path) => RolledBackResource::FileCopy(path.clone()),
+                ProvisionalResource::GitTree { path, branch, .. } => RolledBackResource::GitTree {
+                    path: path.clone(),
+                    branch: branch.clone(),
+                },
+                ProvisionalResource::RunFile { path, .. } => {
+                    RolledBackResource::RunFile(path.clone())
                 }
-                ProvisionalResource::Branch(branch) => RolledBackResource::Branch(branch.clone()),
             };
             self.faults.rolled_back(&public);
             let result = match resource {
-                ProvisionalResource::RunDirectory(path)
-                | ProvisionalResource::Worktree { path, git: false } => {
+                ProvisionalResource::RunDirectory(path) => {
+                    if !children_clean {
+                        tracing::warn!(
+                            ?public,
+                            "a provisional run directory was kept because one of its children no longer matched this attempt"
+                        );
+                        continue;
+                    }
                     remove_owned_directory(&path)
                 }
-                ProvisionalResource::Worktree { path, git: true } => {
-                    isolate::roll_back_provisional_tree(self.project, &path)
+                ProvisionalResource::FileCopy(path) => remove_owned_directory(&path),
+                ProvisionalResource::GitTree {
+                    path,
+                    branch,
+                    head,
+                    marker_path,
+                } => {
+                    cleanup_provisional_git_tree(self.project, &path, &branch, &head, &marker_path)
                         .map_err(|error| io::Error::other(error.to_string()))
                 }
-                ProvisionalResource::Branch(branch) => {
-                    isolate::roll_back_provisional_branch(self.project, &branch)
-                        .map_err(|error| io::Error::other(error.to_string()))
-                }
+                ProvisionalResource::RunFile {
+                    path,
+                    run_id,
+                    exact_bytes,
+                    identity,
+                } => remove_owned_run_file(&path, &run_id, exact_bytes.as_deref(), identity),
             };
             if let Err(error) = result {
+                children_clean = false;
                 tracing::warn!(?public, %error, "a provisional run resource could not be rolled back");
             }
         }
@@ -779,6 +913,100 @@ fn remove_owned_directory(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+fn validate_unstarted_run_file(bytes: &[u8], run_id: &str) -> io::Result<()> {
+    let described: Value = serde_json::from_slice(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if described.get("id").and_then(Value::as_str) != Some(run_id) {
+        return Err(io::Error::other(
+            "the provisional run file belongs to another run; nothing was removed",
+        ));
+    }
+    let steps = described
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            io::Error::other("the provisional run file has no step records; nothing was removed")
+        })?;
+    if steps.iter().any(|step| {
+        step.get("executed").and_then(Value::as_bool) == Some(true)
+            || step.get("process_started").and_then(Value::as_bool) == Some(true)
+    }) {
+        return Err(io::Error::other(
+            "the provisional run file says that work started; nothing was removed",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_owned_run_file(
+    path: &Path,
+    run_id: &str,
+    exact_bytes: Option<&[u8]>,
+    identity: Option<PublicationIdentity>,
+) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("the provisional run file has no parent directory"))?;
+    // `plan.dir` może zachować ścieżkę workspace'u otwartego przez symlink. Kandydat przeszedł
+    // już proof wygenerowanego dziecka; publisher dostaje jego realny root, bo sam poprawnie
+    // odmawia przechodzenia przez symlink w kontrolowanej ścieżce.
+    let parent = fs::canonicalize(parent)?;
+    let relative = Path::new(
+        path.file_name()
+            .ok_or_else(|| io::Error::other("the provisional run file has no file name"))?,
+    );
+    DurableFilePublisher::new(&parent)
+        .with_publication(|batch| {
+            let target = batch.root().target(relative).map_err(PublishError::Io)?;
+            let Some(found_identity) = target
+                .regular_target_identity()
+                .map_err(PublishError::Io)?
+            else {
+                return Ok(());
+            };
+            let Some(identity) = identity else {
+                return Err(PublishError::Io(io::Error::other(
+                    "the published run file was not recorded before cleanup; nothing was removed",
+                )));
+            };
+            if found_identity != identity {
+                return Err(PublishError::Io(io::Error::other(
+                    "the run file was replaced before cleanup; nothing was removed",
+                )));
+            }
+            let Some(exact_bytes) = exact_bytes else {
+                return Err(PublishError::Io(io::Error::other(
+                    "the provisional run file was never authenticated after publication; nothing was removed",
+                )));
+            };
+            let found = match batch.root().read_regular(relative, false) {
+                Ok(found) => found,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(PublishError::Io(error)),
+            };
+            validate_unstarted_run_file(&found, run_id).map_err(PublishError::Io)?;
+            if found.as_slice() != exact_bytes {
+                return Err(PublishError::Io(io::Error::other(
+                    "the run file changed before cleanup; nothing was removed",
+                )));
+            }
+            // Wspólny publisher trzyma jeden lifecycle dla tego roota. POSIX nie ma
+            // compare-and-unlink wobec obcego procesu, więc ostatnia descriptor-relative
+            // kontrola identity pozostaje możliwie wąsko przy samym unlinku.
+            if !batch
+                .root()
+                .remove_regular_file_if_identity(relative, identity)
+                .map_err(PublishError::Io)?
+            {
+                return Err(PublishError::Io(io::Error::other(
+                    "the provisional run file changed before removal; nothing was removed",
+                )));
+            }
+            Ok(())
+        })
+        .map_err(PublishError::into_io)
 }
 
 /// Ten sam Run co [`run_workflow_inner`], z kontrolowanymi odmowami w fazie przygotowania.
@@ -921,10 +1149,31 @@ pub async fn run_triggered_workflow_inner(
     claim: &TriggerClaim,
     lines: LineSink,
 ) -> Result<TriggerRunReport, RunError> {
+    run_triggered_workflow_with_prestart_faults(
+        deps,
+        request,
+        claim,
+        lines,
+        Arc::new(NoPrestartFaults),
+    )
+    .await
+}
+
+/// Produkcyjna droga triggera z tym samym szwem odmów, którego używa kryterium T-152.
+///
+/// To nie jest drugi algorytm Startu: fault injector jedzie do wspólnego
+/// [`the_planned_run_with_prestart`], a bind, reconcile i release pozostają dokładnie tutaj.
+pub async fn run_triggered_workflow_with_prestart_faults(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    claim: &TriggerClaim,
+    lines: LineSink,
+    faults: Arc<dyn PrestartFaultInjector>,
+) -> Result<TriggerRunReport, RunError> {
     deps.control.begin();
     deps.control.lines_go_to(lines.clone());
     let slots = the_pool_of_this_application(deps, request.how_many_at_once);
-    let report = the_whole_triggered_run(deps, request, claim, lines, slots).await;
+    let report = the_whole_triggered_run(deps, request, claim, lines, slots, faults).await;
     deps.control.lines_go_quiet();
     deps.control.settle();
     report
@@ -1157,6 +1406,7 @@ async fn the_whole_triggered_run(
     claim: &TriggerClaim,
     lines: LineSink,
     slots: Limiter,
+    faults: Arc<dyn PrestartFaultInjector>,
 ) -> Result<TriggerRunReport, RunError> {
     let delivery = triggers::claimed_delivery(deps.home, claim)?;
     let requested = request.workflow.file_name().and_then(|name| name.to_str());
@@ -1177,15 +1427,21 @@ async fn the_whole_triggered_run(
     triggers::bind_delivery(deps.home, claim, &run_file)?;
     // Reconcile czyta `run.json` dopiero po dowodzie sciezki i idempotentnym bindzie. Inaczej
     // stary Bound wskazujacy przez symlink moglby zaakceptowac podrobiony plik poza biegiem.
-    if let DeliveryState::Accepted { run_file, .. } =
-        triggers::reconcile_delivery(deps.home, claim, |bound_file| {
-            read_and_sync_run_file(deps.project, bound_file)
-        })?
-    {
-        return Ok(TriggerRunReport::AlreadyAccepted {
-            id: claim.run_id.clone(),
-            run_file,
-        });
+    match triggers::reconcile_delivery(deps.home, claim, |bound_file| {
+        read_and_sync_run_file(deps.project, bound_file)
+    })? {
+        DeliveryState::Accepted { run_file, .. } => {
+            return Ok(TriggerRunReport::AlreadyAccepted {
+                id: claim.run_id.clone(),
+                run_file,
+            });
+        }
+        DeliveryState::Bound {
+            run_file: ref found,
+        } if found == &run_file => {}
+        DeliveryState::Pending | DeliveryState::Bound { .. } | DeliveryState::Cancelled => {
+            return Err(triggers::TriggerError::InvalidClaim.into());
+        }
     }
     let plan = match plan_triggered_run(deps, request, &delivery) {
         Ok(plan) => plan,
@@ -1197,8 +1453,12 @@ async fn the_whole_triggered_run(
     let acceptance = TriggerAcceptance {
         home: deps.home.to_path_buf(),
         claim: claim.clone(),
+        bound_prestart: BoundPrestart {
+            run_id: claim.run_id.clone(),
+            run_file: run_file.clone(),
+        },
     };
-    match the_planned_run(
+    match the_planned_run_with_prestart(
         deps,
         plan,
         lines,
@@ -1209,6 +1469,7 @@ async fn the_whole_triggered_run(
             reflection_enabled: true,
             before_stamp: None,
         },
+        faults,
     )
     .await
     {
@@ -1252,6 +1513,13 @@ async fn the_whole_ask(
 struct TriggerAcceptance {
     home: PathBuf,
     claim: TriggerClaim,
+    bound_prestart: BoundPrestart,
+}
+
+#[derive(Clone)]
+struct BoundPrestart {
+    run_id: String,
+    run_file: PathBuf,
 }
 
 struct PlannedRunOptions {
@@ -1345,7 +1613,13 @@ fn prepare_planned_run(
     } = options;
     // Ostatnia obrona przed cyklem stoi przed pierwszym artefaktem biegu.
     let dag = Dag::new(plan.steps.len(), &plan.arrows)?;
-    let mut provisional = ProvisionalRun::new(deps.project, Arc::clone(&faults));
+    faults
+        .before_run_directory(&plan.dir)
+        .map_err(RunError::Io)?;
+    let bound_prestart = acceptance
+        .as_ref()
+        .map(|acceptance| acceptance.bound_prestart.clone());
+    let mut provisional = ProvisionalRun::new(deps.project, Arc::clone(&faults), bound_prestart);
     let isolated = lay_out_the_run_dir(&plan, deps.project, &mut provisional)?;
     // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
     // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
@@ -1368,9 +1642,18 @@ fn prepare_planned_run(
     ));
     // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
     provisional.check(PrestartFaultPoint::BeforeFirstRunFile)?;
-    live.open_the_book()?;
+    let run_file = live.plan.dir.join(RUN_FILE);
+    provisional.will_create_run_file(run_file.clone(), live.plan.id.clone())?;
+    let (exact_run_file, run_file_identity) = live.open_the_book()?;
+    // ID nie jest provenance: cleanup porównuje komplet bajtów i opaque identity pierwszej
+    // publikacji; każda niezgodność zachowuje zarówno receipt, jak i jego katalog.
+    provisional.authenticate_created_run_file(
+        &run_file,
+        &live.plan.id,
+        exact_run_file,
+        run_file_identity,
+    )?;
     provisional.check(PrestartFaultPoint::AfterFirstRunFile)?;
-    accept_trigger_after_durable_run(deps.project, &live, acceptance)?;
     if let Some(before_stamp) = before_stamp {
         let (id, job) = live
             .plan
@@ -1396,6 +1679,15 @@ fn prepare_planned_run(
     stamp_what_this_run_carried(&book.memory);
     drop(book);
     provisional.check(PrestartFaultPoint::OwnershipTransferred)?;
+    // Akceptacja jest ostatnią fallible operacją przed przekazaniem ownershipu. Gdyby stała
+    // wcześniej, późniejsza odmowa wycofałaby `run.json`, ale ledger zostałby `Accepted` i
+    // wskazywał na nieistniejący bieg z zerem startów.
+    if let Err(failure) = accept_trigger_after_durable_run(deps.project, &live, acceptance) {
+        if failure.preserve_resources {
+            provisional.disarm();
+        }
+        return Err(failure.error);
+    }
     provisional.disarm();
     Ok((live, isolated, dag))
 }
@@ -1404,21 +1696,70 @@ fn accept_trigger_after_durable_run(
     project: &Path,
     live: &Live,
     acceptance: Option<TriggerAcceptance>,
-) -> Result<(), RunError> {
+) -> Result<(), TriggerAcceptanceFailure> {
     let Some(acceptance) = acceptance else {
         return Ok(());
     };
     let run_file = live.plan.dir.join(RUN_FILE);
     // Sam atomowy rename nie wystarcza recovery: fsync pliku i katalogu jest dowodem trwałości.
-    if read_and_sync_run_file(project, &run_file)?.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "the run file disappeared before it could be saved safely",
-        )
-        .into());
+    match read_and_sync_run_file(project, &run_file) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(TriggerAcceptanceFailure::rollback(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the run file disappeared before it could be saved safely",
+            )));
+        }
+        Err(error) => return Err(TriggerAcceptanceFailure::rollback(error)),
     }
-    triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())?;
-    Ok(())
+    let Err(accept_error) =
+        triggers::accept_delivery(&acceptance.home, &acceptance.claim, &run_file, now_ms())
+    else {
+        return Ok(());
+    };
+    let state = triggers::reconcile_delivery(&acceptance.home, &acceptance.claim, |_| {
+        Ok::<Option<Vec<u8>>, io::Error>(None)
+    });
+    match state {
+        Ok(DeliveryState::Accepted {
+            run_file: ref found,
+            ..
+        }) if found == &run_file => Ok(()),
+        Ok(DeliveryState::Bound {
+            run_file: ref found,
+        }) if found == &run_file => Err(TriggerAcceptanceFailure {
+            error: accept_error.into(),
+            preserve_resources: false,
+        }),
+        // Zapis atomowy może zwrócić błąd dopiero po rename. Jeśli późniejszy odczyt nie umie
+        // rozstrzygnąć, czy ledger jest Bound czy Accepted, skasowanie receipt stworzyłoby
+        // najgorszy stan: Accepted wskazujące na brakujący bieg. Zachowujemy oba artefakty,
+        // a istniejący reconcile rozliczy je przy kolejnym wejściu.
+        Ok(
+            DeliveryState::Pending
+            | DeliveryState::Bound { .. }
+            | DeliveryState::Accepted { .. }
+            | DeliveryState::Cancelled,
+        )
+        | Err(_) => Err(TriggerAcceptanceFailure {
+            error: accept_error.into(),
+            preserve_resources: true,
+        }),
+    }
+}
+
+struct TriggerAcceptanceFailure {
+    error: RunError,
+    preserve_resources: bool,
+}
+
+impl TriggerAcceptanceFailure {
+    fn rollback(error: io::Error) -> Self {
+        Self {
+            error: error.into(),
+            preserve_resources: false,
+        }
+    }
 }
 
 async fn run_planned_graph(
@@ -4575,10 +4916,17 @@ fn lay_out_the_run_dir(
 ) -> Result<Vec<Isolated>, RunError> {
     // Proof obejmuje kazdy bieg, takze bez `fresh-copy`. Dopiero on tworzy realny katalog biegu
     // i `logs/`; zadne `create_dir_all` nie moze po cichu przejsc przez symlink przodka.
-    let run_directory_was_missing = matches!(
-        fs::symlink_metadata(&plan.dir),
-        Err(error) if error.kind() == io::ErrorKind::NotFound
-    );
+    let run_directory_was_missing = match fs::symlink_metadata(&plan.dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Ok(_) if provisional.can_reclaim_bound_directory(&plan.id, &plan.dir) => false,
+        Ok(_) => {
+            return Err(RunError::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the planned run directory already exists and does not belong to this attempt",
+            )));
+        }
+        Err(error) => return Err(RunError::Io(error)),
+    };
     let prepared = prepare_run_directory(project, &plan.dir);
     if run_directory_was_missing
         && fs::symlink_metadata(&plan.dir).is_ok_and(|metadata| metadata.file_type().is_dir())
@@ -4586,6 +4934,13 @@ fn lay_out_the_run_dir(
         provisional.owns_run_directory(plan.dir.clone());
     }
     prepared.map_err(|problem| RunError::Io(io::Error::other(problem.to_string())))?;
+    // 2026-08-28 (T-152 review): retry dokładnie tego samego Bound claimu ma ten sam UUID i
+    // katalog. Brak durable `run.json` dowodzi, że lifecycle jeszcze nie ruszył, więc ten
+    // istniejący katalog nadal należy do jednej logicznej próby. Zwykły Start nie ma tego
+    // provenance i nigdy nie przejmuje zastanego katalogu.
+    if !run_directory_was_missing && provisional.can_reclaim_bound_directory(&plan.id, &plan.dir) {
+        provisional.owns_reclaimed_run_directory(plan.dir.clone());
+    }
     /* JEDEN KATALOG ROBOCZY POWSTAJE RAZ. Rundy petli dziela katalog -- musza, bo inaczej runda 2
      * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
@@ -4624,9 +4979,18 @@ fn lay_out_the_run_dir(
                 from.as_deref().unwrap_or("HEAD"),
                 provisional,
             )
-            .map_err(|why| RunError::NoFreshCopy {
-                step: step.name.clone(),
-                why: why.to_string(),
+            .map_err(|why| {
+                // Zastany Bound katalog może zawierać marker lub drzewo, którego exact
+                // tożsamość odmawia cleanupu. Ta odmowa musi zablokować także późniejsze
+                // rekurencyjne usunięcie rodzica — inaczej bezpieczny child oracle byłby
+                // obchodzony jednym `remove_dir_all` poziom wyżej.
+                if !provisional.owns_work_path(cwd) {
+                    provisional.block_reclaimed_parent_cleanup(&plan.dir);
+                }
+                RunError::NoFreshCopy {
+                    step: step.name.clone(),
+                    why: why.to_string(),
+                }
             })?;
             made.push(Isolated {
                 step: step.name.clone(),
@@ -4698,11 +5062,20 @@ fn make_or_recover_tree(
         /* Kopia plikowa punktu startu nie zna i znać nie może: bez gita nie ma gałęzi, na której
          * poprzedni bieg mógłby cokolwiek zostawić. Wznowienie w projekcie bez repozytorium
          * dostaje więc to, co dostawało zawsze — kopię tego, co leży w projekcie. */
-        // 2026-08-28 (T-152 repair) — kopiowanie może utworzyć część `cwd`, zanim zwróci błąd.
-        // Po dowodzie ścieżki guard musi więc przejąć cel przed pierwszym zapisem; cleanup braku
+        // 2026-08-28 (T-152 review) — marker Gita dowodzi, że katalog pochodzi z wcześniejszej
+        // próby. Odmowa musi więc poprzedzać przejęcie ownershipu; inaczej Drop skasowałby WIP
+        // odzyskanego worktree jako rzekomą kopię plikową tej próby.
+        if marker.is_some() {
+            return Err(isolate::Trouble::Git(
+                "the retry found a git isolation record, but this project is no longer the same git repository"
+                    .to_owned(),
+            ));
+        }
+        // Kopiowanie może utworzyć część `cwd`, zanim zwróci błąd. Po odrzuceniu cudzego markera
+        // i dowodzie ścieżki guard musi więc przejąć cel przed pierwszym zapisem; cleanup braku
         // ścieżki jest idempotentny.
         provisional.owns_file_copy(cwd.to_path_buf());
-        let made = make_or_recover_file_copy(project, cwd, branch, marker.is_some())?;
+        let made = make_or_recover_file_copy(project, cwd, branch)?;
         return Ok(made);
     }
     make_or_recover_git_tree(
@@ -4982,14 +5355,7 @@ fn make_or_recover_file_copy(
     project: &Path,
     cwd: &Path,
     branch: &str,
-    has_git_marker: bool,
 ) -> Result<isolate::Made, isolate::Trouble> {
-    if has_git_marker {
-        return Err(isolate::Trouble::Git(
-            "the retry found a git isolation record, but this project is no longer the same git repository"
-                .to_owned(),
-        ));
-    }
     if !path_entry_exists(cwd)? {
         return isolate::make(project, cwd, branch);
     }
@@ -5031,6 +5397,14 @@ fn make_or_recover_git_tree(
         let head = branch_oid(project, branch)?;
         match marker {
             Some(IsolationMarker::Complete { head: expected, .. }) if expected == &head => {
+                if provisional.owns_directory_containing_marker(marker_path) {
+                    provisional.owns_git_tree(
+                        cwd.to_path_buf(),
+                        branch.to_owned(),
+                        head,
+                        marker_path.to_path_buf(),
+                    );
+                }
                 return Ok(isolate::Made {
                     how: isolate::How::Tree {
                         branch: branch.to_owned(),
@@ -5121,14 +5495,25 @@ fn make_new_git_tree(
     marker_path: &Path,
     provisional: &mut ProvisionalRun<'_>,
 ) -> Result<isolate::Made, isolate::Trouble> {
-    let made = isolate::make_from_after_add(project, cwd, branch, from, || {
-        provisional.owns_git_tree(cwd.to_path_buf(), branch.to_owned());
+    let mut added_head = None;
+    let made = isolate::make_from_after_add(project, cwd, branch, from, |head| {
+        added_head = Some(head.to_owned());
+        provisional.owns_git_tree(
+            cwd.to_path_buf(),
+            branch.to_owned(),
+            head.to_owned(),
+            marker_path.to_path_buf(),
+        );
         provisional
             .faults
             .check(PrestartFaultPoint::AfterWorktreeAdd)
     })?;
     if matches!(&made.how, isolate::How::Tree { .. }) {
-        let head = branch_oid(project, branch)?;
+        let head = added_head.ok_or_else(|| {
+            isolate::Trouble::Git(
+                "git created a work tree without returning its exact commit".to_owned(),
+            )
+        })?;
         // Dopiero caly `isolate::make` (worktree, dirty diff i lista brakow) moze wystawic
         // marker. Fsync pliku i katalogu stoi w helperze przed zwrotem do layoutu.
         write_isolation_marker(
@@ -5153,6 +5538,19 @@ impl IsolationMarker {
     fn branch(&self) -> &str {
         match self {
             Self::Complete { branch, .. } | Self::Recovering { branch, .. } => branch,
+        }
+    }
+
+    fn matches(&self, branch: &str, head: &str) -> bool {
+        match self {
+            Self::Complete {
+                branch: marked_branch,
+                head: marked_head,
+            }
+            | Self::Recovering {
+                branch: marked_branch,
+                head: marked_head,
+            } => marked_branch == branch && marked_head == head,
         }
     }
 }
@@ -5384,13 +5782,30 @@ fn cleanup_incomplete_worktree(
         ));
     }
 
+    retire_matching_worktree(project, cwd, branch, &marked_head)?;
+    remove_isolation_marker(marker_path)
+}
+
+/// Zdejmuje dokładnie jedno drzewo i jego ref, oba związane ścieżką, pełnym refem i OID.
+///
+/// 2026-08-28 (T-152 review): ten sam rdzeń obsługuje recovery i Drop provisional guarda.
+/// Rozdzielenie tych dróg wcześniej zostawiło w guardzie ślepe `branch -D`, mimo że recovery
+/// miało już sprawdzenie admina i CAS. Brak ścieżki jest bezpieczny tylko dla prunable admina;
+/// podmieniona ścieżka, ref albo OID zawsze zostają nietknięte.
+fn retire_matching_worktree(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    expected_head: &str,
+) -> Result<(), isolate::Trouble> {
     let cwd_exists = path_entry_exists(cwd)?;
-    let admin = expected_worktree_admin(project, cwd, branch, &marked_head)?;
+    let admin = expected_worktree_admin(project, cwd, branch, expected_head)?;
     if cwd_exists {
-        if !worktree_points_at(project, cwd, branch) || branch_oid(project, branch)? != marked_head
+        if !worktree_points_at(project, cwd, branch)
+            || branch_oid(project, branch)? != expected_head
         {
             return Err(isolate::Trouble::Git(
-                "the work tree no longer matches its recovery record; nothing was removed"
+                "the work tree no longer matches its recorded identity; nothing was removed"
                     .to_owned(),
             ));
         }
@@ -5407,10 +5822,9 @@ fn cleanup_incomplete_worktree(
                     .to_owned(),
             ));
         }
-        if !branch_exists(project, branch)? || branch_oid(project, branch)? != marked_head {
+        if !branch_exists(project, branch)? || branch_oid(project, branch)? != expected_head {
             return Err(isolate::Trouble::Git(
-                "the recovery branch no longer matches its recorded commit; nothing was removed"
-                    .to_owned(),
+                "the recorded branch no longer matches its commit; nothing was removed".to_owned(),
             ));
         }
         let destination = cwd.display().to_string();
@@ -5421,28 +5835,55 @@ fn cleanup_incomplete_worktree(
     }
     if path_entry_exists(cwd)? {
         return Err(isolate::Trouble::Git(
-            "git reported removing the incomplete work tree, but its path still exists; the branch was kept"
+            "git reported removing the work tree, but its path still exists; the branch was kept"
                 .to_owned(),
         ));
     }
-    if expected_worktree_admin(project, cwd, branch, &marked_head)? != ExpectedWorktreeAdmin::Absent
+    if expected_worktree_admin(project, cwd, branch, expected_head)?
+        != ExpectedWorktreeAdmin::Absent
     {
         return Err(isolate::Trouble::Git(
-            "git kept the incomplete work tree administration; the branch was kept".to_owned(),
+            "git kept the work tree administration; the branch was kept".to_owned(),
         ));
     }
     if branch_exists(project, branch)? {
         // `update-ref` laczy porownanie i kasowanie w jednej operacji CAS. Reczne przesuniecie
         // galezi miedzy osobnym `rev-parse` i `branch -D` nie moze wpasc w okno TOCTOU.
         let reference = format!("refs/heads/{branch}");
-        git_for_recovery(project, &["update-ref", "-d", &reference, &marked_head])?;
+        git_for_recovery(project, &["update-ref", "-d", &reference, expected_head])?;
     }
     if branch_exists(project, branch)? {
         return Err(isolate::Trouble::Git(
-            "git kept the recovery branch after its guarded removal".to_owned(),
+            "git kept the recorded branch after its guarded removal".to_owned(),
         ));
     }
-    remove_isolation_marker(marker_path)
+    Ok(())
+}
+
+fn cleanup_provisional_git_tree(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    head: &str,
+    marker_path: &Path,
+) -> Result<(), isolate::Trouble> {
+    if let Some(marker) = read_isolation_marker(marker_path)?
+        && !marker.matches(branch, head)
+    {
+        return Err(isolate::Trouble::Git(
+            "the isolation record no longer matches this attempt; nothing was removed".to_owned(),
+        ));
+    }
+    retire_matching_worktree(project, cwd, branch, head)?;
+    if let Some(marker) = read_isolation_marker(marker_path)? {
+        if !marker.matches(branch, head) {
+            return Err(isolate::Trouble::Git(
+                "the isolation record changed during cleanup; it was kept".to_owned(),
+            ));
+        }
+        remove_isolation_marker(marker_path)?;
+    }
+    Ok(())
 }
 
 fn path_entry_exists(path: &Path) -> Result<bool, isolate::Trouble> {
@@ -6477,9 +6918,20 @@ impl Live {
     }
 
     /// Pierwszy zrzut `run.json`. Jego błąd zatrzymuje bieg, bo bieg bez pliku nie ma historii.
-    fn open_the_book(&self) -> Result<(), RunError> {
+    fn open_the_book(&self) -> Result<(Vec<u8>, PublicationIdentity), RunError> {
         let book = self.book();
-        self.spill(&book)
+        let bytes = self.run_file_bytes(&book)?;
+        let (run_dir, run_file) = self.durable_run_location()?;
+        let identity = DurableFilePublisher::new(&run_dir)
+            .with_publication(|batch| {
+                batch.atomic_create_if_absent_with_identity(
+                    &run_file,
+                    &bytes,
+                    ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+                )
+            })
+            .map_err(PublishError::into_io)?;
+        Ok((bytes, identity))
     }
 
     /// Zmienia księgę i **od razu** zrzuca ją na dysk — wszystko pod jednym zamkiem.
@@ -6982,7 +7434,7 @@ impl Live {
     /// stoi przy [`crate::workflow::ServeStep`] i jest zmierzony na biegu właściciela.
     ///
     /// Nie `async`: `Processes::start` wraca natychmiast, z `pgid` już w ręku.
-    async fn start_and_leave(&self, id: StepId, job: &ServeJob) -> StepReport {
+    fn start_and_leave(&self, id: StepId, job: &ServeJob) -> StepReport {
         let line = job.command.trim();
         if line.is_empty() {
             // Odmowa, nie ciche przejście: krok bez komendy jest kafelkiem bez skutku, a bieg,
@@ -7005,7 +7457,6 @@ impl Live {
                     step.summary = Some(format!("Started and left running: {line}"));
                     step.pgid = Some(started.pgid);
                 });
-                tokio::time::sleep(SERVE_START_OBSERVATION).await;
                 StepReport::Succeeded
             }
             // Zdanie mówi, CO nie wstało: `os error 2` samo nie mówi nic (DESIGN §8).
@@ -7043,33 +7494,28 @@ impl Live {
         }
     }
 
-    /// Księga → `run.json`, przez plik tymczasowy i `rename`.
+    /// Księga → `run.json` przez ten sam trwały publisher, którego używa recovery z T-202.
     fn spill(&self, book: &Book) -> Result<(), RunError> {
-        let text = serde_json::to_string_pretty(&self.run_file(book))?;
-        let writing = self
-            .plan
-            .dir
-            .join(format!(".run.json.{}.writing", Uuid::now_v7()));
-        let result = (|| -> io::Result<()> {
-            // `create_new` jest atomowym no-follow dla ostatniego komponentu. Losowa nazwa
-            // usuwa wspolny cel miedzy zrzutami, wiec przygotowany symlink nie moze zostac
-            // otwarty przez `truncate`, jak dawny staly `run.json.writing`.
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&writing)?;
-            file.write_all(text.as_bytes())?;
-            drop(file);
-            fs::rename(&writing, self.plan.dir.join(RUN_FILE))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&writing);
-        }
-        result?;
-        // `rename` w obrębie jednego katalogu jest atomowe: czytelnik widzi albo poprzedni plik
-        // w całości, albo nowy w całości, i nigdy zera bajtów w środku.
+        let bytes = self.run_file_bytes(book)?;
+        let (run_dir, run_file) = self.durable_run_location()?;
+        DurableFilePublisher::new(&run_dir)
+            .atomic_replace(
+                &run_file,
+                &bytes,
+                ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+            )
+            .map_err(PublishError::into_io)?;
         Ok(())
+    }
+
+    fn durable_run_location(&self) -> Result<(PathBuf, PathBuf), RunError> {
+        let run_dir = fs::canonicalize(&self.plan.dir)?;
+        let run_file = run_dir.join(RUN_FILE);
+        Ok((run_dir, run_file))
+    }
+
+    fn run_file_bytes(&self, book: &Book) -> Result<Vec<u8>, RunError> {
+        Ok(serde_json::to_vec_pretty(&self.run_file(book))?)
     }
 
     /// Widok `run.json` na tę chwilę.
@@ -7300,7 +7746,7 @@ impl Live {
             Job::Agent(job) => self.run_agent(id, job, &cancel).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
             Job::Check(job) => self.run_check(id, job, &cancel).await,
-            Job::Serve(job) => self.start_and_leave(id, job).await,
+            Job::Serve(job) => self.start_and_leave(id, job),
         };
 
         self.finish_this_step(id, report).await
