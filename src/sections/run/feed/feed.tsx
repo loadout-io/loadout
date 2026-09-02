@@ -343,7 +343,21 @@ export function Feed({
 
                 KOMENDA JEDZIE Z WIERSZA, i to jest cała droga propozycji do przycisku: model
                 przepisuje ją z linii, ten plik podaje ją komponentowi, a `message.tsx` rysuje
-                kontrolkę wyłącznie wtedy, gdy ją dostanie (niezmiennik 16). */}
+                kontrolkę wyłącznie wtedy, gdy ją dostanie (niezmiennik 16).
+
+                2026-09-02 — TA LISTA NIE JEST WIRTUALIZOWANA I NIE MA BYĆ. Audyt 2026-09-02 (F-2,
+                R-10) pytał wprost, bo `@tanstack/react-virtual` leży w `package.json` i nie ma
+                w `src/` ani jednego wołającego. Werdykt brzmi „nie", z trzech zmierzonych powodów:
+                (a) sześć cudzych kryteriów montuje ten komponent przez `renderToStaticMarkup`
+                i pyta o WIERSZE — a `useVirtualizer` bez zmierzonego elementu przewijania oddaje
+                zero pozycji, więc wirtualizacja przewróciłaby całą szóstkę i kazała je przepisać;
+                (b) kolumna stoi na `flex-col-reverse` z wierszami o zmiennej wysokości, w które
+                wplecione są odpowiedzi człowieka — to przebudowa układu, nie dołożenie biblioteki;
+                (c) okno historii jest twardo ograniczone (`../../../state/run.ts`), a po naprawie
+                z tego samego audytu drzewo przelicza się dopiero wtedy, gdy naprawdę przyjdzie
+                linia — `Message` jest od dziś zapamiętany, a proza rozbierana raz na treść.
+                Ta zależność jest więc martwa i należy ją zdjąć; `package.json` nie jest zapisywalny
+                z pętli zadania, więc robi to właściciel (`docs/prod-ready/PLAN.md`, „po Z-25"). */}
             {rows.map((row) => (
               <Fragment key={row.id}>
                 <Message row={row} onToggle={onToggle} command={row.command} />

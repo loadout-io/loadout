@@ -18,7 +18,7 @@
  * `./suggested.ts`, a proza z `./answer.tsx`. Ten plik rozstrzyga wyłącznie UKŁAD — i to jest
  * jedyna rzecz, którą różni się od `./line.tsx`.
  */
-import { type ReactElement, useState } from 'react';
+import { memo, type ReactElement, useState } from 'react';
 import { identityToken } from '../rail/colour';
 import { authorityOf } from '../rail/say';
 import { Answer, AnswerLine } from './answer';
@@ -108,7 +108,27 @@ function StartLine({ row }: { row: HistoryRow }): ReactElement {
   );
 }
 
-export function Message({ row, onToggle, command }: MessageProps): ReactElement {
+/**
+ * Jedna wypowiedź. Rysowana ponownie WYŁĄCZNIE wtedy, gdy zmienił się jej własny wiersz.
+ *
+ * 2026-09-02 — DLACZEGO `memo` (audyt 2026-09-02, F-2). Ta kolumna miewa dwa tysiące wierszy
+ * (sufit historii stoi w `../../../state/run.ts`), a każdy z nich składa markdown od nowa
+ * (`./answer.tsx`). Ekran Bieg przerysowuje się z powodów, które nie mają z żadnym z tych wierszy
+ * nic wspólnego — dochodzi kafelek rzeczy uruchomionej komendą, zmienia się zawężenie strumienia —
+ * i wtedy cała kolumna leksowała markdown drugi raz, żeby narysować dokładnie to samo.
+ *
+ * PŁYTKIE PORÓWNANIE WYSTARCZA i to jest własność DANYCH, nie założenie: `row` jest obiektem
+ * z modelu, a `toggle` podmienia tam wyłącznie ten jeden wiersz, którego dotyczy (`./model.ts`),
+ * więc pozostałe jadą tą samą referencją. `onToggle` jedzie z `runFeed.toggle`, czyli z metody
+ * modułowego obiektu, a nie z domknięcia składanego przy renderze (`../index.tsx`). Dzień, w
+ * którym któreś z tych dwóch przestanie być prawdą, jest dniem, w którym ta pamięć przestanie
+ * cokolwiek dawać — nie dniem, w którym zacznie kłamać.
+ */
+export const Message = memo(function Message({
+  row,
+  onToggle,
+  command,
+}: MessageProps): ReactElement {
   /* DWIE RZECZY MOGĄ STAĆ ZA WIERSZEM i jedna kontrolka je otwiera — powód w całości
      w `./line.tsx`. */
   const hasMore = row.output.length > 0 || row.body.length > 0;
@@ -242,7 +262,7 @@ export function Message({ row, onToggle, command }: MessageProps): ReactElement 
       </div>
     </article>
   );
-}
+});
 
 export interface AnsweredProps {
   /** Komu ta odpowiedź poszła — podpis, pod którym agent zadał pytanie. */

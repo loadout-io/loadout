@@ -110,24 +110,51 @@ export function StartedThings(): ReactElement {
   const started = useSyncExternalStore(subscribeToStarted, startedThings, startedThings);
   const opened = useSyncExternalStore(subscribeToStarted, openedStarted, openedStarted);
 
-  /* ODŚWIEŻANIE JEST JEDYNĄ DROGĄ, KTÓRĄ TA GRUPA DOWIADUJE SIĘ O ŚMIERCI. Rzecz uruchomiona
-   * komendą nie jest agentem i nie ma w strumieniu czego pisać (niezmiennik 17), więc kanał
-   * biegu jej nie wiezie — a kafelek ma istnieć dokładnie tak długo, jak ona.
-   *
-   * Pierwsze pytanie idzie od razu, nie po sekundzie: po przeładowaniu okna magazyn jest pusty,
-   * a rejestr po tamtej stronie granicy żyje dalej i wie o wszystkim, co jeszcze biegnie.
+  /* PIERWSZE PYTANIE IDZIE ZAWSZE I OD RAZU, nie po sekundzie i nie warunkowo: po przeładowaniu
+   * okna magazyn jest pusty, a rejestr po tamtej stronie granicy żyje dalej i wie o wszystkim,
+   * co jeszcze biegnie. To jest JEDYNA droga, którą kafelek wraca po przeładowaniu — reguła 3
+   * przy `refreshStarted` w `./processes.ts`.
    *
    * `renderToStaticMarkup` nie odpala efektów, więc cudze kryteria montujące ten ekran nie
    * wołają tędy ani jednego `invoke` — grupa sądzona jest wtedy za to, co jej podano. */
   useEffect(() => {
     void refreshStarted();
+  }, []);
+
+  /**
+   * Czy jest jeszcze o co pytać: coś stoi na liście albo człowiek patrzy w czyjeś wyjście.
+   *
+   * Otwarty panel liczy się osobno, choć dziś nie da się otworzyć panelu rzeczy, której nie ma
+   * na liście: to `looking` w `refreshStarted` decyduje, o czyje wyjście pytamy, więc cisza przy
+   * otwartym panelu byłaby panelem, który przestał dostawać nowe wiersze.
+   */
+  const somethingToAskAbout = started.length > 0 || opened !== null;
+
+  /* ODŚWIEŻANIE JEST JEDYNĄ DROGĄ, KTÓRĄ TA GRUPA DOWIADUJE SIĘ O ŚMIERCI. Rzecz uruchomiona
+   * komendą nie jest agentem i nie ma w strumieniu czego pisać (niezmiennik 17), więc kanał
+   * biegu jej nie wiezie — a kafelek ma istnieć dokładnie tak długo, jak ona.
+   *
+   * 2026-09-02 — ODSTĘP ŻYJE TYLKO NAD NIEPUSTĄ LISTĄ, i to jest naprawa zgłoszona audytem
+   * (F-2), nie oszczędność stylistyczna. Stał tu odstęp założony raz przy montażu i trzymany do
+   * końca życia okna, więc `list_processes` przechodziło granicę raz na sekundę także wtedy, gdy
+   * nic nie biegło: godzina otwartego okna to 3600 pytań o pustą listę.
+   *
+   * CISZA NAD PUSTĄ LISTĄ NICZEGO NIE GUBI, bo do tego rejestru nie ma jak nic wejść bez tego
+   * okna: jedynym wołającym `start_process` jest `startFromLine` (`./processes.ts`), a ono
+   * dopisuje wpis SAMO i publikuje — czyli odstęp wstaje w tej samej chwili, w której powstaje
+   * pierwsza rzecz do pilnowania. Stan sprzed przeładowania okna wraca pytaniem przy montażu,
+   * wyżej. */
+  useEffect(() => {
+    /* `undefined`, nie gołe `return`: obie gałęzie tej funkcji oddają wartość, więc bramka typów
+       (`noImplicitReturns`) nie ma o co pytać. */
+    if (!somethingToAskAbout) return undefined;
     const asking = setInterval(() => {
       void refreshStarted();
     }, ASK_AGAIN);
     return () => {
       clearInterval(asking);
     };
-  }, []);
+  }, [somethingToAskAbout]);
 
   /* PUSTA LISTA AGENTÓW NIE JEST TU BŁĘDEM: ta funkcja rozdziela dwie listy, a ten komponent
    * rysuje wyłącznie tę drugą. Agenci mają dziś własne miejsce — kafelki planu — i przepisanie
