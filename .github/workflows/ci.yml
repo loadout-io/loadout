@@ -151,25 +151,57 @@ jobs:
       - name: Run the web lane
         run: bash scripts/ci.sh web
 
+  # ── Pas strażników: „sprawdzenie sprawdzeń". Ubuntu, bo żaden strażnik nie kompiluje —
+  #    sadzą prawdziwe naruszenie, wymagają czerwonego i przywracają stan (niezmiennik 20).
+  #
+  #    2026-09-02: do tego dnia `gate` zależał tylko od `rust` i `web`, a `guards_lane`
+  #    biegł WYŁĄCZNIE lokalnie. Siedem własnych sprawdzeń — granice modułów, martwe szwy,
+  #    klucze invoke, tokeny, tłumione bramki, deklaracje testów, zapadka gęstości — było
+  #    dla runnera niewidzialne, a job nazwany `gate (scripts/ci.sh full)` twierdził, że
+  #    `full` jest spełnione. `full` to trzy pasy, nie dwa.
+  guards:
+    name: guards lane (ci.sh guards)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `spine_merges_keep_both_declarations` buduje własne repozytorium w piaskownicy
+          # i nie czyta historii tego — ale `git` musi umieć commitować, więc tożsamość
+          # ustawiają same strażniki, nie ten krok.
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Run the guards lane
+        run: bash scripts/ci.sh guards
+
   # ── JEDNO agregujące sprawdzenie wymagane przez regułę gałęzi. Nazwa jest
   #    kontraktem z ustawieniami repo — nie zmieniaj jej bez zmiany reguły.
   #    Sprawdzenie, którego tu nie ma w `needs`, jest dekoracyjne: może być
   #    czerwone przy zielonym przycisku merge. ──
   gate:
     name: gate (scripts/ci.sh full)
-    needs: [rust, web]
+    needs: [rust, web, guards]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require both lanes green
         run: |
-          echo "rust lane: ${{ needs.rust.result }}"
-          echo "web  lane: ${{ needs.web.result }}"
+          echo "rust   lane: ${{ needs.rust.result }}"
+          echo "web    lane: ${{ needs.web.result }}"
+          echo "guards lane: ${{ needs.guards.result }}"
           # `skipped` nigdy nie czyta się jako spełnione: pas pominięty przez
           # anulowanie albo przez błąd zależności to brak dowodu, nie dowód.
-          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.web.result }}" != "success" ]; then
+          if [ "${{ needs.rust.result }}" != "success" ] \
+            || [ "${{ needs.web.result }}" != "success" ] \
+            || [ "${{ needs.guards.result }}" != "success" ]; then
             echo "::error::a ci.sh lane is not green — the full gate is RED"
             exit 1
           fi
-          echo "both lanes green — scripts/ci.sh full is satisfied"
+          echo "all three lanes green — scripts/ci.sh full is satisfied"

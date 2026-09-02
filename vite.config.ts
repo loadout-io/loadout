@@ -51,6 +51,20 @@ export default defineConfig({
     // zastepuje cala liste, wiec bez `configDefaults.exclude` zniknelyby `node_modules` i `dist`.
     exclude: [...configDefaults.exclude, '**/.claude/**'],
 
+    // JAWNA LISTA ZRODEL. Dopisane 2026-09-02 (R-9). Bez `include` vitest bierze swoj
+    // domyslny wzorzec z CALEGO drzewa, wiec `vitest run` zbieral cztery rozne rodziny
+    // testow, nie wiedzac o tym: jednostkowe z `src/`, przegladarkowe z `e2e/`,
+    // samotesty bramki z `checks/tests/` i testy raportow z `docs/research/`. Wszystkie
+    // cztery MAJA biec — ale lista, ktorej nikt nie napisal, jest lista, ktorej nikt nie
+    // sprawdza: plik dolozony obok, w katalogu, o ktorym nikt nie myslal, wchodzi do
+    // bramki po cichu, a plik przeniesiony wypada z niej rownie po cichu.
+    include: [
+      'src/**/*.test.{ts,tsx}',
+      'e2e/**/*.spec.ts',
+      'checks/tests/**/*.test.ts',
+      'docs/research/**/*.test.ts',
+    ],
+
     // SUFIT NA ROWNOLEGLOSC. Dopisane 2026-08-31, po zmierzeniu -- i to jest naprawa
     // BRAMKI, nie testu.
     //

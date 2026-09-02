@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,22 @@ HDIR = ROOT / "harness"
 CFG = json.loads((HDIR / "checks.json").read_text(encoding="utf-8"))
 STATE_DIR = ROOT / ".git" / "h"
 MAX_FIX_ROUNDS = 2
+
+# H-2 (audyt 2026-09-02): `deny` w .claude/settings.json zamyka tylko Edit/Write, a `allow`
+# ma `sed`, `cp`, `python3` -- wiec bieg MOGL przepisac check, ktory go sadzi, i nikt by tego
+# nie zobaczyl. Prompt tego zabrania od poczatku (implement.md), ale prompt jest miekki
+# (niezmiennik 28). To jest ta sama lista co w `deny`, egzekwowana twardo: raz przed commitem
+# biegu, drugi raz przed merge'em w `land`.
+ORACLE = ("harness/", "checks/", "scripts/", ".claude/", "AGENTS.md",
+          "docs/DECISIONS-LOCKED.md", "worktree.sh", "CLAUDE.md")
+
+
+def trunk_name():
+    return os.environ.get("LOADOUT_TRUNK", "main")
+
+
+def oracle_hits(paths):
+    return [p for p in paths if p.startswith(ORACLE)]
 
 # `target/` NIE jest dzielony miedzy worktree, i to jest decyzja o POPRAWNOSCI, nie
 # o wydajnosci. Odtworzone w ../meetnotes przy ZEROWEJ rownoleglosci: dwa checkouty
@@ -194,13 +211,21 @@ def run_check(cid, cmd, cwd, budget, counts, wt):
     log("check %s: %s" % (cid, cmd))
     t0 = time.time()
     env = dict(os.environ, CI="1", NO_COLOR="1", FORCE_COLOR="0", CARGO_TERM_COLOR="never")
+    # H-8 (audyt 2026-09-02): `subprocess.run` po timeoucie zabija WYLACZNIE `bash -c`, a nie
+    # grupe -- `cargo`, `rustc`, `vitest` i chromium zyly dalej i zjadaly maszyne (pamiec
+    # projektu: workery vitest sierociejace na gigabajty). Popen + kill_group daje dowod ESRCH
+    # tak samo, jak `call_model` robi to dla modeli.
+    proc = subprocess.Popen(["/bin/bash", "-c", cmd], cwd=str(where), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, env=env,
+                            start_new_session=True)
     try:
-        r = subprocess.run(["/bin/bash", "-c", cmd], cwd=str(where), capture_output=True,
-                           text=True, timeout=budget, env=env, start_new_session=True)
-        out, code = (r.stdout + r.stderr), r.returncode
-    except subprocess.TimeoutExpired as e:
-        out = ((e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes)
-               else (e.stdout or "")) + "\n[TIMEOUT po %ds]" % budget
+        out, _ = proc.communicate(timeout=budget)
+        code = proc.returncode
+        kill_group(proc)
+    except subprocess.TimeoutExpired:
+        proved = kill_group(proc)
+        out = "[TIMEOUT po %ds]%s" % (
+            budget, "" if proved else " -- I NIE DA SIE DOWIESC, ze grupa nie zyje")
         code = 124
     dt = time.time() - t0
     reason = ""
@@ -228,7 +253,21 @@ def phase_check(wt):
     if not picked:
         log("zaden check nie pasuje do zmienionych sciezek: %s" % ", ".join(paths[:5]))
         return [], paths
-    return [run_check(*c, wt) for c in picked], paths
+    # H-20 (audyt 2026-09-02): po pierwszym FAIL ciezkie checki (>= 600 s budzetu) nie niosa
+    # juz informacji, ktorej runda naprawcza nie dostanie taniej -- a `rust-test` kosztowal
+    # do godziny zegara PO tym, jak `rust-clippy` juz powiedzial, co jest zle. Pominiety check
+    # jest CZERWONY, nie zielony: nie wiemy, czy przechodzi.
+    results, red = [], False
+    for cid, cmd, cwd, budget, counts in picked:
+        if red and budget >= 600:
+            log("  POMIN %s (wczesniejszy check padl, budzet %ds)" % (cid, budget))
+            results.append({"id": cid, "ok": False, "cmd": cmd, "seconds": 0,
+                            "tail": "POMINIETY: wczesniejszy check w tej rundzie padl"})
+            continue
+        r = run_check(cid, cmd, cwd, budget, counts, wt)
+        results.append(r)
+        red = red or not r["ok"]
+    return results, paths
 
 
 # ---------------------------------------------------------------------- modele
@@ -238,11 +277,16 @@ def kill_group(proc):
 
     Osierocony `claude` pali limit w tle; to blad finansowy, nie higieniczny. W pythonie
     dowodem jest ProcessLookupError z killpg -- to doslownie ESRCH z jadra.
+
+    H-8 (audyt 2026-09-02): kiedy dziecko jest juz ZEBRANE (po `communicate`), `getpgid`
+    daje ESRCH na samym liderze, a jego grupa potrafi dalej zyc -- to wlasnie tam siedza
+    `cargo`, `vitest` i chromium checka. Kazdy nasz `Popen` idzie z `start_new_session=True`,
+    wiec pgid ZAWSZE rowna sie pid lidera i mozna po nim strzelac takze po zebraniu.
     """
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
-        return True
+        pgid = proc.pid
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pgid, sig)
@@ -258,10 +302,13 @@ def kill_group(proc):
 
 
 def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=False,
-              turns=None, transcript=None):
+              turns=None, transcript=None, session=None, budget_usd=None):
     exe = shutil.which(vendor)
     if not exe:
-        die("nie znaleziono `%s` w PATH" % vendor)
+        # H-10 (audyt 2026-09-02): D3 mowi wprost "recenzent niedostepny to NIE czerwone".
+        # Kod 1 znaczy "sprawdzenie padlo" i wysyla orchestratora szukac defektu kodu,
+        # ktorego nie ma; kod 2 znaczy "zatrzymaj sie i zapytaj czlowieka".
+        die("nie znaleziono `%s` w PATH" % vendor, 2 if schema else 1)
     if turns is None:
         turns = int(os.environ.get("LOADOUT_MAX_TURNS", "250"))
     out_file = None
@@ -295,10 +342,23 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
                     os.environ.get("LOADOUT_CLAUDE_EFFORT", "max"),
                 ),
                 "--max-turns", str(turns)]
+        if budget_usd:
+            # H-9 (audyt 2026-09-02): bez tego jedna faza potrafila zjesc 25 USD i 123 tury,
+            # a jedynym hamulcem byl sufit tur, ktory nie mowi nic o pieniadzach. Sufit jest
+            # per FAZA, bo plan i weryfikacja sa tanie, a implementacja jest 3-5x drozsza.
+            argv += ["--max-budget-usd", "%.2f" % budget_usd]
         if resume:
             # Poprawka kontynuuje TE SAMA sesje: agent pamieta, co juz probowal, zamiast
             # odtwarzac rozumowanie z samego kodu.
-            argv.append("--continue")
+            #
+            # H-4 (audyt 2026-09-02): do 2026-09-02 stalo tu `--continue`, ktore bierze
+            # NAJNOWSZA sesje w tym katalogu. Przy parze same-vendor (`--verifier claude`)
+            # najnowsza jest sesja WERYFIKATORA -- w trybie plan, read-only -- wiec poprawka
+            # "pamietala" cudze rozumowanie. To samo, gdy czlowiek otworzyl `claude`
+            # w worktree. Jawny identyfikator sesji nie ma jak trafic w cudza.
+            argv += ["--resume", session] if session else ["--continue"]
+        elif session:
+            argv += ["--session-id", session]
         if schema:
             argv += ["--json-schema", json.dumps(schema)]
         if transcript:
@@ -313,6 +373,13 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
             sf.write_text(json.dumps(schema), encoding="utf-8")
             out_file = Path(cwd) / ".h-out.json"
             argv += ["--output-schema", str(sf), "-o", str(out_file)]
+        elif transcript:
+            # H-1 (audyt 2026-09-02): bez `-o` funkcja oddaje CALY strumien `exec --json`,
+            # a `phase_plan` bierze go jako plan: zmierzone 55-317 KB `thread.started`,
+            # `item.*` i logow `ERROR rmcp` w KAZDYM promptcie implementacji i weryfikacji,
+            # do trzech rund. Ten sam mechanizm, ktorego uzywa juz galaz ze schematem.
+            out_file = Path(cwd) / ".h-last.txt"
+            argv += ["-o", str(out_file)]
         argv.append("-")
     else:
         die("nieznany vendor: %s (claude albo codex)" % vendor)
@@ -331,6 +398,7 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
     except KeyboardInterrupt:
         proved = kill_group(proc)
         die("przerwane%s" % ("" if proved else " -- grupa NIE dowiedziona jako martwa"), 3)
+    kill_group(proc)
     if transcript:
         Path(transcript).write_text(out, encoding="utf-8")
     if proc.returncode != 0:
@@ -409,8 +477,15 @@ def phase_plan(task_id, task, wt, vendor):
     # (`turns=60` stalo tu na sztywno) -- czyli rada byla nieprawdziwa.
     raw = call_model(vendor, p, wt, write=False,
                      turns=int(os.environ.get("LOADOUT_PLAN_TURNS", "60")), budget=2400,
+                     budget_usd=float(os.environ.get("LOADOUT_BUDGET_PLAN", "12")),
                      transcript=str(rundir(task_id) / "plan.jsonl"))
     plan = last_text(raw) if vendor == "claude" else raw.strip()
+    # H-1 (audyt 2026-09-02): kontrola negatywna do poprawki wyzej. Plan, ktory zaczyna sie
+    # od koperty strumienia albo ma rozmiar transkryptu, NIE jest planem -- i lepiej, zeby
+    # bieg stanal tutaj, niz zeby smieci pojechaly do trzech kolejnych promptow.
+    if plan.lstrip().startswith('{"type":') or len(plan) > 40_000:
+        die("planista oddal strumien zamiast planu (%d znakow, zaczyna sie od %r)"
+            % (len(plan), plan.lstrip()[:40]), 2)
     (Path(wt) / ".h-plan.md").write_text(plan, encoding="utf-8")
     print("\n\033[1m--- PLAN ---\033[0m\n%s\n" % plan)
     return plan
@@ -422,13 +497,23 @@ def phase_implement(task_id, task, plan, wt, vendor, feedback="", rnd=0):
     if feedback:
         p += ("\n## Weryfikacja odrzucila poprzednia wersje\n\n%s\n\n"
               "Popraw dokladnie to. Nie zaczynaj od zera, nie przepisuj reszty.\n" % feedback)
+    # H-4: identyfikator sesji zapisany w stanie, zeby runda naprawcza wznowila TE sesje,
+    # a nie te, ktora akurat byla ostatnia w katalogu.
+    sid = load_state(task_id).get("session") or str(uuid.uuid4())
+    save_state(task_id, session=sid)
     call_model(vendor, p, wt, write=True, resume=bool(feedback), budget=5400,
+               session=sid,
+               budget_usd=float(os.environ.get("LOADOUT_BUDGET_DEV", "40")),
                transcript=str(rundir(task_id) / ("build-%d.jsonl" % rnd)))
 
 
-def phase_verify(task, plan, wt, checks, vendor):
+def phase_verify(task_id, task, plan, wt, checks, vendor, rnd=0):
     log("weryfikacja (%s)..." % vendor)
-    diff = git("diff", "HEAD", cwd=wt, check=False)
+    # H-19 (audyt 2026-09-02): `git diff HEAD` pokazuje wylacznie NIEZACOMMITOWANE zmiany,
+    # wiec po ponownym `h run <id>` (praca poprzedniej proby jest juz w commicie biegu)
+    # weryfikator dostawal pusty diff i sadzil zadanie po samym planie.
+    base = git("merge-base", trunk_name(), "HEAD", cwd=wt, check=False) or "HEAD"
+    diff = git("diff", base, cwd=wt, check=False)
     for p in changed_paths(wt):
         f = Path(wt) / p
         try:
@@ -444,8 +529,12 @@ def phase_verify(task, plan, wt, checks, vendor):
         for c in checks) or "(brak checkow dla tych sciezek)"
     p = ("%s\n\n## Zadanie\n\n%s\n\n## Plan i akceptacja\n\n%s\n\n## Wynik checkow\n\n%s\n\n"
          "## Diff\n\n```diff\n%s\n```\n" % (prompt_file("verify"), task, plan, csum, diff))
+    # H-10: weryfikacja zostawia slad. Bez niego `die("model nie zwrocil JSON-a")` po 30-50
+    # minutach implementacji nie zostawial ani werdyktu, ani niczego do przeczytania.
     return parse_json(call_model(vendor, p, wt, write=False, schema=VERIFY_SCHEMA,
-                                 turns=40, budget=1800))
+                                 turns=40, budget=1800,
+                                 budget_usd=float(os.environ.get("LOADOUT_BUDGET_VERIFY", "6")),
+                                 transcript=str(rundir(task_id) / ("verify-%d.jsonl" % rnd))))
 
 
 # -------------------------------------------------------------------- komendy
@@ -500,7 +589,11 @@ def cmd_run(a):
     save_state(task_id, task=task, worktree=wt, started=time.time())
     (rundir(task_id) / "request.txt").write_text(task, encoding="utf-8")
 
-    plan = task if a.no_plan else phase_plan(task_id, task, wt, a.planner)
+    # H-10 (audyt 2026-09-02): `--no-plan` przy WZNOWIENIU ma uzyc planu, ktory juz stoi
+    # w stanie -- inaczej ponowienie po kodzie 3 sadzi zadanie wobec samego zlecenia
+    # i gubi kontrakt, za ktory zaplacono w pierwszej probie.
+    plan = (load_state(task_id).get("plan") or task) if a.no_plan else phase_plan(
+        task_id, task, wt, a.planner)
     save_state(task_id, plan=plan)
 
     feedback, t0 = "", time.time()
@@ -509,8 +602,13 @@ def cmd_run(a):
         checks, paths = phase_check(wt)
         if not paths:
             die("agent nic nie zmienil w worktree")
+        hit = oracle_hits(paths)
+        if hit:
+            die("bieg dotknal wyroczni, ktora go sadzi: %s. To jest AGENTS.md §7: check,\n"
+                "ktory jest zly, ZGLASZA sie, a nie zmienia. Praca zostaje w worktree."
+                % ", ".join(hit[:6]), 2)
         failed = [c for c in checks if not c["ok"]]
-        v = phase_verify(task, plan, wt, checks, a.verifier)
+        v = phase_verify(task_id, task, plan, wt, checks, a.verifier, rnd)
         save_state(task_id, rounds=rnd + 1, last_verdict=v, checks=checks)
 
         verdict = v.get("werdykt")
@@ -524,6 +622,14 @@ def cmd_run(a):
             print("Laduj:  scripts/h land %s" % task_id)
             print("Koniec: scripts/h clean %s" % task_id)
             return
+        if verdict == "NIE_WIEM":
+            # H-11 (audyt 2026-09-02): AGENTS.md §2 obiecuje trzy wyjscia i STOP przy
+            # niepewnosci. Do 2026-09-02 `NIE_WIEM` szlo w `feedback` z PUSTYM opisem, wiec
+            # bieg placil do dwoch rund naprawczych za zdanie "nie wiem".
+            print("\n\033[33m\033[1m=== NIE_WIEM ===\033[0m")
+            print(v.get("co_nie_dziala") or "(weryfikator nie napisal, czego nie wie)")
+            print("\nworktree: %s  (nic nie usuniete -- to jest pytanie do czlowieka)" % wt)
+            raise SystemExit(2)
         why = v.get("co_nie_dziala") or ""
         how = v.get("jak_naprawic") or ""
         if failed and verdict == "DZIALA":
@@ -564,16 +670,26 @@ def cmd_check(a):
 
 def cmd_land(a):
     """Merge jednej galezi i PELNE CI na trunku. Tu, raz -- nie w petli zadania."""
-    if git("rev-parse", "--abbrev-ref", "HEAD") != os.environ.get("LOADOUT_TRUNK", "main"):
+    trunk = trunk_name()
+    if git("rev-parse", "--abbrev-ref", "HEAD") != trunk:
         die("landuj z trunka, nie z galezi")
         return
     if git("status", "--porcelain", "-uall"):
         die("drzewo brudne -- zacommituj albo odloz przed landowaniem")
     branch = "h-%s" % a.task_id
-    if not git("show-ref", "--verify", "-q", "refs/heads/%s" % branch, check=False) == "":
-        pass
-    ahead = git("rev-list", "--count", "%s..%s" % (os.environ.get("LOADOUT_TRUNK", "main"), branch),
-                check=False)
+    # H-3 (audyt 2026-09-02): po przepisaniu historii przed publikacja 118 lokalnych galezi
+    # nie ma wspolnego przodka z trunkiem. `merge --no-ff` albo odmawia, albo -- gdyby ktos
+    # dolozyl --allow-unrelated-histories -- wciaga 1500 commitow sprzed czyszczenia
+    # do PUBLICZNEGO repo. Pytamy o to PRZED merge'em, a nie po.
+    if not git("merge-base", trunk, branch, check=False):
+        die("galaz %s nie ma wspolnego przodka z %s -- nie da sie jej wlac merge'em.\n"
+            "Przenies jej commity na swieza galaz od trunka (cherry-pick) i sprobuj ponownie."
+            % (branch, trunk), 2)
+    hit = oracle_hits(git("diff", "--name-only", "%s...%s" % (trunk, branch),
+                          check=False).splitlines())
+    if hit:
+        die("galaz zmienia wyrocznie, ktora ja sadzi: %s (AGENTS.md §7)" % ", ".join(hit[:6]), 2)
+    ahead = git("rev-list", "--count", "%s..%s" % (trunk, branch), check=False)
     if ahead in ("", "0"):
         die("galaz %s nie ma ani jednego commita ponad trunkiem -- nie ma czego landowac" % branch)
     log("merge --no-ff %s (%s commit(ow))" % (branch, ahead))
@@ -584,9 +700,15 @@ def cmd_land(a):
     if subprocess.run(["bash", "scripts/ci.sh", "full"], cwd=str(ROOT)).returncode != 0:
         print("\033[31mCI czerwone PO merge'u. Merge zostaje na miejscu, zebys go przeczytal.\033[0m",
               file=sys.stderr)
-        print("Cofniecie:  git reset --hard HEAD~1", file=sys.stderr)
+        # H-23 (audyt 2026-09-02): `git reset --hard` jest w `deny` .claude/settings.json,
+        # wiec ta rada byla niewykonalna dla biegu, ktory ja czyta. Revert merge'a bierze -m 1.
+        print("Cofniecie:  git revert -m 1 HEAD", file=sys.stderr)
         raise SystemExit(1)
     log("wyladowane, CI zielone")
+    # H-14 (audyt 2026-09-02): bez tego kazdy zlandowany bieg zostawial worktree z wlasnym
+    # `target/` (zmierzone: 20 kopii = 68 GB) i wpis w `h list`, ktory nie mial juz tresci.
+    if not getattr(a, "keep", False):
+        cmd_clean(a)
 
 
 def cmd_status(a):
@@ -600,7 +722,13 @@ def cmd_clean(a):
     s = load_state(a.task_id)
     wt = s.get("worktree")
     if wt and Path(wt).exists():
-        git("worktree", "remove", *(["--force"] if a.force else []), wt, check=False)
+        git("worktree", "remove", *(["--force"] if getattr(a, "force", False) else []),
+            wt, check=False)
+        # H-14 (audyt 2026-09-02): `check=False` polykal blad, a log i tak mowil "usunieto".
+        # Sierota znikala z `h list` i zostawala na dysku -- niewidzialna dla wszystkich.
+        if Path(wt).exists():
+            die("worktree NIE zszedl: %s (stan zadania zostaje, sprobuj `h clean %s --force`)"
+                % (wt, a.task_id))
         log("usunieto worktree %s" % wt)
     git("branch", "-D", "h-%s" % a.task_id, check=False)
     state_path(a.task_id).unlink(missing_ok=True)
@@ -644,6 +772,9 @@ def main():
         s.add_argument("task_id")
         if name == "clean":
             s.add_argument("--force", action="store_true")
+        if name == "land":
+            s.add_argument("--keep", action="store_true",
+                           help="nie sprzataj worktree po zielonym CI")
         s.set_defaults(fn=fn)
 
     sub.add_parser("list", help="otwarte taski").set_defaults(fn=cmd_list)

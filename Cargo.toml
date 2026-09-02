@@ -8,7 +8,10 @@ default-members = ["src-tauri"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.96"
-license = "MIT"
+# 2026-09-02 (R-7): bylo tu "MIT", a LICENSE i package.json mowia AGPL-3.0-only
+# od upublicznienia repo. Dwie licencje w jednym drzewie to nie niescislosc,
+# tylko sprzecznosc w tym, na czym ktos moze polegac.
+license = "AGPL-3.0-only"
 publish = false
 
 # Polityka lintów mieszka TUTAJ, nie w stringu w skrypcie CI.

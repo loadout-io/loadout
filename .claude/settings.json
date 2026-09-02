@@ -3,7 +3,6 @@
   "model": "claude-opus-5[1m]",
   "effortLevel": "max",
   "env": {
-    "CI": "1",
     "NO_COLOR": "1",
     "FORCE_COLOR": "0",
     "CARGO_TERM_COLOR": "never",
@@ -71,6 +70,10 @@
       "Bash(npx --no-install prettier:*)"
     ],
     "deny": [
+      "Edit(docs/ARCHITECTURE.md)",
+      "Write(docs/ARCHITECTURE.md)",
+      "Edit(docs/design/DESIGN.md)",
+      "Write(docs/design/DESIGN.md)",
       "Write(scripts/**)",
       "Edit(scripts/**)",
       "Write(checks/**)",

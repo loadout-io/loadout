@@ -76,7 +76,9 @@ async fn wait_for_ready(path: &Path, limit: Duration) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn a_polite_child_handles_sigterm_and_we_do_not_wait_out_the_grace()
 -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
@@ -143,7 +145,9 @@ async fn a_polite_child_handles_sigterm_and_we_do_not_wait_out_the_grace()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn a_stubborn_child_survives_the_grace_and_then_takes_signal_nine()
 -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;

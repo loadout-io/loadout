@@ -11,9 +11,10 @@
 //! jednego procesu — również żadnego z `ppid == 1`. Obie te rzeczy widzą wnuki, których nasz
 //! `wait()` nigdy nie zobaczy.
 //!
-//! Test odpala prawdziwe procesy, więc jest `#[ignore]` i nie biegnie w pętli wewnętrznej.
-//! Uruchamia go wyłącznie bramka, linią `check:` z `-- --include-ignored`; bez tej flagi cargo
-//! zamelduje `0 passed`, a to nie jest dowód (niezmiennik 19).
+//! Test odpala prawdziwe procesy — ale atrapy `#!/bin/sh`, nie vendora — więc od 2026-09-02
+//! biegnie w każdej bramce jak każdy inny. Do tego dnia był `#[ignore]` z obietnicą, że woła
+//! go bramka z `--include-ignored`; tej flagi nie było w repo ani razu, więc jedyny test
+//! dowodu śmierci grupy nie biegł NIGDZIE i czytał się jak zdany (R-2, audyt 2026-09-02).
 
 use std::error::Error;
 use std::fs;
@@ -151,7 +152,9 @@ async fn wait_for_rows(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn stop_proves_the_whole_group_is_dead_not_just_the_child() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let marker = unique_marker("group-death");

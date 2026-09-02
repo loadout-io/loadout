@@ -91,7 +91,9 @@ async fn ps_scan(marker: &str) -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn the_deadline_goes_through_the_kill_path_and_not_through_a_dropped_future()
 -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;

@@ -61,7 +61,40 @@ fi
 
 # `h check` sam wybiera checki po ZMIENIONYCH ścieżkach i kończy zerem, gdy nic nie zmienione.
 # Nie ma tu poziomów ani nazw checków — lista mieszka w `harness/checks.json`, w jednym miejscu.
-out="$(python3 -B harness/h.py check 2>&1)"; rc=$?
+# WLASNY SUFIT, ponizej `Stop.timeout` z .claude/settings.json (660 s). H-16, audyt
+# 2026-09-02: bez niego przekroczenie sufitu KONCZY hak z zewnatrz, a hak, ktory nie
+# zdazyl, milczy — i cisza czyta sie dokladnie jak „checki zielone". Blokada z jawnym
+# zdaniem jest gorsza dla tury i lepsza dla prawdy.
+#
+# Sufit egzekwuje python, nie `timeout`: na macOS `timeout` nie istnieje w bazowym
+# systemie, a `gtimeout` jest z homebrew i moze go nie byc. Zabijamy GRUPE (h.py
+# odpala checki z `start_new_session=True`), bo zabicie samego h.py zostawiloby
+# zywe `cargo` i `vitest` (niezmiennik 6).
+out="$(python3 - <<'PY' 2>&1
+import os, signal, subprocess, sys, time
+
+CEILING = 600
+p = subprocess.Popen([sys.executable, "-B", "harness/h.py", "check"],
+                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                     text=True, start_new_session=True)
+try:
+    out, _ = p.communicate(timeout=CEILING)
+    rc = p.returncode
+except subprocess.TimeoutExpired:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            break
+        time.sleep(1)
+    out = ("stop-gate: checki nie zmiescily sie w %d s i zostaly zabite.\n"
+           "To NIE znaczy, ze przeszly -- nikt ich nie osadzil. Zawez to, co zmieniasz,\n"
+           "albo powiedz czlowiekowi, ze bramka nie miesci sie w suficie tury." % CEILING)
+    rc = 1
+sys.stdout.write(out)
+raise SystemExit(rc)
+PY
+)"; rc=$?
 
 if [ "$rc" -eq 0 ]; then echo 0 > "$STATE"; exit 0; fi
 

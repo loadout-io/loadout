@@ -175,5 +175,25 @@ fi
 python3 "$ROOT/harness/trust-workspace.py" "$DEST" \
   || echo "note: could not mark the workspace trusted for both vendors" >&2
 
+# ── zimny build, ZANIM zacznie sie tura ─────────────────────────────────────
+#
+# Komentarz przy `target/` wyzej obiecuje: „Placimy ja RAZ, przy tworzeniu worktree
+# (nizej), a nie w srodku pierwszej bramki". Do 2026-09-02 nie bylo tu ani jednej
+# linii, ktora by to robila — zostal sam `LOADOUT_SHARE_TARGET`. Skutek (H-16, audyt
+# 2026-09-02): pierwszy `scripts/h check` w swiezym worktree kompilowal cale drzewo
+# WEWNATRZ tury agenta, pod hakiem Stop z sufitem 660 s — czyli bramka albo kosztowala
+# tury, albo nie zdazyla i konczyla sie cisza.
+#
+# `--tests` buduje takze cele testowe, bo to one sa droga czescia (jeden cel `it`
+# linkuje cala biblioteke z 527 skrzyniami Tauri). Niepowodzenie NIE jest bledem
+# tego skryptu: worktree jest juz uzywalny, a build i tak powtorzy sie w bramce.
+# LOADOUT_NO_PREBUILD=1 pomija ten krok (uzyteczne, gdy tniesz worktree tylko po to,
+# zeby na cos zerknac).
+if [ "${LOADOUT_NO_PREBUILD:-0}" != "1" ] && command -v cargo >/dev/null 2>&1; then
+  echo "note: warming target/ in $DEST (cargo build --tests) -- this is the cold build" >&2
+  ( cd "$DEST/src-tauri" && cargo build --tests >/dev/null 2>&1 ) \
+    || echo "note: the warm-up build did not finish; the first gate will pay for it" >&2
+fi
+
 echo "port $PORT (read it from $GITDIR/loadout-port)" >&2
 echo "$DEST"

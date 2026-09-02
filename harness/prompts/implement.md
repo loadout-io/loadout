@@ -26,5 +26,9 @@ Dwie rzeczy o narzędziach, obie zmierzone i obie kosztowały bieg:
   zamiast `cargo test --tests`, pojedynczy plik vitest zamiast całego katalogu.
   Harness i tak odpali właściwe checki po tobie; twój przebieg ma tylko
   potwierdzić, że test pada przed poprawką i przechodzi po niej.
+- **Nie odpalaj `scripts/h check` ani pełnej suity.** Checki biegną po tobie dwa razy:
+  z haka Stop i z samego harnessu. Zmierzone 2026-09-02 na biegu `skills-reach-the-lead`:
+  agent zawołał `scripts/h check` 3 razy, `cargo test` 6 razy i `cargo clippy` 4 razy —
+  za każdym razem płacąc kilka minut zegara i tokeny za wynik, który i tak dostanie.
 
 Jak skończysz, napisz jednym akapitem, co zrobiłeś.

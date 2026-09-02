@@ -139,7 +139,9 @@ async fn wait_for_rows(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn a_handle_dropped_without_stop_still_takes_the_group_with_it() -> Result<(), Box<dyn Error>>
 {
     let dir = tempfile::tempdir()?;
@@ -188,7 +190,9 @@ async fn a_handle_dropped_without_stop_still_takes_the_group_with_it() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn a_run_of_short_processes_leaves_no_zombie_behind() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let script = write_script(dir.path(), "short.sh", SHORT)?;

@@ -17,8 +17,9 @@
 //! na niczym — a asercja, która jest prawdziwa, bo nic się nie wydarzyło, jest dokładnie tym,
 //! czego zabrania niezmiennik 20.
 //!
-//! Testy odpalają prawdziwe procesy, więc są `#[ignore]`; bramka woła je linią `check:`
-//! z `-- --include-ignored`.
+//! Testy odpalają prawdziwe procesy — atrapy `#!/bin/sh`, nie vendora — i od 2026-09-02
+//! biegną w każdej bramce. Wcześniej były `#[ignore]` z obietnicą `--include-ignored`,
+//! której nikt nie spełniał (R-2, audyt 2026-09-02).
 
 use std::error::Error;
 use std::fs;
@@ -211,7 +212,9 @@ fn spec(run_id: Uuid, cwd: &Path) -> RunSpec {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwy proces; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn under_the_capability_the_session_is_asked_to_stop_and_ends_itself()
 -> Result<(), Box<dyn Error>> {
     let began = Instant::now();
@@ -276,7 +279,9 @@ async fn under_the_capability_the_session_is_asked_to_stop_and_ends_itself()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwy proces; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn without_the_capability_the_group_is_killed_and_proved_gone() -> Result<(), Box<dyn Error>>
 {
     let began = Instant::now();

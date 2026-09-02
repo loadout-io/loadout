@@ -43,7 +43,7 @@ trap 'printf "\n✗ interrupted\n" >&2; exit 3' INT TERM
 
 STAGE="${1:-full}"
 case "$STAGE" in
-full | rust | web) ;;
+full | rust | web | guards) ;;
 *)
   printf 'usage: bash scripts/ci.sh [full|rust|web]\n' >&2
   exit 2
@@ -108,6 +108,19 @@ has_any() { # has_any <katalog> <predykaty find...>
 }
 
 CI_RAN_CHECKS=()
+
+# H-6 (audyt 2026-09-02): wariant, w ktorym BRAK PLIKU JEST CZERWONY. Do 2026-09-02 pas
+# webowy wolal `checks/quick-vocabulary.sh` -- plik o tej nazwie nie istnieje od zmiany
+# nazewnictwa, wiec `run_check_if_present` pomijal go w KAZDYM `full` i `web`, a D5
+# (niezmiennik 14) nie byla egzekwowana ani przy `land`, ani na runnerze. Check, ktorego
+# nie ma, czyta sie dokladnie jak check, ktory przeszedl (N-13).
+run_check_now() {
+  local path="$1"
+  [ -f "$path" ] || die 2 "$path jest wolany w ci.sh, ale nie istnieje — brak checka czyta się jak check zdany"
+  [ -x "$path" ] || die 2 "$path exists but is not executable — chmod +x it"
+  CI_RAN_CHECKS+=("$path")
+  step "$path" bash "$path"
+}
 
 run_check_if_present() { # ciało sprawdzenia ma JEDNO miejsce — plik w checks/ (niezmiennik 23)
   local path="$1"
@@ -262,19 +275,25 @@ web_lane() {
   # Brak przeglądarki jest POMINIĘCIEM Z POWODEM, nigdy zielenią: pomiar, którego nikt nie
   # wziął, nie jest pomiarem zera, a sędzia i tak odmówiłby kodem 2 na braku zrzutu.
   if [ -f index.html ] && [ -f scripts/density-collect.mjs ]; then
-    if node scripts/density-collect.mjs --out dist/density-snapshot.json >/dev/null 2>&1; then
+    density_err="$(mktemp)"
+    # H-7 (audyt 2026-09-02): `2>&1 >/dev/null` gasilo TAKZE bledy kolektora, wiec kazda
+    # jego awaria czytala sie jako „nie ma Chromium" i schodzila do pominiecia. Powod
+    # pominiecia ma byc PRAWDZIWY, inaczej pominiecie jest cicha zieleni¹.
+    if node scripts/density-collect.mjs --out dist/density-snapshot.json >/dev/null 2>"$density_err"; then
       LOADOUT_DENSITY_SNAPSHOT=dist/density-snapshot.json \
         step "density" bash checks/density.sh
     else
+      sed 's/^/  collector: /' "$density_err" >&2
       skip "density" "the in-browser collector did not run here (no Chromium?)"
     fi
+    rm -f "$density_err"
   else
     skip "density" "no built app to measure"
   fi
 
   # D5 / niezmiennik 14: słownictwo widoczne dla użytkownika. Ciało sprawdzenia
   # jest w checks/, tutaj tylko wywołanie.
-  run_check_if_present checks/quick-vocabulary.sh
+  run_check_now checks/vocabulary.sh
 }
 
 # ── sprawdzenie sprawdzeń ─────────────────────────────────────────────────────
@@ -389,6 +408,34 @@ for group in ("checks", "manual_only"):
             if not os.path.isfile(os.path.join("checks", m.group(1))):
                 missing.append("%s deklaruje checks/%s, ktorego nie ma" % (cid, m.group(1)))
 
+# H-6 (audyt 2026-09-02): TRZECI kierunek. Do 2026-09-02 ten straznik pytal wylacznie
+# „checks.json <-> dysk" i dlatego nie widzial, ze sam `ci.sh` wola plik, ktorego nie ma.
+ci = open("scripts/ci.sh", encoding="utf-8").read().splitlines()
+for line in ci:
+    if line.lstrip().startswith("#"):
+        continue
+    for m in re.finditer(r"(?:bash|run_check_now)\s+checks/([\w.-]+\.sh)", line):
+        if not os.path.isfile(os.path.join("checks", m.group(1))):
+            missing.append("scripts/ci.sh wola checks/%s, ktorego nie ma" % m.group(1))
+
+# R-2 (audyt 2026-09-02): `#[ignore]`, ktorego tekst obiecuje, ze bramka wola go
+# z `--include-ignored`, a zadna linia ci.sh tego nie robi, jest obietnica bez pokrycia:
+# test nie biegnie NIGDZIE i czyta sie dokladnie jak zdany. Zmierzone: jedenascie takich
+# atrybutow na testach dowodu smierci procesu, czyli caly niezmiennik 6 bez dowodu.
+ci_text = open("scripts/ci.sh", encoding="utf-8").read()
+promises = []
+for base, _dirs, files in os.walk("src-tauri/tests"):
+    for name in files:
+        if not name.endswith(".rs"):
+            continue
+        path = os.path.join(base, name)
+        for i, line in enumerate(open(path, encoding="utf-8"), 1):
+            if "#[ignore" in line and "--include-ignored" in line:
+                promises.append("%s:%d" % (path, i))
+if promises and "--include-ignored" not in ci_text:
+    missing += ["%s obiecuje, ze bramka wola go z --include-ignored, a ci.sh nigdzie tego nie robi" % p
+                for p in promises]
+
 on_disk = {f for f in os.listdir("checks") if f.endswith(".sh") and not f.startswith("_")}
 orphans = sorted(on_disk - declared)
 if orphans:
@@ -411,6 +458,7 @@ PY
 case "$STAGE" in
 rust) rust_lane ;;
 web) web_lane ;;
+guards) guards_lane ;;
 full)
   rust_lane
   web_lane

@@ -59,7 +59,9 @@ fn write_script(dir: &Path, name: &str, body: &str) -> Result<PathBuf, Box<dyn E
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn the_pipe_reaches_eof_only_once_the_whole_group_is_dead() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let marker = unique_marker("pipe-eof");

@@ -15,9 +15,9 @@
 //! środowiskową: supervisor z T-03 robi `env_clear()` i przepuszcza sześć nazw, więc fikstura
 //! sterowana envem po cichu przestałaby działać i test zrobiłby się zielony na niczym.
 //!
-//! Test odpala prawdziwy proces, więc jest `#[ignore]` i nie biegnie w pętli wewnętrznej.
-//! Uruchamia go bramka, linią `check:` z `-- --include-ignored`; bez tej flagi cargo zamelduje
-//! `0 passed`, a to nie jest dowód (niezmiennik 19).
+//! Test odpala prawdziwy proces — atrapę `#!/bin/sh`, nie vendora — i od 2026-09-02 biegnie
+//! w każdej bramce. Wcześniej był `#[ignore]` z obietnicą `--include-ignored`, której nikt
+//! nie spełniał (R-2, audyt 2026-09-02).
 
 use std::error::Error;
 use std::fs;
@@ -111,7 +111,9 @@ fn spec(run_id: Uuid, cwd: &Path) -> RunSpec {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwy proces; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn two_turns_share_one_process_and_one_session() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let binary = write_script(dir.path(), "claude", DUMMY)?;
@@ -170,7 +172,9 @@ async fn two_turns_share_one_process_and_one_session() -> Result<(), Box<dyn Err
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwy proces; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stalo tu `#[ignore]` z obietnica "bramka wola to z --include-ignored".
+// Zadna nie wolala: tej flagi nie ma nigdzie w harness/, checks/, scripts/ ani .github/,
+// wiec niezmiennik 6 nie mial ani jednego biegnacego dowodu. Atrapa to `#!/bin/sh`, nie vendor.
 async fn a_missing_binary_is_an_answer_not_a_crash() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let binary = write_script(dir.path(), "claude", DUMMY)?;

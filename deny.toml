@@ -42,7 +42,11 @@ ignore = []
 
 [licenses]
 version = 2
-# Licencje permisywne, zgodne z zamkniętą aplikacją desktopową.
+# Licencje permisywne. 2026-09-02 (R-7): do tego dnia stalo tu "zgodne z zamknieta
+# aplikacja desktopowa" -- nieprawda od upublicznienia repo. Loadout jest AGPL-3.0-only,
+# a AGPL wymaga, zeby kazda zaleznosc dala sie z nia polaczyc; permisywne daja sie,
+# copyleft po stronie zaleznosci (GPL, LGPL bez wyjatku) nie -- i dlatego ta lista zostaje
+# taka waska, tylko z innego powodu niz przed publikacja.
 # Copyleft (GPL / LGPL / AGPL) NIE JEST na tej liście świadomie: zależność
 # copyleftowa ma przewrócić bramkę i wymusić decyzję człowieka, a nie wejść cicho.
 allow = [
