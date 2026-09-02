@@ -54,7 +54,8 @@ const FIXTURE: &[u8] = include_bytes!(concat!(
 ));
 
 /// Ile bajtów ma mieć fikstura. Asercja, nie komentarz: przycięta mierzyłaby krótszy strumień.
-const FIXTURE_BYTES: usize = 25_584;
+/// 2026-09: złoty plik zredagowano w Z-29 bez zmiany zdarzeń; stąd nowa liczba.
+const FIXTURE_BYTES: usize = 19_397;
 
 /// Katalogi biegów, od najstarszego. Kolejność na liście ma być odwrotna.
 const OLDEST: &str = "20260810-081500__0198a1f2-3b4c-7d5e-8f60-000000000001";

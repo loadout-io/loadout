@@ -1,10 +1,10 @@
 //! AC-1 dla T-05: szesnaście prawdziwych zdarzeń zostawia **dokładnie trzy** wiersze historii.
 //!
 //! To jest jedyne miejsce, w którym powstaje wartość produktu, i jedyne kryterium, które mierzy
-//! ją w całości: wejściem jest cały złoty plik z prawdziwego biegu (16 zdarzeń, 25 584 bajty),
+//! ją w całości: wejściem jest cały zredagowany złoty plik (16 zdarzeń, 19 397 bajtów),
 //! a wyjściem historia, którą zobaczy człowiek. Cichy tryb porażki nie wygląda jak awaria —
 //! wygląda jak widok, który „działa" i znowu jest ścianą tekstu, bo mapowanie przepuściło
-//! `thinking` albo `system/init` (9 929 bajtów, 42% strumienia [T7 §4.3]).
+//! `thinking` albo `system/init` (po redakcji Z-29 z 2026-09: 4 015 bajtów, 21% fikstury).
 //!
 //! **Słaba wersja tego kryterium to
 //! `assert!(lines.iter().any(|l| l.kind() == LineKind::Note))`.** Przechodzi ją implementacja,
@@ -29,7 +29,8 @@ const FIXTURE: &[u8] = include_bytes!(concat!(
 
 /// Ile bajtów ma mieć fikstura. Asercja, nie komentarz: gdyby ktoś ją przyciął, to kryterium
 /// mierzyłoby krótszy strumień i nikt by tego nie zauważył.
-const FIXTURE_BYTES: usize = 25_584;
+/// 2026-09: złoty plik zredagowano w Z-29 bez zmiany zdarzeń; stąd nowa liczba.
+const FIXTURE_BYTES: usize = 19_397;
 
 /// Ile zdarzeń niesie fikstura.
 const FIXTURE_EVENTS: usize = 16;
@@ -104,7 +105,7 @@ async fn sixteen_real_events_leave_exactly_three_rows_in_this_order() -> anyhow:
         HISTORY_ROWS,
         "sixteen events have to leave three rows. More means the mapping let through some of \
          the thirteen that must never be seen — three hook_started, three hook_response, init \
-         (42% of the stream), three thinking_tokens, the thinking block, the allowed \
+         (21% of the redacted stream), three thinking_tokens, the thinking block, the allowed \
          rate_limit_event and the tool_result that only closes the read row. Fewer means it \
          also dropped something a person needs. The history was {lines:?}"
     );

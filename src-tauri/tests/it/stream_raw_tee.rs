@@ -18,7 +18,7 @@ use loadout_lib::engine::stream;
 use tokio::io::BufReader;
 use tokio::sync::mpsc;
 
-/// Złoty plik: 16 zdarzeń, 25 584 bajty, kończy się `\n`.
+/// Złoty plik: 16 zdarzeń, 19 397 bajtów po redakcji Z-29 z 2026-09, kończy się `\n`.
 const FIXTURE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../docs/research/fixtures/claude-stream.jsonl"
