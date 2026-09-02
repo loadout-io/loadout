@@ -34,6 +34,7 @@
  * powodu — pobranie obrazka jest żądaniem sieciowym pod adres, który wybrał ktoś inny.
  */
 import type { ReactElement, ReactNode } from 'react';
+import { useMemo } from 'react';
 import { marked } from 'marked';
 
 /** Token markdowna. Kształt `marked`, opisany tu tylko w częściach, których dotykamy. */
@@ -175,10 +176,19 @@ function block(tokens: readonly Token[]): ReactNode {
  * zrobiłby z `## Backend` element blokowy, a ten rozpycha wiersz strumienia w pionie.
  */
 export function AnswerLine({ text }: AnswerProps): ReactElement {
-  /* NAGŁÓWEK ZDJĘTY Z PRZODU, nie zostawiony jako tekst: `##` w jednej linii z resztą zdania
+  /* 2026-09-02 — ROZBIÓR TRZYMANY MIĘDZY RENDERAMI (audyt 2026-09-02, F-2). Ten wiersz stoi
+     w KAŻDEJ wypowiedzi prozy, a strumień miewa ich dwa tysiące; markdown tego samego zdania
+     rozbierany drugi raz daje ten sam wynik za tę samą cenę. Klucz jest jeden i jest nim `text`,
+     bo z niego liczy się wszystko poniżej — i zdjęcie nagłówka, i sam rozbiór.
+     NAGŁÓWEK ZDJĘTY Z PRZODU, nie zostawiony jako tekst: `##` w jednej linii z resztą zdania
      czyta się jak literówka. Sam tekst nagłówka zostaje — to on niesie treść. */
-  const flat = text.replace(/^#{1,6}\s+/, '');
-  const tokens = marked.Lexer.lexInline(flat) as unknown as readonly Token[];
+  const { flat, tokens } = useMemo(() => {
+    const withoutHash = text.replace(/^#{1,6}\s+/, '');
+    return {
+      flat: withoutHash,
+      tokens: marked.Lexer.lexInline(withoutHash) as unknown as readonly Token[],
+    };
+  }, [text]);
   return <span>{inline(tokens, flat)}</span>;
 }
 
@@ -195,7 +205,16 @@ export interface AnswerProps {
  */
 export function Answer({ text }: AnswerProps): ReactElement {
   /* `lexer`, nie `parse`: to pierwsze oddaje tokeny, drugie napis HTML. Cała różnica między tym
-     modułem a dziurą w oknie z dostępem do powłoki mieści się w tym jednym słowie. */
-  const tokens = marked.lexer(text) as unknown as readonly Token[];
+     modułem a dziurą w oknie z dostępem do powłoki mieści się w tym jednym słowie.
+     2026-09-02 — TRZYMANE MIĘDZY RENDERAMI z tego samego powodu, co w `AnswerLine` wyżej: to jest
+     rozbiór CAŁEJ odpowiedzi agenta, czyli najdroższa rzecz, jaką ta kolumna robi.
+
+     CIAŁO W KLAMRACH, nie wyrażenie w jednej linii, i to nie jest gust (2026-09-02):
+     `checks/vocabulary.sh` czyta wszystko między `>` a `<` jako tekst widoczny na ekranie, więc
+     strzałka `=>` domknięta dopiero elementem niżej robi z tej linii „zdanie dla człowieka" —
+     i zapala je na słowie `Token`. Klamra po strzałce zamyka to okno w tej samej linii. */
+  const tokens = useMemo(() => {
+    return marked.lexer(text) as unknown as readonly Token[];
+  }, [text]);
   return <div className="whitespace-normal break-words">{block(tokens)}</div>;
 }

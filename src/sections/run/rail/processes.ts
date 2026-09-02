@@ -370,8 +370,55 @@ export async function refreshStarted(): Promise<void> {
     next.push({ ...one, id: 'started-' + String(minted) });
   }
 
+  /* 2026-09-02 — ODPOWIEDŹ, KTÓRA NIC NIE WNOSI, NIE RUSZA LISTY. `startedThings` jest migawką
+   * `useSyncExternalStore`, a React porównuje ją PO REFERENCJI — więc świeża tablica o tej samej
+   * treści jest dla niego zmianą. Zmierzone (audyt 2026-09-02, F-2): to odświeżanie biegło raz
+   * na sekundę przez całe życie okna i publikowało ZAWSZE, także nad dwiema pustymi listami, więc
+   * ekran Bieg (`../index.tsx`, wiersz 1113) przerysowywał się co sekundę razem z całym
+   * strumieniem — do dwóch tysięcy wypowiedzi, każda proza leksowana od nowa. Ani jeden piksel
+   * się przy tym nie zmieniał. */
+
+  /* 2026-09-02 — PANEL GAŚNIE RAZEM ZE SWOJĄ RZECZĄ, i to jest dokładnie ta sama linia, którą ma
+   * `stopStarted` o dwie funkcje wyżej. Bez niej `opened` zostawał nad wpisem, którego już nie ma:
+   * ekran przestawał rysować panel (`rail.tsx`, `inside` szuka po `id` w liście), ale okno dalej
+   * uważało, że jest w co patrzeć. Do 2026-09-02 był to stan bez skutku; od chwili, w której
+   * `opened` trzyma przy życiu odstęp pytający rejestr, jest to wyciek: rzecz, która zeszła
+   * PODCZAS oglądania jej wyjścia, zostawiała jedno `list_processes` na sekundę do końca życia
+   * okna — nad pustą listą i z zamkniętym panelem. */
+  const closing = opened !== null && !next.some((one) => one.id === opened);
+
+  if (!closing && sameThings(held, next)) return;
+
   held = next;
+  if (closing) opened = null;
   publish();
+}
+
+/**
+ * Czy te dwie listy mówią o tym samym, pole po polu.
+ *
+ * Pięć pól, bo tyle ich [`Held`] ma i każde z nich widać: `id` niesie kwadrat tożsamości,
+ * `command` jest nazwą kafelka, `alive` rozstrzyga, czy kafelek w ogóle stoi, `pgid` decyduje
+ * o przycisku Stop, a `said` jest treścią otwartego panelu. Porównanie po czymkolwiek węższym —
+ * choćby po samej długości — zgubiłoby wyjście dojeżdżające do panelu, w który człowiek właśnie
+ * patrzy, czyli zamieniłoby tę oszczędność w ekran, który przestał się odświeżać.
+ *
+ * KOLEJNOŚĆ TEŻ JEST TREŚCIĄ: lista idzie w kolejności uruchamiania i tak stoi na ekranie, więc
+ * te same wpisy w innym porządku są dla oka zmianą.
+ */
+function sameThings(before: readonly Held[], after: readonly Held[]): boolean {
+  if (before.length !== after.length) return false;
+  return before.every((one, at) => {
+    const now = after[at];
+    return (
+      now !== undefined &&
+      now.id === one.id &&
+      now.pgid === one.pgid &&
+      now.command === one.command &&
+      now.alive === one.alive &&
+      now.said === one.said
+    );
+  });
 }
 
 /**
