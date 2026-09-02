@@ -192,7 +192,11 @@ async fn stdin_closes_at_once(dir: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "odpala prawdziwe procesy; bramka woła to z --include-ignored"]
+// 2026-09-02 (R-2): stal tu atrybut obiecujacy, ze bramka wola ten test
+// z flaga uruchamiajaca testy pominiete. Zadna nie wolala -- tej flagi nie ma nigdzie
+// w harness/, checks/, scripts/ ani .github/, wiec jedyny dowod higieny srodowiska
+// procesu potomnego (niezmiennik 9) nie biegl w ZADNEJ bramce. Ten plik zostaje
+// osobnym celem, bo wola `env::set_var` i mierzy stan calego procesu.
 async fn the_child_gets_a_scrubbed_environment_and_an_immediately_closed_stdin()
 -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;

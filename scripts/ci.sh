@@ -422,7 +422,22 @@ for line in ci:
 # z `--include-ignored`, a zadna linia ci.sh tego nie robi, jest obietnica bez pokrycia:
 # test nie biegnie NIGDZIE i czyta sie dokladnie jak zdany. Zmierzone: jedenascie takich
 # atrybutow na testach dowodu smierci procesu, czyli caly niezmiennik 6 bez dowodu.
-ci_text = open("scripts/ci.sh", encoding="utf-8").read()
+# Straznik musi umiec ZAPALIC SIE. Pierwsza wersja z 2026-09-02 nie umiala i to jest
+# dokladnie niezmiennik 20: szukala napisu `--include-ignored` w calym `ci.sh`, a wlasny
+# kod tego straznika STOI w `ci.sh` i ten napis zawiera -- wiec warunek byl zawsze falszywy.
+# Po stronie testow to samo w druga strone: komentarz opisujacy zdjety atrybut tez niesie
+# oba napisy w jednej linii. Teraz obie strony patrza na KOD, nie na wzmianke:
+# atrybut musi zaczynac linie, a wywolanie musi stac przy `cargo test` w linii niekomentarzowej.
+def _calls_include_ignored(text):
+    for line in text.splitlines():
+        bare = line.strip()
+        if bare.startswith("#") or "--include-ignored" not in bare:
+            continue
+        if "cargo" in bare and "test" in bare:
+            return True
+    return False
+
+gate_runs_ignored = _calls_include_ignored(open("scripts/ci.sh", encoding="utf-8").read())
 promises = []
 for base, _dirs, files in os.walk("src-tauri/tests"):
     for name in files:
@@ -430,9 +445,10 @@ for base, _dirs, files in os.walk("src-tauri/tests"):
             continue
         path = os.path.join(base, name)
         for i, line in enumerate(open(path, encoding="utf-8"), 1):
-            if "#[ignore" in line and "--include-ignored" in line:
+            bare = line.strip()
+            if bare.startswith("#[ignore") and "--include-ignored" in bare:
                 promises.append("%s:%d" % (path, i))
-if promises and "--include-ignored" not in ci_text:
+if promises and not gate_runs_ignored:
     missing += ["%s obiecuje, ze bramka wola go z --include-ignored, a ci.sh nigdzie tego nie robi" % p
                 for p in promises]
 

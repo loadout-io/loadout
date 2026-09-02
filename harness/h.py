@@ -506,9 +506,16 @@ def phase_implement(task_id, task, plan, wt, vendor, feedback="", rnd=0):
               "Popraw dokladnie to. Nie zaczynaj od zera, nie przepisuj reszty.\n" % feedback)
     # H-4: identyfikator sesji zapisany w stanie, zeby runda naprawcza wznowila TE sesje,
     # a nie te, ktora akurat byla ostatnia w katalogu.
-    sid = load_state(task_id).get("session") or str(uuid.uuid4())
+    #
+    # POPRAWKA 2026-09-02, po biegu z01-descendants: `--session-id` zaklada sesje NOWA i vendor
+    # odmawia ("Session ID ... is already in use"), kiedy ten sam task startuje drugi raz --
+    # a to jest normalna droga po kodzie 3 (sufit tur), gdzie praca zostaje w worktree
+    # i ma byc kontynuowana. Sesja zapisana w stanie znaczy wiec „wznow", niezaleznie od tego,
+    # czy powodem jest runda naprawcza, czy ponowne wywolanie po suficie.
+    saved = load_state(task_id).get("session")
+    sid = saved or str(uuid.uuid4())
     save_state(task_id, session=sid)
-    call_model(vendor, p, wt, write=True, resume=bool(feedback), budget=5400,
+    call_model(vendor, p, wt, write=True, resume=bool(feedback) or bool(saved), budget=5400,
                session=sid,
                budget_usd=float(os.environ.get("LOADOUT_BUDGET_DEV", "40")),
                transcript=str(rundir(task_id) / ("build-%d.jsonl" % rnd)))
