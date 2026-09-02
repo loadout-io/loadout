@@ -402,6 +402,14 @@ struct Pool {
     ///
     /// Permity są tu zapominane przy braniu i oddawane w [`Pool::give_back`], dokładnie jak
     /// w puli obok — jedna droga zwrotu, jeden `Drop`.
+    ///
+    /// **Zapominane dopiero wtedy, kiedy [`Slot`] na pewno powstanie** (2026-09, Z-3). Między
+    /// wzięciem permitu stąd a budową slotu stoi drugi `await`, ten po miejsce z [`Pool::slots`],
+    /// a na nim prośba potrafi zniknąć: Stop porzuca ją w `Live::a_slot_for_this_step`. Permit
+    /// zapomniany przed tym `await` nie miałby kto oddać, bo `Slot` jeszcze nie istnieje — a tych
+    /// miejsc jest [`Pool::heavy_at_once`] na CAŁĄ aplikację, więc jeden taki Stop zabierał
+    /// wszystkim kartom możliwość uruchomienia kroku ciężkiego aż do restartu. Do chwili budowy
+    /// slotu miejsca pilnuje `SemaphorePermit`, czyli ten sam `Drop`, co wszędzie indziej.
     heavy: Semaphore,
 }
 
@@ -568,11 +576,11 @@ impl Limiter {
         // trzymałyby wtedy trzy miejsca z puli i czekały na jedno miejsce ciężkie, więc żaden
         // krok zwykły nie ruszyłby przez cały ten czas. Zakleszczenia nie ma w żadnej z nich —
         // ciężki czeka na zwykłe miejsce, a zwykły nigdy nie czeka na ciężkie.
-        if weight == Weight::Heavy
-            && let Ok(permit) = self.pool.heavy.acquire().await
-        {
-            permit.forget();
-        }
+        let heavy_seat = if weight == Weight::Heavy {
+            self.pool.heavy.acquire().await.ok()
+        } else {
+            None
+        };
         if let Ok(permit) = self.pool.slots.acquire().await {
             // Permit zapominamy, bo o zwrocie decyduje [`Pool::give_back`], nie `Drop` permitu.
             permit.forget();
@@ -580,6 +588,15 @@ impl Limiter {
         // `Err` znaczy zamkniętą pulę, czyli gaszenie aplikacji. Nie ma wtedy do czego wracać
         // i nie ma komu tego zgłosić — slot i tak zaraz zginie razem z biegiem.
         self.pool.running.fetch_add(1, Ordering::SeqCst);
+        // 2026-09 (Z-3) — MIEJSCE CIĘŻKIE ZAPOMINAMY DOPIERO TUTAJ, za ostatnim `await`. Wyżej
+        // stoi czekanie na miejsce z puli, a na nim cała ta prośba potrafi zniknąć: Stop porzuca
+        // ją przez `select!` w `Live::a_slot_for_this_step`. Zapomniane wcześniej miejsce nie
+        // miałoby kto oddać — [`Slot`], jedyna droga zwrotu, jeszcze nie istnieje — a jest ono
+        // jedno na całą aplikację, więc żaden krok ciężki nie ruszyłby już do restartu. Do tej
+        // linijki pilnuje go `SemaphorePermit`, który porzucony oddaje miejsce sam.
+        if let Some(permit) = heavy_seat {
+            permit.forget();
+        }
         Slot {
             pool: Arc::clone(&self.pool),
             weight,
