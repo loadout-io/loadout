@@ -294,8 +294,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | **BLOCKED** — sześć odrzuceń w dwóch podejściach; zakres jest większy niż jedno zadanie | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | **LANDED** `2026-09-02` | dwie rundy, 13 min; zawężony test biegnie 1 s |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | **LANDED** `2026-09-03` | jedna runda, 911 s | |
-| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | RUNNING | `run.rs` 11 k linii |
-| Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | TODO | |
+| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | **BLOCKED** — test nie kompilował się na starym kodzie (§2a p. 4); do ponowienia po dopisce o szkieletach | `run.rs` 11 k linii |
+| Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | RUNNING | |
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
 | Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
 | Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | **LANDED** `2026-09-02` | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
@@ -374,6 +374,8 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 02:10 · WNIOSEK Z DZIEWIĘCIU ODRZUCEŃ · dopisałem do 28 pozostałych promptów sekcję z trzema rzeczami, na których stanęły Z-01, Z-01b i Z-04, a których żaden check nie widzi: (1) test musi się SKOMPILOWAĆ na starym kodzie — najpierw sygnatury z `todo!()`, inaczej cel nie kompiluje się wcale i nic nie dowodzi (AGENTS.md §2a p. 4); (2) przy ujednolicaniu zachowania trzeba wymienić WSZYSTKIE drogi, bo weryfikator przechodzi je po kolei i pyta o tę pominiętą; (3) zdanie, które czyta człowiek, asertuje się tam, gdzie ono stoi (niezmiennik 29), nie na wartości zwróconej · ręka
+- 2026-09-03 02:00 · Z-04 · **BLOCKED po trzech rundach**, ale z powodu, który da się naprawić promptem: moduł testowy importował nowe typy, więc na starym kodzie cel integracyjny nie kompilował się i test nie mógł najpierw paść. Weryfikator ma rację co do §2a. Praca w `../loadout-h-z04-settle-guard` · C→X
 - 2026-09-03 00:35 · Z-03 · LANDED, jedna runda, 911 s. Miejsce ciężkie przestaje przeciekać przy Stopie w kolejce — bez tego pierwszy Stop w oczekiwaniu na pulę unieruchamiał każdy krok „sprawdź" aż do restartu aplikacji · C→X
 - 2026-09-02 23:50 · Z-01b · **BLOCKED po trzech rundach**, drugi raz. Sześć odrzuceń łącznie, każde na innej prawdziwej dziurze — pełna lista i trzy drogi wyjścia w sekcji 6 tego pliku. Pętla idzie dalej po Z-03; zależność w tabeli była kolejnością, nie logiką · C→X
 - 2026-09-02 21:35 · Z-02 · LANDED, dwie rundy, 780 s. Sonda sygnałem zerowym zamiast salwy SIGTERM co 10 ms przez całe okno łaski; zawężony test biegnie 1 s zamiast pełnej suity · X→C
