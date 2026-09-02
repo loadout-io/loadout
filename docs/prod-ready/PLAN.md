@@ -291,11 +291,13 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 |---|---|---|---|---|---|---|---|---|
 | Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — prompt był niepełny; zastąpione przez Z-01b |
-| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | **BLOCKED** — sześć odrzuceń w dwóch podejściach; zakres jest większy niż jedno zadanie | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | **ZAMKNIĘTE jako za szerokie** — decyzją właściciela 2026-09-03 rozbite na Z-01c i Z-01d |
+| Z-01c | `z01c-live-kill` | `prompts/Z-01c.md` | R | C→X | duże | Z-04 | TODO | Stop i limit czasu zabijają każdą grupę, którą krok utworzył |
+| Z-01d | `z01d-pgids-recovery` | `prompts/Z-01d.md` | R | C→X | duże | Z-01c | TODO | znacznik na wszystkich drogach spawnu, `pgids` w `run.json`, reaper po awarii | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | **LANDED** `2026-09-02` | dwie rundy, 13 min; zawężony test biegnie 1 s |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | **LANDED** `2026-09-03` | jedna runda, 911 s | |
-| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | **BLOCKED** — test nie kompilował się na starym kodzie (§2a p. 4); do ponowienia po dopisce o szkieletach | `run.rs` 11 k linii |
-| Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | RUNNING | |
+| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | RUNNING (2. podejście, prompt z regułą o szkieletach) | `run.rs` 11 k linii |
+| Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | DZIALA (3 rundy), do wlania | |
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
 | Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
 | Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | **LANDED** `2026-09-02` | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
@@ -374,6 +376,8 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 09:15 · DECYZJE WŁAŚCICIELA · (1) Z-01 rozbite na Z-01c (żywe zabijanie: migawka i eskalacja dla każdej grupy, test na produkcyjnym `Supervised::stop()`) i Z-01d (znacznik na wszystkich drogach spawnu, `pgids` w `run.json`, reaper po awarii). (2) Z-04 wznowione. (3) `repair-agent-app-preflight` do uratowania w części rustowej, `repair-readme-truth` skasowane jako bezprzedmiotowe (README przepisany dla 0.2), dwa pozostałe do napisania od nowa, gdy będą potrzebne. (4) 58 starych gałęzi osiągalnych z backupu skasowanych; 35 nieosiągalnych zostaje · ręka
+- 2026-09-03 09:10 · Z-05 · DZIALA w trzech rundach; sufit na zamknięcie tury i dowód śmierci grupy poprzedniej tury Codeksa · X→C
 - 2026-09-03 02:10 · WNIOSEK Z DZIEWIĘCIU ODRZUCEŃ · dopisałem do 28 pozostałych promptów sekcję z trzema rzeczami, na których stanęły Z-01, Z-01b i Z-04, a których żaden check nie widzi: (1) test musi się SKOMPILOWAĆ na starym kodzie — najpierw sygnatury z `todo!()`, inaczej cel nie kompiluje się wcale i nic nie dowodzi (AGENTS.md §2a p. 4); (2) przy ujednolicaniu zachowania trzeba wymienić WSZYSTKIE drogi, bo weryfikator przechodzi je po kolei i pyta o tę pominiętą; (3) zdanie, które czyta człowiek, asertuje się tam, gdzie ono stoi (niezmiennik 29), nie na wartości zwróconej · ręka
 - 2026-09-03 02:00 · Z-04 · **BLOCKED po trzech rundach**, ale z powodu, który da się naprawić promptem: moduł testowy importował nowe typy, więc na starym kodzie cel integracyjny nie kompilował się i test nie mógł najpierw paść. Weryfikator ma rację co do §2a. Praca w `../loadout-h-z04-settle-guard` · C→X
 - 2026-09-03 00:35 · Z-03 · LANDED, jedna runda, 911 s. Miejsce ciężkie przestaje przeciekać przy Stopie w kolejce — bez tego pierwszy Stop w oczekiwaniu na pulę unieruchamiał każdy krok „sprawdź" aż do restartu aplikacji · C→X
