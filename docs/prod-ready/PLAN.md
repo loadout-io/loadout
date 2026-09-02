@@ -290,7 +290,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
 |---|---|---|---|---|---|---|---|---|
 | Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
-| Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | TODO | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | RUNNING (3. podejście, 400 tur) | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | TODO | dwa wiersze + test licznika TERM |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | TODO | `run.rs` 11 k linii |
@@ -298,7 +298,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
 | Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
 | Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | **LANDED** `2026-09-02` | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
-| Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | TODO | tylko `docs/`; może biec obok |
+| Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | DZIALA (czeka na wolną maszynę do lądowania) | tylko `docs/`; może biec obok |
 | Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | TODO | utrata pracy człowieka |
 | Z-08 | `z08-skills-outside-commit` | `prompts/Z-08.md` | R | X→C | | Z-07 | TODO | |
 | Z-09 | `z09-sweeper` | `prompts/Z-09.md` | R | C→X | duże | Z-08 | TODO | pięć punktów, jeden bieg; jeśli kod 3 — podziel na `z09a` (reconcile+prune) i `z09b` (kopie, forget, exclude) |
@@ -366,6 +366,9 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-02 18:10 · REGRESJE WŁASNE ×2, obie naprawione · (a) strażnik obietnicy `--include-ignored` nie mógł zaświecić: szukał napisu w całym `ci.sh`, a jego własny kod stoi w `ci.sh` i ten napis zawiera — niezmiennik 20 w czystej postaci. Teraz patrzy na KOD (atrybut zaczyna linię, wywołanie stoi przy `cargo test`), zasadzone naruszenie czerwone. (b) `--session-id` przy ponownym biegu tego samego zadania odmawiał („already in use"), czyli dokładnie na drodze po kodzie 3. Sesja w stanie znaczy teraz „wznów" · ręka
+- 2026-09-02 18:00 · Z-01 · kod 3 po 250 turach; 17 plików i 891 linii pracy zostało w worktree. Wznowione z sufitem 400. Bieg zgłosił przy okazji cztery rzeczy POZA ZAKRESEM, w tym ostatnią obietnicę `--include-ignored` bez pokrycia (`supervisor_env_hygiene.rs:195`) — ominęła R-2, bo tamto szło po `tests/it/`, a to jest osobny cel · C→X
+- 2026-09-02 17:30 · Z-29 · DZIALA w jednej rundzie; ścieżki domowe i lista serwerów MCP właściciela zniknęły z obu fikstur, cztery testy czytające je poprawione. Czeka na lądowanie, bo maszyna jest zajęta przez Z-01 · X→C
 - 2026-09-02 15:05 · domknięcia po Z-28 i Z-25 · allowlista ośmiu celów w `checks/tests-listed.sh` (zasadzone naruszenie: czerwone, przywrócone: zielone); `rust-test` z 3600 na 1500 s; `npm uninstall @tanstack/react-virtual`; tabela zależności w ARCHITECTURE.md uzgodniona z `package.json` · ręka
 - 2026-09-02 14:55 · Z-25 · LANDED, dwie rundy. Weryfikator (codex) znalazł przypadek brzegowy w rundzie 1: ostatni proces znikający przy otwartym panelu wypadał z `held` i odpytywanie milkło. Werdykt o wirtualizacji: NIE, z trzema zmierzonymi powodami w `feed.tsx`; zależność zdjęta · C→X
 - 2026-09-02 14:50 · Z-28 · LANDED. 60 → 8 plików testowych wprost w `tests/`; pełne CI 252 s, a kolejne 222 s (było 256) · X→C
