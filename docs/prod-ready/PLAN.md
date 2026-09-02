@@ -291,8 +291,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 |---|---|---|---|---|---|---|---|---|
 | Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — prompt był niepełny; zastąpione przez Z-01b |
-| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | TODO | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
-| Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | TODO | dwa wiersze + test licznika TERM |
+| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | RUNNING | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | **LANDED** `2026-09-02` | dwie rundy, 13 min; zawężony test biegnie 1 s |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | TODO | `run.rs` 11 k linii |
 | Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | TODO | |
@@ -374,6 +374,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-02 21:35 · Z-02 · LANDED, dwie rundy, 780 s. Sonda sygnałem zerowym zamiast salwy SIGTERM co 10 ms przez całe okno łaski; zawężony test biegnie 1 s zamiast pełnej suity · X→C
 - 2026-09-02 20:35 · Z-29 · LANDED, pełne CI 237 s · X→C
 - 2026-09-02 20:20 · Z-01 · **BLOCKED po trzech rundach** i to jest dobra wiadomość o systemie, nie zła o zadaniu. Weryfikator (codex) odrzucił trzy razy, za każdym razem wskazując lukę, której zielone checki nie widziały: (1) reaper uznawał DOWOLNY znacznik za zgodę na zabicie, więc grupa cudzego biegu ginęłaby zamiast być zgłoszona jako obca; (2) znacznik przy prawdziwym starcie bierze się z identyfikatora SESJI, a odzyskiwanie porównuje go z identyfikatorem BIEGU — nigdy się nie zgadzają, więc własna żywa grupa byłaby „obca"; (3) `pgids` nie są zapisywane do `run.json` na ścieżce Stopu ani timeoutu, więc ocalały wnuk po nieudanym Stopie nie trafia do pliku i reaper startowy go nie znajdzie. Praca (18 plików, 908 linii) stoi w `../loadout-h-z01-descendants`. Sugestia weryfikatora jest konkretna: pobierać `descendant_groups()` z zachowanego uchwytu przed zapisem `death_proof`, a drugi test przepiąć na prawdziwy bieg zamiast ręcznego wpisu · C→X
 - 2026-09-02 18:10 · REGRESJE WŁASNE ×2, obie naprawione · (a) strażnik obietnicy `--include-ignored` nie mógł zaświecić: szukał napisu w całym `ci.sh`, a jego własny kod stoi w `ci.sh` i ten napis zawiera — niezmiennik 20 w czystej postaci. Teraz patrzy na KOD (atrybut zaczyna linię, wywołanie stoi przy `cargo test`), zasadzone naruszenie czerwone. (b) `--session-id` przy ponownym biegu tego samego zadania odmawiał („already in use"), czyli dokładnie na drodze po kodzie 3. Sesja w stanie znaczy teraz „wznów" · ręka
