@@ -87,7 +87,7 @@ jest w `deny`, więc żaden bieg tego nie naprawi.
 
 Każdy pakiet kończy się commitem na `main` i wierszem w Dzienniku. Kolejność jest zależnością.
 
-### 0.1 Sprzątanie maszyny
+### 0.1 Sprzątanie maszyny — LANDED
 
 1. Sierota: `ps -o pid,ppid,pgid,etime,command -p 23164`. Jeśli to nadal
    `…/meetnotes/.loadout/runs/20260901-150035__01a05d7c-…/work/s_7/target/debug/deps/meetnotes_lib-…`
@@ -111,7 +111,7 @@ Każdy pakiet kończy się commitem na `main` i wierszem w Dzienniku. Kolejnoś�
 Kryterium: `ls target/debug/deps | wc -l` < 60 000 po buildzie; `git worktree list` = main +
 16 z pakietu 0.2; brak procesu z `cwd` w `.loadout/runs/` starszego niż żywy bieg.
 
-### 0.2 Ratunek dwunastu gałęzi `h-repair-*`
+### 0.2 Ratunek dwunastu gałęzi `h-repair-*` — LANDED (7 z 11 commitów, 4 BLOCKED)
 
 Dla każdej z: `repair-agent-app-preflight`, `repair-bounded-check-output`,
 `repair-bounded-evidence`, `repair-diagnostics-build-facts`, `repair-global-diagnostics`,
@@ -150,23 +150,23 @@ Dla każdej z: `repair-agent-app-preflight`, `repair-bounded-check-output`,
 
 | gałąź | status | uwagi |
 |---|---|---|
-| repair-agent-app-preflight | TODO | |
-| repair-bounded-check-output | TODO | |
-| repair-bounded-evidence | TODO | |
-| repair-diagnostics-build-facts | TODO | |
-| repair-global-diagnostics | TODO | |
-| repair-log-lifecycle | TODO | `write_log_open_error` nie jest w main |
-| repair-readme-truth | TODO | |
-| repair-release-identity | TODO | |
-| repair-release-runbook | TODO | `release-runbook-contract` nie jest w main |
-| repair-serve-natural-reap | TODO | |
-| repair-serve-reap-hardening | TODO | `Staying::alive` już w main — możliwe, że pusta |
-| repair-trigger-open-app-honesty | TODO | `data-trigger-lifecycle` nie jest w main |
+| repair-log-lifecycle | LANDED | rotacja `loadout.log`, nowy `logging.rs` |
+| repair-bounded-check-output | LANDED | wyjście checka z sufitem w RAM |
+| repair-diagnostics-build-facts | LANDED | paczka diagnostyczna zna build |
+| repair-serve-natural-reap | LANDED | naturalne zejście `serve` zbiera grupę |
+| repair-serve-reap-hardening | LANDED | to samo przy uporczywym procesie |
+| repair-release-identity | LANDED | `.cargo/config.toml` + kontrakt wydania |
+| repair-release-runbook | LANDED | `docs/RELEASE.md` + test runbooka |
+| repair-bounded-evidence | PUSTA | wskazywała ten sam commit co serve-reap-hardening; własnej pracy nie miała |
+| repair-global-diagnostics | BLOCKED | konflikt: `titlebar.tsx`, `run/index.tsx`, `diagnostics.tsx` napisane od nowa w 0.2 |
+| repair-readme-truth | BLOCKED | konflikt: README przepisany dla 0.2 |
+| repair-agent-app-preflight | BLOCKED | konflikt tylko w `titlebar.tsx`; reszta (probe.rs, agent_apps.rs, 276 linii testów) da się uratować osobno |
+| repair-trigger-open-app-honesty | BLOCKED | konflikt: `triggers/form.tsx` |
 
 Kryterium: `git branch --no-merged main | wc -l` = liczba gałęzi z otwartym stanem w `.git/h/`;
 `git merge-base main <każda żywa gałąź>` niepuste.
 
-### 0.3 `harness/h.py` — plan, sesja, sieroty, werdykt, sufit, wyrocznia
+### 0.3 `harness/h.py` — LANDED (`b157a6a0`)
 
 Wszystko przez `python3` z zapisem atomowym. Po zmianach: `python3 -m py_compile harness/h.py`,
 potem jeden krótki bieg próbny `scripts/h run probe-h --no-plan --prompt "Dopisz jedną linię
@@ -219,7 +219,7 @@ Kryterium: bieg próbny z `--planner codex` zapisuje `.h-plan.md` bez `{"type":`
 timeoucie checka nie pokazuje cargo/vitest z cwd w worktree; bieg, który dotknie `checks/`,
 kończy się kodem 2 przed commitem; `NIE_WIEM` = kod 2.
 
-### 0.4 Bramka i CI mówią prawdę
+### 0.4 Bramka i CI mówią prawdę — LANDED (`b157a6a0`)
 
 - **H-6.** `scripts/ci.sh:277`: `checks/quick-vocabulary.sh` → `checks/vocabulary.sh`, i nie przez
   `run_check_if_present`, tylko twardo (plik musi istnieć). Sprawdź, czy `run_check_if_present`
@@ -259,7 +259,7 @@ Kryterium: `bash scripts/ci.sh full` zielone lokalnie; job `gate` na runnerze za
 jobów; `cargo test --test it -- --test-threads=1 supervisor_` melduje > 0 passed bez
 `--include-ignored`.
 
-### 0.5 Dokumentacja bez martwych odwołań
+### 0.5 Dokumentacja bez martwych odwołań — LANDED (`4ed0e9b4`)
 
 Jedna przecinka, usuwanie nie dopisywanie: `AGENTS.md` (§5 `docs/research/projects/`,
 §6 komendy, `checks/quick-vocabulary.sh`), `docs/DECISIONS-LOCKED.md` (`ship.sh`, `review.sh`,
@@ -328,6 +328,13 @@ Szacunek: 30–70 USD i 40–90 min na zadanie (zmierzone na biegach z sierpnia)
 zatrzyma bieg (kod 3 z `--max-budget-usd`), zadanie wraca jako `BLOCKED` z powodem „budżet" —
 podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 
+> **Zmiany w zakresie, wprowadzone w Fali 0 (2026-09-02):**
+> `docs/ARCHITECTURE.md` i `docs/design/DESIGN.md` weszły do `deny` (H-15), więc prompty
+> **Z-13** i **Z-16** proszą teraz o akapit w podsumowaniu zamiast o edycję pliku —
+> dopisuje go orchestrator poza biegiem. `src-tauri/commands.golden.txt` świadomie ZOSTAŁ
+> zapisywalny: jest lustrem, które `it/ipc_read_paths.rs` porównuje z prawdziwą listą komend,
+> więc wpis wymyślony przez bieg przewraca test, a blokada psułaby legalne dodanie komendy (Z-09).
+
 ### Po wlaniu, poza biegiem (ręka orkiestratora, po konkretnym zadaniu)
 
 - **po Z-28:** allowlista plików `tests/*.rs` w `checks/tests-listed.sh` (python3, atomowo);
@@ -359,4 +366,13 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-02 12:05 · 0.1/0.2 sprzątanie · 22 worktree zdjęte, 11 gałęzi skasowanych, `runs/` 192→120, `.h-plan.md` z korzenia usunięty; wolne 433→520 GiB · ręka
+- 2026-09-02 11:58 · 0.5 · `4ed0e9b4`; STATUS.md 3237→204 linii + archiwum, dwa pliki 90 KB do `docs/archive/`, martwe odwołania z AGENTS.md, DECISIONS-LOCKED, build.md, settings.json; proza historyczna dostała baner zamiast przepisania · ręka
+- 2026-09-02 11:40 · 0.3/0.4 · `b157a6a0` + `Cargo.lock`; pełna bramka zielona na main, strażnicy 9/9. Nowo żywy `checks/vocabulary.sh` przechodzi. 11 testów dowodu śmierci procesu biegnie: 6,8 / 5,9 / 5,9 s w trzech przebiegach · ręka
+- 2026-09-02 11:20 · sonda H-1 · `codex exec -o` oddaje 3 bajty („TAK"), strumień bez `-o` to 716 bajtów z logiem `ERROR rmcp` — na prawdziwym planie 55–317 KB. Poprawka potwierdzona przeciwko zainstalowanemu CLI · ręka
+- 2026-09-02 11:15 · rescue-repairs · siedem napraw sprzed przepisania historii wlane do main; pełna bramka zielona przed merge'em (257 s) i po nim. Cztery pozostałe BLOCKED · ręka
+- 2026-09-02 10:50 · ODSTĘPSTWO od planu · 0.2 miało być dwunastoma biegami `h run rescue-<x>` (~360 USD). Gałęzie okazały się STOSEM, nie dwunastoma niezależnymi: 11 różnych commitów w dwóch łańcuchach, jedna gałąź bez własnej pracy. Zamiast dwunastu biegów: jeden cherry-pick w kolejności zależności + pełna bramka. Bramka odpowiada na to samo pytanie („czy to nadal działa") mechanicznie i za darmo · ręka
+- 2026-09-02 10:45 · ODSTĘPSTWO od planu · plan kazał skasować 92 gałęzie `task-*`/`T-*`. NIE zrobione: 35 z nich NIE jest osiągalnych z `backup/przed-przepisaniem-historii`, więc kasowanie straciłoby ich wierzchołki bezpowrotnie. Refy zostają (kosztują 40 bajtów), dysk zwolniły katalogi worktree. Decyzja o kasowaniu należy do człowieka · ręka
+- 2026-09-02 10:30 · 0.1 · osierocone binarium testowe z anulowanego biegu meetnotes (pid 23164, 16 h 48 min, 262 MB) zabite z dowodem ESRCH; `cargo clean` zdjął 621 313 plików i 71,3 GiB; 84 martwe wpisy zaufania u Claude'a i 288 u Codeksa · ręka
+- 2026-09-02 10:15 · POMYŁKA ORKIESTRATORA · edytowałem drzewo w trakcie `ci.sh full`, więc pas strażników odmówił („the tree is dirty") i cała bramka dała kod 2 przy wszystkich pasach zielonych. Reguła na przyszłość: kiedy bramka biegnie, wolno tylko czytać · ręka
 - 2026-09-02 03:50 · plan · plan powstał z audytu; 5 pakietów Fali 0, 33 zadania, 33 prompty w `prompts/`; nic jeszcze nie wykonane · ręka (Fable)
