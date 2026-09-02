@@ -215,7 +215,9 @@ use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
-use crate::engine::supervisor::{GroupProof, MissingProgram, PublicationIdentity};
+use crate::engine::supervisor::{
+    GroupId, GroupProof, KeepsLeftovers, Leftover, MissingProgram, PublicationIdentity,
+};
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
 use crate::inherit::rewrite;
 use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
@@ -1274,7 +1276,7 @@ pub async fn run_triggered_workflow_with_prestart_faults(
 /// Jedno ciało trzech dróg wyżej: zapadka biegu, pula i sufit podany argumentem.
 ///
 /// `deps.control.settle()` musi zostać na KAŻDEJ drodze wyjścia — powód w całości stoi przy
-/// [`the_whole_triggered_run`].
+/// [`the_whole_triggered_run`], a od 2026-09 pilnuje tego [`Settling`], nie kolejność linii.
 async fn the_triggered_start(
     deps: &RunDeps<'_>,
     request: &RunRequest,
@@ -1284,12 +1286,12 @@ async fn the_triggered_start(
     budget_usd: Option<f64>,
 ) -> Result<TriggerRunReport, RunError> {
     deps.control.begin();
+    let settling = Settling(deps.control.clone());
     deps.control.lines_go_to(lines.clone());
     let slots = the_pool_of_this_application(deps, request.how_many_at_once);
     let report =
         the_whole_triggered_run(deps, request, claim, lines, slots, faults, budget_usd).await;
-    deps.control.lines_go_quiet();
-    deps.control.settle();
+    drop(settling);
     report
 }
 
@@ -1363,19 +1365,115 @@ async fn the_whole_workflow_with_prestart(
      * dopiero po walidacji dałoby okno czasu, w którym bieg już czyta dysk, a zamknięcie okna
      * uznałoby, że nie ma nic do roboty. */
     deps.control.begin();
+    /* GWARDIA STOI ZARAZ ZA `begin()` i to jest cała jej treść: między jednym a drugim nie ma ani
+     * jednego `await`, więc nie istnieje stan „bieg ruszył i nie ma kto go oddać". */
+    let settling = Settling(deps.control.clone());
     /* Strumień oddajemy biegowi DO UCHWYTU, bo tura człowieka przychodzi spoza pętli kroku:
      * komendą z okna, w chwili, w której krok czeka na agenta. Klon, nie przekazanie: pompa ma
      * jednego właściciela, a `LineSink` jest klonowalny właśnie dlatego, że sypie do niej kilku
      * producentów naraz. */
     deps.control.lines_go_to(lines.clone());
     let report = the_whole_run(deps, request, lines, slots, options).await;
-    /* PORZUCAMY NADAJNIK, ZANIM OGŁOSIMY ZEJŚCIE, i ta kolejność ma zmierzony powód. Pompa kończy
-     * się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy `LineSink` — a nasz klon
-     * siedzi w uchwycie. Bez tej linii wisiało piętnaście testów biegu i wisiałby każdy prawdziwy
-     * bieg (powód w całości przy `RunControl::lines_go_quiet`). */
-    deps.control.lines_go_quiet();
-    deps.control.settle();
+    // Jawnie, a nie na końcu ramki: kolejność „najpierw cisza, potem dowód" ma zostać widoczna
+    // w tym miejscu, w którym była (`Settling` trzyma ją u siebie).
+    drop(settling);
     report
+}
+
+/// Rejestr ocalałych widziany przez sterownik JEDNEGO kroku — razem z miejscem tego kroku w puli.
+///
+/// # Po co to istnieje, skoro `Processes` już implementuje ten trait
+///
+/// 2026-09 (Z-4) — bo nieudany start vendora zostawia grupę, której permit należy do KROKU, a nie
+/// do sterownika. Krok bierze miejsce z puli **przed** `AgentDriver::start` (`Live::step`), więc
+/// oddanie ocalałego prosto do [`processes::Processes`] wkładało go tam z `slot: None`: rejestr
+/// trzymał właściciela, a miejsce wracało do puli razem z ramką kroku — czyli następny agent po
+/// ~583 MB startował obok grupy, która dalej pali limit u dostawcy (niezmiennik 11). Ta wartość
+/// jest tym jednym miejscem, w którym permit kroku i ocalały sterownika się spotykają.
+///
+/// Niesie też adres z powrotem, bo krok musi mieć co zapisać człowiekowi: `pgid` do `run.json`
+/// i zdanie o ocalałym do historii. Bez tego z tej jednej drogi człowiek nie dowiedziałby się
+/// o żywej grupie ani słowem (niezmiennik 29).
+///
+/// Oba `std::sync::Mutex` są brane i oddawane w jednej instrukcji i **nigdy przez `await`**
+/// (niezmiennik 8): [`KeepsLeftovers::keep_leftover`] jest synchroniczne z definicji.
+#[derive(Debug)]
+struct StepLeftovers {
+    processes: Arc<processes::Processes>,
+    /// Miejsce z puli tego kroku, dopóki nikt go stąd nie zabrał.
+    seat: Mutex<Option<limits::Slot>>,
+    /// Adres grupy, którą sterownik tu zostawił — albo `None`, kiedy niczego nie zostawił.
+    left: Mutex<Option<GroupId>>,
+}
+
+impl StepLeftovers {
+    /// Trzyma miejsce kroku na czas startu sterownika.
+    fn holding(processes: Arc<processes::Processes>, seat: Option<limits::Slot>) -> Self {
+        Self {
+            processes,
+            seat: Mutex::new(seat),
+            left: Mutex::new(None),
+        }
+    }
+
+    /// Miejsce wraca do kroku — chyba że zabrał je ocalały, i wtedy tu już nic nie ma.
+    fn take_back(&self) -> Option<limits::Slot> {
+        self.seat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Adres grupy, którą sterownik zostawił po nieudanym starcie.
+    fn left_behind(&self) -> Option<GroupId> {
+        *self.left.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl KeepsLeftovers for StepLeftovers {
+    fn keep_leftover(&self, owner: Box<dyn Leftover>, slot: Option<limits::Slot>) {
+        let address = owner.address();
+        // Miejsce podane przez sterownik wygrywa, a kiedy go nie podał — jedzie miejsce KROKU.
+        // Dzisiejszy `codex.rs` nie podaje żadnego i nie ma skąd: permit należy do warstwy wyżej.
+        let seat = slot.or_else(|| self.take_back());
+        if address.is_some() {
+            *self.left.lock().unwrap_or_else(PoisonError::into_inner) = address;
+        }
+        self.processes.keep_leftover(owner, seat);
+    }
+}
+
+/// Gwardia, która oddaje bieg NA KAŻDEJ drodze wyjścia: cichnie i zapala dowód zejścia,
+/// jakkolwiek by się ta ramka skończyła.
+///
+/// # Po co to istnieje, skoro te dwie linie już tam stały
+///
+/// 2026-09 (Z-4) — stały ZA `await`, więc widziały wyłącznie powrót. Panika w zadaniu biegu
+/// (indeks, `expect`, cudzy `unwrap` w bibliotece) i każde PORZUCENIE tego future'a przechodziły
+/// obok nich: `settled` zostawało niezapalone, [`stop_if_anything_is_going`] czekało na dowód,
+/// którego nikt już nie zapali, a zapadka folderu ([`crate::ipc::AppState::begin_run`]) odmawiała
+/// każdego następnego Startu — aż do restartu Loadouta. Człowiek widział „A run is already
+/// going… Press Stop first", naciskał Stop i okno przestawało odpowiadać.
+///
+/// KOLEJNOŚĆ JEST TREŚCIĄ i jest dokładnie ta, która była: najpierw porzucenie nadajnika, potem
+/// dowód. Pompa kończy się na zamkniętej kolejce, czyli dopiero wtedy, gdy zniknie każdy
+/// `LineSink` — a klon biegu siedzi w uchwycie (powód w całości przy `RunControl::lines_go_quiet`).
+///
+/// `[profile.release] panic = "abort"` (`Cargo.toml`) znaczy, że w wydanej aplikacji panika ubija
+/// proces, zanim `Drop` zdąży cokolwiek zrobić — i to jest świadome, profilu nie ruszamy. Ta
+/// gwardia broni więc buildu deweloperskiego (`npm run app`) oraz — w OBU profilach — każdej
+/// drogi, na której future biegu zostaje porzucone zamiast dokończone.
+///
+/// Klon uchwytu, nie pożyczka: `RunControl` jest `Arc` w środku, a gwardia z czasem życia
+/// zmusiłaby każdą z trzech dróg startu do parametru, którego żadna z nich nie potrzebuje.
+#[derive(Debug)]
+struct Settling(RunControl);
+
+impl Drop for Settling {
+    fn drop(&mut self) {
+        self.0.lines_go_quiet();
+        self.0.settle();
+    }
 }
 
 /// Jeden agent, jedno zdanie — żądanie biegu jednokrokowego.
@@ -1469,15 +1567,16 @@ async fn the_whole_single_agent(
     slots: Limiter,
     budget_usd: Option<f64>,
 ) -> Result<RunReport, RunError> {
-    // Kolejność i powód każdej z tych czterech linii stoją przy `run_workflow_with_slots`.
-    // Ta sama czwórka, nie jej wariant: uchwyt biegu odpowiada na pytanie „czy jest co
-    // zatrzymywać" tak samo dla obu rodzajów biegu, bo Stop nie wie, którym z nich jest ten,
-    // który idzie.
+    // Kolejność i powód każdej z tych linii stoją przy `run_workflow_with_slots`. Ta sama czwórka,
+    // nie jej wariant: uchwyt biegu odpowiada na pytanie „czy jest co zatrzymywać" tak samo dla
+    // obu rodzajów biegu, bo Stop nie wie, którym z nich jest ten, który idzie. Od 2026-09 (Z-4)
+    // ta sama czwórka znaczy też tę samą gwardię: `/ask`, który przewraca się po drodze, ma zejść
+    // dokładnie tak, jak bieg z pliku.
     deps.control.begin();
+    let settling = Settling(deps.control.clone());
     deps.control.lines_go_to(lines.clone());
     let report = the_whole_ask(deps, ask, lines, slots, budget_usd).await;
-    deps.control.lines_go_quiet();
-    deps.control.settle();
+    drop(settling);
     report
 }
 
@@ -8489,7 +8588,7 @@ impl Live {
         let report = match &self.plan.steps[id].job {
             Job::Agent(job) => self.run_agent(id, job, &cancel, &mut slot).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
-            Job::Check(job) => self.run_check(id, job, &cancel).await,
+            Job::Check(job) => self.run_check(id, job, &cancel, &mut slot).await,
             Job::Serve(job) => self.start_and_leave(id, job),
         };
 
@@ -9123,6 +9222,7 @@ impl Live {
         id: StepId,
         job: &AgentJob,
         target: EvidenceTarget,
+        leftovers: &Arc<StepLeftovers>,
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
         let configuration = self.vendor_arguments_for(id, job)?;
         let driver = if configuration.arguments.is_empty() {
@@ -9152,16 +9252,26 @@ impl Live {
          * ktory naprawde pojdzie do `start`. Odwrocenie tej kolejnosci jest niewidoczne:
          * wszystko sie kompiluje, bieg rusza, a znika albo `--mcp-config`, albo plik dowodu. */
         let driver = self.with_its_own_settings(id, job, &driver)?;
-        match driver.with_evidence(target) {
-            Some(driver) => Ok(driver),
+        let driver = match driver.with_evidence(target) {
+            Some(driver) => driver,
             /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do
              * testowania planisty. Produkcyjna fabryka ma tylko te dwa identyfikatory;
              * dla nich brak szwu jest odmowa, nigdy cichym biegiem bez dowodu. */
-            None if matches!(driver.id(), "claude" | "codex") => Err(anyhow::anyhow!(
-                "this agent app cannot preserve its private run evidence"
-            )),
-            None => Ok(driver),
-        }
+            None if matches!(driver.id(), "claude" | "codex") => {
+                return Err(anyhow::anyhow!(
+                    "this agent app cannot preserve its private run evidence"
+                ));
+            }
+            None => driver,
+        };
+        /* REJESTR OCALAŁYCH IDZIE OSTATNI, i to jest ta sama wymuszona kolejność, co wyżej: każde
+         * z tych opakowań oddaje KLON sterownika, więc założone wcześniej ginie, gdy późniejsze
+         * klonuje sterownik sprzed niego. Ten szew nie odmawia startu przy `None` — vendor bez
+         * własnego procesu startowego nie ma czego zostawiać, a atrapy nie mają go wcale
+         * (2026-09, Z-4). */
+        Ok(driver
+            .leaving_leftovers_with(Arc::clone(leftovers) as Arc<dyn KeepsLeftovers>)
+            .unwrap_or(driver))
     }
 
     /// Konfiguruje sterownik i oddaje mu nadajnik dokładnie raz.
@@ -9175,8 +9285,9 @@ impl Live {
         spec: RunSpec,
         target: EvidenceTarget,
         events: mpsc::Sender<DecodedEvent>,
+        leftovers: &Arc<StepLeftovers>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        let driver = self.configured_driver_for_agent(id, job, target)?;
+        let driver = self.configured_driver_for_agent(id, job, target, leftovers)?;
         driver.start(spec, events).await
     }
 
@@ -9285,7 +9396,19 @@ impl Live {
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
         let target = self.evidence_for_agent(id, spec.prompt.len(), context, &job.borrowed);
         let evidence = target.clone();
-        let started = self.start_agent_turn(id, job, spec, target, events).await;
+        /* MIEJSCE KROKU JEDZIE DO STEROWNIKA NA CZAS STARTU (2026-09, Z-4). Nieudany start vendora
+         * potrafi zostawić żywą grupę, a permit należy do kroku, nie do sterownika — więc gdyby
+         * ocalały wjechał do rejestru bez niego, pula zwolniłaby miejsce po czymś, co dalej
+         * biegnie. Kiedy sterownik niczego nie zostawił, miejsce wraca linijkę niżej i `one_turn`
+         * dostaje je nietknięte. */
+        let leftovers = Arc::new(StepLeftovers::holding(
+            Arc::clone(&self.processes),
+            slot.take(),
+        ));
+        let started = self
+            .start_agent_turn(id, job, spec, target, events, &leftovers)
+            .await;
+        *slot = leftovers.take_back();
 
         let turned = match started {
             Ok(handle) => {
@@ -9317,16 +9440,23 @@ impl Live {
                     .send(AgentEvent::Notice { text: text.clone() }.into())
                     .await;
                 drop(ours);
-                // 2026-08-28 (T-152): bez uchwytu nie ma prozy agenta, więc publiczna odmowa
-                // jest jedyną treścią, którą `carry-on` może uczciwie przekazać potomkowi.
-                self.update(|book| {
-                    let step = &mut book.steps[id];
-                    step.summary = Some(text.clone());
-                    /* Zachowujemy dokładną publiczną przyczynę przed wspólną polityką porażki.
-                     * `when_this_one_fails` używa `get_or_insert`, więc dopisek o `carry-on`
-                     * albo pytaniu nie może zastąpić faktu, dlaczego proces nie wystartował. */
-                    step.error = Some(text.clone());
-                });
+                /* ODBIORNIK KURATORA DOMYKAMY TU, NA KAŻDYM NIEUDANYM STARCIE (2026-09, Z-4).
+                 *
+                 * `drop(ours)` zdejmuje NASZ klon nadajnika, ale nie ten, który pojechał do
+                 * sterownika: `codex::start_app_conversation` wystawia czytnika (`app_server_actor`)
+                 * PRZED uzgodnieniem, więc uzgodnienie, które padło, zostawia zadanie trzymające
+                 * `events`. Porzucenie `JoinHandle` go nie przerywa, a przy `Alive` czytniki
+                 * zostają przy uchwycie z rozmysłu (`cleanup_after_proof` dołącza je wyłącznie po
+                 * `Dead`) — kolejka kuratora nie zamyka się więc nigdy i `pump.await` niżej nie
+                 * wraca. Bieg nie dochodzi do `settle()`, a folder odmawia każdego następnego
+                 * Startu aż do restartu Loadouta, czyli dokładnie ta wada, którą Z-4 zamyka.
+                 *
+                 * NA KAŻDYM `Err`, nie tylko przy ocalałym: krok bez uchwytu nie ma już czego
+                 * powiedzieć, a zatrzymany nadajnik jest wyciekiem niezależnie od tego, czy grupę
+                 * dało się dowieść. Zakolejkowana odmowa wyżej NIE ginie — `forward` zamyka
+                 * przyjmowanie i dopiero potem opróżnia to, co przyjęte. */
+                finish_forward.cancel();
+                self.the_start_that_never_happened(id, &text, leftovers.left_behind());
                 Turned::Broke(text)
             }
         };
@@ -9342,6 +9472,43 @@ impl Live {
              * przekazania, jakie zostawia po sobie krok jadący dalej mimo porażki (T-87 AC-5). */
             Turned::Broke(why) => self.when_this_one_fails(id, &why).await,
         }
+    }
+
+    /// Zapisuje krok, którego sterownik nie wystartował — razem z tym, co ten start zostawił.
+    ///
+    /// 2026-08-28 (T-152): bez uchwytu nie ma prozy agenta, więc publiczna odmowa jest jedyną
+    /// treścią, którą `carry-on` może uczciwie przekazać potomkowi.
+    ///
+    /// 2026-09 (Z-4) — NIEUDANY START POTRAFI ZOSTAWIĆ ŻYWĄ GRUPĘ. Sterownik oddał ją do rejestru
+    /// razem z miejscem tego kroku ([`StepLeftovers`]), ale człowiek dowiaduje się o niej wyłącznie
+    /// z księgi — a do tego dnia ta droga nie zapisywała ani adresu, ani zdania, więc ocalały po
+    /// nieudanym starcie był niewidzialny (niezmiennik 29).
+    ///
+    /// Osobna metoda, a nie ramię `match`, bo `run_agent` stoi pod sufitem stu linii.
+    fn the_start_that_never_happened(&self, id: StepId, text: &str, survivor: Option<GroupId>) {
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.summary = Some(text.to_owned());
+            /* Zachowujemy dokładną publiczną przyczynę przed wspólną polityką porażki.
+             * `when_this_one_fails` używa `get_or_insert`, więc dopisek o `carry-on` albo pytaniu
+             * nie może zastąpić faktu, dlaczego proces nie wystartował. */
+            step.error = Some(text.to_owned());
+            let Some(group) = survivor else {
+                return;
+            };
+            // Adres jest jedyną rzeczą, po której człowiek znajdzie tę grupę w `ps`, a odzyskiwanie
+            // przy następnym starcie po niej sprząta [T7 §6.2].
+            step.pid = Some(group.pid);
+            step.pgid = Some(group.pgid);
+            step.death_proof = false;
+            /* NASZE ZDANIE WYGRYWA Z POWODEM ODMOWY, tym samym idiomem, którym
+             * `Ended::RepeatedToolFailure` przykrywa powód agenta: „nie wystartował" zostaje
+             * w `summary`, a `error` mówi o tym, co MOŻE JESZCZE BIEC i palić limit u dostawcy.
+             * Z dwóch zdań tylko to drugie każe komuś sprawdzić maszynę. To samo zdanie, co na
+             * każdej innej drodze z `death_proof: false` poza żywym Stopem — powód przy
+             * `Ended::Turn(Err)`. */
+            step.error = Some(STEP_SURVIVOR_ERROR.to_owned());
+        });
     }
 
     fn record_memory_for_started_step(&self, id: StepId, memory: &[MemoryDisposition]) {
@@ -9384,6 +9551,7 @@ impl Live {
         id: StepId,
         job: &CheckJob,
         cancel: &CancellationToken,
+        slot: &mut Option<limits::Slot>,
     ) -> StepReport {
         let driver = CommandDriver::new();
         // START I CZEKANIE OSOBNO, a nie jednym `CommandDriver::run`, i to jest cała różnica
@@ -9432,7 +9600,8 @@ impl Live {
                  * „passed" nad grupą, która dalej odpowiada na sygnał zerowy, jest tym samym
                  * `Ok(())`, przed którym stoi `GroupProof` (niezmiennik 6) — tylko o warstwę
                  * obok kroku agenta. */
-                let proven_dead = self.prove_check_settled(&mut live).await;
+                let proof = self.prove_check_settled(&mut live).await;
+                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
                     step.exit_code = report.exit_code;
@@ -9442,6 +9611,10 @@ impl Live {
                         step.error = Some(CHECK_SURVIVOR_ERROR.to_owned());
                     }
                 });
+                // Ocalały jedzie do rejestru PRZED przekazaniem i przed werdyktem: za nimi stoi
+                // `when_this_one_fails`, które przy ustawieniu „zapytaj mnie" czeka na człowieka —
+                // a przez cały ten czas pula kłamałaby o wolnym miejscu (2026-09, Z-4).
+                self.check_released_by(live, slot, &proof);
                 /* WYJŚCIE KOMENDY MA DWÓCH CZYTELNIKÓW (niezmiennik 21): werdykt wyżej
                  * i przekazanie do następnego kroku tutaj. 2026-08-31 — przekazywany tekst jest
                  * ogonem do 64 KiB i zaczyna się zdaniem o pominięciu, gdy pełny strumień był
@@ -9490,89 +9663,173 @@ impl Live {
             // Anulowanie jest WARTOŚCIĄ, nie błędem (niezmiennik 7), a dowód zejścia grupy
             // przyszedł już w `how` — to sterownik go zdobył, nie my.
             CheckHow::Stopped(first_proof) => {
-                let proof = self.prove_check_dead(&mut live, first_proof).await;
-                let unproven = matches!(&proof, GroupProof::Alive { .. });
-                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
-                self.update(|book| {
-                    let step = &mut book.steps[id];
-                    step.death_proof = proven_dead;
-                    if unproven {
-                        step.error = Some(
-                            "Loadout could not make sure this check stopped, so it may still be \
-                             running."
-                                .to_owned(),
-                        );
-                    }
-                });
-                StepReport::Cancelled
+                self.stop_cancelled_check(id, live, slot, first_proof).await
             }
             CheckHow::Overdue(first_proof) => {
-                let proof = self.prove_check_dead(&mut live, first_proof).await;
-                let unproven = matches!(&proof, GroupProof::Alive { .. });
-                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
-                self.update(|book| {
-                    // Powód nazywa LIMIT CZASU i mówi, co zrobić. Liczba minut przychodzi ZE
-                    // STAŁEJ, a nie z tego zdania: dwa miejsca, w których mieszka jedna liczba,
-                    // rozjeżdżają się przy pierwszej zmianie i to zdanie zostaje tym nieaktualnym.
-                    let minutes = GIVE_UP_AFTER.as_secs() / 60;
-                    let step = &mut book.steps[id];
-                    step.death_proof = proven_dead;
-                    step.error = Some(if unproven {
-                        format!(
-                            "This check ran longer than {minutes} minutes, and Loadout could not \
-                             make sure it stopped, so it may still be running."
-                        )
-                    } else {
-                        format!(
-                            "This check ran longer than {minutes} minutes, so Loadout stopped it. \
-                             Split the work, or run fewer things in one step."
-                        )
-                    });
-                });
-                // Ta sama droga, co kazda inna porazka (T-87 AC-5): krok, ktory nie zdazyl, tez
-                // byl slepym punktem — jedna wolna komenda konczyla caly bieg.
-                self.when_this_one_fails(id, "This check ran out of time.")
-                    .await
+                self.stop_overdue_check(id, live, slot, first_proof).await
             }
         }
     }
 
-    /// Zachowuje uchwyt komendy sprawdzającej po pierwszym niepełnym dowodzie Stopu.
-    async fn prove_check_dead(&self, live: &mut Checking, mut proof: GroupProof) -> GroupProof {
-        while matches!(proof, GroupProof::Alive { .. }) {
+    /// Kończy komendę, która przekroczyła własny limit czasu, i utrwala jej rzeczywisty dowód.
+    ///
+    /// Osobna metoda, a nie ramię `match`, z tego samego powodu co bliźniak niżej: `run_check`
+    /// stoi pod sufitem stu linii, a oddanie ocalałego dołożyło każdemu ramieniu po parę.
+    async fn stop_overdue_check(
+        &self,
+        id: StepId,
+        mut live: Checking,
+        slot: &mut Option<limits::Slot>,
+        first_proof: GroupProof,
+    ) -> StepReport {
+        let proof = self.prove_check_dead(&mut live, first_proof).await;
+        let unproven = matches!(&proof, GroupProof::Alive { .. });
+        let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+        self.update(|book| {
+            // Powód nazywa LIMIT CZASU i mówi, co zrobić. Liczba minut przychodzi ZE STAŁEJ,
+            // a nie z tego zdania: dwa miejsca, w których mieszka jedna liczba, rozjeżdżają się
+            // przy pierwszej zmianie i to zdanie zostaje tym nieaktualnym.
+            let minutes = GIVE_UP_AFTER.as_secs() / 60;
+            let step = &mut book.steps[id];
+            step.death_proof = proven_dead;
+            step.error = Some(if unproven {
+                format!(
+                    "This check ran longer than {minutes} minutes, and Loadout could not make \
+                     sure it stopped, so it may still be running."
+                )
+            } else {
+                format!(
+                    "This check ran longer than {minutes} minutes, so Loadout stopped it. Split \
+                     the work, or run fewer things in one step."
+                )
+            });
+        });
+        self.check_released_by(live, slot, &proof);
+        // Ta sama droga, co kazda inna porazka (T-87 AC-5): krok, ktory nie zdazyl, tez byl
+        // slepym punktem — jedna wolna komenda konczyla caly bieg.
+        self.when_this_one_fails(id, "This check ran out of time.")
+            .await
+    }
+
+    /// Kończy komendę zatrzymaną przez człowieka i utrwala jej rzeczywisty dowód.
+    ///
+    /// Bliźniak [`Live::stop_cancelled_agent`] po stronie kroku „sprawdź" i z tym samym
+    /// rozstrzygnięciem: ocalały NIE jest anulowaniem. Osobna metoda, a nie ramię `match`, bo
+    /// `run_check` stoi pod sufitem stu linii, a to jest ten sam podział, który po stronie agenta
+    /// istnieje od dawna.
+    async fn stop_cancelled_check(
+        &self,
+        id: StepId,
+        mut live: Checking,
+        slot: &mut Option<limits::Slot>,
+        first_proof: GroupProof,
+    ) -> StepReport {
+        let proof = self.prove_check_dead(&mut live, first_proof).await;
+        let unproven = matches!(&proof, GroupProof::Alive { .. });
+        let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.death_proof = proven_dead;
+            if unproven {
+                step.error = Some(
+                    "Loadout could not make sure this check stopped, so it may still be running."
+                        .to_owned(),
+                );
+            }
+        });
+        self.check_released_by(live, slot, &proof);
+        if unproven {
+            // 2026-09 (Z-4), to samo zdanie, co przy agencie po żywym Stopie: Stop całego biegu
+            // zostaje anulowaniem, ale TEN krok nie może nazywać się anulowanym — jego grupa
+            // przeżyła pełną eskalację, a potomków wypuszcza wyłącznie stan udany.
+            StepReport::Failed
+        } else {
+            StepReport::Cancelled
+        }
+    }
+
+    /// Zachowuje uchwyt komendy sprawdzającej po pierwszym niepełnym dowodzie Stopu —
+    /// **przez skończoną liczbę pełnych eskalacji**, nie w nieskończoność.
+    ///
+    /// 2026-09 (Z-4) — do tego dnia ta pętla kręciła się aż do `ESRCH` i była drugą drogą, na
+    /// której bieg nie schodził NIGDY: `settle()` nie zapadało, Stop nie wracał, a zapadka folderu
+    /// odmawiała każdego następnego Startu aż do restartu Loadouta. Sufit jest ten sam, co przy
+    /// każdej innej eskalacji tego pliku, bo polityka trzech prób jest jedna (niezmiennik 23).
+    ///
+    /// **Ocalałego nie ma tu komu oddać**, i to jest różnica wobec kroku agenta: uchwyt komendy
+    /// nie jest `Box<dyn AgentHandle>` i nie wchodzi do [`processes::Unproven`]. Po suficie
+    /// zostaje więc ostatnia linia obrony, którą [`Checking`] ma zawsze — gwardia `Drop` na
+    /// [`crate::engine::supervisor::Supervised`], czyli twardy `killpg` plus zebranie lidera.
+    /// `Alive` wraca stąd jako brak dowodu i to on pisze zdanie dla człowieka. To jest ŚWIADOMIE
+    /// SŁABSZE niż po stronie agenta — `Drop` zabija, ale nie dowodzi `ESRCH`, a miejsce z puli
+    /// wraca do niej razem z ramką kroku. Pełne domknięcie wymaga drugiego rodzaju właściciela
+    /// w rejestrze ocalałych i jest zgłoszone jako rozszerzenie planu (`AGENTS.md` §7).
+    async fn prove_check_dead(&self, live: &mut Checking, first: GroupProof) -> GroupProof {
+        /* PIERWSZY DOWÓD LICZY SIĘ JAKO PRÓBA NR 1 (2026-09, Z-4). `Checking::give_up` zdobywa go
+         * przez `Supervised::stop`, czyli przez dokładnie tę samą pełną eskalację TERM → łaska →
+         * KILL → dowód, którą robi `Checking::cancel` niżej. Potraktowany jako „zerowy" dawał
+         * CZTERY eskalacje tam, gdzie polityka produktu mówi trzy — a wtedy ta jedna droga liczy
+         * inaczej niż pozostałe trzy i sufit przestaje być jedną liczbą (niezmiennik 23). */
+        let mut proof = first;
+        for attempt in 1..=LIVE_STOP_ATTEMPTS {
+            if matches!(proof, GroupProof::Dead { .. }) {
+                return proof;
+            }
             tracing::error!(
-                "a check group is still alive after escalation; Loadout retains its handle and \
-                 will retry"
+                attempt,
+                attempts = LIVE_STOP_ATTEMPTS,
+                "a check group is still alive after a full escalation"
             );
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            proof = live.cancel().await;
+            // Odstęp i kolejna eskalacja WYŁĄCZNIE między próbami: po ostatniej nie ma na co
+            // czekać, a dodatkowy `cancel()` byłby czwartą próbą pod trzyliterową stałą.
+            if attempt < LIVE_STOP_ATTEMPTS {
+                tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
+                proof = live.cancel().await;
+            }
         }
         proof
     }
 
     /// Kończy krok po limicie wyłącznie przez supervisor i utrwala jego rzeczywisty dowód.
+    ///
+    /// Oddaje dowód razem z werdyktem — dokładnie jak [`Live::stop_cancelled_agent`] i z tego
+    /// samego powodu (2026-09, Z-4): bez `GroupProof` w ręku wołający nie ma jak przekazać uchwytu
+    /// ani miejsca z puli rejestrowi aplikacji ([`processes::Unproven`]), a `Alive` znaczy dokładnie
+    /// tyle, że oba te zasoby muszą tam pojechać. Do tego dnia ta droga nie wracała w ogóle:
+    /// `prove_agent_dead` kręciło się bez sufitu, więc krok po limicie czasu nad grupą, której nie
+    /// da się dowieść, zabierał ze sobą cały bieg i folder aż do restartu Loadouta.
     async fn stop_overdue_agent(
         &self,
         id: StepId,
         handle: &mut dyn AgentHandle,
         limit: Duration,
-    ) -> StepReport {
+    ) -> (StepReport, GroupProof) {
         let proof = self.prove_agent_dead(handle).await;
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
             let step = &mut book.steps[id];
             step.death_proof = proven_dead;
-            step.error = Some(format!(
-                "This step ran longer than its {} minute limit, so Loadout stopped it. Give it \
-                 more minutes in the agent, or split the work.",
-                limit.as_secs() / 60
-            ));
+            step.error = Some(if proven_dead {
+                format!(
+                    "This step ran longer than its {} minute limit, so Loadout stopped it. Give \
+                     it more minutes in the agent, or split the work.",
+                    limit.as_secs() / 60
+                )
+            } else {
+                /* ZDANIE O OCALAŁYM WYGRYWA ZE ZDANIEM O LIMICIE (2026-09, Z-4). Oba są prawdą,
+                 * ale mówią człowiekowi zrobić dwie różne rzeczy: tamto każe przestawić minuty,
+                 * a to mówi, że coś MOŻE JESZCZE BIEC i palić limit u dostawcy. Zdanie o minutach
+                 * nad żywą grupą jest tym samym „stopped it", przed którym stoi niezmiennik 6. */
+                STEP_SURVIVOR_ERROR.to_owned()
+            });
         });
         // Powod jest juz zapisany wyzej i mowi wiecej niz zdanie ponizej, wiec `get_or_insert`
         // go nie tknie. Ustawienie czlowieka rozstrzyga jednak tak samo, jak przy kazdej innej
         // porazce: krok, ktory nie zdazyl, tez byl slepym punktem.
-        self.when_this_one_fails(id, "This step ran out of time.")
-            .await
+        let report = self
+            .when_this_one_fails(id, "This step ran out of time.")
+            .await;
+        (report, proof)
     }
 
     /// Kończy krok po Stopie i oddaje dowód właścicielowi uchwytu oraz ciężkiego slotu.
@@ -9581,7 +9838,7 @@ impl Live {
         id: StepId,
         handle: &mut dyn AgentHandle,
     ) -> (StepReport, GroupProof) {
-        let proof = self.prove_agent_dead_after_live_stop(handle).await;
+        let proof = self.prove_agent_dead(handle).await;
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
             let step = &mut book.steps[id];
@@ -9598,38 +9855,6 @@ impl Live {
             StepReport::Failed
         };
         (report, proof)
-    }
-
-    /// Ponawia pełną eskalację Stopu, ale nie zamraża aplikacji na zawsze.
-    ///
-    /// 2026-08-27 — trzy próby są polityką produktu, nie parametrem wołającego. Każde
-    /// `cancel()` przechodzi przez pełne TERM → łaska → KILL → dowód supervisora; odstęp jest
-    /// tylko między próbami. Po ostatnim `Alive` posiadany uchwyt wraz z ciężkim slotem przechodzi
-    /// do rejestru żywych procesów: adres nie wystarcza, bo tylko właściciel może ponowić dowód.
-    /// `Alive` wraca jako brak dowodu, nigdy jako `Dead`.
-    async fn prove_agent_dead_after_live_stop(&self, handle: &mut dyn AgentHandle) -> GroupProof {
-        // Adres z uchwytu jest tym, co wiemy PRZED pierwszą próbą; każdy kolejny `Alive` niesie
-        // własny i nadpisuje ten wstępny. Zwrócenie świeżo zmyślonego `Alive` gubiłoby jedno
-        // i drugie, a wołający dostawałby odmowę bez adresu (2026-08-28).
-        let mut last = GroupProof::Alive {
-            group: handle.group(),
-        };
-        for attempt in 1..=LIVE_STOP_ATTEMPTS {
-            let proof = handle.cancel().await;
-            if matches!(proof, GroupProof::Dead { .. }) {
-                return proof;
-            }
-            last = proof;
-            tracing::error!(
-                attempt,
-                attempts = LIVE_STOP_ATTEMPTS,
-                "an agent group is still alive after a full Stop escalation"
-            );
-            if attempt < LIVE_STOP_ATTEMPTS {
-                tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
-            }
-        }
-        last
     }
 
     /// Zamyka sesję kroku i **dowodzi**, że po jej grupie nie zostało nic.
@@ -9663,10 +9888,11 @@ impl Live {
         let proof = if close_succeeded {
             self.prove_step_dead(handle).await
         } else {
-            /* `close()` PADŁO: tu pętla dowodowa zostaje NIEOGRANICZONA, bo ta droga i tak nie
-             * wraca sukcesem, a powrót na `Alive` zrzuciłby `Box<dyn AgentHandle>` i osierocił
-             * grupę. Ograniczamy wyłącznie ścieżkę udaną — tam krok skończył pracę i nie wolno
-             * go wieszać w nieskończoność. */
+            /* `close()` PADŁO, więc sesji nie da się już domknąć w paśmie: dowód bierzemy pełną
+             * eskalacją przerwaniem, nie `proof_of_death()`. Sufit jest ten sam (2026-09, Z-4) —
+             * do tego dnia ta jedna gałąź kręciła się bez końca, choć wołający oddaje uchwyt
+             * i miejsce z puli rejestrowi zaraz niżej (`released_by`), więc `Alive` nie zrzuca
+             * już `Box<dyn AgentHandle>` i nie osieroca niczego. */
             self.prove_agent_dead(handle).await
         };
         let proven_dead = matches!(proof, GroupProof::Dead { .. });
@@ -9719,10 +9945,10 @@ impl Live {
     /// tamta prowadzi przerwaniem w paśmie i czeka na odpowiedź, której proces po `close()` już
     /// nie wyśle, więc każdy udany krok płaciłby całym oknem przerwania.
     ///
-    /// **Ograniczona, nie wieczna**, i to jest różnica wobec [`Live::prove_agent_dead`]: tamta
-    /// pętla kończy bieg i wolno jej trzymać uchwyt bez końca, a ta stoi nad krokiem, który
-    /// pracę już oddał. Bieg zamrożony na zawsze przy grupie, której nie da się dowieść, jest
-    /// gorszy niż uczciwe „nie wiem" na kafelku.
+    /// **Ograniczona, nie wieczna**, tym samym sufitem, co [`Live::prove_agent_dead`]: bieg
+    /// zamrożony na zawsze przy grupie, której nie da się dowieść, jest gorszy niż uczciwe
+    /// „nie wiem" na kafelku. Do 2026-09 tamta pętla sufitu nie miała i to była cała różnica
+    /// między tymi dwoma czasownikami; dziś różnicą jest już tylko sam czasownik.
     ///
     /// **Sufit nie jest pozwoleniem na porzucenie.** Ostatni `Alive` wraca stąd w całości, razem
     /// z adresem grupy, i to on decyduje, że uchwyt oraz miejsce z puli jadą do rejestru
@@ -9754,11 +9980,19 @@ impl Live {
     /// [`Checking::cancel`] jest już czystym [`crate::engine::supervisor::Supervised::stop`] —
     /// nie ma tu przerwania w paśmie do pominięcia, więc uchwyt komendy nie potrzebuje drugiego
     /// czasownika.
-    async fn prove_check_settled(&self, live: &mut Checking) -> bool {
+    async fn prove_check_settled(&self, live: &mut Checking) -> GroupProof {
+        // 2026-09 (Z-4) — `GroupProof`, nie `bool`. Ostatni `Alive` decyduje, że uchwyt komendy
+        // i jej miejsce z puli jadą do rejestru ocalałych zamiast zginąć z ramką kroku, a `bool`
+        // nie niesie ani adresu grupy, ani niczego, na czym dałoby się tę decyzję oprzeć.
+        let mut last = GroupProof::Alive {
+            group: Some(live.group()),
+        };
         for attempt in 1..=LIVE_STOP_ATTEMPTS {
-            if matches!(live.cancel().await, GroupProof::Dead { .. }) {
-                return true;
+            let proof = live.cancel().await;
+            if matches!(proof, GroupProof::Dead { .. }) {
+                return proof;
             }
+            last = proof;
             tracing::error!(
                 attempt,
                 attempts = LIVE_STOP_ATTEMPTS,
@@ -9768,26 +10002,68 @@ impl Live {
                 tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
             }
         }
-        false
+        last
     }
 
-    /// Zachowuje jedynego właściciela uchwytu aż supervisor dowiedzie `Dead`.
+    /// Zwalnia zasoby komendy — albo oddaje je rejestrowi aplikacji, kiedy dowodu nie było.
     ///
-    /// `Alive` nie jest wynikiem końcowym. Powrót z tej funkcji na takim dowodzie zrzuciłby
-    /// `Box<dyn AgentHandle>` i osierocił proces, więc pełna eskalacja jest ponawiana w tym samym
-    /// stosie tak długo, jak długo istnieje coś, czego nie umiemy uznać za martwe.
+    /// 2026-09 (Z-4) — bliźniak [`Live::released_by`] po stronie kroku „sprawdź". Do tego dnia ta
+    /// droga nie istniała: uchwyt komendy spadał z ramki `run_check`, a jego miejsce z puli wracało
+    /// do niej razem z krokiem. `Drop` na [`crate::engine::supervisor::Supervised`] posyłał grupie
+    /// dziewiątkę, ale **nie dowodził `ESRCH`** — więc zostawała grupa, o którą nikt nie mógł już
+    /// zapytać, i pula, która o niej nie wie (niezmienniki 6 i 11). Ponawianie należy od tej pory
+    /// do `Processes::prove_the_unproven`, dokładnie jak przy sesji agenta.
+    fn check_released_by(
+        &self,
+        live: Checking,
+        slot: &mut Option<limits::Slot>,
+        proof: &GroupProof,
+    ) {
+        if matches!(proof, GroupProof::Dead { .. }) {
+            // Dowód był: uchwyt ginie tutaj i jego gwardia `Drop` nie ma już czego zabijać
+            // (`Supervised::proved_dead`), a miejsce zostaje przy kroku i schodzi z jego ramką.
+            return;
+        }
+        self.processes.keep_leftover(Box::new(live), slot.take());
+    }
+
+    /// Ponawia pełną eskalację przerwaniem, ale nie zamraża aplikacji na zawsze.
+    ///
+    /// 2026-08-27 — trzy próby są polityką produktu, nie parametrem wołającego. Każde
+    /// `cancel()` przechodzi przez pełne TERM → łaska → KILL → dowód supervisora; odstęp jest
+    /// tylko między próbami. Po ostatnim `Alive` posiadany uchwyt wraz z ciężkim slotem przechodzi
+    /// do rejestru żywych procesów: adres nie wystarcza, bo tylko właściciel może ponowić dowód.
+    /// `Alive` wraca jako brak dowodu, nigdy jako `Dead`.
+    ///
+    /// 2026-09 (Z-4) — JEDNO CIAŁO NA WSZYSTKICH PIĘCIU DROGACH, i to nie jest porządkowanie.
+    /// Do tego dnia stały tu dwie funkcje o tym samym ciele i różnym suficie: żywy Stop i seria
+    /// porażek narzędzia miały te trzy próby, a limit czasu kroku, tura, która wróciła błędem,
+    /// i nieudane `close()` szły pętlą bez końca. Ta sama grupa, której nie da się dowieść,
+    /// kończyła więc bieg w dwóch przypadkach i wieszała go w trzech pozostałych — a wieszała
+    /// razem z folderem, bo `settle()` nie zapadało (niezmiennik 23).
     async fn prove_agent_dead(&self, handle: &mut dyn AgentHandle) -> GroupProof {
-        loop {
+        // Adres z uchwytu jest tym, co wiemy PRZED pierwszą próbą; każdy kolejny `Alive` niesie
+        // własny i nadpisuje ten wstępny. Zwrócenie świeżo zmyślonego `Alive` gubiłoby jedno
+        // i drugie, a wołający dostawałby odmowę bez adresu (2026-08-28).
+        let mut last = GroupProof::Alive {
+            group: handle.group(),
+        };
+        for attempt in 1..=LIVE_STOP_ATTEMPTS {
             let proof = handle.cancel().await;
             if matches!(proof, GroupProof::Dead { .. }) {
                 return proof;
             }
+            last = proof;
             tracing::error!(
-                "an agent group is still alive after escalation; Loadout retains its handle and \
-                 will retry"
+                attempt,
+                attempts = LIVE_STOP_ATTEMPTS,
+                "an agent group is still alive after a full escalation"
             );
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            if attempt < LIVE_STOP_ATTEMPTS {
+                tokio::time::sleep(LIVE_STOP_RETRY_PAUSE).await;
+            }
         }
+        last
     }
 
     /// Czeka na dokładnie jeden z czterech końców tury, zachowując pierwszeństwo istniejącej
@@ -9913,7 +10189,17 @@ impl Live {
             // Timeout przechodzi przez sterownik; anulowanie samego zadania Rusta zostawiłoby
             // proces systemowy żywy (niezmienniki 6 i 10).
             Ended::Overdue => {
-                Turned::Settled(self.stop_overdue_agent(id, handle.as_mut(), limit).await)
+                let (report, proof) = self.stop_overdue_agent(id, handle.as_mut(), limit).await;
+                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+                // Ta sama trójka, co przy Stopie i z tego samego powodu (2026-09, Z-4): `Alive`
+                // zabiera uchwyt i miejsce do rejestru, a odbiornik kuratora trzeba wtedy domknąć
+                // osobno — zachowany uchwyt trzyma klon nadajnika zdarzeń, więc `pump.await`
+                // w `run_agent` nie wróciłby nigdy i krok wisiałby mimo sufitu.
+                self.released_by(handle, &mut *turn.slot, proof);
+                if !proven_dead {
+                    turn.finish_forward.cancel();
+                }
+                Turned::Settled(report)
             }
             Ended::Stopped => {
                 let (report, proof) = self.stop_cancelled_agent(id, handle.as_mut()).await;
@@ -9930,7 +10216,7 @@ impl Live {
                     text: REPEATED_TOOL_FAILURE_SENTENCE.to_owned(),
                     resets_at: None,
                 });
-                let proof = self.prove_agent_dead_after_live_stop(handle.as_mut()).await;
+                let proof = self.prove_agent_dead(handle.as_mut()).await;
                 let proven_dead = matches!(proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -9948,11 +10234,34 @@ impl Live {
             }
             Ended::Turn(Err(error)) => {
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
+                let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
-                    step.death_proof = matches!(proof, GroupProof::Dead { .. });
-                    step.error = Some(error.to_string());
+                    step.death_proof = proven_dead;
+                    /* NASZE ZDANIE WYGRYWA Z POWODEM STEROWNIKA (2026-09, Z-4), tym samym idiomem,
+                     * którym `Ended::RepeatedToolFailure` przykrywa powód agenta. Do tego dnia
+                     * z tej drogi zostawał wyłącznie błąd tury — prawdziwy, ale mówiący o czymś
+                     * innym: człowiek czytał, dlaczego tura padła, i nie dowiadywał się, że po
+                     * tym kroku MOŻE COŚ JESZCZE BIEC i palić limit u dostawcy.
+                     *
+                     * JEDNO ZDANIE NA WSZYSTKIE DROGI OCALAŁEGO POZA ŻYWYM STOPEM: `death_proof:
+                     * false` znaczy tu dokładnie to samo, co po limicie czasu kroku, więc krok
+                     * mówi to samo, co tamten. Rozróżnienie zostaje wyłącznie tam, gdzie zdanie
+                     * odpowiada na inne pytanie człowieka — po Stopie, który ktoś nacisnął
+                     * (`LIVE_STOP_SURVIVOR_ERROR`, powód przy tamtej stałej). */
+                    step.error = Some(if proven_dead {
+                        error.to_string()
+                    } else {
+                        STEP_SURVIVOR_ERROR.to_owned()
+                    });
                 });
+                // Tura, która się przewróciła, nie zwalnia z dowodu (2026-09, Z-4): bez tej pary
+                // linii ocalała grupa ginęła razem z ramką, czyli dokładnie w chwili, w której
+                // Loadout właśnie przyznał, że nie wie, czy coś jeszcze biegnie.
+                self.released_by(handle, &mut *turn.slot, proof);
+                if !proven_dead {
+                    turn.finish_forward.cancel();
+                }
                 Turned::Broke("This step's agent stopped in the middle of its turn.".to_owned())
             }
             Ended::Turn(Ok(outcome)) => Turned::Settled(
