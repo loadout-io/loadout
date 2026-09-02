@@ -45,8 +45,8 @@ const INTERRUPTED: &str = r#"{"type":"result","subtype":"error_during_execution"
 const HIT_THE_CEILING: &str =
     r#"{"type":"result","subtype":"error_max_turns","is_error":true,"result":"turn limit"}"#;
 
-/// Sesja z fikstury.
-const FIXTURE_SESSION: &str = "d24ee572-640c-4442-9c15-587dff952b98";
+/// 2026-09: sesję z fikstury zredagowano w Z-29; stała nadal mierzy jej przekazanie.
+const FIXTURE_SESSION: &str = "00000000-0000-4000-8000-000000000003";
 
 /// Koszt z fikstury. Na drucie stoi `0.14836290000000002`, więc porównanie idzie przez
 /// tolerancję — dwie różne dziesiętne reprezentacje tej samej kwoty to nie jest regresja.
