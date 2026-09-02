@@ -312,6 +312,7 @@ mod stream_unknown_events;
 mod supervisor_drop_guard;
 mod supervisor_group_death;
 mod supervisor_pipe_eof;
+mod supervisor_probe_sends_no_signal;
 mod supervisor_term_then_kill;
 mod supervisor_timeout_kills;
 mod support_report_excludes_private_content;

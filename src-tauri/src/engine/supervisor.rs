@@ -2059,7 +2059,7 @@ impl Supervised {
 
         // 3. Dowód, wciąż w oknie łaski: lider bywa najszybszy, a płacimy za wnuki.
         let left = grace.saturating_sub(began.elapsed());
-        if self.prove_gone(SIGNAL_TERM, left).await {
+        if self.prove_gone(left).await {
             self.proved_dead = true;
             return GroupProof::Dead {
                 status: self.status,
@@ -2072,7 +2072,7 @@ impl Supervised {
         if let Ok(Ok(status)) = reaped {
             self.status = Some(status);
         }
-        if self.prove_gone(SIGNAL_KILL, PROOF_AFTER_KILL).await {
+        if self.prove_gone(PROOF_AFTER_KILL).await {
             self.proved_dead = true;
             return GroupProof::Dead {
                 status: self.status,
@@ -2089,20 +2089,20 @@ impl Supervised {
 
     /// Czy w grupie nie ma już **nikogo**.
     ///
-    /// Pytamy sygnałem zerowym: nic nie dostarcza, sprawdza wyłącznie istnienie i prawa. Kiedy
-    /// opakowanie odmówi zera — bo mapuje `i32` na wyliczenie sygnałów, w którym zera nie ma —
-    /// pytamy jeszcze raz tym sygnałem, który tej grupie i tak już posłaliśmy. Powtórzenie nie
-    /// zmienia intencji, a `ESRCH` znaczy wtedy dokładnie to samo: nie ma komu odpowiedzieć.
+    /// 2026-09 — pytamy przez `nix::killpg` z `None`, bo `process-wrap` odrzuca `signal(0)` jako
+    /// `EINVAL`. Fallback z prawdziwym sygnałem zamieniał sondę w salwę TERM/KILL co 10 ms.
     ///
     /// Każda inna odpowiedź to „żywa", łącznie z `EPERM`, który znaczy, że grupa istnieje, tylko
     /// nie jest nasza. Niezmiennik 6 nie zna stanu „chyba nie żyje".
     #[cfg(unix)]
-    fn group_is_gone(&mut self, fallback: i32) -> bool {
-        let asked = self.child.signal(0);
-        match asked {
-            Ok(()) => false,
-            Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => true,
-            Err(_) => means_empty_group(&self.child.signal(fallback)),
+    fn group_is_gone(&self) -> bool {
+        use nix::errno::Errno;
+        use nix::sys::signal::killpg;
+        use nix::unistd::Pid;
+
+        match killpg(Pid::from_raw(self.group.pgid), None) {
+            Err(Errno::ESRCH) => true,
+            Ok(()) | Err(_) => false,
         }
     }
 
@@ -2111,10 +2111,10 @@ impl Supervised {
     /// 2026-08-15 — to jest ta pętla, której brak dał w T7 §3.1 `total=2 orphaned=2`: status
     /// lidera mówił „zabity", a dwoje wnucząt biegło pod PID 1 i paliło limit. Wnuka nie widzi
     /// żaden nasz `wait()`, więc jedynym źródłem prawdy jest jądro.
-    async fn prove_gone(&mut self, fallback: i32, limit: Duration) -> bool {
+    async fn prove_gone(&mut self, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         loop {
-            if self.group_is_gone(fallback) {
+            if self.group_is_gone() {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -2157,15 +2157,6 @@ impl Drop for Supervised {
             }
             std::thread::sleep(DROP_REAP_POLL);
         }
-    }
-}
-
-/// Czy ta odpowiedź jądra znaczy „w tej grupie nie ma nikogo".
-#[cfg(unix)]
-fn means_empty_group(answer: &io::Result<()>) -> bool {
-    match answer {
-        Ok(()) => false,
-        Err(error) => error.raw_os_error() == Some(NO_SUCH_GROUP),
     }
 }
 
