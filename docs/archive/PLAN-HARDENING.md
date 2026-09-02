@@ -1,3 +1,8 @@
+> **ARCHIWUM.** Ten plik opisuje harness z `OWNS`, `tasks/` i `verify.sh`, którego
+> w repo nie ma od 2026-08-28. Zostaje, bo niesie pomiary i powody decyzji, nie
+> dlatego, że opisuje dzisiejszy stan. Dzisiejszy stan: `harness/README.md`
+> i `docs/prod-ready/PLAN.md`. Przeniesione 2026-09-02.
+
 # Plan: twardnienie agentów, pętli i pamięci — faza 7
 
 2026-08-24 · analiza + weryfikacja właściciela w trunku + pierwszy żywy bieg · decyzje D-1…D-6 rozstrzygnięte

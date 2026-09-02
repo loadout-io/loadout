@@ -16,7 +16,8 @@ więc zostało tu tylko to, czego żaden skrypt nie robi za ciebie.
 
 | Plik | Co z niego wynosisz |
 |---|---|
-| `docs/STATUS.md` | **czytaj to pierwsze.** Co stoi w trunku, co odstawione i dlaczego |
+| `docs/prod-ready/PLAN.md` | **czytaj to pierwsze**, gdy trwa pętla prod-ready: statusy, fale, dziennik |
+| `docs/STATUS.md` | co stoi w trunku, co odstawione i dlaczego (starsze wpisy: `STATUS-ARCHIVE.md`) |
 | `docs/DECISIONS-LOCKED.md` | siedem decyzji człowieka (D1–D7). Nie podważaj ich |
 | `AGENTS.md` | karta pracy: 29 niezmienników i kontrakt kryterium w §2a |
 | `harness/README.md` | jak spina się harness i co znaczy każdy kod wyjścia |
@@ -49,8 +50,10 @@ Reagujesz **inaczej** na każdy. Mylenie ich to najdroższy błąd, jaki możesz
 | `2` | **MY jesteśmy źle skonfigurowani** | zatrzymujesz się. To nie wina agenta — patrz §5a |
 | `3` | przerwane albo sufit czasu | sprawdź osierocone procesy; wznów |
 
-Przy `1` czytaj **powód**, nie sam kod. Bramka odróżnia „padło, bo brakuje zachowania" od
-„padło, bo się nie uruchomiło" (`NOT_A_REAL_RED`). Drugie to defekt kontraktu, nie kodu.
+Przy `1` czytaj **powód**, nie sam kod. Rozróżnienie „padło, bo brakuje zachowania" od
+„padło, bo się nie uruchomiło" robisz dziś oczami na ogonie checka — mechanizmu
+`NOT_A_REAL_RED` nie ma od 2026-08-28. Jego rolę pełni licznik przejść (niezmiennik 19):
+`exit 0` bez ani jednego zameldowanego przejścia jest czerwony.
 
 ## 4. Równoległość
 
@@ -60,10 +63,10 @@ sześciu agentów to 2,5 GB i `load 2,6` przy szesnastu rdzeniach — maszyna **
 Agent czeka na odpowiedź modelu, nie na procesor, więc **liczba agentów nie jest pokrętłem
 wydajności**; pokrętłem jest liczba niezależnych rzeczy do zrobienia.
 
-Przy wachlarzu podnieś sufit czekania na muteks cargo: `LOADOUT_CARGO_LOCK_WAIT=2400`. Domyślne
-300 s jest dobre dla biegu szeregowego, gdzie pięciominutowe czekanie znaczy „coś wisi"; przy
-sześciu biegach kolejkowanie jest **oczekiwane**, a bez podniesienia sufitu ostatni w kolejce
-dostaje `exit 2` i fałszywą czerwień.
+Muteksu cargo nie ma od 2026-08-28 (`checks/_cargo-serialize.sh` odszedł razem z drugim
+clippy), więc nie ma też sufitu czekania do podnoszenia. Zostaje niezmiennik 26: **dwa
+ciężkie `cargo` naraz na tym Macu przypinają kompresor pamięci**. Szereguj je sam —
+jeden bieg dotykający Rusta naraz, obok najwyżej jeden czysto frontendowy.
 
 **Landowanie zawsze pojedynczo i poza wachlarzem.** Drugi merge na czerwonym trunku zamienia
 jeden defekt w dwa nierozróżnialne.
@@ -72,7 +75,9 @@ jeden defekt w dwa nierozróżnialne.
 
 Te rzeczy wyglądają jak pomoc i są sabotażem:
 
-- **Nie edytuj `harness/`, `checks/`, `verify.sh` ani `TASK.md` gałęzi**, żeby coś przeszło.
+- **Nie edytuj `harness/`, `checks/`, `scripts/ci.sh` ani `.claude/`**, żeby coś przeszło.
+  Od 2026-09-02 `h.py` sam odmawia biegowi, który tknął którąkolwiek z tych ścieżek (kod 2),
+  i odmawia lądowania gałęzi, która je zmienia.
   Jeśli kryterium jest złe — to znalezisko do zgłoszenia, nie do naprawienia po cichu.
 - **Nie rozluźniaj kryterium** i nie zdejmuj asercji. Bieg mierzy liczbę linii asercji między
   etapami i staje, gdy spadnie — ale próba sama w sobie jest tym, przed czym stoimy.
@@ -133,12 +138,13 @@ git status --porcelain -uall                   # czy da się w ogóle landować
 Dwie pułapki, obie kosztowały bieg:
 
 - **Zabicie basha zostawia agenta.** `claude -p` przeżywa śmierć rodzica i pisze do worktree,
-  którego nikt nie odbierze. Od 2026-08-28 pisarz biegnie pod `harness/process-group.sh`, więc
-  `h run` przerwany Ctrl-C sam dowodzi ESRCH (`kill_group` w `h.py`) — ale agent, którego
-  odpaliłeś **poza** harnessem, tej ochrony nie ma. Kończ zawsze parę: skrypt **i** jego `claude`.
-- **Przypięte skrypty biegną jako `/var/folders/…/ship.XXXX`**, nie `scripts/h run` (`exec bash
-  "$snap"`, żeby edycja w trakcie biegu nie psuła procesu). Wzorzec pisany na pełną nazwę
-  cicho nie trafia.
+  którego nikt nie odbierze. `h.py` odpala modele i checki z `start_new_session=True`
+  i dowodzi ESRCH (`kill_group`) — ale agent odpalony **poza** harnessem tej ochrony nie ma.
+  Kończ zawsze parę: skrypt **i** jego `claude`.
+- **Potomkowie narzędzia Bash agenta leżą poza tą grupą.** Claude Code stawia każdą komendę
+  Bash w OSOBNEJ grupie procesów, więc `cargo test` czy `npm run dev` odpalone przez agenta
+  przeżywają dowód śmierci jego sesji. Zmierzone 2026-09-01: binarium testowe żyło 9 godzin
+  po anulowaniu biegu, przy `death_proof: true`. Po biegu sprawdź `ps` sam (to jest Z-01).
 
 ## 6. Co raportujesz człowiekowi
 
@@ -148,7 +154,6 @@ Zatrzymujesz się i piszesz dłużej, kiedy:
 
 - kod wyjścia to **2** — defekt harnessu, opisz który i dlaczego,
 - ten sam bieg padł drugi raz po naprawie,
-- bieg potrzebuje pliku spoza swojego bloku `<!-- OWNS -->`,
 - koszt jednego biegu przekroczył **$25** — to sygnał, że coś się zapętla, nie że rzecz jest trudna.
 
 Prognozy podawaj z **realnych liczb** — koszty z transkryptów w `runs/<id>/*.jsonl` — nie

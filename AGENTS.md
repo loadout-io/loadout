@@ -14,8 +14,9 @@ i go uruchamiasz. Zastępuje Superset, Warpa i ręcznie klejone harnessy.
 
 Poprzednie podejście (75 tys. linii Rusta w dwa dni) umarło na złożoność:
 osiem rodzajów „autorytetu", trzy maszyny stanów, cztery migracje schematu w dwudniowym repo,
-i **nigdy nie uruchomiło agentów naprawdę równolegle**. Cała ta historia jest opisana
-w `docs/research/projects/` i jest wiążąca jako lista rzeczy, których nie powtarzamy.
+i **nigdy nie uruchomiło agentów naprawdę równolegle**. Rekonesans, który to opisywał,
+wyszedł z drzewa przy upublicznieniu repo (`cf49f2dc`); wiążącą listą rzeczy, których nie
+powtarzamy, są od tego dnia same niezmienniki w §3 — każdy z nich ma tam swój incydent.
 
 ---
 
@@ -127,7 +128,7 @@ Numerowane, bo kontrakty biegów i prompty cytują je po numerze („niezmiennik
 13. **Jeden fakt, jedno miejsce.** Limit żywych regionów na fakt wynosi 1. Poprzedni prototyp pokazywał stan
     połączenia w sześciu miejscach.
 14. **Zero żargonu w tekście widocznym dla użytkownika.** Wiążąca jest tabela
-    `docs/FOUNDATIONS.md` §2.2. Egzekwuje `checks/quick-vocabulary.sh`.
+    `docs/FOUNDATIONS.md` §2.2. Egzekwuje `checks/vocabulary.sh`.
     Enum z drutu (`gate.decision_recorded`) nigdy nie trafia na ekran.
 15. **Kuracja dzieje się w Ruście, w mapowaniu zdarzenie→linia, nie w CSS.** Jeśli „czysty widok"
     da się zepsuć zmianą arkusza stylów, to nie jest czysty widok.
@@ -256,8 +257,8 @@ docs/DECISIONS-LOCKED.md      decyzje człowieka — nie podważaj ich
 docs/ARCHITECTURE.md          kształt systemu, maszyna stanów, sufit gęstości
 docs/PLAN.md                  fazy, kolejność, linia cięcia MVP
 docs/design/DESIGN.md         tokeny i komponenty; theme.css jest jego lustrem
-docs/research/projects/       rekonesans trzech repo źródłowych + synteza
 docs/research/topics/         osiem raportów tematycznych + ADR-y
+docs/prod-ready/PLAN.md       pętla do stanu produkcyjnego: statusy, fale, dziennik
 docs/patterns/<nn>-<nazwa>.md wzorce, które zadania cytują po nazwie pliku
 harness/                   CAŁY harness: h.py, checks.json, trzy prompty, guards.sh
 harness/checks.json        zmienione ścieżki -> checki. Jedyne miejsce, gdzie się je dodaje

@@ -1,5 +1,13 @@
 # Loadout — plan budowy
 
+
+> **Nazwy skryptów w tym pliku są sprzed 2026-08-28.** `ship-task.sh`, `verify.sh`,
+> `review.sh`, `repair.sh`, `integrate.sh` i `harness/gate.py` odeszły razem ze starym
+> harnessem (9323 linie → `harness/h.py`). Dzisiejsze odpowiedniki: `scripts/h run`,
+> `scripts/h land`, `scripts/ci.sh`. Tekst zostaje w oryginale, bo opisuje, co się wtedy
+> wydarzyło; podmiana nazw zamieniłaby zapis przeszłości w zapis czegoś, czego nie było.
+> Oznaczone 2026-09-02 (H-17).
+
 2026-08-15 · v1 · czytaj po `docs/ARCHITECTURE.md`
 
 Kolejność nie jest listą życzeń. Jest ułożona tak, żeby **najwcześniej obalić najdroższe założenia**.

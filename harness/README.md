@@ -78,7 +78,9 @@ Wydajność bierzemy więc z drugiego lewara, tego bezpiecznego: zawężania che
 
 ## Granice
 
-Ten harness ma ~590 linii w `h.py` plus 90 linii `checks.json` i trzy prompty po ~30 linii.
+Ten harness ma ~786 linii w `h.py` plus ~90 linii `checks.json` i trzy prompty po ~30 linii
+(2026-09-02: +130 linii naprawami z audytu — sufit wydatku per faza, dowód śmierci grup
+checków, jawna sesja poprawki, odmowa dla biegu, który tknął wyrocznię).
 Poprzedni miał **9323 linie w czternastu plikach** i to jest dokładny powód, dla którego go
 nie ma. Zanim cokolwiek tu dopiszesz, sprawdź w `runs/`, czy to kiedykolwiek złapało realny błąd.
 

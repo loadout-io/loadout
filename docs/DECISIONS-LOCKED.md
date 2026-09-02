@@ -82,7 +82,8 @@ wspierany, ale to słabszy tryb i tak ma być opisany.
 harnessu, a jej uwaga odpalała rundę naprawczą. Zmierzone na 121 biegach: 97 recenzji na 105
 zwracało uwagę, więc runda „doradcza" była obowiązkowa w 81% biegów i regularnie trwała dłużej
 niż implementacja (T-103: 2 min implementacji, 45 min naprawy). Recenzja jest teraz **na
-żądanie** — `ship.sh --review` albo `./review.sh` — i jest RAPORTEM: nie odpala rundy
+żądanie** — dziś: osobny bieg `scripts/h run` z rolą recenzenta — i jest RAPORTEM:
+nie odpala rundy
 naprawczej. Naprawę prowadzi paragon bramki, bo tylko on odróżnia „sprawdzenie padło" od
 „ktoś ma zdanie".*
 
@@ -95,7 +96,9 @@ Konsekwencje:
 
 - `AgentDriver` ma **dwie** implementacje od początku: `ClaudeDriver` i `CodexDriver`. Trait z jedną
   implementacją to trait wymyślony; dwie sprawiają, że abstrakcja jest prawdziwa.
-- `ship.sh` przyjmuje `--agent <vendor>` i `--reviewer <vendor>`, obie flagi niezależne.
+- Harness przyjmuje wybór vendora osobno dla każdej roli: `scripts/h run <id> --planner X
+  --dev Y --verifier Z`, trzy flagi niezależne (do 2026-08-28 robił to `ship.sh --agent`
+  i `--reviewer`; skrypt odszedł razem ze starym harnessem, decyzja została).
 - Recenzent **nigdy nie może zatwierdzić ani zablokować.** Schemat odpowiedzi ma `verdict ∈ {concern, none}`
   i `findings` z `maxItems: 6` — strukturalnie nie ma czego zatwierdzić.
 - **Ryzyko operacyjne:** research odnotował, że Codex był bez kredytów do 2026-08-20 `[ran]`.
@@ -114,7 +117,7 @@ i jest wiążąca, a część terminów po polsku brzmi gorzej niż po angielsku
 
 Dokumentacja, ADR-y, prompty biegów, komentarze w kodzie wyjaśniające *dlaczego*: polski.
 
-Sprawdzacz słownictwa (`checks/quick-vocabulary.sh`) skanuje **wyłącznie tekst widoczny dla użytkownika**
+Sprawdzacz słownictwa (`checks/vocabulary.sh`) skanuje **wyłącznie tekst widoczny dla użytkownika**
 i egzekwuje angielską tabelę z `FOUNDATIONS.md` §2.2.
 
 ---
@@ -256,7 +259,7 @@ harnessu ma w aplikacji odpowiednik, który dokładasz świadomie:
 
 | Mechanizm harnessu | W aplikacji |
 |---|---|
-| bramka (`verify.sh`) | krok typu „sprawdź" — uruchamia twoje checki |
+| bramka (`scripts/ci.sh`) | krok typu „sprawdź" — uruchamia twoje checki |
 | druga opinia | krok z agentem-recenzentem |
 | zatwierdzenie człowieka | kafelek punktu kontrolnego |
 | runda naprawcza | ustawienie kroku „jeśli próba się nie uda" |
@@ -275,9 +278,10 @@ zwykłym krokiem.
 To jest jedyny sposób, żeby D7 była prawdziwa, a nie deklarowana: jeśli którykolwiek etap jest
 w kodzie, to on jest domyślny i nie da się go wyłączyć konfiguracją.
 
-### Pozorna sprzeczność z `ship-task.sh`, i jej rozwiązanie
+### Pozorna sprzeczność z harnessem, i jej rozwiązanie
 
-`ship-task.sh` istnieje właśnie dlatego, że graf jest **w kodzie**: model, który dostaje sekwencję
+Harness (`harness/h.py`, do 2026-08-28 `ship-task.sh`) prowadzi bieg po sekwencji zapisanej
+**w kodzie** właśnie dlatego, że model, który dostaje sekwencję
 w promptcie, pomija etap, kiedy uzna go za zbędny. Czy D7 tego nie łamie?
 
 Nie — ochrona się przenosi, nie znika:

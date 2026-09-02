@@ -1,6 +1,8 @@
 /* Wspólna hydraulika siedmiu specyfikacji T-22. Nie jest testem — nazwa bez `.test.` jest
  * poza wzorcem zbierania vitesta, a podkreślenie z przodu to ta sama konwencja, co
- * `checks/_cargo-serialize.sh`: plik pomocniczy, nie sprawdzenie.
+ * `checks/_cargo-serialize.sh`: plik pomocniczy, nie sprawdzenie. ODSZEDŁ 2026-08-28
+ * razem z muteksem cargo (w `full` biegnie dziś jedno clippy, więc nie ma o co się bić);
+ * wzmianki niżej opisują wzorzec, nie żywy plik.
  *
  * Mieszkają tu "Trzy rzeczy, bez których te testy nie zadziałają" z TASK.md — w jednym
  * miejscu, zamiast przepisane siedem razy:

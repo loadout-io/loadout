@@ -1,5 +1,13 @@
 # Harness Loadouta wyrażony jako workflow Loadouta
 
+
+> **Nazwy skryptów w tym pliku są sprzed 2026-08-28.** `ship-task.sh`, `verify.sh`,
+> `review.sh`, `repair.sh`, `integrate.sh` i `harness/gate.py` odeszły razem ze starym
+> harnessem (9323 linie → `harness/h.py`). Dzisiejsze odpowiedniki: `scripts/h run`,
+> `scripts/h land`, `scripts/ci.sh`. Tekst zostaje w oryginale, bo opisuje, co się wtedy
+> wydarzyło; podmiana nazw zamieniłaby zapis przeszłości w zapis czegoś, czego nie było.
+> Oznaczone 2026-09-02 (H-17).
+
 Ten dokument jest pomiarem, nie projektem. Pytanie brzmi: czy najcięższa ceremonia, jaką
 znamy — pętla, którą to repo biegnie na sobie samym — da się zapisać jako **zwykły plik
 workflow**, bez dokładania czegokolwiek do silnika. Jeśli tak, długość ceremonii definiuje
