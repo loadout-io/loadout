@@ -158,10 +158,10 @@ Dla każdej z: `repair-agent-app-preflight`, `repair-bounded-check-output`,
 | repair-release-identity | LANDED | `.cargo/config.toml` + kontrakt wydania |
 | repair-release-runbook | LANDED | `docs/RELEASE.md` + test runbooka |
 | repair-bounded-evidence | PUSTA | wskazywała ten sam commit co serve-reap-hardening; własnej pracy nie miała |
-| repair-global-diagnostics | BLOCKED | konflikt: `titlebar.tsx`, `run/index.tsx`, `diagnostics.tsx` napisane od nowa w 0.2 |
-| repair-readme-truth | BLOCKED | konflikt: README przepisany dla 0.2 |
-| repair-agent-app-preflight | BLOCKED | konflikt tylko w `titlebar.tsx`; reszta (probe.rs, agent_apps.rs, 276 linii testów) da się uratować osobno |
-| repair-trigger-open-app-honesty | BLOCKED | konflikt: `triggers/form.tsx` |
+| repair-global-diagnostics | ODŁOŻONE — decyzja właściciela 2026-09-03 | do napisania od nowa jako zwykłe zadanie, jeśli nadal potrzebne; cała praca jest w plikach interfejsu przepisanych w 0.2. Gałąź `h-repair-global-diagnostics` zostaje jako materiał źródłowy |
+| repair-readme-truth | **SKASOWANE** 2026-09-03 | README przepisany dla 0.2, praca bezprzedmiotowa; gałąź usunięta |
+| repair-agent-app-preflight | URATOWANE, czeka na bramkę | gałąź `rescue-preflight`: konflikt w `titlebar.tsx` rozwiązany na rzecz dzisiejszego paska, cała część rustowa (`drivers/probe.rs` 184 linie, `commands/agent_apps.rs`, 276 linii testów) plus store i widok stanu przeniesione |
+| repair-trigger-open-app-honesty | ODŁOŻONE — decyzja właściciela 2026-09-03 | to samo; gałąź `h-repair-trigger-open-app-honesty` zostaje jako materiał źródłowy |
 
 Kryterium: `git branch --no-merged main | wc -l` = liczba gałęzi z otwartym stanem w `.git/h/`;
 `git merge-base main <każda żywa gałąź>` niepuste.
