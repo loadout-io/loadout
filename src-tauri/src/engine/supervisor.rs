@@ -1744,6 +1744,13 @@ fn is_executable_file(path: &Path) -> bool {
 /// nigdy nie prowadzimy KILL-em.
 pub const DEFAULT_GRACE: Duration = Duration::from_secs(5);
 
+/// Ile sterownik czeka, aż agent wyjdzie sam po zamknięciu wejścia.
+///
+/// 2026-09 — jedna krotność okna łaski należy do polityki nadzoru, nie do trzech adapterów ani
+/// ich wołających. Po tym suficie sterownik przechodzi przez zwykłe TERM → łaska → KILL → dowód,
+/// zamiast zostawić krok na zawsze w `running` (niezmienniki 10 i 23).
+pub const CLOSE_CEILING: Duration = Duration::from_secs(DEFAULT_GRACE.as_secs() * 2);
+
 /// Odstęp między dwoma pytaniami „czy w tej grupie ktoś jeszcze jest".
 ///
 /// 2026-08-15 — pętla dowodowa istnieje dlatego, że pomiar z T7 §3.1 (`total=2 orphaned=2`)

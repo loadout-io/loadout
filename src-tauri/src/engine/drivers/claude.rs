@@ -84,13 +84,15 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, DriverSetupError,
-    FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, StepSettings, ToAgent, Tokens,
-    ValidatedImages, Voice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
+    DriverSetupError, FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, StepSettings,
+    ToAgent, Tokens, ValidatedImages, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
-use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
+use crate::engine::supervisor::{
+    self, CLOSE_CEILING, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised,
+};
 use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
@@ -2768,9 +2770,19 @@ impl AgentHandle for ClaudeHandle {
 
         // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
         // różnica, którą mierzy dowód z `cancel()`.
-        let status = self.process.wait().await?;
-        self.finish_evidence().await;
-        Ok(status.code())
+        if let Ok(status) = timeout(CLOSE_CEILING, self.process.wait()).await {
+            let status = status?;
+            self.finish_evidence().await;
+            Ok(status.code())
+        } else {
+            // 2026-09 — timeout porzuca wyłącznie czekanie Rusta. Agent przechodzi jeszcze
+            // przez TERM → łaska → KILL → dowód, zanim uchwyt odda kontrolę (niezmiennik 10).
+            let proof = self.process.stop(DEFAULT_GRACE).await;
+            if matches!(proof, GroupProof::Dead { .. }) {
+                self.finish_evidence().await;
+            }
+            Err(DidNotLetGo.into())
+        }
     }
 
     /// Dowód po turze, która skończyła się sama: sama eskalacja z nadzoru, bez `control_request`.

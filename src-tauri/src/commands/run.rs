@@ -208,8 +208,8 @@ use crate::engine::drivers::command::{
     CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
 };
 use crate::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, DriverSetupError,
-    DriverSetupFailure, FinishReason, Outcome as DriverOutcome, Policy, RunSpec,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
+    DriverSetupError, DriverSetupFailure, FinishReason, Outcome as DriverOutcome, Policy, RunSpec,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
@@ -2690,6 +2690,13 @@ const STEP_SURVIVOR_ERROR: &str = "\
 This step finished its work, but Loadout could not make sure everything it started had stopped, \
 so some of it may still be running.";
 
+/// Zdanie dla kroku, który oddał wynik, ale po zamknięciu wejścia wymagał eskalacji.
+///
+/// 2026-09 — osobne od awarii dowodów: prywatny zapis nadal jest zdrowy, lecz agent nie spełnił
+/// kontraktu normalnego końca. Zdanie stoi w `run.json`, skąd czyta je okno (niezmiennik 29).
+const STEP_WOULD_NOT_LET_GO_ERROR: &str = "This step finished its work, but the agent kept going \
+after Loadout closed its input, so Loadout stopped it.";
+
 /// To samo o komendzie kroku „sprawdź". Osobne zdanie, bo nazywa KOMENDĘ: w tym kroku nie ma
 /// agenta, a „ten krok" bez podmiotu wysyła człowieka szukać wady u kogoś, kogo tam nie było.
 const CHECK_SURVIVOR_ERROR: &str = "\
@@ -3214,14 +3221,25 @@ enum Turned {
 }
 
 /// Czym skończyło się domknięcie sesji kroku — powstaje w [`Live::close_and_prove`].
-///
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosedHow {
+    /// Agent wyszedł sam po zamknięciu wejścia.
+    OnItsOwn,
+    /// Agent wymagał eskalacji supervisora po upływie sufitu.
+    WouldNotLetGo,
+    /// Samo zamknięcie transportu padło.
+    Broke,
+    /// Stop człowieka wygrał z trwającym zamknięciem.
+    StoppedByAPerson,
+}
+
 /// Trzy pola, bo trzy fakty są prawdziwie różne i każdy z osobna potrafi odebrać krokowi prawo
-/// do słowa „done": zamknięcie się nie udało, lider wyszedł czymś innym niż zero, albo grupa nie
-/// dała się dowieść jako martwa (niezmiennik 6).
+/// do słowa „done": sposób zamknięcia, kod lidera albo grupa bez dowodu śmierci
+/// (niezmiennik 6).
 #[derive(Debug)]
 struct Closed {
-    /// Czy `close()` w ogóle wróciło bez błędu.
-    close_succeeded: bool,
+    /// Czy proces wyszedł sam, wymagał eskalacji, zepsuł transport albo dostał Stop.
+    how: ClosedHow,
     /// Kod wyjścia lidera. `None`, kiedy proces zginął od sygnału i kodu po prostu nie ma —
     /// a `None` nigdy nie jest przejściem, bo `None` to nie zero.
     code: Option<i32>,
@@ -9652,30 +9670,45 @@ impl Live {
         id: StepId,
         handle: &mut dyn AgentHandle,
         evidence: &EvidenceTarget,
+        cancel: &CancellationToken,
     ) -> Closed {
         // `claude` z otwartym stdinem czeka w nieskończoność, więc krok bez tego zostawia żywy
         // proces [T1 §2, §4.6].
-        let closed = handle.close().await;
-        let close_succeeded = closed.is_ok();
-        if !close_succeeded {
+        let (how, code) = {
+            let closing = handle.close();
+            tokio::pin!(closing);
+            tokio::select! {
+                // 2026-09 — wynik zamknięcia ma pierwszeństwo, jeśli przyszedł w tej samej
+                // chwili co Stop; to zachowuje kolejność końca żywej tury powyżej.
+                biased;
+                closed = &mut closing => match closed {
+                    Ok(code) => (ClosedHow::OnItsOwn, code),
+                    Err(error) if error.downcast_ref::<DidNotLetGo>().is_some() => {
+                        (ClosedHow::WouldNotLetGo, None)
+                    }
+                    Err(_) => (ClosedHow::Broke, None),
+                },
+                () = cancel.cancelled() => (ClosedHow::StoppedByAPerson, None),
+            }
+        };
+        if matches!(how, ClosedHow::Broke) {
             evidence.mark_incomplete();
         }
-        let proof = if close_succeeded {
-            self.prove_step_dead(handle).await
-        } else {
-            /* `close()` PADŁO: tu pętla dowodowa zostaje NIEOGRANICZONA, bo ta droga i tak nie
-             * wraca sukcesem, a powrót na `Alive` zrzuciłby `Box<dyn AgentHandle>` i osierocił
-             * grupę. Ograniczamy wyłącznie ścieżkę udaną — tam krok skończył pracę i nie wolno
-             * go wieszać w nieskończoność. */
-            self.prove_agent_dead(handle).await
+        let proof = match how {
+            ClosedHow::OnItsOwn | ClosedHow::WouldNotLetGo | ClosedHow::StoppedByAPerson => {
+                self.prove_step_dead(handle).await
+            }
+            ClosedHow::Broke => {
+                /* `close()` PADŁO: tu pętla dowodowa zostaje NIEOGRANICZONA, bo ta droga i tak nie
+                 * wraca sukcesem, a powrót na `Alive` zrzuciłby `Box<dyn AgentHandle>` i osierocił
+                 * grupę. Ograniczamy wyłącznie ścieżkę udaną — tam krok skończył pracę i nie wolno
+                 * go wieszać w nieskończoność. */
+                self.prove_agent_dead(handle).await
+            }
         };
         let proven_dead = matches!(proof, GroupProof::Dead { .. });
         self.update(|book| book.steps[id].death_proof = proven_dead);
-        Closed {
-            close_succeeded,
-            code: closed.ok().flatten(),
-            proof,
-        }
+        Closed { how, code, proof }
     }
 
     /// Zwalnia zasoby kroku — albo oddaje je rejestrowi aplikacji, kiedy dowodu nie było.
@@ -9836,12 +9869,8 @@ impl Live {
         turn: &mut LiveAgentTurn<'_>,
     ) -> StepReport {
         let id = turn.id;
-        let Closed {
-            close_succeeded,
-            code,
-            proof,
-        } = self
-            .close_and_prove(id, handle.as_mut(), turn.evidence)
+        let Closed { how, code, proof } = self
+            .close_and_prove(id, handle.as_mut(), turn.evidence, turn.cancel)
             .await;
         let proven_dead = matches!(proof, GroupProof::Dead { .. });
         self.released_by(handle, &mut *turn.slot, proof);
@@ -9851,7 +9880,7 @@ impl Live {
         // Sukces to zero **i** `is_error == false` (niezmiennik 19, ARCHITECTURE §5).
         let evidence_complete = turn.evidence.is_healthy();
         let ok = outcome.ok
-            && close_succeeded
+            && matches!(how, ClosedHow::OnItsOwn)
             && evidence_complete
             && proven_dead
             && matches!(code, None | Some(0));
@@ -9860,7 +9889,9 @@ impl Live {
             step.exit_code = code;
             record_turn(step, &outcome, cost_is_estimate);
             step.summary = summary_of(&outcome.text);
-            if !close_succeeded || !evidence_complete {
+            if matches!(how, ClosedHow::WouldNotLetGo) && proven_dead {
+                step.error = Some(STEP_WOULD_NOT_LET_GO_ERROR.to_owned());
+            } else if matches!(how, ClosedHow::Broke) || !evidence_complete {
                 /* Surowy blad zapisu moze zawierac prywatna sciezke albo tekst vendora.
                  * Ksiege i ekran dostaja staly rodzaj; szczegol zostaje lokalnie przy
                  * prywatnym artefakcie, ktory nadal ma stan niekompletny. */
@@ -9880,7 +9911,15 @@ impl Live {
                 step.error = Some(short);
             }
         });
-        if ok {
+        if matches!(how, ClosedHow::StoppedByAPerson) {
+            // 2026-09 — Stop całego biegu pozostaje anulowaniem, lecz krok z grupą nadal żywą
+            // nie może dostać tej nazwy. To ta sama granica, co w `stop_cancelled_agent`.
+            if proven_dead {
+                StepReport::Cancelled
+            } else {
+                StepReport::Failed
+            }
+        } else if ok {
             // Przekazanie schodzi na dysk przed zwolnieniem potomków przez scheduler.
             self.hand_over(id, &outcome.text, turn.reads);
             self.remember_handoff_evidence(id, &outcome.text);

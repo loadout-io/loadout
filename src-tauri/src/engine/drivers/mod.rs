@@ -936,6 +936,22 @@ impl std::fmt::Debug for ToAgent {
 /// i czyta go jeden odbiorca.
 pub type Voice = mpsc::Sender<ToAgent>;
 
+/// Agent nie wyszedł sam po zamknięciu wejścia i wymagał eskalacji supervisora.
+///
+/// Osobny typ pozwala rdzeniowi odróżnić kontrolowane zejście przez dowód od awarii transportu:
+/// pierwsze nie psuje prywatnych dowodów kroku, choć nadal odbiera mu prawo do sukcesu
+/// (2026-09, niezmienniki 6 i 29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DidNotLetGo;
+
+impl std::fmt::Display for DidNotLetGo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the agent kept going after Loadout closed its input")
+    }
+}
+
+impl std::error::Error for DidNotLetGo {}
+
 #[async_trait]
 pub trait AgentHandle: Send {
     /// Sesja tej rozmowy.
@@ -990,15 +1006,16 @@ pub trait AgentHandle: Send {
     /// `SessionEnd` [T1 §4.6].
     async fn cancel(&mut self) -> GroupProof;
 
-    /// Zamyka wejście sesji i czeka, aż proces wyjdzie **sam**.
+    /// Zamyka wejście sesji i czeka z sufitem, aż proces wyjdzie **sam**.
     ///
     /// To jest normalne zakończenie kroku, nie anulowanie: `claude` z otwartym stdinem czeka
     /// w nieskończoność, więc bez tego każdy skończony krok zostawiałby żywy proces
     /// [T1 §2, §4.6]. Zwraca kod wyjścia; `None`, kiedy vendor nie trzyma jednego procesu na
     /// sesję albo kiedy proces zginął od sygnału i kodu po prostu nie ma.
     ///
-    /// Wolne czytanie stdoutu potrafi opóźnić to wyjście do 30 s — to jest udokumentowane
-    /// zachowanie, nie zawieszenie [T1 „Worth adding"].
+    /// Po przekroczeniu wspólnego sufitu sterownik eskaluje przez supervisor i zwraca
+    /// [`DidNotLetGo`]. Wolne czytanie stdoutu potrafi opóźnić wyjście — dlatego sufit jest
+    /// wielokrotnością okna łaski, a nie natychmiastowym anulowaniem [T1 „Worth adding"].
     async fn close(&mut self) -> anyhow::Result<Option<i32>>;
 
     /// **Dowód**, że po grupie tej sesji nie zostało nic — na ścieżce UDANEJ.
