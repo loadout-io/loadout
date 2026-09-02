@@ -391,11 +391,28 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
     else:
         die("nieznany vendor: %s (claude albo codex)" % vendor)
 
+    # AUTOAKTUALIZACJA VENDORA POZA BIEGIEM. Zmierzone 2026-09-03, DWA razy w jednej fali:
+    # Claude Code aktualizuje sie globalnie i podmienia binarke W MIEJSCU (~199 MB), a bieg,
+    # ktory trafi w okno zapisu, dostaje raz `cannot execute binary file`, a raz
+    # `claude not found in PATH` (kod 127) -- oba po 30+ minutach pracy, oba wygladaja jak
+    # wada kodu. `DISABLE_AUTOUPDATER` istnieje w binarce (sprawdzone `strings`); aktualizacje
+    # robi czlowiek miedzy biegami, nie bieg sam sobie w polowie implementacji.
+    child_env = dict(os.environ, DISABLE_AUTOUPDATER="1")
+
     # Prompt STDIN-em, nigdy w argv (niezmiennik 9): argv widzi kazdy `ps`.
     # Wlasna grupa procesow, zeby dalo sie ubic CALE drzewo z dowodem (patrz kill_group).
-    proc = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, start_new_session=True)
+    def spawn():
+        return subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, start_new_session=True, env=child_env)
+
+    # Sygnatury chwilowego braku binarki vendora: pierwsza jest z opakowania Supersetu,
+    # druga z jadra przy pliku podmienianym w miejscu. Oba stany mijaja w sekundy, wiec JEDNO
+    # ponowienie zamienia stracona godzine pracy w stracone dziesiec sekund. Kazda inna
+    # przyczyna leci dalej bez ponawiania -- to nie jest miejsce na ogolna petle retry.
+    VENDOR_VANISHED = ("not found in PATH", "cannot execute binary file")
+
+    proc = spawn()
     try:
         out, _ = proc.communicate(input=prompt, timeout=budget)
     except subprocess.TimeoutExpired:
@@ -405,6 +422,18 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
     except KeyboardInterrupt:
         proved = kill_group(proc)
         die("przerwane%s" % ("" if proved else " -- grupa NIE dowiedziona jako martwa"), 3)
+    if proc.returncode != 0 and any(mark in (out or "") for mark in VENDOR_VANISHED):
+        log("binarka %s zniknela w trakcie (aktualizacja vendora?) -- jedno ponowienie za 15 s"
+            % vendor)
+        kill_group(proc)
+        time.sleep(15)
+        proc = spawn()
+        try:
+            out, _ = proc.communicate(input=prompt, timeout=budget)
+        except subprocess.TimeoutExpired:
+            proved = kill_group(proc)
+            die("%s przekroczyl %ss%s" % (vendor, budget,
+                "" if proved else " -- I NIE DA SIE DOWIESC, ze grupa nie zyje"), 3)
     kill_group(proc)
     if transcript:
         Path(transcript).write_text(out, encoding="utf-8")
