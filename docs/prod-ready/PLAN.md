@@ -289,7 +289,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 
 | ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
 |---|---|---|---|---|---|---|---|---|
-| Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | RUNNING (2. podejście) | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
+| Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | TODO | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | TODO | dwa wiersze + test licznika TERM |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
@@ -297,7 +297,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | TODO | |
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
 | Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
-| Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | TODO | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
+| Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | **LANDED** `2026-09-02` | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
 | Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | TODO | tylko `docs/`; może biec obok |
 | Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | TODO | utrata pracy człowieka |
 | Z-08 | `z08-skills-outside-commit` | `prompts/Z-08.md` | R | X→C | | Z-07 | TODO | |
@@ -366,6 +366,12 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-02 15:05 · domknięcia po Z-28 i Z-25 · allowlista ośmiu celów w `checks/tests-listed.sh` (zasadzone naruszenie: czerwone, przywrócone: zielone); `rust-test` z 3600 na 1500 s; `npm uninstall @tanstack/react-virtual`; tabela zależności w ARCHITECTURE.md uzgodniona z `package.json` · ręka
+- 2026-09-02 14:55 · Z-25 · LANDED, dwie rundy. Weryfikator (codex) znalazł przypadek brzegowy w rundzie 1: ostatni proces znikający przy otwartym panelu wypadał z `held` i odpytywanie milkło. Werdykt o wirtualizacji: NIE, z trzema zmierzonymi powodami w `feed.tsx`; zależność zdjęta · C→X
+- 2026-09-02 14:50 · Z-28 · LANDED. 60 → 8 plików testowych wprost w `tests/`; pełne CI 252 s, a kolejne 222 s (było 256) · X→C
+- 2026-09-02 14:10 · REGRESJA WŁASNA, naprawiona · H-10 dokładał `--output-format stream-json` do fazy weryfikacji, co razem ze `--json-schema` przewracało `parse_json` — bieg ginął zdaniem „model nie zwrócił JSON-a" PO całej implementacji, mimo że weryfikator napisał poprawną diagnozę. Transkrypt powstaje teraz bez tych flag · ręka
+- 2026-09-02 13:40 · Z-28 · drugie podejście: 48 błędów `dead_code` z pliku pomocniczego wciągniętego do celu `it`. H-20 zadziałał — po czerwonym clippy `rust-test` został POMINIĘTY zamiast mielić do godziny. Wznowione z konkretem, naprawione jednym `#[allow(dead_code)]` na deklaracji modułu · X→C
+- 2026-09-02 13:25 · POMYŁKA ORKIESTRATORA · uznałem bieg za martwy po ciszy w logu i wystartowałem drugi na tym samym `task_id`; log był tylko buforowany. Starszy ubity z dowodem ESRCH. Odtąd długie biegi idą przez tło narzędzia, nie przez `nohup &` · ręka
 - 2026-09-02 13:05 · Z-28 · pierwsze podejście kod 1, ZERO zmian — i to jest uczciwa odmowa, nie awaria. Planista podał baseline z grepu (1217/1054), Codex zmierzył `--list` (1245/1034), liczby się nie zgodziły i plan kazał w takiej sytuacji stanąć. Wada jest w moim prompcie: pozwalał zapisać liczbę bazową w planie. Poprawione — wykonawca mierzy sam i porównuje z własnym pomiarem · X→C
 - 2026-09-02 13:00 · Z-24 · LANDED, jedna runda, werdykt DZIALA, 7 checków zielonych, pełne CI 256 s; `h land` sam sprzątnął worktree (H-14 działa) · C→X
 - 2026-09-02 12:05 · 0.1/0.2 sprzątanie · 22 worktree zdjęte, 11 gałęzi skasowanych, `runs/` 192→120, `.h-plan.md` z korzenia usunięty; wolne 433→520 GiB · ręka

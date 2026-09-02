@@ -109,12 +109,13 @@
         "src-tauri/**/*.rs",
         "src-tauri/Cargo.toml"
       ],
+      "_why_budget_1500": "2026-09-02: bylo 3600 s. Z-28 zeszlo z 60 celow testowych do 8, czyli 52 linki calej biblioteki mniej; zmierzone po scaleniu: pelne `cargo test --tests --test-threads=1` to 154 s na cieplym drzewie, a pelne CI 222 s zamiast 256. Sufit trzyma zapas na zimny worktree, ale przestaje byc godzina, w ktorej nikt nie wie, czy bramka liczy, czy wisi.",
       "_why_single_threaded": "ZMIERZONE 2026-08-28: rownolegle 31 s ale TRZY testy padaja na Elapsed (driver_codex_finish, driver_codex_resume, started_processes_die_with_the_window -- spawnuja prawdziwe procesy i mierza czasy, wiec pod obciazeniem wychodza na timeout). Jednowatkowo 88 s i 818 passed, 0 failed. 57 s za werdykt, ktory mowi o kodzie, a nie o tym, czy maszyna byla wolna.",
       "cmd": "cargo test --tests -- --test-threads=1",
       "cwd": "src-tauri",
       "scoped": "cargo",
       "counts_tests": true,
-      "budget_s": 3600
+      "budget_s": 1500
     }
   },
   "manual_only": {

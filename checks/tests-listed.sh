@@ -67,6 +67,49 @@ if [ -n "${ghosts//[$'\n' ]/}" ]; then
   bad=1
 fi
 
+# ── DRUGA POŁOWA: co wolno stać WPROST w `src-tauri/tests/` ──────────────────
+#
+# 2026-09-02 (R-5/H-5). Do tego dnia ten strażnik pytał wyłącznie „czy każdy plik w `tests/it/`
+# ma swój `mod`" i nie miał pojęcia o plikach na najwyższym poziomie. A to tam mieszkał koszt:
+# 60 plików = 60 osobnych binariów, każde linkujące całą bibliotekę z 527 skrzyniami Tauri
+# (~60 s za sztukę), przy 6 s wykonania wszystkich testów razem. Zadanie Z-28 zeszło z 60 do 8;
+# bez tej listy 61. plik wróciłby po cichu, bo AGENTS.md §2a jest regułą w prozie, a proza
+# nie świeci na czerwono.
+#
+# Ośmiu wyjątków nie da się scalić i każdy ma inny powód:
+#   * pięć `flow_*` i `t149_phase7_paid_live_oracle` uruchamiają PRAWDZIWYCH agentów — są
+#     `#[ignore]`, płatne, i wołane wprost, nie przez suitę;
+#   * `shell_logging` liczy deskryptory przez `/dev/fd` i instaluje globalny hak paniki,
+#     a `supervisor_env_hygiene` woła `env::set_var` — oba mierzą stan CAŁEGO PROCESU, więc
+#     w scalonym binarium mierzyłyby cudze testy (`shell_logging` dostał 96 zamiast swojej
+#     liczby przy pierwszym lądowaniu po scaleniu 2026-08-17).
+ALLOWED_TOP="flow_fan_in flow_lead_agent_chat flow_say_to_agent flow_skill flow_todo_app \
+t149_phase7_paid_live_oracle shell_logging supervisor_env_hygiene"
+
+top_on_disk="$(find src-tauri/tests -maxdepth 1 -name '*.rs' -exec basename {} .rs \; | sort)"
+allowed_sorted="$(printf '%s\n' $ALLOWED_TOP | sort)"
+extra="$(comm -23 <(printf '%s\n' "$top_on_disk") <(printf '%s\n' "$allowed_sorted") || true)"
+gone="$(comm -13 <(printf '%s\n' "$top_on_disk") <(printf '%s\n' "$allowed_sorted") || true)"
+
+if [ -n "${extra//[$'\n' ]/}" ]; then
+  echo "these files sit directly in src-tauri/tests/, so each is its OWN test binary:" >&2
+  printf '%s\n' "$extra" | sed '/^$/d;s|^|  src-tauri/tests/|;s|$|.rs|' >&2
+  echo >&2
+  echo "Every file there links the whole library with 527 Tauri crates -- about 60 s each," >&2
+  echo "against 6 s to run all the tests together (AGENTS.md 2a). Make it a module of the one" >&2
+  echo "integration target instead: src-tauri/tests/it/<name>.rs plus \`mod <name>;\` in main.rs." >&2
+  echo "If it truly cannot be merged -- it measures whole-process state, or it costs money --" >&2
+  echo "say so and add it to ALLOWED_TOP in this file, with the reason." >&2
+  bad=1
+fi
+
+if [ -n "${gone//[$'\n' ]/}" ]; then
+  echo "ALLOWED_TOP names files that are not there any more:" >&2
+  printf '%s\n' "$gone" | sed '/^$/d;s|^|  src-tauri/tests/|;s|$|.rs|' >&2
+  echo "An exception without a file is an exception nobody can read. Remove it." >&2
+  bad=1
+fi
+
 [ "$bad" = 0 ] || exit 1
 
-echo "tests-listed: $(printf '%s\n' "$on_disk" | grep -c . || true) test files, every one declared in main.rs"
+echo "tests-listed: $(printf '%s\n' "$on_disk" | grep -c . || true) modules declared in main.rs, $(printf '%s\n' "$top_on_disk" | grep -c . || true) standalone targets (all on the allowlist)"

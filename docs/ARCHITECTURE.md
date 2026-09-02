@@ -48,7 +48,7 @@ Rozstrzygam je tutaj. Każde ma powód i koszt zmiany zdania później.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  React 19 · Vite · Tailwind v4 · Zustand · Base UI               │
+│  React 19 · Vite · Tailwind v4 · Zustand                          │
 │  Sześć sekcji, bez routera: Praca · Workflow · Agenci · Umiejętności     │
 │  · Pamięć · Triggery                                                    │
 └───────────────┬──────────────────────────────┬───────────────────┘
@@ -560,12 +560,16 @@ Powłoka     tauri 2.11.5 · tauri-build 2.6.3 · @tauri-apps/api 2.11.1
 Wtyczki     opener 2.5.4 · dialog 2.7.2 · store 2.4.4 · single-instance 2.4.3 · window-state 2.4.1
             BEZ shell, BEZ fs w webview
 Rust        rustc 1.96 · tokio 1.53 · tokio-util 0.7.19 · process-wrap 9.1.0
-            rusqlite 0.40.2 (bundled) · rusqlite_migration 2.6.0 · serde_json 1.0.151
+            rusqlite 0.40.2 (bundled) · serde_json 1.0.151
             thiserror 2.0.20 · uuid 1.24.1 (v7) · tracing 0.1.44
 Frontend    react 19.2.8 · vite 8.2.1 · typescript ~6.0.3 (pinowany dokładnie)
 Stan        zustand 5.0.15
 Style       tailwindcss 4.3.3 — tokeny w jednym bloku @theme, lustrzane wobec DESIGN.md
-Prymitywy   @base-ui/react 1.7.0 · @tanstack/react-virtual 3.14.9
+Prymitywy   BRAK -- komponenty sa nasze, na naszych tokenach
+            (2026-09-02, R-10: `@base-ui/react` i `@tanstack/react-virtual` staly tu
+            od pierwszego dnia i nie zostaly zaimportowane ANI RAZU -- ta sama klasa
+            co kroj Inter z D1, zadeklarowany w theme.css i nieobecny w drzewie.
+            Wyszly razem z klientami JS wtyczek store i opener, ktorych front nie wolal.)
 Graf        @xyflow/react 12.11.3
 Testy       proptest 1.11.0 · vitest · playwright (tylko gesty przeciągania)
 ```

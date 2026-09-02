@@ -20,7 +20,6 @@
     "fmt:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\""
   },
   "dependencies": {
-    "@tanstack/react-virtual": "3.14.9",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.2",
     "@xyflow/react": "12.11.3",
