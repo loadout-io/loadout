@@ -32,7 +32,7 @@ import { wireChannel } from '../../ipc/run';
  * przepisywałaby linie biegu z zakresu A do sesji zakresu B w chwili przełączenia, i wyglądałoby
  * to na ekranie jak dwa pomieszane biegi. Nagłówki `./feed/live` i `../../state/run` mówią to
  * samo z drugiej strony. */
-import { runFor, type RunStore } from '../../state/run';
+import { nextStamp, runFor, type RunStore } from '../../state/run';
 import type { Step } from '../../state/run';
 /* WYŁĄCZNIE TYP: strzałka „po" jest kształtem z pliku workflow, a ta krawędź tylko ją przewozi.
  * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc sekcja Bieg nie zyskuje ani
@@ -246,15 +246,16 @@ export function start(
    * ten bieg należy do TEGO zakresu przez cały swój czas, a rozstrzyganie sesji w środku
    * domknięcia dawałoby uchwyt, który mógłby się przesunąć razem z widokiem. */
   /* STEMPEL POWSTAJE TUTAJ, I TO JEST ROZBIEŻNOŚĆ DO ZGŁOSZENIA (AGENTS.md §7).
-   * `src/state/run.ts` opisuje `Stamped.id` jako „ściśle rosnący numer nadawany po stronie
-   * Rusta [T2 §6.3]" — a `src-tauri/src/engine/line.rs` nie serializuje ani `id`, ani `at`:
-   * `at_ms` istnieje wyłącznie w `Seen`, czyli w WEJŚCIU kuratora, i nigdy nie wychodzi na drut.
-   * Dopóki tak jest, jedynym miejscem, w którym te dwa pola mogą powstać, jest granica — czyli
-   * to miejsce. `at` jest tu poprawne z definicji („kiedy zdarzenie NAPŁYNĘŁO"), `id` jest
-   * zastępcze: zachowuje kolejność przybycia, ale nie przeżyje przeładowania okna i nie zgodzi
-   * się z żadnym numerem po stronie Rusta. Prawdziwa naprawa to pole na drucie, czyli
-   * `engine/line.rs`, który należy do T-05 — poza OWNS tego zadania. */
-  let stamp = 0;
+   * `src-tauri/src/engine/line.rs` nie serializuje ani `id`, ani `at`: `at_ms` istnieje wyłącznie
+   * w `Seen`, czyli w WEJŚCIU kuratora, i nigdy nie wychodzi na drut. Dopóki tak jest, jedynym
+   * miejscem, w którym te dwa pola mogą powstać, jest granica — czyli to miejsce. `at` jest tu
+   * poprawne z definicji („kiedy zdarzenie NAPŁYNĘŁO"), `id` jest zastępcze. Prawdziwa naprawa
+   * to pole na drucie, czyli `engine/line.rs`, który należy do T-05 — poza OWNS tego zadania.
+   *
+   * 2026-09-02 — NUMER JEDZIE Z JEDNEGO LICZNIKA NA CAŁE OKNO (`nextStamp`), a nie z własnego
+   * licznika tej pompy. Powód w całości stoi przy tamtej funkcji; w skrócie: rozmowa i bieg
+   * wchodzą do TEJ SAMEJ historii, więc pompa licząca od siebie wydaje numer, który już w niej
+   * stoi — a numer wiersza jest jego adresem dla `toggle`, dla bloku „Answered" i dla Reacta. */
   /* Klucz sesji tego biegu. Pusty napis znaczy „bez wskazanego folderu" — Rust bierze wtedy
    * katalog, pod którym wstała aplikacja (`AppState::project_for`), i to też jest jedna,
    * konkretna sesja, a nie „żadna". Ten sam sentinel czyta rejestr strumienia. */
@@ -263,10 +264,7 @@ export function start(
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
     const at = Date.now();
-    const stamped = batch.map((line) => {
-      stamp += 1;
-      return { ...line, id: stamp, at };
-    });
+    const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
   });
@@ -392,23 +390,23 @@ export function ask(
   /* Zawsze ręczny: `/ask` wychodzi z wiersza wejścia, przy którym siedzi człowiek, więc bierze
    * jego nadpisanie i je zjada — tak samo, jak zrobiłby to przycisk Start. */
   const ceiling = theCeilingFor(budgetUsd, null);
-  /* TE DZIESIĘĆ LINII SĄ TRZECIĄ KOPIĄ (`start`, `openChat`, tutaj) I TO JEST ZGŁOSZENIE, NIE
+  /* TE DZIEWIĘĆ LINII SĄ TRZECIĄ KOPIĄ (`start`, `openChat`, tutaj) I TO JEST ZGŁOSZENIE, NIE
    * WYGODA. Wyciągnięcie ich do jednej funkcji jest oczywiste i należy do właściciela tego
    * pliku: mandat T-62 na `io.ts` pozwala DOPISAĆ jedną krawędź i mówi wprost, że żadna
    * istniejąca sygnatura nie jest przy tym zmieniana (TASK.md, „Wąskie mandaty na cudze
    * pliki"). Wspólny szew ruszyłby ciała `start` i `openChat`, czyli dokładnie to, przed czym
-   * ten mandat stoi — a stempel powstaje tu z tego samego powodu, co tam (`src/state/run.ts`
-   * opisuje `Stamped.id` jako numer z Rusta, a drut go nie niesie). */
+   * ten mandat stoi.
+   *
+   * 2026-09-02 — JEDNEJ RZECZY JUŻ TUTAJ NIE MA: własnego licznika stempla. Był czwartym
+   * liczącym od 1, a wszystkie cztery pompy piszą do tej samej historii terminalu, więc numery
+   * się w niej powtarzały. Wydaje je dziś `nextStamp` (`src/state/run.ts`) i to jest jedyna
+   * kopia, która z tej czwórki zniknęła. */
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
   const lines = new Channel<unknown[]>();
-  let stamp = 0;
   wireChannel(lines, (batch) => {
     const at = Date.now();
-    const stamped = batch.map((line) => {
-      stamp += 1;
-      return { ...line, id: stamp, at };
-    });
+    const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
   });
@@ -685,14 +683,13 @@ function asARun(
 
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
-  let stamp = 0;
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
     const at = Date.now();
-    const stamped = batch.map((line) => {
-      stamp += 1;
-      return { ...line, id: stamp, at };
-    });
+    /* JEDEN LICZNIK NA CAŁE OKNO, ten sam, co przy Starcie — powód stoi przy `nextStamp`
+     * (`src/state/run.ts`): wznowienie i powtórzenie kroku wchodzą do historii, w której stoi
+     * już rozmowa tego terminalu. */
+    const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
   });
@@ -782,13 +779,12 @@ export function openChat(
   const at = terminalOf(terminal, folder);
   const view = feedFor(at);
   const lines = new Channel<unknown[]>();
-  let stamp = 0;
   wireChannel(lines, (batch) => {
     const now = Date.now();
-    const stamped = batch.map((line) => {
-      stamp += 1;
-      return { ...line, id: stamp, at: now };
-    });
+    /* TEN SAM LICZNIK, CO PRZY BIEGU, i to jest cała naprawa z 2026-09-02: ekran Pracy woła tę
+     * krawędź przy KAŻDYM montażu (`./index.tsx`), a licznik zerowany razem z pompą wydawał przy
+     * każdym powrocie numery, które w tej historii już stały. Powód przy `nextStamp`. */
+    const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at: now }));
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
 
@@ -803,9 +799,8 @@ export function openChat(
     for (const going of autoStarts(stamped)) {
       void runSuggestion(going.command).then((refusal) => {
         if (refusal !== null) {
-          stamp += 1;
           view.appendLines([
-            { kind: 'note', agent: going.agent, text: refusal, id: stamp, at: Date.now() },
+            { kind: 'note', agent: going.agent, text: refusal, id: nextStamp(), at: Date.now() },
           ]);
         }
       });

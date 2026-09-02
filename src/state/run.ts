@@ -37,10 +37,56 @@ import { useWorkspaces } from './workspaces';
 
 /** Dwa pola, które granica dokłada wierszowi z drutu. */
 export interface Stamped {
-  /** Ściśle rosnący numer nadawany po stronie Rusta [T2 §6.3]. */
+  /**
+   * Ściśle rosnący numer wiersza w tym oknie. Nadaje go GRANICA, nie Rust.
+   *
+   * 2026-09-02 — ZDANIE, KTÓRE TU STAŁO, BYŁO NIEPRAWDĄ. Opisywało ten numer jako „nadawany po
+   * stronie Rusta [T2 §6.3]", a `src-tauri/src/engine/line.rs` nie serializuje ani `id`, ani
+   * `at`: `at_ms` istnieje wyłącznie w `Seen`, czyli w WEJŚCIU kuratora, i nigdy nie wychodzi na
+   * drut. Jedynym miejscem, w którym te dwa pola mogą dziś powstać, jest krawędź
+   * (`src/sections/run/io.ts`) — a numer bierze ona z [`nextStamp`] niżej. Numer jest przez to
+   * zastępczy: zachowuje kolejność przybycia, ale nie przeżyje przeładowania okna i nie zgodzi
+   * się z żadną liczbą po tamtej stronie granicy.
+   */
   readonly id: number;
   /** Kiedy zdarzenie napłynęło, w milisekundach. Okno sklejania liczy się z tego. */
   readonly at: number;
+}
+
+/**
+ * Ostatni numer wydany wierszowi z drutu.
+ *
+ * NA POZIOMIE MODUŁU, i to jest cała treść tej zmiennej: licznik zerowany razem z pompą wydaje
+ * drugi raz numery, które już stoją w historii. Tak samo stoi licznik wierszy okna
+ * (`src/sections/run/entry/echo.ts`, `last`), tylko że tamten maleje.
+ */
+let stamped = 0;
+
+/**
+ * Kolejny numer wiersza — jedyne miejsce w oknie, w którym on powstaje.
+ *
+ * 2026-09-02 — PO CO TO POWSTAŁO, ZMIERZONE (audyt, znalezisko F-1). Granica miała CZTERY
+ * niezależne liczniki, po jednym na pompę (`start`, `ask`, `asARun`, `openChat`
+ * w `src/sections/run/io.ts`), i każdy zaczynał od 1. Rozmowa i bieg jadą przy tym do TEJ SAMEJ
+ * historii — strumień jest kluczowany tożsamością terminalu, a nie tym, co paczkę przywiozło
+ * (`src/sections/run/feed/live.ts`) — a ekran Pracy woła `openChat` przy każdym montażu, więc
+ * powrót na ten ekran był trzecim nadawcą numerów 1, 2, 3 w tej samej kolumnie. Model historii
+ * nie deduplikuje po `id`, więc duplikat naprawdę stawał w niej jako drugi wiersz, a numer
+ * wiersza jest jego ADRESEM: `toggle` szuka wiersza przez `findIndex`, czyli oddaje naciśnięcie
+ * temu, kto nosi ten numer pierwszy, blok „Answered" staje pod wierszem o `id` równym
+ * `questionId`, a `key` Reacta jest tą samą liczbą.
+ *
+ * JEDEN LICZNIK NA CAŁE OKNO, nie jeden na terminal, i nie jest to uproszczenie: numery mają być
+ * niepowtarzalne w każdej historii, a nie gęste w którejkolwiek z nich. Licznik per terminal
+ * odpowiadałby na to samo pytanie w kilku miejscach naraz (niezmiennik 13) i wymagałby od pompy
+ * wiedzy, do którego strumienia właśnie pisze — czyli drugiego rozstrzygnięcia obok `feedFor`.
+ *
+ * DODATNIE Z ROZMYSŁEM: wiersze pisane przez samo okno numerują się PONIŻEJ zera, żeby nie
+ * udawały zdarzeń biegu (niezmiennik 4), i te dwie przestrzenie nie mają prawa się spotkać.
+ */
+export function nextStamp(): number {
+  stamped += 1;
+  return stamped;
 }
 
 /** Wiersz, który to repo umie nazwać: jeden z czternastu rodzajów, ostemplowany. */

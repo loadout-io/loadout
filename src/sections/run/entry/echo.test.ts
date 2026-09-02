@@ -116,10 +116,11 @@ describe('every line you send leaves a row, and none of them pretends to come fr
       if (row === null) continue;
       expect(
         row.id,
-        'the number has to be below zero. Both pumps on the boundary stamp from 1 and they do it ' +
-          'separately — the run in `start()` and the conversation in `openChat()` — so a positive ' +
-          'counter in the window collides with theirs inside one window. Two rows under one ' +
-          'number are one row to React, and the older of the two is the one that disappears.',
+        'the number has to be below zero. The boundary stamps every line it carries in from 1 ' +
+          'upwards — the run in `start()` and the conversation in `openChat()` share one counter ' +
+          'now — so a positive counter in the window collides with theirs inside one window. Two ' +
+          'rows under one number are one row to React, and the older of the two is the one that ' +
+          'disappears.',
       ).toBeLessThan(0);
       numbers.push(row.id);
     }

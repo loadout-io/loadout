@@ -13,12 +13,14 @@
  * je `You →` (`../feed/line.tsx`). Dwa wiersze o jednym zdaniu to dwa miejsca prawdy
  * (niezmiennik 13), więc [`echoOf`] oddaje wtedy `null`.
  *
- * DLACZEGO IDENTYFIKATOR JEST UJEMNY. Stempel powstaje na granicy i osobno dla każdej pompy:
- * `../io.ts` liczy od 1 w `start()` i od 1 w `openChat()`, więc dodatnie numery już dziś potrafią
- * się powtórzyć w jednym oknie. Wiersz składany tutaj wchodzi do tej samej historii, więc
- * potrzebuje przestrzeni numerów, której żadna z tych dwóch pomp nie tknie — a przy okazji
- * NIESIE swoje pochodzenie: numer ujemny nie ma prawa udawać zdarzenia biegu (niezmiennik 4).
- * Tego wiersza nie ma w `run.json` i nie przeżyje przeładowania okna.
+ * DLACZEGO IDENTYFIKATOR JEST UJEMNY. Bo wiersz składany tutaj wchodzi do tej samej historii, co
+ * paczki z granicy, i musi NIEŚĆ swoje pochodzenie: numer ujemny nie ma prawa udawać zdarzenia
+ * biegu (niezmiennik 4). Tego wiersza nie ma w `run.json` i nie przeżyje przeładowania okna.
+ *
+ * 2026-09-02 — STAŁ TU JESZCZE DRUGI POWÓD I DZIŚ JEST NIEPRAWDĄ: „stempel powstaje osobno dla
+ * każdej pompy, więc dodatnie numery i tak potrafią się powtórzyć". Granica wydaje je od tego
+ * dnia z jednego licznika (`nextStamp` w `../../../state/run.ts`), więc powtórzyć się nie mogą.
+ * Ujemne zostają z powodu wypisanego wyżej, który był tu od początku.
  */
 import type { Line } from '../../../ipc/types';
 import type { Stamped } from '../../../state/run';
@@ -72,11 +74,12 @@ const TYPED_HERE = '❯ ';
 const WINDOW_KIND = 'run' as const;
 
 /**
- * Ostatni wydany numer. Maleje, więc nigdy nie zderzy się z żadną z dwóch pomp.
+ * Ostatni wydany numer. Maleje, więc nigdy nie zderzy się z numerem znad granicy.
  *
  * Na poziomie modułu, nie w komponencie: wiersz wejścia odmontowuje się przy każdym wyjściu
  * do innej sekcji, a licznik zerowany przy powrocie wydałby drugi raz numery, które już stoją
- * w historii — czyli dokładnie tę kolizję, przed którą to pole ma bronić.
+ * w historii — czyli dokładnie tę kolizję, przed którą to pole ma bronić. Licznik granicy stoi
+ * z tego samego powodu w module (`nextStamp` w `../../../state/run.ts`), tylko rośnie.
  */
 let last = 0;
 
