@@ -291,9 +291,9 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 |---|---|---|---|---|---|---|---|---|
 | Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — prompt był niepełny; zastąpione przez Z-01b |
-| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | RUNNING | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | **BLOCKED** — sześć odrzuceń w dwóch podejściach; zakres jest większy niż jedno zadanie | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | **LANDED** `2026-09-02` | dwie rundy, 13 min; zawężony test biegnie 1 s |
-| Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
+| Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | RUNNING | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | TODO | `run.rs` 11 k linii |
 | Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | TODO | |
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
@@ -374,6 +374,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-02 23:50 · Z-01b · **BLOCKED po trzech rundach**, drugi raz. Sześć odrzuceń łącznie, każde na innej prawdziwej dziurze — pełna lista i trzy drogi wyjścia w sekcji 6 tego pliku. Pętla idzie dalej po Z-03; zależność w tabeli była kolejnością, nie logiką · C→X
 - 2026-09-02 21:35 · Z-02 · LANDED, dwie rundy, 780 s. Sonda sygnałem zerowym zamiast salwy SIGTERM co 10 ms przez całe okno łaski; zawężony test biegnie 1 s zamiast pełnej suity · X→C
 - 2026-09-02 20:35 · Z-29 · LANDED, pełne CI 237 s · X→C
 - 2026-09-02 20:20 · Z-01 · **BLOCKED po trzech rundach** i to jest dobra wiadomość o systemie, nie zła o zadaniu. Weryfikator (codex) odrzucił trzy razy, za każdym razem wskazując lukę, której zielone checki nie widziały: (1) reaper uznawał DOWOLNY znacznik za zgodę na zabicie, więc grupa cudzego biegu ginęłaby zamiast być zgłoszona jako obca; (2) znacznik przy prawdziwym starcie bierze się z identyfikatora SESJI, a odzyskiwanie porównuje go z identyfikatorem BIEGU — nigdy się nie zgadzają, więc własna żywa grupa byłaby „obca"; (3) `pgids` nie są zapisywane do `run.json` na ścieżce Stopu ani timeoutu, więc ocalały wnuk po nieudanym Stopie nie trafia do pliku i reaper startowy go nie znajdzie. Praca (18 plików, 908 linii) stoi w `../loadout-h-z01-descendants`. Sugestia weryfikatora jest konkretna: pobierać `descendant_groups()` z zachowanego uchwytu przed zapisem `death_proof`, a drugi test przepiąć na prawdziwy bieg zamiast ręcznego wpisu · C→X
@@ -398,3 +399,45 @@ Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem
 - 2026-09-02 10:30 · 0.1 · osierocone binarium testowe z anulowanego biegu meetnotes (pid 23164, 16 h 48 min, 262 MB) zabite z dowodem ESRCH; `cargo clean` zdjął 621 313 plików i 71,3 GiB; 84 martwe wpisy zaufania u Claude'a i 288 u Codeksa · ręka
 - 2026-09-02 10:15 · POMYŁKA ORKIESTRATORA · edytowałem drzewo w trakcie `ci.sh full`, więc pas strażników odmówił („the tree is dirty") i cała bramka dała kod 2 przy wszystkich pasach zielonych. Reguła na przyszłość: kiedy bramka biegnie, wolno tylko czytać · ręka
 - 2026-09-02 03:50 · plan · plan powstał z audytu; 5 pakietów Fali 0, 33 zadania, 33 prompty w `prompts/`; nic jeszcze nie wykonane · ręka (Fable)
+
+---
+
+## 6. Z-01 — dlaczego stoi i co wymaga twojej decyzji
+
+Dwa podejścia (`z01-descendants`, `z01b-descendants`), po trzy rundy każde, **sześć odrzuceń**,
+każde na innej prawdziwej dziurze, każde przy ZIELONYCH checkach. Praca stoi w dwóch worktree
+i nie jest zmarnowana: ostatnie podejście ma 8 plików i ~700 linii, wszystkie checki zielone.
+
+Co kolejno znalazł weryfikator (cross-vendor, Codex):
+
+1. reaper uznawał **dowolny** znacznik za zgodę na zabicie — grupa cudzego biegu ginęłaby
+   zamiast zostać zgłoszona jako obca;
+2. znacznik przy prawdziwym starcie brał się z identyfikatora **sesji**, a odzyskiwanie
+   porównywało go z identyfikatorem **biegu** — nigdy równe, więc własna żywa grupa byłaby „obca";
+3. `pgids` nie trafiały do `run.json` na ścieżce Stopu ani limitu czasu — czyli dokładnie tam,
+   gdzie ocalały wnuk jest jedynym powodem, dla którego ta praca powstaje;
+4. krok `serve` w ogóle nie dostawał znacznika (`Processes::start` omija `for_step`);
+5. zmienna z Połączeń o tej samej nazwie mogła **nadpisać** znacznik, bo był ustawiany przed
+   pętlą po środowisku;
+6. potomek utworzony **po** SIGTERM, w trakcie obsługi sygnału, wymyka się drugiej migawce;
+   a grupy odkryte w oknie łaski dostawały od razu SIGKILL zamiast eskalacji TERM → KILL → dowód.
+
+**Wniosek, który należy do ciebie, nie do pętli.** To nie jest zadanie „dodaj migawkę drzewa".
+Znacznik musi przeżyć KAŻDĄ drogę powstania procesu (agent, sprawdzenie, `serve`, środowisko
+z Połączeń) i KAŻDĄ drogę zejścia (naturalne, Stop, limit czasu, fork w oknie łaski), a jego
+zapis musi trafić do `run.json` na każdej z nich. To jest zmiana projektowa w supervisorze,
+nie łatka — i dlatego harness słusznie stanął.
+
+Trzy drogi do wyboru:
+
+- **podzielić na trzy zadania**: (a) migawka i eskalacja dla każdej odkrytej grupy w samym
+  supervisorze, z testem na `Supervised::stop()`; (b) znacznik na wszystkich drogach spawnu,
+  odporny na nadpisanie ze środowiska; (c) zapis `pgids` na wszystkich drogach zejścia plus
+  reaper porównujący identyfikator biegu;
+- **zawęzić do (a)**, bo samo to zamyka najczęstszy przypadek — `cargo test` odpalony przez
+  agenta, który przeżywa Stop — i dopiero potem wracać po resztę;
+- **zostawić** i przyjąć, że `death_proof` mówi o grupie lidera, a nie o wszystkim, co krok
+  uruchomił, dopisując to zdanie do `docs/ARCHITECTURE.md` §5 jako znane ograniczenie.
+
+Worktree obu podejść zostają nietknięte: `../loadout-h-z01-descendants`
+i `../loadout-h-z01b-descendants`.
