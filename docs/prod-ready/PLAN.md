@@ -1,0 +1,362 @@
+# Plan „prod-ready" — pętla do stanu produkcyjnego
+
+Powstał 2026-09-02 z audytu (`docs/prod-ready/AUDIT-2026-09-02.md`, strona:
+https://claude.ai/code/artifact/52e87887-d893-46ac-a47f-48f8dafc7d1f). Ten plik jest **jedynym
+źródłem prawdy o postępie**: tabela „Stan" mówi, co zrobione, „Dziennik" mówi, co się działo.
+Orkiestrator aktualizuje oba po każdej zmianie statusu i commituje ten plik na `main`.
+
+Nad tym planem stoją `AGENTS.md` i `docs/DECISIONS-LOCKED.md`. Jeśli coś tu się z nimi kłóci —
+wygrywają tamte, a rozbieżność trafia do Dziennika.
+
+---
+
+## 1. Protokół pętli (wiążący dla orkiestratora)
+
+### Statusy
+
+`TODO` → `RUNNING` → `DZIALA` (bieg skończony kodem 0, jeszcze niewlany) → `LANDED`
+(zmergowane na `main`, `ci.sh full` zielone, worktree usunięty). Boczne: `BLOCKED` (kod 2 po
+dwóch poprawkach, kod 1 z powodu kodu, czerwone CI po merge'u, konflikt) — z jednym zdaniem
+powodu w kolumnie „Uwagi" i wpisem w Dzienniku. `BLOCKED` nie zatrzymuje pętli; zatrzymuje tylko
+zadania, które od niego zależą (te dostają `BLOCKED-DEP`).
+
+### Wybór następnego zadania
+
+1. Fala 0 w całości przed jakimkolwiek `scripts/h run` — pakiety 0.1 → 0.5, po kolei.
+2. Potem: najniższa fala, w niej najniższy numer, którego wszystkie zależności są `LANDED`.
+3. Równoległość: najwyżej **jeden** bieg dotykający Rusta (`src-tauri/**`) naraz; obok niego
+   może iść najwyżej **jeden** bieg czysto TS (`src/**`, oznaczone `TS` w tabeli). Niezmiennik 26
+   i pamięć projektu: dwa ciężkie `cargo` naraz zamrażają maszynę, a zajęta maszyna udaje czerwony
+   test.
+4. `scripts/h land` biegnie wyłącznie, gdy **żaden** bieg nie trwa (pełne CI to ciężkie `cargo`
+   + `vitest` + Chromium). Kolejka lądowań: w kolejności zakończenia biegów.
+5. Sesja ma limit tokenów. Po każdym `LANDED` zapisz stan; gdy kontekst robi się ciężki —
+   `/compact`. Nie trzymaj w kontekście transkryptów biegów: czytaj `runs/<id>/` tylko przy
+   kodach 1/2/3, i tylko ogon.
+
+### Uruchomienie zadania
+
+```bash
+scripts/h run <id> --prompt "$(cat docs/prod-ready/prompts/<ID>.md)" [--dev codex --verifier claude]
+```
+
+- `<id>` = mały identyfikator z tabeli (np. `z01-descendants`); gałąź to `h-<id>`, worktree
+  `../loadout-h-<id>`, stan `.git/h/<id>.json`, transkrypty `runs/<id>/`.
+- Prompt idzie przez `$(cat …)`, nie wklejony w cudzysłów: wynik podstawienia nie jest
+  interpretowany przez powłokę, więc backticki i dolary w treści są bezpieczne.
+- Uruchamiaj w tle (`run_in_background: true`); bieg trwa 30–90 min, a sufit tury Basha to 10 min.
+- Domyślna para: plan Claude, kod Claude, weryfikacja Codex (D3). Zadania oznaczone w tabeli
+  `codex` idą z `--dev codex --verifier claude` — cross-vendor w drugą stronę, żeby oba vendory
+  robiły całość, a D3 była prawdziwa w obu kierunkach.
+- Domyślne sufity per faza (po pakiecie 0.3): `LOADOUT_BUDGET_PLAN=12`, `LOADOUT_BUDGET_DEV=40`,
+  `LOADOUT_BUDGET_VERIFY=6` (USD). Zadania oznaczone `duże` dostają `LOADOUT_BUDGET_DEV=70`.
+
+### Odbiór
+
+| kod | znaczenie | co robisz |
+|---|---|---|
+| 0 | DZIALA, praca zacommitowana na `h-<id>` | status `DZIALA`; gdy nic nie biegnie: `scripts/h land <id>` → `scripts/h clean <id>` → `LANDED` |
+| 1 | check padł albo model padł | przeczytaj ogon `runs/<id>/build-*.jsonl` i `.git/h/<id>.json`; jeśli to maszyna (timeout checka, zajęty procesor, brak vendora) — powtórz raz to samo polecenie (worktree zostaje); jeśli to kod — `BLOCKED` |
+| 2 | STOP po dwóch poprawkach albo NIE_WIEM albo bieg dotknął wyroczni | `BLOCKED` z pierwszym zdaniem `co_nie_dziala`; worktree zostaje do wglądu |
+| 3 | sufit czasu/tur | powtórz raz z `LOADOUT_MAX_TURNS=400 LOADOUT_BUDGET_DEV=70` i `--no-plan` (plan jest w stanie); drugi raz — `BLOCKED` |
+
+Po `land`: jeśli `ci.sh full` jest czerwone, merge zostaje na `main`. Gdy powód to `rust-fmt`,
+`web-fmt` albo pojedyncza uwaga clippy — popraw na `main`, `bash scripts/ci.sh full`, commit
+`fix(main): …`. Każdy inny powód: `git revert -m 1 HEAD`, `BLOCKED` z powodem. **Nigdy**
+`git reset --hard` (zablokowane w `deny`).
+
+### Czego orkiestrator nie robi
+
+- Nie edytuje `harness/`, `checks/`, `scripts/`, `.claude/`, `AGENTS.md`,
+  `docs/DECISIONS-LOCKED.md`, `worktree.sh` poza Falą 0 — i w Fali 0 wyłącznie przez `python3`
+  z zapisem atomowym (`tmp` w tym samym katalogu + `os.replace`), bo Edit/Write są tam
+  zablokowane celowo.
+- Nie uruchamia `cargo`/`vitest` na `main`, gdy jakikolwiek bieg albo `land` trwa.
+- Nie pushuje. Nie kasuje gałęzi `backup/*`. Nie kasuje worktree zadania w stanie `BLOCKED`.
+- Nie zmienia treści promptów w `docs/prod-ready/prompts/` po starcie biegu; jeśli prompt jest zły,
+  zadanie dostaje `BLOCKED` z powodem „prompt", a poprawiony prompt idzie jako nowy bieg z nowym
+  `<id>` (stary worktree `clean`).
+
+---
+
+## 2. Fala 0 — ręka orkiestratora, przed pętlą
+
+Powód: pętla na dzisiejszym `h.py` dostaje plan Codeksa jako surowy strumień JSON, poprawkę na
+cudzej sesji, zostawia sieroty po checkach i potrafi wlać gałąź bez wspólnego przodka. Wyrocznia
+jest w `deny`, więc żaden bieg tego nie naprawi.
+
+Każdy pakiet kończy się commitem na `main` i wierszem w Dzienniku. Kolejność jest zależnością.
+
+### 0.1 Sprzątanie maszyny
+
+1. Sierota: `ps -o pid,ppid,pgid,etime,command -p 23164`. Jeśli to nadal
+   `…/meetnotes/.loadout/runs/20260901-150035__01a05d7c-…/work/s_7/target/debug/deps/meetnotes_lib-…`
+   → `kill -TERM 23164`, po 5 s `kill -KILL 23164`, potwierdź `kill -0 23164` = ESRCH. Jeśli pid
+   wskazuje co innego — nie zabijaj, zapisz w Dzienniku.
+2. `cargo clean` w `~/Projects/Loadout` (34 GB, 577 979 plików w `deps`). Potem pierwszy
+   `cargo build --tests` w `src-tauri` (zimny, kilka minut) — żeby hak Stop i pierwsze biegi nie
+   płaciły go w turze.
+3. Worktree: `scripts/h clean skills-reach-the-lead` (zlądowany w `ff31bb11`);
+   `git worktree remove --force` dla `../loadout-T-151-race-before` i `../loadout-T-157-before`
+   (detached, sondy); `git worktree prune`. Pozostałe 16 (`h-repair-*`, `lab`, `ui`,
+   `wf-preflight`, `T-203-phase8`, `fix-session-trust`) zostają do pakietu 0.2.
+4. `runs/`: zostaw katalogi zadań z otwartym stanem w `.git/h/` oraz młodsze niż 14 dni; resztę
+   usuń (`runs/` jest gitignored). Zapisz w Dzienniku, ile usunięto.
+5. Zaufanie: kopia `~/.claude.json` → `~/.claude.json.bak-2026-09-02`; usuń z `projects` wpisy,
+   których katalog nie istnieje (python3, atomowo, `flock` jak w `harness/trust-workspace.py`).
+   To samo dla `[projects."…"]` w `~/.codex/config.toml` (kopia najpierw). Zapisz liczby.
+6. Zamknij dwa procesy-sieroty innych sesji tylko, jeśli są nasze i martwe (nie dotykaj czterech
+   interaktywnych `claude`).
+
+Kryterium: `ls target/debug/deps | wc -l` < 60 000 po buildzie; `git worktree list` = main +
+16 z pakietu 0.2; brak procesu z `cwd` w `.loadout/runs/` starszego niż żywy bieg.
+
+### 0.2 Ratunek dwunastu gałęzi `h-repair-*`
+
+Dla każdej z: `repair-agent-app-preflight`, `repair-bounded-check-output`,
+`repair-bounded-evidence`, `repair-diagnostics-build-facts`, `repair-global-diagnostics`,
+`repair-log-lifecycle`, `repair-readme-truth`, `repair-release-identity`,
+`repair-release-runbook`, `repair-serve-natural-reap`, `repair-serve-reap-hardening`,
+`repair-trigger-open-app-honesty`:
+
+1. `git -C ../loadout-h-<x> stash -u` jest zablokowane; zamiast tego **odrzuć** 85 zestagowanych
+   zmian bez commitowania: to kopie z przepisywania historii, nie praca biegu
+   (`git -C ../loadout-h-<x> diff --cached --stat` do Dziennika, potem
+   `git -C ../loadout-h-<x> restore --staged --worktree .` — jeśli `restore` jest zablokowane,
+   pomiń krok: patch i tak bierzesz z commitów, nie z drzewa).
+2. Właściwa praca biegu = commity ponad wspólnym przodkiem ze starą historią:
+   `base=$(git merge-base backup/przed-przepisaniem-historii h-<x>)`;
+   `git diff $base h-<x> > /tmp/prod-ready/<x>.patch`. Obejrzyj `--stat`: jeśli patch dotyka
+   `harness/`, `checks/`, `scripts/`, `AGENTS.md`, `docs/DECISIONS-LOCKED.md` — te hunki wytnij
+   (to nie była praca zadania) i zapisz w Dzienniku.
+3. Świeża gałąź: `git worktree add ../loadout-rescue-<x> -b rescue-<x> main`;
+   `git -C ../loadout-rescue-<x> apply --3way /tmp/prod-ready/<x>.patch`. Konflikt → zostaw,
+   `BLOCKED` w tabeli poniżej, dalej.
+4. Bramka: `scripts/h check` w tym worktree nie zna zadania bez stanu — więc zapisz stan ręcznie
+   (`.git/h/rescue-<x>.json` z `worktree` i `task`) i odpal
+   `scripts/h run rescue-<x> --no-plan --prompt "Ta gałąź przenosi naprawę <x> z gałęzi sprzed
+   przepisania historii. Sprawdź, że kompiluje się i testy jej dotyczące przechodzą; nie dodawaj
+   niczego."` — dev Claude, verifier Codex. Kod 0 → `land` → `clean` (także starego worktree
+   `../loadout-h-<x>` i gałęzi `h-repair-<x>` przez `git worktree remove --force` +
+   `git branch -D`).
+5. Po dwunastu: `lab`, `ui`, `wf-preflight`, `T-203-phase8` — obejrzyj `git log --oneline
+   $(git merge-base backup/przed-przepisaniem-historii <b>)..<b>`; jeśli to sondy albo praca już
+   w `main` innym commitem, `worktree remove --force` + `branch -D`; jeśli nie — ta sama droga
+   co wyżej, ale jako wpis `BLOCKED` do decyzji człowieka (nie ratuj automatycznie).
+6. Dopiero teraz skasuj 92 gałęzie `task-*`/`T-*` bez merge-base z `main` (jedna komenda z listy
+   `git for-each-ref --format='%(refname:short)' refs/heads/ | while …`), zostawiając `backup/*`,
+   `main`, `rescue-*`, `fix-session-trust` (zmergowana — też do kasacji po sprawdzeniu `ahead=0`).
+7. Usuń `./.h-plan.md` z korzenia repo (H-12).
+
+| gałąź | status | uwagi |
+|---|---|---|
+| repair-agent-app-preflight | TODO | |
+| repair-bounded-check-output | TODO | |
+| repair-bounded-evidence | TODO | |
+| repair-diagnostics-build-facts | TODO | |
+| repair-global-diagnostics | TODO | |
+| repair-log-lifecycle | TODO | `write_log_open_error` nie jest w main |
+| repair-readme-truth | TODO | |
+| repair-release-identity | TODO | |
+| repair-release-runbook | TODO | `release-runbook-contract` nie jest w main |
+| repair-serve-natural-reap | TODO | |
+| repair-serve-reap-hardening | TODO | `Staying::alive` już w main — możliwe, że pusta |
+| repair-trigger-open-app-honesty | TODO | `data-trigger-lifecycle` nie jest w main |
+
+Kryterium: `git branch --no-merged main | wc -l` = liczba gałęzi z otwartym stanem w `.git/h/`;
+`git merge-base main <każda żywa gałąź>` niepuste.
+
+### 0.3 `harness/h.py` — plan, sesja, sieroty, werdykt, sufit, wyrocznia
+
+Wszystko przez `python3` z zapisem atomowym. Po zmianach: `python3 -m py_compile harness/h.py`,
+potem jeden krótki bieg próbny `scripts/h run probe-h --no-plan --prompt "Dopisz jedną linię
+komentarza z datą 2026-09-02 do nagłówka src-tauri/src/durable_file.rs i nic więcej."`
+z `--planner codex` raz i domyślnie raz — oba mają skończyć kodem 0 albo 2 z czytelnym
+powodem; potem `scripts/h clean probe-h` bez lądowania.
+
+Zmiany, każda z komentarzem DLACZEGO z datą i numerem znaleziska:
+
+- **H-1 (plan Codeksa).** W `call_model`, gałąź `codex`: gdy `transcript` jest podane, a `schema`
+  nie — dołóż `out_file = Path(cwd) / ".h-last.txt"` i `argv += ["-o", str(out_file)]`; istniejący
+  kod po `communicate` już zwraca treść `out_file`, jeśli istnieje. Surowy strumień nadal idzie do
+  `transcript`. W `phase_plan` po wyliczeniu `plan`: jeśli `plan.lstrip().startswith('{"type":')`
+  albo `len(plan) > 40_000` → `die("plan wyglada jak strumien JSON, nie plan", 2)`.
+- **H-4 (sesja poprawki).** `import uuid`. W `phase_implement`: `sid = load_state(task_id).get("session") or str(uuid.uuid4())`;
+  `save_state(task_id, session=sid)`; przekaż `session=sid` do `call_model`. W `call_model`
+  (parametr `session=None`), gałąź `claude`: zamiast `argv.append("--continue")` →
+  `argv += ["--resume", session] if resume else ["--session-id", session]` (gdy `session`
+  podane). Codex bez zmian (nie ma wznowienia; poprawka startuje z `feedback`).
+- **H-8 (sieroty checków).** `run_check`: `subprocess.Popen([...], start_new_session=True, ...)`
+  + `communicate(timeout=budget)`; przy `TimeoutExpired` → `kill_group(proc)` i tail
+  `[TIMEOUT po %ds]`. W `call_model` po normalnym `communicate` też wołaj `kill_group(proc)`
+  (grupa zwykle już pusta → `True`; jeśli nie — dzieci Basha agenta giną z dowodem).
+- **H-9 (sufit).** `call_model` dostaje `budget_usd`; gałąź `claude`: `argv += ["--max-budget-usd", "%.2f" % budget_usd]`.
+  `phase_plan` → `float(os.environ.get("LOADOUT_BUDGET_PLAN", "12"))`, `phase_implement` →
+  `LOADOUT_BUDGET_DEV` (40), `phase_verify` → `LOADOUT_BUDGET_VERIFY` (6). W `harness/prompts/implement.md`
+  dopisz jedno zdanie: „`scripts/h check` i hak Stop biegną po tobie — nie odpalaj checków ani
+  pełnej suity sam; zawężony test padający-przechodzący wystarczy."
+- **H-10 (weryfikacja bez śladu).** `phase_verify(task_id, task, plan, wt, checks, vendor, rnd)`
+  z `transcript=str(rundir(task_id) / ("verify-%d.jsonl" % rnd))`. W `call_model`: brak binarki
+  vendora przy `schema` → `die(..., 2)` (niedostępny weryfikator to nie czerwone, D3). W `cmd_run`:
+  `plan = (load_state(task_id).get("plan") or task) if a.no_plan else phase_plan(...)`.
+- **H-11 (NIE_WIEM).** W pętli `cmd_run`: `if verdict == "NIE_WIEM": print(...); raise SystemExit(2)`
+  przed budowaniem `feedback`.
+- **H-2 (wyrocznia).** Stała `ORACLE = ("harness/", "checks/", "scripts/", ".claude/",
+  "AGENTS.md", "docs/DECISIONS-LOCKED.md", "worktree.sh", "CLAUDE.md")`. W `cmd_run` po
+  `phase_check`: `hit = [p for p in paths if p.startswith(ORACLE)]` → `die("bieg dotknal wyroczni: %s" % hit, 2)`.
+  W `cmd_land` przed merge'em: `git diff --name-only <trunk>...<branch>` z tym samym filtrem →
+  `die(..., 2)`; oraz `if not git("merge-base", trunk, branch, check=False): die("galaz nie ma wspolnego przodka z trunkiem", 2)`.
+- **H-19.** `phase_verify`: `base = git("merge-base", trunk, "HEAD", cwd=wt, check=False) or "HEAD"`;
+  `diff = git("diff", base, cwd=wt, check=False)`.
+- **H-20.** `phase_check`: po pierwszym `FAIL` pomiń checki z `budget_s >= 600`, dopisując do
+  listy `{"id": cid, "ok": False, "seconds": 0, "tail": "POMINIETY: wczesniejszy check padl"}`.
+- **H-14/H-23.** `cmd_clean`: po `worktree remove` sprawdź `Path(wt).exists()` — jeśli istnieje,
+  `die("worktree nie zszedl: %s" % wt)` zamiast „usunieto". `cmd_land`: po zielonym CI wołaj
+  `cmd_clean` (argument `--keep` wyłącza). Poradę `git reset --hard HEAD~1` zamień na
+  `git revert -m 1 HEAD`. Usuń martwy `if not git("show-ref", …) == "": pass`.
+
+Kryterium: bieg próbny z `--planner codex` zapisuje `.h-plan.md` bez `{"type":`; `ps` po
+timeoucie checka nie pokazuje cargo/vitest z cwd w worktree; bieg, który dotknie `checks/`,
+kończy się kodem 2 przed commitem; `NIE_WIEM` = kod 2.
+
+### 0.4 Bramka i CI mówią prawdę
+
+- **H-6.** `scripts/ci.sh:277`: `checks/quick-vocabulary.sh` → `checks/vocabulary.sh`, i nie przez
+  `run_check_if_present`, tylko twardo (plik musi istnieć). Sprawdź, czy `run_check_if_present`
+  ma jeszcze inne wywołania do plików, których nie ma — każde takie to ta sama wada.
+- **H-7.** `.github/workflows/ci.yml`: trzeci job `guards` na tym samym runnerze co `rust`
+  (`bash -c 'source scripts/ci.sh; guards_lane'` albo nowy tryb `bash scripts/ci.sh guards`),
+  `gate` zależy od wszystkich trzech. W `ci.sh` stderr kolektora gęstości do logu, nie do `/dev/null`.
+- **R-2.** Zdejmij `#[ignore]` z 11 testów procesowych (`supervisor_group_death:154`,
+  `supervisor_term_then_kill:79,146`, `supervisor_timeout_kills:94`, `supervisor_pipe_eof:62`,
+  `supervisor_drop_guard:142,191`, `claude_cancel_escalation:214,279`,
+  `claude_session_process:114,173`). Uruchom `cargo test --test it -- --test-threads=1 supervisor_ claude_cancel claude_session`
+  **trzy razy** z rzędu; jeśli któryś jest niestabilny, zostaw mu `#[ignore]` z nowym, prawdziwym
+  powodem i wpisz do Dziennika. Do `harness/guards.sh` strażnik: każdy `#[ignore = "…bramka woła…"]`
+  bez odpowiadającego wiersza w `ci.sh` = czerwone.
+- **H-15.** Do `deny` w `.claude/settings.json`: `docs/ARCHITECTURE.md`, `docs/design/DESIGN.md`,
+  `src-tauri/commands.golden.txt` (Edit i Write).
+- **H-16.** `worktree.sh` `cut`: `cargo build --tests` w `src-tauri` nowego worktree (poza turą);
+  `.claude/hooks/stop-gate.sh`: własny sufit 600 s i przy przekroczeniu blokada z jawnym zdaniem
+  „nie zdążyłem sprawdzić", nie cisza.
+- **H-18.** Usuń `"CI": "1"` z `env` w `.claude/settings.json` (`h.py` daje `CI=1` checkom sam).
+- **R-9.** `vite.config.ts` (python3): `test.include = ['src/**/*.test.ts?(x)', 'checks/tests/**/*.test.ts', 'docs/research/**/*.test.ts']`;
+  osobny projekt `e2e` (`vitest run --project e2e` z `fileParallelism` na 4); w `package.json`
+  skrypt `e2e` wskazuje ten projekt (dziś `playwright test` bez configu); w `checks/tests/_support.ts`
+  usuń odwołanie do nieistniejącego `checks/_cargo-serialize.sh`. `checks.json` `web-test` bez
+  zmian (zawęża po ścieżkach).
+- **R-10.** `package.json`: usuń `@base-ui/react`, `@tauri-apps/plugin-store`,
+  `@tauri-apps/plugin-opener` (`npm uninstall`, żeby lockfile poszedł razem); `@tanstack/react-virtual`
+  zostaje do decyzji Z-25. `Cargo.toml` (src-tauri): usuń `rusqlite_migration`. Uprawnienia
+  `store:default` i `opener:*` w `capabilities/default.json` zostają tylko, jeśli Rust je woła —
+  sprawdź `grep -rn plugin_store\|plugin_opener src-tauri/src`.
+- **R-7.** `Cargo.toml` workspace: `license = "AGPL-3.0-only"`; komentarz w `deny.toml` o
+  „zamkniętej aplikacji" poprawić.
+- **R-11.** Przypnij `@playwright/test`, `vitest`, `prettier`, `@types/node` do zainstalowanych
+  wersji z `package-lock.json` (komentarz przy Playwright: bump = ponowny pomiar gęstości).
+
+Kryterium: `bash scripts/ci.sh full` zielone lokalnie; job `gate` na runnerze zależy od trzech
+jobów; `cargo test --test it -- --test-threads=1 supervisor_` melduje > 0 passed bez
+`--include-ignored`.
+
+### 0.5 Dokumentacja bez martwych odwołań
+
+Jedna przecinka, usuwanie nie dopisywanie: `AGENTS.md` (§5 `docs/research/projects/`,
+§6 komendy, `checks/quick-vocabulary.sh`), `docs/DECISIONS-LOCKED.md` (`ship.sh`, `review.sh`,
+`ship-task.sh`, `verify.sh` — zamień na `scripts/h run`/`h land`, treść decyzji bez zmian),
+`.claude/commands/build.md` (§3–6 opisują maszynerię, której nie ma — skróć do wskazania na ten
+plan), `docs/HARNESS-QUEUE.md` (Q-6 nadal prawdziwe dla `h.py`, reszta archiwum),
+`harness/README.md` („~590 linii"), `.claude/settings.json` allow (`Bash(bash harness/snapshot.sh)`,
+`Edit(engine/**)`, `Write(engine/**)`, `Edit(tests/**)`, `Write(tests/**)` — nie istnieją).
+`docs/STATUS.md` → 150 linii („co stoi w trunku, co otwarte, trzy ostatnie sprostowania") +
+`docs/STATUS-ARCHIVE.md`; `docs/PLAN-HARDENING.md` i `docs/PROMPT-FAZA-7-CODEX.md` →
+`docs/archive/` (usuń ścieżkę domową z tego drugiego).
+
+Kryterium: `grep -rn 'verify.sh\|ship.sh\|review.sh\|tasks/\|snapshot.sh\|quick-vocabulary' AGENTS.md docs/*.md .claude harness/README.md`
+= 0 trafień.
+
+---
+
+## 3. Fale 1–5 — zadania w pętli
+
+Kolumny: **ID** (numer z audytu) · **id biegu** (argument `scripts/h run`) · **prompt** ·
+**tryb**: `R` dotyka Rusta (jeden naraz), `TS` czysto frontend (może iść obok jednego `R`) ·
+**vendorzy**: `C→X` = kod Claude, weryfikacja Codex (domyślne); `X→C` = `--dev codex --verifier claude` ·
+**rozmiar**: `duże` = `LOADOUT_BUDGET_DEV=70` · **zależy od** · **status** · **uwagi**.
+
+Kolejność w tabeli = kolejność startu, gdy zależności pozwalają. Z-28 idzie pierwsze, bo
+obniża koszt każdej następnej bramki (60 binariów testowych → 8).
+
+| ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
+|---|---|---|---|---|---|---|---|---|
+| Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | TODO | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
+| Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | TODO | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | TODO | dwa wiersze + test licznika TERM |
+| Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
+| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | TODO | `run.rs` 11 k linii |
+| Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | TODO | |
+| Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
+| Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | TODO | może biec obok Z-28/Z-01 |
+| Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | TODO | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
+| Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | TODO | tylko `docs/`; może biec obok |
+| Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | TODO | utrata pracy człowieka |
+| Z-08 | `z08-skills-outside-commit` | `prompts/Z-08.md` | R | X→C | | Z-07 | TODO | |
+| Z-09 | `z09-sweeper` | `prompts/Z-09.md` | R | C→X | duże | Z-08 | TODO | pięć punktów, jeden bieg; jeśli kod 3 — podziel na `z09a` (reconcile+prune) i `z09b` (kopie, forget, exclude) |
+| Z-10 | `z10-blocking-offload` | `prompts/Z-10.md` | R | C→X | duże | Z-09 | TODO | |
+| Z-26 | `z26-terminal-eviction` | `prompts/Z-26.md` | R | X→C | | Z-25, Z-10 | TODO | jedna linia w `chat.rs` → liczy się jako R |
+| Z-27 | `z27-card-truth` | `prompts/Z-27.md` | TS | X→C | | Z-26 | TODO | pięć drobnych; `PastRunRow` + lustro drutu = `invoke-args` |
+| Z-11 | `z11-skill-tool` | `prompts/Z-11.md` | R | C→X | | Z-10 | TODO | żywa wyrocznia `--ignored`; orkiestrator odpala ją raz po wlaniu (3,75 s) |
+| Z-12 | `z12-codex-pricing` | `prompts/Z-12.md` | R | X→C | | Z-11 | TODO | sonda `--max-budget-usd 0.00` PRZED startem (sekcja 4) |
+| Z-13 | `z13-budget-reservation` | `prompts/Z-13.md` | R | C→X | duże | Z-12 | TODO | |
+| Z-14 | `z14-tee-tool-results` | `prompts/Z-14.md` | R | C→X | | Z-13 | TODO | |
+| Z-15 | `z15-index-without-raw` | `prompts/Z-15.md` | R | C→X | duże | Z-14 | TODO | migracja addytywna; po wlaniu orkiestrator kasuje `~/.loadout/loadout.db*` (indeks odbuduje się) i zapisuje rozmiar przed/po |
+| Z-16 | `z16-context-loaded-by-cli` | `prompts/Z-16.md` | R | C→X | | Z-15 | TODO | sonda `--restricted` PRZED startem |
+| Z-17 | `z17-prompt-file-lead-settings` | `prompts/Z-17.md` | R | X→C | | Z-16 | TODO | |
+| Z-18 | `z18-reflection-switch` | `prompts/Z-18.md` | R | X→C | | Z-17 | TODO | |
+| Z-19 | `z19-codex-resume-flag` | `prompts/Z-19.md` | R | X→C | | Z-18 | TODO | jedna flaga |
+| Z-20 | `z20-roster-same-copy-skill` | `prompts/Z-20.md` | R | X→C | | Z-19 | TODO | odblokowuje workflow Urc |
+| Z-21 | `z21-borrow-review` | `prompts/Z-21.md` | R | C→X | | Z-20 | TODO | |
+| Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | TODO | |
+| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | TODO | sonda `env_vars` Codeksa PRZED startem; wynik dopisz do promptu jako akapit „Wynik sondy" |
+| Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | Z-23 | TODO | |
+| Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | TODO | |
+| Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | TODO | |
+| Z-33 | `z33-record-truth` | `prompts/Z-33.md` | R | X→C | | Z-32 | TODO | |
+
+Szacunek: 30–70 USD i 40–90 min na zadanie (zmierzone na biegach z sierpnia). 33 zadania to rząd
+1 000–1 500 USD i 2–3 doby zegara przy jednym biegu Rusta naraz. Jeśli sufit per faza z 0.3
+zatrzyma bieg (kod 3 z `--max-budget-usd`), zadanie wraca jako `BLOCKED` z powodem „budżet" —
+podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
+
+### Po wlaniu, poza biegiem (ręka orkiestratora, po konkretnym zadaniu)
+
+- **po Z-28:** allowlista plików `tests/*.rs` w `checks/tests-listed.sh` (python3, atomowo);
+  `checks.json` `rust-test.budget_s` z 3600 na 1500 (60 linków mniej).
+- **po Z-06:** ręczny test ⌘Q z żywym dublerem (`FakeDriver` przez `npm run app`) — wynik do
+  Dziennika; jeśli agenci przeżyli, Z-06 wraca do `TODO` jako `z06b` z opisem, co zostało.
+- **po Z-11:** `cargo test --test it -- --ignored skills_reach_claude` raz (płatne ~0,05 USD).
+- **po Z-15:** zamknij aplikację, `rm ~/.loadout/loadout.db ~/.loadout/loadout.db-wal ~/.loadout/loadout.db-shm`,
+  uruchom, sprawdź, że historia biegów jest kompletna (niezmiennik 4), zapisz rozmiar nowej bazy.
+- **po Z-25:** jeśli werdykt „wirtualizacja niepotrzebna" — `npm uninstall @tanstack/react-virtual`.
+- **po Z-20:** otwórz workflow Urc w aplikacji — kafelek „Figma check" bez Problemu (zrzut do Dziennika).
+
+---
+
+## 4. Sondy przed konkretnym zadaniem (tanie, kilka minut, wynik do Dziennika)
+
+| przed | pytanie | jak | co zmienia |
+|---|---|---|---|
+| Z-12 | co Claude Code robi z `--max-budget-usd 0.00` | `claude -p --max-budget-usd 0.00 --output-format json "say hi"` w pustym katalogu | czy „poniżej centa" to odmowa (jak w prompcie), czy CLI sam odmawia |
+| Z-16 | czy `--restricted` odcina `CLAUDE.md` gospodarza (2.1.258) | katalog tymczasowy z `CLAUDE.md` „ODPOWIEDZ SŁOWEM MARKER", `claude -p --restricted --output-format stream-json "what does the project file say?"` i odczyt `system/init` | jeśli tak — Z-16 dostaje dopisek: przełącznik izolacji, nie tylko raport |
+| Z-23 | jaki klucz przekazuje zmienne do serwera MCP stdio w codex-cli 0.152 | `codex exec --help`, `codex mcp --help`, próba `-c 'mcp_servers.x.env_vars=["A"]'` i `-c 'mcp_servers.x.env={A="1"}'` z serwerem-atrapą `env` | treść akapitu „Wynik sondy" w prompcie Z-23 |
+| 0.4 | czy Claude Code po timeoucie haka Stop przepuszcza turę | hak z `sleep 700` w kopii ustawień w katalogu tymczasowym | kształt H-16: sufit własny vs. blokada |
+| 0.3 | czy `codex exec -o <plik>` zapisuje ostatnią wiadomość agenta | `codex exec --skip-git-repo-check -o /tmp/x.txt -` z promptem „odpowiedz słowem TAK" | kształt H-1 |
+
+---
+
+## 5. Dziennik
+
+Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
+Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
+
+- 2026-09-02 03:50 · plan · plan powstał z audytu; 5 pakietów Fali 0, 33 zadania, 33 prompty w `prompts/`; nic jeszcze nie wykonane · ręka (Fable)
