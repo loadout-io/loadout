@@ -40,9 +40,10 @@
  *     mógłby stanąć (`src/sections/run/index.tsx` nie należy do T-72). Osobny plik obok byłby
  *     ścieżką spoza zakresu, czyli pytaniem do człowieka (AGENTS.md §7), a nie cichym dopiskiem.
  *
- * SKĄD OKNO WIE, ŻE COŚ ZESZŁO. Z odświeżania: `list_processes` oddaje wszystko, co rejestr wie,
- * razem z polem `alive`, a odsiew robi `railGroups`. Nie ma tu zdarzenia z drutu i to jest wybór
- * z ceną — kafelek gaśnie do sekundy po śmierci, nie w tej samej klatce. Kanał na to jest
+ * SKĄD OKNO WIE, ŻE COŚ ZESZŁO. Z odświeżania: po `GroupProof::Dead` rejestr usuwa własny wpis,
+ * więc następne `list_processes` nie zawiera już jego `pgid`, a `refreshStarted` zdejmuje kafelek.
+ * Nie ma tu zdarzenia z drutu i to jest wybór z ceną — kafelek gaśnie do sekundy po dowodzie,
+ * nie w tej samej klatce. Kanał na to jest
  * (`Channel<Vec<Line>>`), tylko wiezie WIERSZE STRUMIENIA, a rzecz uruchomiona komendą nie jest
  * agentem i nie ma w strumieniu czego pisać (niezmiennik 17).
  */
@@ -79,7 +80,7 @@ export interface StartedProcess {
 export interface GroupsInput {
   /** Kafelki agentów, już policzone przez `roster()`. Ten plik ich nie przelicza. */
   readonly agents: readonly RailCard[];
-  /** Wszystko, o czym okno wie — także to, co już zeszło. Odsiew jest odpowiedzią tej funkcji. */
+  /** Wszystko, czego rejestr nie dowiódł jeszcze jako martwe. */
   readonly started: readonly StartedProcess[];
 }
 

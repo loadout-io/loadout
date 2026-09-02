@@ -1,13 +1,11 @@
 //! Powłoka aplikacji po stronie Rusta: dziennik, hak paniki, okno.
 //!
-//! Logowanie jest modułem *wewnątrz* tego pliku, bo `src-tauri/src/logging.rs` nie należy do
-//! T-01. Nie zakładamy tu też `engine/` ani helperów, po które sięgnie T-02: niezmiennik 1
-//! czyta się w tym zadaniu odwrotnie — silnik nie ma prawa zależeć od pliku, który zna Tauri.
+//! Konfiguracja subskrybenta zostaje tutaj, a synchroniczny właściciel plików dziennika mieszka
+//! w `logging.rs`. Silnik nadal nie zależy od pliku, który zna Tauri (niezmiennik 1).
 //!
 //! Kod platformowy też tu nie mieszka (niezmiennik 3). Przepis na czyste chrome jest
 //! macOS-owy, ale jest zapisany jako DANE w `tauri.conf.json`, nie jako `cfg` w tym pliku.
 
-use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,8 +21,11 @@ use crate::engine::drivers::{
 };
 use crate::engine::supervisor::AgentCliSearch;
 use crate::library::agents::Vendor;
+use crate::logging::{
+    BoundedLogLayer, BoundedLogWriter, LOG_FILE, LOG_FILE_LIMIT, write_log_open_error,
+};
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
-use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
+use tracing_subscriber::layer::SubscriberExt as _;
 
 /// Czasowniki Loadouta dla agenta: most, ktorym agent siega po to, co nalezy do aplikacji.
 ///
@@ -58,6 +59,8 @@ pub mod ipc;
 
 /// Lab: zestawy przypadkow, warianty i wynik przebiegu liczony z planu oraz `run.json`.
 pub mod lab;
+/// Ograniczony lokalny dziennik: jeden wlasciciel zapisow, najwyzej dwie generacje.
+pub mod logging;
 
 /// Biblioteka uzytkownika: agenci, umiejetnosci, pamiec. Wypelnia T-11 i dalej.
 pub mod library;
@@ -89,9 +92,6 @@ pub mod workspace;
 // Zostawienie obu naraz zbudowaloby ten sam plik dwa razy, jako dwa rozne moduly. To nie jest
 // blad kompilacji — to dwa niezalezne typy `GroupProof`, ktorych kompilator nie zamieni jeden
 // w drugi, wiec `stop()` z jednego modulu nie da sie porownac z dowodem z drugiego.
-
-/// Nazwa pliku dziennika wewnątrz katalogu podanego do [`install_logging`].
-const LOG_FILE: &str = "loadout.log";
 
 /// Etykieta jedynego okna. Ta sama wartość stoi w `app.windows[0].label` w `tauri.conf.json`
 /// i w polu `windows` każdego pliku w `src-tauri/capabilities/`. Uprawnienia celujące w okno,
@@ -249,52 +249,32 @@ pub fn agent_drivers_with_search(search: &AgentCliSearch) -> Drivers {
     })
 }
 
-/// Jeden uchwyt pliku na cały bieg, współdzielony przez wszystkie wątki.
-///
-/// `Arc<File>`, nigdy `try_clone()` na linijkę: `try_clone` to `dup(2)` przy każdym zdarzeniu,
-/// a w Murmurze skończyło się to paniką z wyczerpania deskryptorów **wewnątrz samego
-/// logowania**, czyli w jedynym kodzie, który mógł o tym opowiedzieć [T8 §9, 2026-08-15].
-/// `&File` implementuje `Write`, więc pisanie nie potrzebuje ani zamka, ani kopii uchwytu.
-#[derive(Debug)]
-struct SharedFile(Arc<File>);
-
-impl<'a> MakeWriter<'a> for SharedFile {
-    type Writer = &'a File;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        &self.0
-    }
-}
-
 /// Wpina `tracing` w plik pod `dir` i zwraca ścieżkę tego pliku. Zdarzenia lecą jednocześnie
 /// na wyjście diagnostyczne i do pliku, bo uruchomiona dwuklikiem aplikacja nie ma tego
 /// pierwszego: `LaunchServices` je wyrzuca, więc release bez pliku jest niediagnozowalny.
 ///
-/// Uchwyt pliku jest JEDEN na cały bieg (`Arc<File>` + `MakeWriterExt::and`), nigdy
+/// Uchwyt pliku jest JEDEN na cały bieg i trzyma go [`logging::BoundedLogWriter`], nigdy
 /// `try_clone()` na linijkę: w Murmurze to był `dup(2)` na linijkę i panika z wyczerpania
 /// deskryptorów wewnątrz samego logowania [T8 §9, 2026-08-15].
+///
+/// [`logging::BoundedLogLayer`] formatuje wprost do ograniczonego wpisu i ten sam gotowy wpis
+/// rozdziela na plik i na stderr — bez pośredniego, nieograniczonego `String` i bez drugiego
+/// formattera. Odmowa otwarcia przechodzi przez `io::Error::other`, więc zdanie, które `run()`
+/// wypisuje niżej, niesie już nazwę pliku i powód.
 pub fn install_logging(dir: &Path) -> io::Result<PathBuf> {
-    fs::create_dir_all(dir)?;
     let path = dir.join(LOG_FILE);
-
-    // O_APPEND, nie „otwórz i pisz od pozycji": przy ośmiu wątkach dopisujących do jednego
-    // deskryptora tylko append daje zapis na koniec pliku jednym wywołaniem jądra. Bez tego
-    // dwa zapisy potrafią wylądować na tym samym offsecie i zostaje jedna linia sklejona
-    // z dwóch — awaria, która wygląda jak zgubione zdarzenie, a nie jak wyścig.
-    let file = OpenOptions::new().create(true).append(true).open(&path)?;
-    let to_file = SharedFile(Arc::new(file));
+    let to_file = BoundedLogWriter::open(dir, LOG_FILE_LIMIT).map_err(io::Error::other)?;
 
     // Bez RUST_LOG i tak chcemy dziennik: aplikacja odpalona dwuklikiem nie ma jak go dostać.
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .parse_lossy(std::env::var("RUST_LOG").unwrap_or_default());
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        // Kody sterujące terminala w pliku, który czyta się rok później, to szum.
-        .with_ansi(false)
-        .with_writer(to_file.and(io::stderr))
-        .finish();
+    // Kody sterujące terminala w pliku, który czyta się rok później, to szum — nasza warstwa
+    // nie pisze ich w ogóle, więc `with_ansi(false)` nie ma już czego wyłączać.
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(BoundedLogLayer::new(to_file).with_stderr());
 
     tracing::subscriber::set_global_default(subscriber).map_err(io::Error::other)?;
 
@@ -421,7 +401,12 @@ pub async fn recover_from_last_time(
 pub fn run() {
     match install_logging(&loadout_dir()) {
         Ok(path) => tracing::info!("this run writes to {}", path.display()),
-        Err(error) => eprintln!("Loadout could not open its log file: {error}"),
+        Err(error) => {
+            let mut stderr = io::stderr().lock();
+            // 2026-08-31: jeśli stderr też odmawia, nie ma drugiego bezpiecznego sinka;
+            // opisanie tej awarii przez `tracing` wróciłoby do nieotwartego dziennika.
+            let _diagnostic_error = write_log_open_error(&mut stderr, &error);
+        }
     }
     install_panic_hook();
 

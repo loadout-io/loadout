@@ -3304,11 +3304,9 @@ fn unix_millis() -> i64 {
         .unwrap_or(i64::MAX)
 }
 
-/// Wszystko, co Loadout dla człowieka uruchomił — plus wyjście tej jednej rzeczy, w którą wszedł.
-///
-/// Rzeczy, które zeszły, **są w tej odpowiedzi** i to jest jedyna droga, którą okno dowiaduje się
-/// o śmierci czegoś, czego nie zatrzymało samo. Kafelka takiemu wpisowi nie rysuje widok
-/// (`src/sections/run/rail/processes.ts`), więc lista może być uczciwa, a ekran mimo to nie kłamie.
+/// Wszystko, czego grupa nie ma jeszcze dowodu śmierci — plus wyjście tej jednej rzeczy, w którą
+/// człowiek wszedł. Naturalny reaper usuwa wpis dopiero po `ESRCH`, a okno poznaje ten fakt przy
+/// następnym odświeżeniu po braku jego `pgid` (2026-08-31).
 ///
 /// `opened` jest `pgid` rzeczy, której panel jest otwarty, albo `None`. Powód, dla którego wyjście
 /// jedzie tylko dla niej, stoi przy [`StartedWire::said`].

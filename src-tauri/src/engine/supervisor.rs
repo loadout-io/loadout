@@ -102,6 +102,126 @@ pub enum PrivateFileAccess {
     CreateAppend,
 }
 
+/// Rodzaj wpisu widziany przez `stat` bez podążania za symlinkiem.
+///
+/// Osobny typ, bo `io::ErrorKind` nie odróżnia przenośnie dowiązania od katalogu, a to jest
+/// dokładnie ta różnica, którą człowiek musi przeczytać w zdaniu odmowy (niezmiennik 29).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateFileKind {
+    Regular,
+    Directory,
+    Symlink,
+    Other,
+}
+
+/// Fakty z `fstat`/`fstatat` w postaci niezależnej od platformy, podawane wspólnej polityce.
+///
+/// Pola są publiczne, żeby kryterium akceptacji mogło uczciwie wykonać gałąź obcego właściciela:
+/// stworzenie inode'u należącego do innego UID-a wymaga roota, a bez tej gałęzi ta jedna odmowa
+/// byłaby jedyną, której nikt nigdy nie sprawdził (2026-08-31).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrivateFileFacts {
+    pub kind: PrivateFileKind,
+    pub owner: u32,
+    pub mode: u32,
+}
+
+/// Czy istniejący prywatny leaf musi mieć `0600` od początku, czy regularny plik należący do
+/// bieżącego użytkownika wolno zacieśnić przed pierwszym I/O.
+///
+/// Dwie polityki, jeden rdzeń (niezmiennik 23): evidence żąda `ExactOwnerOnly`, a dziennik
+/// zastany po starszym wydaniu Loadouta jest zacieśniany, bo skasowanie go zabrałoby jedyny
+/// ślad po ostatniej awarii.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateFileModePolicy {
+    ExactOwnerOnly,
+    TightenOwnedLegacy,
+}
+
+/// Co opener ma jeszcze zrobić z otwartym deskryptorem, zanim odda go wołającemu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateFileDisposition {
+    Ready,
+    TightenPermissions,
+}
+
+/// Typowana przyczyna odmowy. Zdania są po angielsku, bo dochodzą do człowieka (decyzja D5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PrivateFileProblem {
+    #[error("the private path is not a regular file ({kind:?})")]
+    NotRegular { kind: PrivateFileKind },
+    #[error("the private file belongs to uid {actual}, not effective uid {expected}")]
+    ForeignOwner { actual: u32, expected: u32 },
+    #[error("the private file has mode {actual:o}, not 600")]
+    UnsafeMode { actual: u32 },
+}
+
+/// Wynik operacji na prywatnym leafie. Odmowa jest osobnym wariantem, a nie `io::Error`, bo
+/// wołający ma ją nazwać człowiekowi; zwykłe I/O zachowuje swój `ErrorKind`.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PrivateLeafError {
+    #[error(transparent)]
+    Unsafe(#[from] PrivateFileProblem),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+/// Otwarty prywatny plik razem z tożsamością inode'u dowiedzioną po `openat` + `fstat`.
+///
+/// Tożsamość jest trzymana obok deskryptora, a nie odczytywana z nazwy przy każdym użyciu:
+/// między odczytem po nazwie a operacją mieści się cała podmiana (ten sam powód, dla którego
+/// istnieje [`PublicationIdentity`]).
+#[derive(Debug)]
+pub(crate) struct PrivateFileHandle {
+    file: std::fs::File,
+    identity: PublicationIdentity,
+}
+
+impl PrivateFileHandle {
+    pub(crate) const fn file(&self) -> &std::fs::File {
+        &self.file
+    }
+
+    pub(crate) const fn file_mut(&mut self) -> &mut std::fs::File {
+        &mut self.file
+    }
+
+    pub(crate) const fn identity(&self) -> PublicationIdentity {
+        self.identity
+    }
+}
+
+/// Jedna czysta polityka dla wszystkich prywatnych openerów.
+///
+/// Czysta, bo dopiero rozdzielenie „co widać" od „co z tym zrobić" pozwala kryterium wykonać
+/// gałąź, której nie da się zasadzić na dysku bez roota. Opener nadal musi zapytać o fakty
+/// PONOWNIE na otwartym deskryptorze — `TightenPermissions` nie jest zgodą na `chmod` po
+/// nazwie, tylko na `fchmod` uchwytu, który już trzyma.
+pub fn validate_private_file_facts(
+    facts: PrivateFileFacts,
+    effective_uid: u32,
+    mode_policy: PrivateFileModePolicy,
+) -> Result<PrivateFileDisposition, PrivateFileProblem> {
+    if facts.kind != PrivateFileKind::Regular {
+        return Err(PrivateFileProblem::NotRegular { kind: facts.kind });
+    }
+    if facts.owner != effective_uid {
+        return Err(PrivateFileProblem::ForeignOwner {
+            actual: facts.owner,
+            expected: effective_uid,
+        });
+    }
+    if facts.mode == 0o600 {
+        return Ok(PrivateFileDisposition::Ready);
+    }
+    match mode_policy {
+        PrivateFileModePolicy::ExactOwnerOnly => {
+            Err(PrivateFileProblem::UnsafeMode { actual: facts.mode })
+        }
+        PrivateFileModePolicy::TightenOwnedLegacy => Ok(PrivateFileDisposition::TightenPermissions),
+    }
+}
+
 /// Nadaje istniejącej ścieżce prawa „tylko właściciel" (`0600`).
 ///
 /// # Dlaczego to mieszka TUTAJ, a nie tam, gdzie jest potrzebne
@@ -248,6 +368,94 @@ impl PublicationRoot {
             io::ErrorKind::Unsupported,
             "no-follow publication targets are not implemented on Windows",
         ))
+    }
+
+    /// Otwiera istniejący prywatny leaf względem utrzymanego roota. `None` znaczy „nie ma go",
+    /// bo create-if-absent nie potrzebuje istniejącego celu i nie jest to awaria.
+    ///
+    /// Typ, właściciel i prawa są sprawdzane DWA razy: raz po nazwie, żeby nie otwierać
+    /// dowiązania ani cudzego pliku, i raz na otwartym deskryptorze, bo między jednym a drugim
+    /// mieści się cała podmiana. Zacieśnienie idzie wyłącznie przez `fchmod` tego deskryptora.
+    pub(crate) fn open_private_existing(
+        &self,
+        relative: &Path,
+        mode_policy: PrivateFileModePolicy,
+    ) -> Result<Option<PrivateFileHandle>, PrivateLeafError> {
+        self.target(relative)?.open_private_existing(mode_policy)
+    }
+
+    /// Tworzy nowy prywatny plik `0600` przez `openat(O_EXCL)` i utrwala nową nazwę w katalogu.
+    pub(crate) fn create_private(
+        &self,
+        relative: &Path,
+    ) -> Result<PrivateFileHandle, PrivateLeafError> {
+        self.target(relative)?.create_private()
+    }
+
+    /// Dowodzi, że nazwa nadal prowadzi do dokładnie tego prywatnego inode'u i nadal ma `0600`.
+    pub(crate) fn validate_private_identity(
+        &self,
+        relative: &Path,
+        expected: PublicationIdentity,
+    ) -> Result<bool, PrivateLeafError> {
+        Ok(self
+            .open_private_existing(relative, PrivateFileModePolicy::ExactOwnerOnly)?
+            .is_some_and(|opened| opened.identity == expected))
+    }
+
+    /// Podmienia nazwę docelową nazwą źródłową względem utrzymanych deskryptorów katalogów.
+    ///
+    /// Oba leafy muszą być prywatnymi plikami bieżącego użytkownika, a źródło musi nadal mieć
+    /// wcześniej dowiedzioną tożsamość. Cel jest OTWIERANY przed `renameat` z premedytacją:
+    /// bez tego rotacja nadpisałaby plik, którego ktoś z zewnątrz rozluźnił prawa, i zrobiłaby
+    /// to po cichu (2026-08-31).
+    #[cfg(unix)]
+    pub(crate) fn replace_private_name(
+        &self,
+        source: &Path,
+        destination: &Path,
+        expected_source: PublicationIdentity,
+    ) -> Result<(), PrivateLeafError> {
+        use nix::fcntl::renameat;
+
+        let source = self.target(source)?;
+        let destination = self.target(destination)?;
+        let source_identity = source
+            .open_private_existing(PrivateFileModePolicy::ExactOwnerOnly)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the private source vanished"))?
+            .identity;
+        if source_identity != expected_source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the private source changed before rename",
+            )
+            .into());
+        }
+        let _validated_destination =
+            destination.open_private_existing(PrivateFileModePolicy::ExactOwnerOnly)?;
+        renameat(
+            &source.directory,
+            Path::new(&source.file_name),
+            &destination.directory,
+            Path::new(&destination.file_name),
+        )
+        .map_err(io::Error::from)?;
+        destination.sync_directory()?;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn replace_private_name(
+        &self,
+        _source: &Path,
+        _destination: &Path,
+        _expected_source: PublicationIdentity,
+    ) -> Result<(), PrivateLeafError> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative private rename is not implemented on Windows",
+        )
+        .into())
     }
 
     /// Dowodzi, że nazwa roota nadal prowadzi do utrzymanego katalogu. Błąd otwarcia (w tym
@@ -507,6 +715,131 @@ impl fmt::Debug for PublicationTarget {
 }
 
 impl PublicationTarget {
+    /// Fakty leafu spod nazwy, bez otwierania go i bez podążania za dowiązaniem.
+    #[cfg(unix)]
+    fn private_facts(&self) -> Result<Option<PrivateFileFacts>, PrivateLeafError> {
+        use nix::errno::Errno;
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::fstatat;
+
+        match fstatat(
+            &self.directory,
+            Path::new(&self.file_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(stat) => Ok(Some(private_file_facts(&stat))),
+            Err(Errno::ENOENT) => Ok(None),
+            Err(error) => Err(io::Error::from(error).into()),
+        }
+    }
+
+    #[cfg(windows)]
+    fn private_facts(&self) -> Result<Option<PrivateFileFacts>, PrivateLeafError> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative private metadata is not implemented on Windows",
+        )
+        .into())
+    }
+
+    #[cfg(unix)]
+    fn open_private_existing(
+        &self,
+        mode_policy: PrivateFileModePolicy,
+    ) -> Result<Option<PrivateFileHandle>, PrivateLeafError> {
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::{Mode, fchmod};
+        use nix::unistd::{fsync, geteuid};
+
+        let Some(named) = self.private_facts()? else {
+            return Ok(None);
+        };
+        // Pierwsza kontrola po nazwie: dowiązanie ani cudzy plik nie mają być NAWET otwarte.
+        validate_private_file_facts(named, geteuid().as_raw(), mode_policy)?;
+
+        let opened = openat(
+            &self.directory,
+            Path::new(&self.file_name),
+            OFlag::O_RDWR | OFlag::O_APPEND | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        let disposition =
+            validate_private_file_facts(facts_of(&opened)?, geteuid().as_raw(), mode_policy)?;
+        if disposition == PrivateFileDisposition::TightenPermissions {
+            fchmod(&opened, Mode::from_bits_truncate(0o600)).map_err(io::Error::from)?;
+            fsync(&opened).map_err(io::Error::from)?;
+            // Trzeci raz i nie z ostrożności: `fchmod` mógł trafić w plik, który w międzyczasie
+            // dostał inne prawa. Dopiero ten odczyt dowodzi, że deskryptor JEST już 0600.
+            validate_private_file_facts(
+                facts_of(&opened)?,
+                geteuid().as_raw(),
+                PrivateFileModePolicy::ExactOwnerOnly,
+            )?;
+        }
+        let identity = identity_of(&opened)?;
+        Ok(Some(PrivateFileHandle {
+            file: std::fs::File::from(opened),
+            identity,
+        }))
+    }
+
+    #[cfg(windows)]
+    fn open_private_existing(
+        &self,
+        _mode_policy: PrivateFileModePolicy,
+    ) -> Result<Option<PrivateFileHandle>, PrivateLeafError> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative private open is not implemented on Windows",
+        )
+        .into())
+    }
+
+    #[cfg(unix)]
+    fn create_private(&self) -> Result<PrivateFileHandle, PrivateLeafError> {
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::{Mode, fchmod};
+        use nix::unistd::{fsync, geteuid};
+
+        let opened = openat(
+            &self.directory,
+            Path::new(&self.file_name),
+            OFlag::O_RDWR
+                | OFlag::O_APPEND
+                | OFlag::O_CREAT
+                | OFlag::O_EXCL
+                | OFlag::O_NOFOLLOW
+                | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o600),
+        )
+        .map_err(io::Error::from)?;
+        // `openat` respektuje umask, więc tryb z jego argumentu jest życzeniem, nie faktem.
+        // Jawny `fchmod` sprawia, że polityka nie zależy od środowiska procesu.
+        fchmod(&opened, Mode::from_bits_truncate(0o600)).map_err(io::Error::from)?;
+        fsync(&opened).map_err(io::Error::from)?;
+        validate_private_file_facts(
+            facts_of(&opened)?,
+            geteuid().as_raw(),
+            PrivateFileModePolicy::ExactOwnerOnly,
+        )?;
+        let identity = identity_of(&opened)?;
+        self.sync_directory()?;
+        Ok(PrivateFileHandle {
+            file: std::fs::File::from(opened),
+            identity,
+        })
+    }
+
+    #[cfg(windows)]
+    fn create_private(&self) -> Result<PrivateFileHandle, PrivateLeafError> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "descriptor-relative private create is not implemented on Windows",
+        )
+        .into())
+    }
+
     #[cfg(unix)]
     pub(crate) fn parent_identity(&self) -> io::Result<PublicationIdentity> {
         identity_of(&self.directory)
@@ -947,6 +1280,35 @@ pub(crate) fn publication_identity(_file: &std::fs::File) -> io::Result<Publicat
     ))
 }
 
+/// Przekłada platformowy `stat` na fakty, o które pyta polityka. Jedno miejsce, w którym bity
+/// trybu i UID zamieniają się w rzeczowniki — dzięki temu polityka nie zna `SFlag`.
+#[cfg(unix)]
+fn private_file_facts(stat: &nix::sys::stat::FileStat) -> PrivateFileFacts {
+    use nix::sys::stat::SFlag;
+
+    let flags = SFlag::from_bits_truncate(stat.st_mode);
+    let kind = if flags == SFlag::S_IFREG {
+        PrivateFileKind::Regular
+    } else if flags == SFlag::S_IFDIR {
+        PrivateFileKind::Directory
+    } else if flags == SFlag::S_IFLNK {
+        PrivateFileKind::Symlink
+    } else {
+        PrivateFileKind::Other
+    };
+    PrivateFileFacts {
+        kind,
+        owner: stat.st_uid,
+        mode: u32::from(stat.st_mode & 0o777),
+    }
+}
+
+#[cfg(unix)]
+fn facts_of(file: &impl std::os::fd::AsFd) -> io::Result<PrivateFileFacts> {
+    let stat = nix::sys::stat::fstat(file).map_err(io::Error::from)?;
+    Ok(private_file_facts(&stat))
+}
+
 #[cfg(unix)]
 fn validate_regular_fd(file: &impl std::os::fd::AsFd) -> io::Result<()> {
     use nix::sys::stat::{SFlag, fstat};
@@ -1105,23 +1467,23 @@ fn private_anchor_path(anchor: &Path) -> std::path::PathBuf {
     anchor.to_path_buf()
 }
 
+/// Evidence trzyma się polityki ścisłej: nic tu nie wolno zacieśnić w locie.
+///
+/// 2026-08-31: ciało przeszło pod [`validate_private_file_facts`], żeby dziennik i evidence
+/// czytały te same fakty tą samą regułą (niezmiennik 23). Przy okazji zniknęło `contains(S_IFREG)`
+/// — test podzbioru bitów przepuszczał `S_IFLNK` i `S_IFSOCK`, bo obie te wartości zawierają
+/// bit `0o100000`. Porównanie `==` mówi o RODZAJU, a nie o wspólnym bicie.
 #[cfg(unix)]
 fn validate_private_fd(file: &impl std::os::fd::AsFd) -> io::Result<()> {
-    use nix::sys::stat::{SFlag, fstat};
     use nix::unistd::geteuid;
 
-    let stat = fstat(file).map_err(io::Error::from)?;
-    let kind = SFlag::from_bits_truncate(stat.st_mode);
-    if !kind.contains(SFlag::S_IFREG)
-        || stat.st_mode & 0o777 != 0o600
-        || stat.st_uid != geteuid().as_raw()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "an existing private evidence file is not owner-only",
-        ));
-    }
-    Ok(())
+    validate_private_file_facts(
+        facts_of(file)?,
+        geteuid().as_raw(),
+        PrivateFileModePolicy::ExactOwnerOnly,
+    )
+    .map(|_ready| ())
+    .map_err(|problem| io::Error::new(io::ErrorKind::PermissionDenied, problem))
 }
 
 #[cfg(unix)]

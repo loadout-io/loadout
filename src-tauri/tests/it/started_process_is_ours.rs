@@ -50,10 +50,11 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use loadout_lib::commands::processes::Processes;
-use loadout_lib::engine::drivers::command::{GIVE_UP_AFTER, StartSpec};
+use loadout_lib::engine::drivers::command::{CommandDriver, GIVE_UP_AFTER, StartSpec};
 use loadout_lib::engine::supervisor::{self, GroupProof};
 use tokio::process::Command;
 
@@ -336,10 +337,11 @@ async fn what_a_started_command_prints_reaches_the_registry() -> Result<(), Box<
     let dir = tempfile::tempdir()?;
     let processes = Processes::new();
     let started = processes.start(&StartSpec {
-        // Jedno zdanie na wyjście, jedno na skargi. Przez powłokę, bo tak wygląda każda linia,
-        // którą wpisze człowiek — i bo `2>&1` po drodze zlałoby te dwa potoki w jeden, czyli
-        // skasowałoby połowę tej asercji.
-        command: "echo it-said-this; echo it-complained-this 1>&2".to_owned(),
+        // Jedno zdanie na wyjście, jedno na skargi, a potem proces zostaje żywy do `close`.
+        // 2026-08-31 — krótki `echo` jest teraz celowo reapowany razem z ogonem, zanim pętla
+        // zdąży go otworzyć; ta asercja dotyczy wyjścia ŻYWEGO kafelka, nie archiwum po nim.
+        command: "echo it-said-this; echo it-complained-this 1>&2; while :; do sleep 0.2; done"
+            .to_owned(),
         cwd: dir.path().to_path_buf(),
     })?;
 
@@ -375,85 +377,280 @@ async fn what_a_started_command_prints_reaches_the_registry() -> Result<(), Box<
     Ok(())
 }
 
-/// Rzecz, która zeszła SAMA, przestaje mówić o sobie, że żyje.
-///
-/// # Po co ta asercja tu stoi, skoro żadne z czterech zdań kryterium jej nie żąda
-///
-/// Bo bez niej cały ten plik dowodzi wyłącznie tego, że rzecz startuje i że da się ją ubić — a
-/// kafelek ma istnieć dokładnie tak długo, jak rzecz za nim (niezmiennik 17). Odsiew robi czysta
-/// funkcja po stronie okna (`src/sections/run/rail/processes.ts`) i sądzi go osobne kryterium,
-/// tylko że ona odsiewa po POLU `alive` — a tego, że to pole kiedykolwiek gaśnie, nie sprawdzało
-/// nic. Pole, które nie gaśnie, przechodzi tamto kryterium co do joty i zostawia „Running" nad
-/// komendą zeszłą dwie minuty temu, czyli dokładnie tę cichą porażkę, przed którą stoi to
-/// zadanie. To jest ta sama luka co „kryterium zielone, funkcja martwa" (niezmiennik 29), tylko
-/// o jedno pole niżej.
-///
-/// Rzecz, która zeszła, ZOSTAJE na liście i to jest osobne zdanie tej samej asercji: rejestr,
-/// który zapomina wpis w chwili śmierci, nie ma jak POWIEDZIEĆ oknu, że coś zeszło — a okno,
-/// które o tym nie usłyszy, zostawia kafelek na ekranie.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_started_command_that_went_down_by_itself_stops_saying_it_is_up()
--> Result<(), Box<dyn Error>> {
+#[tokio::test]
+async fn staying_observation_api_only_turns_off_after_dead() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
-    let processes = Processes::new();
-    // Komenda, która kończy się sama i od razu — najkrótsza rzecz, jaką człowiek może wpisać
-    // i która ma po sobie coś sprzątnąć.
-    let started = processes.start(&StartSpec {
-        command: "true".to_owned(),
+    let marker = unique_marker("staying-observation");
+    let controlled = write_script(
+        dir.path(),
+        "observed.sh",
+        r#"#!/bin/sh
+# $1 = unikalny tekst meldowany przed pozostaniem przy życiu
+printf '%s\n' "$1"
+while :; do
+  sleep 0.02
+done
+"#,
+    )?;
+    let mut staying = CommandDriver::new().start_to_stay(&StartSpec {
+        command: format!("{} {marker}", controlled.display()),
         cwd: dir.path().to_path_buf(),
     })?;
 
-    // Kontrola przeciw pustemu przejściu: bez niej „przestało mówić, że żyje" jest prawdą także
-    // o polu, które nie powiedziało tego ani razu — czyli o kafelku, którego nigdy nie było.
-    assert!(
-        started.alive,
-        "it has to say it is up at the moment it starts, or the assertion below is about a \
-         field that was never true: {started:?}"
-    );
-
     let deadline = Instant::now() + PATIENCE;
     loop {
-        let known = processes.list();
-        let Some(one) = known.iter().find(|one| one.pgid == started.pgid) else {
-            return Err(format!(
-                "the list forgot pgid {} the moment it went down. Then the window never hears \
-                 about the death it did not cause, and the tile stays on the screen saying \
-                 'running' over something that is gone",
-                started.pgid
-            )
-            .into());
-        };
-        if !one.alive {
+        let said = staying.said();
+        if said.contains(&marker) {
             break;
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "after {PATIENCE:?} the list still says it is up, and it ended by itself long \
-                 ago. A field that never goes out passes the sifting on the window side word for \
-                 word and leaves 'Running' over a line that went down two minutes ago: {one:?}"
+                "after {PATIENCE:?} the staying handle holds {said:?}, but its controlled live \
+                 script printed the unique marker {marker:?}"
             )
             .into());
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    // I nadal da się po niej sprzątnąć: dowód dotyczy grupy, a nie tego, kto ją zatrzymał.
+    assert!(
+        staying.alive(),
+        "the observation API called a controlled live group dead before stop proved anything"
+    );
+    let proof = tokio::time::timeout(PATIENCE, staying.stop())
+        .await
+        .map_err(|_| format!("stopping the observed group did not return within {PATIENCE:?}"))?;
+    assert!(
+        matches!(proof, GroupProof::Dead { .. }),
+        "stop must carry the kernel's death proof before the observation turns off: {proof:?}"
+    );
+    assert!(
+        !staying.alive(),
+        "the observation stayed alive after stop returned {proof:?}"
+    );
+    assert!(
+        staying.said().contains(&marker),
+        "proving the group dead discarded the output that had already reached the handle"
+    );
+    Ok(())
+}
+
+/// Rzecz, która zeszła SAMA, zostaje zebrana i znika bez odpytywania rejestru.
+///
+/// Skrypt melduje gotowość przed czekaniem na plik `release`, żeby pierwsze pytanie do jądra
+/// nie było zdaniem o procesie, który nie zdążył wstać. Po zwolnieniu nie wołamy żadnej metody
+/// rejestru, dopóki `kill(-pgid, 0)` nie odpowie `ESRCH`: `list`, `said`, `stop` ani `close` nie
+/// mogą być ukrytym wyzwalaczem sprzątania. Dopiero systemowy dowód pozwala sprawdzić, że wpis,
+/// uchwyt i ogon zniknęły razem (niezmiennik 6, 2026-08-31).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_started_command_that_went_down_by_itself_is_reaped_and_forgotten()
+-> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let ready = dir.path().join("ready");
+    let release = dir.path().join("release");
+    let controlled = write_script(
+        dir.path(),
+        "controlled.sh",
+        r#"#!/bin/sh
+# $1 = ready, $2 = release
+printf ready > "$1"
+while [ ! -e "$2" ]; do
+  sleep 0.02
+done
+"#,
+    )?;
+    let processes = Processes::new();
+    let started = processes.start(&StartSpec {
+        command: format!(
+            "{} {} {}",
+            controlled.display(),
+            ready.display(),
+            release.display()
+        ),
+        cwd: dir.path().to_path_buf(),
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    while !ready.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the controlled process did not report ready, so its natural \
+                 exit cannot be tested: {started:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    group_probe(started.pgid).map_err(|why| {
+        format!(
+            "kill(-{}, 0) says the controlled group is absent before release: {why}. Reaping it \
+             later would be a statement about an empty set",
+            started.pgid
+        )
+    })?;
+
+    fs::write(&release, b"release")?;
+
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let asked = group_probe(started.pgid);
+        match &asked {
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => break,
+            _ if Instant::now() >= deadline => {
+                return Err(format!(
+                    "after {PATIENCE:?} kill(-{}, 0) still has no ESRCH proof; its last answer \
+                     was {asked:?}. Nothing called list, said, stop, or close after release, so \
+                     natural EOF did not autonomously reap the leader and prove the whole group \
+                     dead",
+                    started.pgid
+                )
+                .into());
+            }
+            _ => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
+
+    // 2026-08-31 — ESRCH i usunięcie wpisu są dwoma kolejnymi krokami tego samego reapera.
+    // Jądro może odpowiedzieć pomiędzy nimi, więc po pierwszym systemowym dowodzie czekamy już
+    // wyłącznie na publikację stanu rejestru, nie próbując wymusić atomowego wyścigu z kill(0).
+    let deadline = Instant::now() + PATIENCE;
+    let known = loop {
+        let known = processes.list();
+        if known.iter().all(|one| one.pgid != started.pgid) {
+            break known;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after ESRCH and another {PATIENCE:?}, the dead group still has its own registry \
+                 entry: {known:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        known.iter().all(|one| one.pgid != started.pgid),
+        "the group is proven dead but its own registry entry remains: {known:?}"
+    );
+    assert_eq!(
+        processes.said(started.pgid),
+        None,
+        "the output tail outlived the entry whose group is proven dead"
+    );
+    let stopped = tokio::time::timeout(PATIENCE, processes.stop(started.pgid))
+        .await
+        .map_err(|_| {
+            format!("stopping an already reaped group did not return within {PATIENCE:?}")
+        })?;
+    assert!(
+        stopped.is_none(),
+        "stop found a handle after the natural reaper proved and forgot pgid {}: {stopped:?}",
+        started.pgid
+    );
     let proofs = tokio::time::timeout(PATIENCE, processes.close())
         .await
         .map_err(|_| format!("closing did not come back within {PATIENCE:?}"))?;
     assert!(
-        proofs
-            .iter()
-            .all(|one| matches!(one, GroupProof::Dead { .. })),
-        "closing has to prove the group gone even for something that ended on its own: a leader \
-         nobody collected is a zombie, and a zombie still answers the zero signal — so the group \
-         would never give ESRCH, not here and not in recovery. It gave {proofs:?}"
+        proofs.is_empty(),
+        "close found work after the natural reaper released the only entry: {proofs:?}"
     );
+    Ok(())
+}
+
+/// Porzucenie okna podczas autonomicznego dowodzenia nie może zostawić ani rejestru, ani grupy.
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_processes_while_the_eof_reaper_is_working_does_not_keep_the_group()
+-> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let ready = dir.path().join("ready");
+    let term = dir.path().join("term-seen");
+    let controlled = write_script(
+        dir.path(),
+        "close-streams-and-stay.sh",
+        r#"#!/bin/sh
+# $1 = ready, $2 = marker odebranego TERM
+trap 'printf term > "$2"' TERM
+printf ready > "$1"
+exec 1>&-
+exec 2>&-
+while :; do
+  sleep 0.02
+done
+"#,
+    )?;
+    let processes = Arc::new(Processes::new());
+    let weak = Arc::downgrade(&processes);
+    let started = processes.start(&StartSpec {
+        command: format!(
+            "{} {} {}",
+            controlled.display(),
+            ready.display(),
+            term.display()
+        ),
+        cwd: dir.path().to_path_buf(),
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    while !ready.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the process that closes its streams did not report ready: \
+                 {started:?}"
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    group_probe(started.pgid).map_err(|why| {
+        format!(
+            "kill(-{}, 0) says the group is absent before its streams trigger the reaper: \
+             {why}",
+            started.pgid
+        )
+    })?;
+
+    let deadline = Instant::now() + PATIENCE;
+    while !term.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "after {PATIENCE:?} the TERM trap did not run; closing stdout and stderr did not \
+                 put the natural reaper inside its proof for pgid {}",
+                started.pgid
+            )
+            .into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    group_probe(started.pgid).map_err(|why| {
+        format!(
+            "the TERM marker exists, but group {} is already absent before Processes is \
+             dropped: {why}; this case must exercise cancellation while proof is in progress",
+            started.pgid
+        )
+    })?;
+
+    drop(processes);
     assert!(
-        processes.list().is_empty(),
-        "and nothing stays behind: {:?}",
-        processes.list()
+        weak.upgrade().is_none(),
+        "the EOF reaper retained a strong Processes owner during Drop"
     );
+
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let asked = group_probe(started.pgid);
+        match &asked {
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => break,
+            _ if Instant::now() >= deadline => {
+                return Err(format!(
+                    "after {PATIENCE:?} kill(-{}, 0) still has no ESRCH after the last Processes \
+                     owner was dropped; its last answer was {asked:?}",
+                    started.pgid
+                )
+                .into());
+            }
+            _ => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
     Ok(())
 }
 
