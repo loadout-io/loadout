@@ -289,14 +289,14 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 
 | ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
 |---|---|---|---|---|---|---|---|---|
-| Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | TODO | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
+| Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | RUNNING (2. podejście) | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | TODO | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | TODO | dwa wiersze + test licznika TERM |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | TODO | `run.rs` 11 k linii |
 | Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | TODO | |
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
-| Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | TODO | może biec obok Z-28/Z-01 |
+| Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
 | Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | TODO | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
 | Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | TODO | tylko `docs/`; może biec obok |
 | Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | TODO | utrata pracy człowieka |
@@ -366,6 +366,8 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-02 13:05 · Z-28 · pierwsze podejście kod 1, ZERO zmian — i to jest uczciwa odmowa, nie awaria. Planista podał baseline z grepu (1217/1054), Codex zmierzył `--list` (1245/1034), liczby się nie zgodziły i plan kazał w takiej sytuacji stanąć. Wada jest w moim prompcie: pozwalał zapisać liczbę bazową w planie. Poprawione — wykonawca mierzy sam i porównuje z własnym pomiarem · X→C
+- 2026-09-02 13:00 · Z-24 · LANDED, jedna runda, werdykt DZIALA, 7 checków zielonych, pełne CI 256 s; `h land` sam sprzątnął worktree (H-14 działa) · C→X
 - 2026-09-02 12:05 · 0.1/0.2 sprzątanie · 22 worktree zdjęte, 11 gałęzi skasowanych, `runs/` 192→120, `.h-plan.md` z korzenia usunięty; wolne 433→520 GiB · ręka
 - 2026-09-02 11:58 · 0.5 · `4ed0e9b4`; STATUS.md 3237→204 linii + archiwum, dwa pliki 90 KB do `docs/archive/`, martwe odwołania z AGENTS.md, DECISIONS-LOCKED, build.md, settings.json; proza historyczna dostała baner zamiast przepisania · ręka
 - 2026-09-02 11:40 · 0.3/0.4 · `b157a6a0` + `Cargo.lock`; pełna bramka zielona na main, strażnicy 9/9. Nowo żywy `checks/vocabulary.sh` przechodzi. 11 testów dowodu śmierci procesu biegnie: 6,8 / 5,9 / 5,9 s w trzech przebiegach · ręka
