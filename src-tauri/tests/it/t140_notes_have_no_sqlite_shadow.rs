@@ -23,7 +23,7 @@ modified: 2026-08-27T10:00:00Z\n\
 last_used_at: null\n\
 ---\n";
 
-const NOTES_SOURCE: &str = include_str!("../src/memory/notes.rs");
+const NOTES_SOURCE: &str = include_str!("../../src/memory/notes.rs");
 
 fn every_file(dir: &Path, prefix: &str, out: &mut Vec<String>) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir)? {

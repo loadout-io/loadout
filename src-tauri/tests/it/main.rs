@@ -23,6 +23,8 @@
 //! sąsiedzi otwierali pliki w tej samej chwili. `supervisor_env_hygiene` woła `env::set_var`,
 //! co jest zmienną globalną procesu. Oba mieszkają więc w `tests/` jako własne cele; koszt to
 //! dwa linkowania zamiast stu dwudziestu dwóch.
+//! Domknięte 2026-09: w `tests/` zostało osiem osobnych celów — sześć płatnych wyroczni
+//! `#[ignore]` i dwa powyższe testy stanu całego procesu; pozostałe 52 są modułami `it`.
 //!
 //! DOPISANIE NOWEGO PLIKU wymaga jednej linii `mod` niżej. To jest cena tej zmiany i jest
 //! świadoma: plik bez wpisu kompiluje się do niczego i nie uruchamia ani jednego testu —
@@ -127,6 +129,10 @@ mod finished_runs_leave_no_work_trees;
 mod folder_same_copy_as_before;
 mod fresh_copy_degrades_loudly;
 mod fresh_copy_isolates_steps;
+mod handoff_attachment_is_openable;
+mod handoff_index_for_fan_in;
+mod handoff_reaches_next_prompt;
+mod handoff_written_after_step;
 mod handoffs_are_scoped_to_one_folder;
 mod harness_workflow_chain;
 mod harness_workflow_findings_match_doc;
@@ -179,6 +185,8 @@ mod isolation_survives_every_file_shape;
 mod lead_answer_keeps_its_lines;
 mod lead_bridge_pair_is_atomic;
 mod lead_comes_from_the_agent;
+mod lead_evidence_is_durable;
+mod lead_image_reaches_both_vendors;
 mod lead_reaches_loadouts_own_verbs;
 mod lead_reaches_the_library;
 mod lead_stall_is_visible;
@@ -236,6 +244,7 @@ mod resume_carries_the_attachments;
 mod resume_carries_the_earlier_handoffs;
 mod resume_starts_from_the_work_that_was_done;
 mod run_commands_registered;
+mod run_evidence_reaches_the_product;
 mod run_json_records_handoff_repairs;
 mod run_json_records_what_the_tester_said;
 mod run_reaches_the_pump;
@@ -305,6 +314,7 @@ mod supervisor_group_death;
 mod supervisor_pipe_eof;
 mod supervisor_term_then_kill;
 mod supervisor_timeout_kills;
+mod support_report_excludes_private_content;
 mod t114_colliding_copy_refs_are_refused_before_start;
 mod t114_copies_get_noncolliding_git_branches;
 mod t114_last_decision_survives_limit;
@@ -314,9 +324,53 @@ mod t114_silent_step_named_for_reader;
 mod t115_codex_handoff_paths_are_actionable;
 mod t115_codex_prices_keep_token_columns_distinct;
 mod t115_unknown_codex_price_stays_unknown;
+mod t121_exact_snapshot_multiset;
+mod t121_snapshot_rollback_transaction;
+mod t124_atomic_note_replacement;
+mod t124_atomic_owned_note_retry;
+mod t124_step_memory_owner_and_full_body;
+mod t126_budget_is_clone_state;
+mod t126_late_stop_and_empty_handoff;
+mod t126_private_reflection_receipt_and_evidence;
+mod t127_parallel_claude_state_isolation;
+mod t127_private_claude_state_paths;
+mod t127_state_setup_refuses_before_spawn;
+mod t131_current_memory_catalog_truth;
+mod t132_memory_receipt_actual_recipients;
+mod t132_memory_receipt_history_wire;
+mod t133_reflection_io_attempt_is_observable;
+mod t134_live_stop_has_a_ceiling;
+mod t135_startup_cleanup_escalates;
+mod t135_startup_survivor_reaches_history;
+mod t139_move_durability_protocol;
+mod t139_two_roots_snapshot_and_tombstones;
+mod t140_fresh_index_has_only_live_tables;
+mod t140_notes_have_no_sqlite_shadow;
+mod t145_recovery_cleanup_preserves_all_regressions;
+mod t145_resume_is_explicit_driver_transport;
+mod t147_startup_reaper_proves_after_kill;
 mod t147_startup_reaper_refuses_ambiguous_probe;
+mod t149_phase7_oracle_offline;
+mod t149_phase7_stop_cleanup;
+mod t150_gui_cli_discovery;
+mod t151_note_stamp_uses_current_file;
+mod t152_prestart_transaction_rolls_back;
+mod t152_reconcile_replaces_run_atomically;
+mod t152_start_error_uses_failure_policy;
+mod t152_step_execution_facts_are_honest;
+mod t157_literal_connection_secrets_are_refused;
+mod t159_claude_auth_with_private_state;
+mod t160_claude_inherit_uses_default_model;
+mod t202_atomic_definition_publication;
+mod t202_handoff_publication_is_durable;
+mod t203_bad_library_definitions_are_isolated;
+mod t203_library_callers_keep_healthy_definitions;
 mod t206_refused_starts_stop_the_trigger;
 mod t208_a_full_disk_refuses_before_the_run;
+mod t210_definition_loaders_recover_owned_temps;
+mod t210_handoff_recovery_stays_inside_run_root;
+mod t210_parallel_handoff_writers_keep_their_temps;
+mod t210_private_replace_preserves_fail_closed_guards;
 mod the_dial_tells_the_truth_about_the_shell;
 mod the_index_says_what_each_file_is;
 mod the_lead_reaches_the_connections;

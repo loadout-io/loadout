@@ -1,6 +1,8 @@
 //! T-149 AC-1: the shared phase-7 graph runs through production without network access.
 
-#[path = "support/t149_phase7.rs"]
+// 2026-09: the shared paid-oracle helpers are intentionally unused by this offline module.
+#[allow(dead_code)]
+#[path = "../support/t149_phase7.rs"]
 pub mod phase7;
 
 use loadout_lib::library::agents::Vendor;
