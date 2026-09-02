@@ -115,13 +115,24 @@ const APP_COMMAND_CAPACITY: usize = 16;
 /// UI begins awaiting the result.
 const APP_OUTCOME_CAPACITY: usize = 4;
 
-/// Odstęp między ponowieniami eskalacji na ścieżce startu, która nie ma już komu oddać
-/// uchwytu. `Alive` nie może wyjść z tej funkcji razem z jedynym właścicielem procesu.
+/// Odstęp między pełnymi eskalacjami na ścieżce startu, nigdy dodatkowe czekanie po ostatniej
+/// próbie.
 const START_CLEANUP_RETRY: Duration = Duration::from_secs(1);
 
 /// Jedno zdanie dla każdej próby podmiany uchwytu nad grupą bez dowodu `ESRCH`.
 const STILL_ALIVE_AFTER_ESCALATION: &str = "the Codex App Server is still alive after a failed \
 start; Loadout retains its handle and will retry";
+
+/// Ile pełnych eskalacji wykonuje ścieżka nieudanego startu, zanim odda grupę ostatniej linii
+/// obrony.
+///
+/// 2026-09 (Z-4) — do tego dnia obie pętle sprzątające niżej kręciły się aż do `ESRCH`, więc
+/// nieudany start nad grupą, której nie da się dowieść, nie wracał NIGDY: bieg nie schodził,
+/// `settle()` nie zapadało, a zapadka folderu odmawiała każdego następnego Startu aż do restartu
+/// Loadouta. Trzy próby są tą samą polityką produktu, co po stronie kroku
+/// (`commands::run::LIVE_STOP_ATTEMPTS`), tylko zapisaną tutaj osobno: `engine/` nie widzi
+/// `commands/` (niezmiennik 1).
+const START_CLEANUP_ATTEMPTS: usize = 3;
 
 /// Tylko ten wariant pozwala porzucic uchwyt procesu i joiny czytnikow. `Alive` nie znaczy
 /// „stop sie nie udal, posprzataj mimo to", tylko „jadro nadal widzi grupe" — wiec caly stan
@@ -136,17 +147,62 @@ fn mark_evidence_incomplete(target: Option<&EvidenceTarget>) {
     }
 }
 
+/// Oddaje nadzorowaną grupę rejestrowi ocalałych — albo zostawia po niej sam adres w dzienniku.
+///
+/// Jedno ciało dla obu ścieżek nieudanego startu (2026-09, Z-4): brak strumienia zaraz po
+/// `spawn` i uzgodnienie, które nie doszło do skutku, różnią się tym, KTO trzyma właściciela,
+/// a nie tym, co się z nim robi. Miejsca z puli nie ma tu żadnego: permit należy do kroku
+/// (`commands::run::Live::step`), a nieudany start w ogóle do kroku nie doszedł.
+///
+/// `None` na rejestrze jest stanem osiągalnym i uczciwym — tak wygląda ten sterownik w swoich
+/// własnych testach i wszędzie, gdzie nikt nie zawołał [`AgentDriver::leaving_leftovers_with`].
+/// Zostaje wtedy gwardia `Drop` na [`Supervised`], która zabija, ale nie dowodzi `ESRCH`, więc
+/// `pgid` idzie do dziennika: to jedyna rzecz, po której odzyskiwanie przy następnym starcie ma
+/// czego szukać (`recovery.rs`).
+fn hand_over_leftover(keeper: Option<&Arc<dyn supervisor::KeepsLeftovers>>, process: Supervised) {
+    let Some(keeper) = keeper else {
+        tracing::error!(
+            pgid = process.group().pgid,
+            "nobody took over the Codex App Server group Loadout could not prove dead"
+        );
+        return;
+    };
+    keeper.keep_leftover(Box::new(process), None);
+}
+
 /// Fatalna porażka startu nie ma zewnętrznego uchwytu, który mógłby ponowić Stop. Dlatego ten
-/// właściciel zostaje w funkcji tak długo, aż supervisor przyniesie rzeczywisty dowód `Dead`.
+/// właściciel zostaje w funkcji przez pełne [`START_CLEANUP_ATTEMPTS`] eskalacji, a potem oddaje
+/// ostatni dowód razem z adresem grupy.
+///
+/// **Uchwytu NIE MA TU KOMU ODDAĆ**, i to jest zapisane wprost, bo to jedyne miejsce w Z-4,
+/// w którym „po suficie oddaj uchwyt i miejsce rejestrowi ocalałych" nie da się wykonać:
+/// `commands::processes` leży po drugiej stronie granicy, której `engine/` nie przekracza
+/// (niezmiennik 1). Ostatnią linią obrony zostaje więc gwardia `Drop` [`Supervised`] — twardy
+/// `killpg` plus zebranie lidera — a `pgid` idzie do dziennika, żeby odzyskiwanie przy następnym
+/// starcie miało po czym szukać (`recovery.rs`).
 async fn stop_startup_process(process: &mut Supervised) -> GroupProof {
-    loop {
+    // Adres znamy PRZED pierwszą próbą; każdy `Alive` z supervisora niesie własny i nadpisuje ten
+    // wstępny (`Supervised::stop`). Odmowa bez adresu byłaby odmową, po której nie da się szukać.
+    let mut last = GroupProof::Alive {
+        group: Some(process.group()),
+    };
+    for attempt in 1..=START_CLEANUP_ATTEMPTS {
         let proof = process.stop(DEFAULT_GRACE).await;
         if proof_allows_cleanup(&proof) {
             return proof;
         }
-        tracing::error!(STILL_ALIVE_AFTER_ESCALATION);
-        tokio::time::sleep(START_CLEANUP_RETRY).await;
+        last = proof;
+        tracing::error!(
+            attempt,
+            attempts = START_CLEANUP_ATTEMPTS,
+            pgid = process.group().pgid,
+            STILL_ALIVE_AFTER_ESCALATION
+        );
+        if attempt < START_CLEANUP_ATTEMPTS {
+            tokio::time::sleep(START_CLEANUP_RETRY).await;
+        }
     }
+    last
 }
 
 /// Sterownik `codex`.
@@ -162,6 +218,9 @@ pub struct CodexDriver {
     evidence: Option<EvidenceTarget>,
     /// Konfiguracja Connections jednego kroku; Debug pokazuje tylko nazwy środowiska.
     configuration: DriverConfiguration,
+    /// Komu oddać grupę, którą zostawił po sobie nieudany start — powód w całości przy
+    /// [`AgentDriver::leaving_leftovers_with`] (2026-09, Z-4).
+    leftovers: Option<Arc<dyn supervisor::KeepsLeftovers>>,
 }
 
 impl fmt::Debug for CodexDriver {
@@ -191,6 +250,7 @@ impl CodexDriver {
             binary: PathBuf::from(DEFAULT_BINARY),
             evidence: None,
             configuration: DriverConfiguration::default(),
+            leftovers: None,
         }
     }
 
@@ -202,7 +262,25 @@ impl CodexDriver {
             binary,
             evidence: None,
             configuration: DriverConfiguration::default(),
+            leftovers: None,
         }
+    }
+
+    /// Oddaje grupę po nieudanym starcie temu, kto ją przejmie — albo zostawia ją gwardii `Drop`.
+    ///
+    /// 2026-09 (Z-4) — bez tej metody `Supervised` ginął razem z ramką `start_app_conversation`.
+    /// `Drop` posyła wtedy grupie dziewiątkę, ale **nie dowodzi `ESRCH`** (niezmiennik 6), więc
+    /// zostawał proces, o który nikt już nie mógł zapytać. `None` na rejestrze znaczy dokładnie
+    /// tamten stan i nadal jest osiągalny — dlatego wtedy zostaje przynajmniej adres w dzienniku,
+    /// po którym odzyskiwanie przy następnym starcie ma czego szukać.
+    ///
+    /// Miejsca z puli nie oddajemy, bo sterownik żadnego nie trzyma: permit należy do kroku
+    /// (`commands::run::Live::step`), a nieudany start w ogóle do kroku nie doszedł.
+    fn leave_behind(&self, process: Supervised, proof: &GroupProof) {
+        if proof_allows_cleanup(proof) {
+            return;
+        }
+        hand_over_leftover(self.leftovers.as_ref(), process);
     }
 
     #[must_use]
@@ -1396,6 +1474,12 @@ fn started_turn(result: &Value) -> anyhow::Result<String> {
 /// wiec reczny Debug pokazuje wylacznie stan transportu.
 struct CodexConversationHandle {
     process: Option<Supervised>,
+    /// Komu oddać grupę, której uzgodnienie nie doszło do skutku i której nie dało się dowieść.
+    ///
+    /// `None` znaczy „nikt nie podał rejestru" — tak wygląda ten sterownik w testach sterownika
+    /// i na drodze, na której bieg nigdy nie zawołał `leaving_leftovers_with`. Wtedy zostaje
+    /// gwardia `Drop` i wpis w dzienniku, dokładnie jak przed 2026-09.
+    leftovers: Option<Arc<dyn supervisor::KeepsLeftovers>>,
     client: AppClient,
     evidence: Option<EvidenceTarget>,
     session_id: String,
@@ -1571,18 +1655,43 @@ impl CodexConversationHandle {
         proof
     }
 
+    /// Bliźniak [`stop_startup_process`] po drugiej stronie uzgodnienia i z tym samym sufitem.
+    ///
+    /// Po ostatnim `Alive` właściciel wychodzi stąd do rejestru ocalałych, a nie do `Drop`:
+    /// `self.process.take()` jest jedyną drogą, którą ten `Supervised` opuszcza uchwyt żywy
+    /// (2026-09, Z-4). Czytniki zostają nietknięte — `cleanup_after_proof` dołącza je wyłącznie
+    /// po `Dead`, a joinowanie ich nad żywą grupą zawiesiłoby tę funkcję.
     async fn force_stop_after_failed_start(&mut self) {
-        loop {
+        for attempt in 1..=START_CLEANUP_ATTEMPTS {
             let proof = self.force_stop().await;
             if proof_allows_cleanup(&proof) {
                 return;
             }
+            // `cleanup_after_proof` zdejmuje właściciela WYŁĄCZNIE po `Dead`, więc po tym dowodzie
+            // proces jest tu nadal i ma adres, który da się zapisać.
             tracing::error!(
-                "the Codex App Server is still alive after a failed handshake; Loadout retains \
-                 its handle and will retry"
+                attempt,
+                attempts = START_CLEANUP_ATTEMPTS,
+                pgid = self.process.as_ref().map(|process| process.group().pgid),
+                "the Codex App Server is still alive after a failed handshake"
             );
-            tokio::time::sleep(START_CLEANUP_RETRY).await;
+            if attempt < START_CLEANUP_ATTEMPTS {
+                tokio::time::sleep(START_CLEANUP_RETRY).await;
+            }
         }
+        self.leave_behind_after_failed_start();
+    }
+
+    /// Oddaje nadzorowaną grupę rejestrowi ocalałych — albo zostawia po niej adres w dzienniku.
+    ///
+    /// Osobno od pętli wyżej, bo to jest inna decyzja: tamta pyta grupę, ta rozstrzyga, kto jest
+    /// jej właścicielem od tej chwili. Powód, dla którego `None` na rejestrze nadal jest stanem
+    /// osiągalnym, stoi przy [`CodexDriver::leave_behind`].
+    fn leave_behind_after_failed_start(&mut self) {
+        let Some(process) = self.process.take() else {
+            return;
+        };
+        hand_over_leftover(self.leftovers.as_ref(), process);
     }
 }
 
@@ -1622,14 +1731,18 @@ impl CodexDriver {
             mark_evidence_incomplete(self.evidence.as_ref());
             close_evidence(stdout_evidence).await;
             close_evidence(stderr_evidence).await;
-            let _proof = stop_startup_process(&mut process).await;
+            // Dowód wchodzi do `leave_behind`, a nie ginie pod `let _`: `Alive` znaczy, że ten
+            // właściciel ma pojechać do rejestru ocalałych zamiast spaść z tą ramką (2026-09).
+            let proof = stop_startup_process(&mut process).await;
+            self.leave_behind(process, &proof);
             anyhow::bail!("The Codex App Server started without an output stream.");
         };
         let Some(stdin) = process.stdin().await else {
             mark_evidence_incomplete(self.evidence.as_ref());
             close_evidence(stdout_evidence).await;
             close_evidence(stderr_evidence).await;
-            let _proof = stop_startup_process(&mut process).await;
+            let proof = stop_startup_process(&mut process).await;
+            self.leave_behind(process, &proof);
             anyhow::bail!("The Codex App Server started without an input stream.");
         };
 
@@ -1660,6 +1773,7 @@ impl CodexDriver {
         }));
         let mut handle = CodexConversationHandle {
             process: Some(process),
+            leftovers: self.leftovers.clone(),
             client: AppClient::new(commands_tx, self.evidence.clone()),
             evidence: self.evidence.clone(),
             session_id: String::new(),
@@ -3488,6 +3602,15 @@ impl AgentDriver for CodexDriver {
         Some(Arc::new(configured))
     }
 
+    fn leaving_leftovers_with(
+        &self,
+        keeper: Arc<dyn supervisor::KeepsLeftovers>,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        let mut configured = self.clone();
+        configured.leftovers = Some(keeper);
+        Some(Arc::new(configured))
+    }
+
     /// Codex nie ma odpowiednika `--add-dir`; pełne ścieżki zostają więc w prompcie,
     /// a wspólny składacz dopowiada, że leżą poza katalogiem pracy kroku.
     fn carries_extra_dirs(&self) -> bool {
@@ -3723,6 +3846,7 @@ mod stop_proof_tests {
         drop(outcome_sender);
         CodexConversationHandle {
             process: None,
+            leftovers: None,
             client: AppClient::new(commands, Some(evidence.clone())),
             evidence: Some(evidence),
             session_id: String::new(),

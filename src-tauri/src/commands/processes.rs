@@ -50,10 +50,10 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::engine::drivers::AgentHandle;
 use crate::engine::drivers::command::{CommandDriver, StartSpec, Staying, StayingOutput};
+use crate::engine::drivers::{AgentHandle, SessionLeftover};
 use crate::engine::limits::Slot;
-use crate::engine::supervisor::{GroupId, GroupProof};
+use crate::engine::supervisor::{GroupId, GroupProof, KeepsLeftovers, Leftover};
 
 /// Co okno wie o jednej uruchomionej rzeczy.
 ///
@@ -100,8 +100,13 @@ pub struct StartedProcess {
 /// gettera oddającego własność, więc uchwytu i permitu nie da się z tego typu wyjąć bokiem.
 #[must_use]
 pub struct Unproven {
-    /// Jedyny właściciel sesji tego kroku. Dopóki tu jest, jest komu zlecić kolejną eskalację.
-    handle: Box<dyn AgentHandle>,
+    /// Jedyny właściciel tej grupy. Dopóki tu jest, jest komu zlecić kolejną eskalację.
+    ///
+    /// 2026-09 (Z-4) — `Box<dyn Leftover>`, nie `Box<dyn AgentHandle>`. Ocalałym jest tak samo
+    /// komenda kroku „sprawdź" i App Server, którego start padł, a żadne z nich nie jest sesją
+    /// agenta i nigdy nią nie będzie. Rejestr potrzebuje z całego uchwytu **jednego czasownika**,
+    /// więc tyle właśnie żąda; sesja agenta wchodzi tu przez `drivers::SessionLeftover`.
+    owner: Box<dyn Leftover>,
     /// Miejsce z puli, zajęte tak długo, jak długo żyje ta wartość (`limits::Slot` zwalnia się
     /// w `Drop`). `None` dla kroków, które miejsca nie brały.
     slot: Option<Slot>,
@@ -141,11 +146,20 @@ impl Unproven {
     // `#[must_use]` stoi na samym typie, więc powtórzony tutaj byłby drugą kopią tej samej
     // reguły (clippy `double_must_use` mówi to samo).
     pub fn new(handle: Box<dyn AgentHandle>, slot: Option<Slot>, group: Option<GroupId>) -> Self {
-        Self {
-            handle,
-            slot,
-            group,
-        }
+        Self::left_behind(Box::new(SessionLeftover::new(handle)), slot, group)
+    }
+
+    /// To samo dla ocalałego, który **nie jest** sesją agenta.
+    ///
+    /// 2026-09 (Z-4) — tędy wchodzą komenda kroku „sprawdź" i App Server, którego start padł.
+    /// Osobny konstruktor, a nie zmiana [`Unproven::new`], bo tamten podpis wołają kroki agenta
+    /// i nie ma powodu, żeby każdy z nich opakowywał uchwyt ręcznie.
+    pub fn left_behind(
+        owner: Box<dyn Leftover>,
+        slot: Option<Slot>,
+        group: Option<GroupId>,
+    ) -> Self {
+        Self { owner, slot, group }
     }
 
     /// Zwalnia zasoby tej grupy — **wyłącznie przez dowód** i **dokładnie raz**.
@@ -168,7 +182,7 @@ impl Unproven {
 
     /// Pyta TĘ grupę o dowód jeszcze raz. Pełna eskalacja z nadzoru, nie samo pytanie.
     async fn asked_again(&mut self) -> GroupProof {
-        self.handle.proof_of_death().await
+        self.owner.ask_again().await
     }
 }
 
@@ -266,6 +280,20 @@ impl Drop for Processes {
         // 2026-08-31 — najpierw odbieramy reaperom prawo do podnoszenia słabych wpisów. Potem
         // zwykły Drop mapy zwalnia jedyne mocne Arc i gwardia `Supervised` sprząta każdą grupę.
         self.natural_reapers.cancel();
+    }
+}
+
+/// Ten rejestr JEST miejscem, w które silnik odkłada ocalałych.
+///
+/// 2026-09 (Z-4) — trait mieszka w `engine::supervisor`, a implementacja tutaj, i to jest cała
+/// odpowiedź na „bez importowania `commands` do `engine`": zależność idzie w jedyną stronę,
+/// w którą wolno. Sterownik vendora dostaje `Arc<dyn KeepsLeftovers>` tym samym szwem, którym
+/// dostaje target dowodów, i nie wie ani że po drugiej stronie stoi stan okna, ani że ten stan
+/// ma drugą listę na rzeczy, które człowiek kazał zostawić.
+impl KeepsLeftovers for Processes {
+    fn keep_leftover(&self, owner: Box<dyn Leftover>, slot: Option<Slot>) {
+        let group = owner.address();
+        self.keep_unproven(Unproven::left_behind(owner, slot, group));
     }
 }
 

@@ -271,6 +271,24 @@ impl Checking {
     }
 }
 
+/// Komenda, która przeżyła pełną eskalację, jest ocalałym dokładnie tak samo jak sesja agenta.
+///
+/// 2026-09 (Z-4) — do tego dnia ten uchwyt po prostu spadał z ramki `run_check`: grupa dostawała
+/// od `Drop` dziewiątkę, ale nikt nie dowodził `ESRCH`, więc rejestr aplikacji nie miał czego
+/// ponawiać, a miejsce z puli wracało do niej razem z krokiem. Ten `impl` jest całą drogą, którą
+/// komenda dojeżdża do [`crate::commands::processes::Processes`] — sam plik dalej nie wie, że taki
+/// rejestr istnieje (niezmiennik 1).
+#[async_trait::async_trait]
+impl supervisor::Leftover for Checking {
+    async fn ask_again(&mut self) -> GroupProof {
+        self.cancel().await
+    }
+
+    fn address(&self) -> Option<GroupId> {
+        Some(self.group)
+    }
+}
+
 /// Czym skończyło się czekanie na komendę.
 ///
 /// Trzy stany, bo trzy rzeczy są prawdziwie różne i każda kończy się czymś innym. `Option` umiał

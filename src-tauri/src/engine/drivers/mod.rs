@@ -22,6 +22,7 @@
 //! i jest opisana tam, przy [`AgentDriver::start`].
 
 use std::ffi::OsString;
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::line::Tool;
-use super::supervisor::{GroupId, GroupProof};
+use super::supervisor::{self, GroupId, GroupProof};
 use crate::evidence::EvidenceTarget;
 
 /// Vendor, ktory jest w typie, ale nie ma jeszcze adaptera. Fabryka `Drivers` jest funkcja
@@ -737,6 +738,33 @@ pub trait AgentDriver: Send + Sync {
         None
     }
 
+    /// Ten sam sterownik, tylko wiedzący, **komu oddać grupę, której nie umiał dowieść**.
+    ///
+    /// # Po co to istnieje (2026-09, Z-4)
+    ///
+    /// Bo start vendora potrafi paść nad żywą grupą, a wtedy nikt na zewnątrz nie ma uchwytu:
+    /// `start` oddaje `Err`, a nadzorowany proces ginie razem z ramką sterownika. `Drop` posyła mu
+    /// wtedy dziewiątkę, ale **nie dowodzi `ESRCH`** — czyli zostaje grupa, o którą nikt nie może
+    /// zapytać (niezmiennik 6). Ten szew jest jedyną drogą, którą ten właściciel wychodzi ze
+    /// sterownika żywy.
+    ///
+    /// Metoda na TRAICIE z domyślnym `None`, dokładnie jak [`AgentDriver::with_evidence`]
+    /// i [`AgentDriver::inheriting`], i z tego samego zmierzonego powodu: bieg trzyma sterownik
+    /// jako `Arc<dyn AgentDriver>`, więc budowniczy żyjący na konkretnym typie jest z niego
+    /// nieosiągalny. `None` znaczy „ten vendor nie zostawia po sobie właściciela, którego dałoby
+    /// się oddać" — tak odpowiada domyślna implementacja i tak odpowiada każda atrapa, która
+    /// o tym szwie nic nie wie, więc ani jeden dubel w tym drzewie nie zmienia się o linię
+    /// (niezmiennik 23).
+    ///
+    /// Argument jest [`supervisor::KeepsLeftovers`], nie `&Processes`: rejestr mieszka
+    /// w `commands/`, a ten plik nie ma prawa o nim wiedzieć (niezmiennik 1).
+    fn leaving_leftovers_with(
+        &self,
+        _keeper: Arc<dyn supervisor::KeepsLeftovers>,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
     /// Ten sam sterownik, tylko z **własnym plikiem ustawień** tego kroku — albo `None`, kiedy
     /// ten vendor takiego pliku nie ma.
     ///
@@ -1038,5 +1066,47 @@ pub trait AgentHandle: Send {
     /// Statusu nie ma, bo nie było czyjego odebrać.
     async fn proof_of_death(&mut self) -> GroupProof {
         GroupProof::Dead { status: None }
+    }
+}
+
+/// Uchwyt sesji agenta widziany wyłącznie jako **to, co po niej może zostać**.
+///
+/// 2026-09 (Z-4) — rejestr ocalałych przestał tego dnia znać `AgentHandle` i zna zamiast tego
+/// [`supervisor::Leftover`], czyli jeden czasownik zamiast dziewięciu. Sesja agenta wchodzi tam
+/// tędy, a `Checking` i `Supervised` wchodzą własnymi `impl`-ami — bez tego adaptera rejestr
+/// musiałby trzymać trzy różne pola albo enum z ramieniem na każdy rodzaj procesu.
+///
+/// `proof_of_death`, nie `cancel`: sesja, która tu trafia, pracę już oddała, a `cancel` prowadzi
+/// przerwaniem w paśmie i czeka na odpowiedź, której ten proces już nie wyśle (powód w całości
+/// przy [`AgentHandle::proof_of_death`]).
+pub struct SessionLeftover(Box<dyn AgentHandle>);
+
+impl SessionLeftover {
+    /// Przejmuje jedynego właściciela sesji.
+    #[must_use]
+    pub fn new(handle: Box<dyn AgentHandle>) -> Self {
+        Self(handle)
+    }
+}
+
+impl fmt::Debug for SessionLeftover {
+    /// Ręcznie, bo uchwytu sesji nie da się pokazać sensownie, a `missing_debug_implementations`
+    /// jest w tej skrzyni ostrzeżeniem, czyli pod `-D warnings` odmową.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionLeftover")
+            .field("group", &self.0.group())
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl supervisor::Leftover for SessionLeftover {
+    async fn ask_again(&mut self) -> GroupProof {
+        self.0.proof_of_death().await
+    }
+
+    fn address(&self) -> Option<GroupId> {
+        self.0.group()
     }
 }

@@ -1858,6 +1858,53 @@ pub enum GroupProof {
     Alive { group: Option<GroupId> },
 }
 
+/// Jedyny właściciel grupy, której **nie dało się** uznać za martwą — i jedyne, co się z nim robi.
+///
+/// # Po co ten trait istnieje i dlaczego mieszka TUTAJ (2026-09, Z-4)
+///
+/// Bo „ocalały" jest pojęciem tego modułu, nie pojęciem kroku. Do tego dnia rejestr aplikacji
+/// ([`crate::commands::processes::Unproven`]) umiał przejąć wyłącznie `Box<dyn AgentHandle>`, więc
+/// dwie inne rzeczy, które dokładnie tak samo przeżywają pełną eskalację — komenda kroku
+/// „sprawdź" ([`crate::engine::drivers::command::Checking`]) i App Server, którego start padł
+/// ([`Supervised`]) — nie miały gdzie pojechać. Obie były po prostu upuszczane: `Drop` posyłał
+/// grupie dziewiątkę, ale **nie dowodził `ESRCH`**, więc zostawała grupa bez właściciela, której
+/// nikt już nie mógł zapytać, plus miejsce z puli oddane czemuś, co dalej biegnie (niezmienniki
+/// 6 i 11).
+///
+/// **Trait, nie enum wariantów** — i to jest cała odpowiedź na „bez importowania `commands` do
+/// `engine`". Zależność idzie w jedyną dozwoloną stronę: `engine/` mówi, czym jest ocalały,
+/// `commands/` go przechowuje. Enum z wariantem na każdy rodzaj właściciela kazałby rejestrowi
+/// znać `Checking` i `Supervised` po nazwie, a każdy nowy rodzaj procesu dopisywałby tam ramię.
+///
+/// Tylko `Send`, bez `Sync`, bo dokładnie tyle ma [`crate::engine::drivers::AgentHandle`], a
+/// rejestr trzyma tę wartość pod `std::sync::Mutex` — a ten jest `Sync` już przy `T: Send`.
+#[async_trait::async_trait]
+pub trait Leftover: Send {
+    /// Pełna eskalacja jeszcze raz, tym samym czasownikiem, którym schodzi ten rodzaj procesu.
+    ///
+    /// `Dead` wolno oddać wyłącznie po `ESRCH` (niezmiennik 6) — implementacja, która zwraca go
+    /// po samym wysłaniu sygnału, kasuje wpis z rejestru i kończy pytanie kłamstwem.
+    async fn ask_again(&mut self) -> GroupProof;
+
+    /// Adres tej grupy, jeśli jest znany. Po nim człowiek pozna ją w `ps`, a odzyskiwanie przy
+    /// następnym starcie ma po czym szukać.
+    fn address(&self) -> Option<GroupId>;
+}
+
+/// Gdzie odkłada się ocalałego, kiedy próby się skończyły.
+///
+/// Drugi trait, a nie argument typu `&Processes`, z tego samego powodu co wyżej: sterownik
+/// vendora musi umieć oddać ocalałego, nie wiedząc, że po drugiej stronie stoi stan okna
+/// (niezmiennik 1). Implementuje to [`crate::commands::processes::Processes`], a sterownik
+/// dostaje go zwykłym szwem `Arc<dyn …>` — tak samo, jak dostaje target dowodów.
+pub trait KeepsLeftovers: Send + Sync {
+    /// Przejmuje właściciela grupy razem z miejscem, które ta grupa **nadal** zajmuje.
+    ///
+    /// `slot` jest `None` wszędzie tam, gdzie ten proces miejsca z puli nie brał — nieudany start
+    /// App Servera jest właśnie takim przypadkiem, bo permit należy do kroku, a nie do sterownika.
+    fn keep_leftover(&self, owner: Box<dyn Leftover>, slot: Option<crate::engine::limits::Slot>);
+}
+
 /// Neutralna operacja na grupie używana przez rdzeń startup reaper.
 ///
 /// Nazwy POSIX-owych sygnałów pozostają w tym module (niezmiennik 3), a deterministyczny
@@ -2129,6 +2176,22 @@ impl Supervised {
             }
             sleep(PROOF_POLL).await;
         }
+    }
+}
+
+/// Nadzorowana grupa jest ocalałym sama z siebie: ma adres i ma czasownik, którym schodzi.
+///
+/// 2026-09 (Z-4) — tędy App Server, którego start padł, przestaje ginąć razem z ramką sterownika.
+/// `stop` jest tu tym samym pełnym TERM → łaska → KILL → dowód, którym schodzi każda inna grupa;
+/// gwardia `Drop` niżej zostaje ostatnią linią obrony dla tego, kogo nikt nie przejął.
+#[async_trait::async_trait]
+impl Leftover for Supervised {
+    async fn ask_again(&mut self) -> GroupProof {
+        self.stop(DEFAULT_GRACE).await
+    }
+
+    fn address(&self) -> Option<GroupId> {
+        Some(self.group)
     }
 }
 
