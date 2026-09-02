@@ -361,7 +361,14 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
             argv += ["--session-id", session]
         if schema:
             argv += ["--json-schema", json.dumps(schema)]
-        if transcript:
+        # H-10 (2026-09-02), POPRAWKA z tego samego dnia: `--output-format stream-json`
+        # WOLNO dolozyc tylko wtedy, gdy nie ma schematu. Razem ze `--json-schema`
+        # odpowiedz przestaje byc JSON-em pasujacym do schematu i staje sie strumieniem
+        # zdarzen, wiec `parse_json` konczy bieg zdaniem "model nie zwrocil JSON-a"
+        # PO calej implementacji. Zmierzone na biegu z28-tests-into-it: weryfikator
+        # napisal poprawna diagnoze, ktorej harness nie umial przeczytac.
+        # Slad i tak powstaje -- `out` ladu je w pliku transkryptu nizej, bez tych flag.
+        if transcript and not schema:
             argv += ["--output-format", "stream-json", "--verbose"]
     elif vendor == "codex":
         argv = [exe, "exec", "--json", "--skip-git-repo-check", "-C", str(cwd),
