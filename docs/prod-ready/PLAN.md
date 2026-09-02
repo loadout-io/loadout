@@ -290,7 +290,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
 |---|---|---|---|---|---|---|---|---|
 | Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
-| Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — trzy rundy, praca w worktree; `pgids` nie są zapisywane na ścieżce Stopu i timeoutu | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — prompt był niepełny; zastąpione przez Z-01b |
+| Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | TODO | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | TODO | dwa wiersze + test licznika TERM |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | TODO | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | TODO | `run.rs` 11 k linii |
