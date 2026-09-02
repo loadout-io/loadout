@@ -58,6 +58,7 @@
 //! zabezpieczenie czasem startu przed ponownym użyciem PID-u (T-20 — my dajemy [`reap_group`],
 //! decyzję *czy wolno* podejmuje odzyskiwanie).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
@@ -1764,6 +1765,23 @@ const PROOF_POLL: Duration = Duration::from_millis(10);
 /// zebranie sierot przez PID 1, a nie drugie okno łaski.
 const PROOF_AFTER_KILL: Duration = Duration::from_secs(2);
 
+/// Jak często w trakcie zatrzymania przeglądamy drzewo potomków w poszukiwaniu grup, o których
+/// jeszcze nie wiemy.
+///
+/// # Dlaczego to w ogóle istnieje (2026-09, Z-01c)
+///
+/// Bo **`pgid` lidera to nie cała prawda**. Claude Code uruchamia każdą komendę narzędzia Bash
+/// we WŁASNEJ grupie procesów, więc wszystko, co taka powłoka odpali — `cargo test`, serwer
+/// deweloperski — leży poza grupą, którą zabijamy i której śmierci dowodzimy. Zmierzone
+/// w `../meetnotes` 2026-09-01: krok Combine miał `death_proof: true` w `run.json`, a binarium
+/// testowe (PPID 1, inny `pgid`, 262 MB) żyło jeszcze szesnaście godzin po anulowaniu biegu.
+/// Niezmiennik 6 nazywa to błędem finansowym, nie higienicznym.
+///
+/// 250 ms, a nie [`PROOF_POLL`]: przegląd kosztuje fork `ps`, a sonda `killpg(pgid, 0)` jest
+/// gołym wywołaniem systemowym. Pytanie `ps` co 10 ms kosztowałoby więcej niż eskalacja, której
+/// służy — a nowa grupa i tak potrzebuje kilkudziesięciu milisekund, żeby powstać.
+const RESCAN_EVERY: Duration = Duration::from_millis(250);
+
 /// Ile [`Drop`] czeka na zebranie lidera. Musi być krótkie: `Drop` jest synchroniczny i biegnie
 /// na wątku roboczym tokio, a po SIGKILL-u lider ginie w mikrosekundach.
 const DROP_REAP_LIMIT: Duration = Duration::from_millis(500);
@@ -2017,6 +2035,39 @@ pub struct Supervised {
     /// odpowiadać `Dead`, a `Drop` po udanym `stop()` nie ma już czego zabijać — zwolniony
     /// `pgid` może w tej chwili należeć do kogoś innego [T7 §10.2].
     proved_dead: bool,
+
+    /// Co ten uchwyt wie o drzewie, które z niego wyrosło (Z-01c, 2026-09).
+    ///
+    /// `Box`, choć to dwa zwykłe zbiory: `Supervised` leży W CAŁOŚCI wewnątrz wariantu
+    /// `commands::processes::Owner::Held`, a `clippy::large_enum_variant` (przez `clippy::all`
+    /// = `deny`) daje temu wariantowi sufit 200 bajtów. Dwa `BTreeSet` wprost w polach to +48
+    /// bajtów i czerwona bramka w cudzym pliku; jeden wskaźnik to +8.
+    tree: Box<ProcessTree>,
+}
+
+/// Wiedza o drzewie potomków, zbierana przy każdym przeglądzie w [`Supervised::stop`].
+///
+/// Mieszka NA UCHWYCIE, a nie w zmiennej lokalnej `stop()`, z dwóch powodów. Po pierwsze, drugi
+/// przegląd biegnie już po śmierci lidera — a wtedy jego potomkowie mają `ppid == 1` i domknięcie
+/// od samego lidera nie doprowadzi do nich NIGDY. Po drugie, `stop()` bywa wołane kilka razy pod
+/// rząd (`stop_startup_process` w sterowniku Codeksa) i druga tura bez pamięci meldowałaby `Dead`
+/// nad żywą grupą.
+///
+/// Ryzyko rezydualne, świadome: PID-y są używane ponownie, więc pamięć o zmarłym potomku mogłaby
+/// wskazać cudzą grupę [T7 ryzyko 2]. Okno tej pamięci to jednak czas jednego zatrzymania —
+/// sekundy przy `kern.maxproc` równym 16 000 — a alternatywą jest wyciek, dla którego to pole
+/// powstało.
+#[derive(Debug)]
+struct ProcessTree {
+    /// Każda grupa procesów, o której ten uchwyt kiedykolwiek wiedział — nie tylko `group.pgid`.
+    ///
+    /// Powód przy [`RESCAN_EVERY`]: krok potrafi odpalić komendę, która zakłada WŁASNĄ grupę,
+    /// a wtedy `killpg` po `pgid` lidera nigdy jej nie dosięgnie. Ten zbiór jest jednostką
+    /// eskalacji i jednostką dowodu; `group.pgid` jest w nim od startu.
+    groups: BTreeSet<i32>,
+
+    /// `pid`-y z domknięcia przechodniego drzewa potomków, czyli zasiew następnego przeglądu.
+    descendants: BTreeSet<i32>,
 }
 
 impl fmt::Debug for Supervised {
@@ -2080,7 +2131,8 @@ impl Supervised {
         Ok(status)
     }
 
-    /// SIGTERM na **grupę**, okno łaski, potem SIGKILL na grupę — i dopiero wtedy dowód.
+    /// SIGTERM na **każdą grupę, którą krok uruchomił**, okno łaski, potem SIGKILL — i dopiero
+    /// wtedy dowód.
     ///
     /// Nigdy nie prowadzimy KILL-em: `claude` na SIGTERM dosypuje transkrypt i zwalnia zamek
     /// sesji, na SIGKILL nie robi nic [T1 §4.6]. Zwrócona wartość jest wynikiem pętli
@@ -2088,6 +2140,12 @@ impl Supervised {
     /// dopiero wtedy, gdy `kill(-pgid, 0)` odpowiedział `ESRCH` — bo to jest ten pomiar, który
     /// w T7 §3.1 pokazał `total=2 orphaned=2` w chwili, w której status bezpośredniego dziecka
     /// mówił „zabity".
+    ///
+    /// 2026-09 (Z-01c) — „grupa" to od tego dnia LICZBA MNOGA. Do tej pory cała eskalacja i cały
+    /// dowód były zdaniem o `pgid` lidera, a Claude Code uruchamia każdą komendę narzędzia Bash
+    /// we własnej grupie: wszystko, co taka powłoka odpali, leżało poza tym zdaniem. Powód
+    /// i pomiar stoją przy [`RESCAN_EVERY`]. Każda znaleziona grupa ma **własny** zegar łaski,
+    /// także ta odkryta w trakcie — pełna eskalacja od piętnastki, nigdy dziewiątka od razu.
     ///
     /// Wołane drugi raz na tej samej grupie nadal zwraca `Dead`, tylko bez statusu: powtórzone
     /// zatrzymanie jest normalną ścieżką (anulowanie biegu, po którym idzie `Drop`), a nie
@@ -2099,84 +2157,231 @@ impl Supervised {
 
         let began = Instant::now();
 
-        // 1. Prowadzimy TERM-em i wysyłamy go na CAŁĄ grupę, nie na lidera: to wnuki przeżyły
-        //    pomiar z T7 §3.1, a lider zginął już wtedy.
-        let _ = self.child.signal(SIGNAL_TERM);
+        // 1. Przegląd drzewa PRZED pierwszym sygnałem. Kto uciekł do własnej grupy, ten jest
+        //    powiązany z nami wyłącznie dopóki jego rodzic żyje — po pierwszej piętnastce
+        //    zostaje po nim `ppid == 1` i żadne domknięcie już go nie znajdzie (Z-01c).
+        self.rescan();
 
-        // 2. Czekamy na lidera, ale najwyżej przez okno łaski. Porzucenie tego future'a niczego
-        //    nie zostawia przy życiu: proces dostał sygnał, a eskalacja jest niżej w TEJ SAMEJ
-        //    funkcji — na tym polega niezmiennik 10.
-        let waited = timeout(grace, self.child.wait()).await;
-        if let Ok(Ok(status)) = waited {
-            self.status = Some(status);
-        }
+        // 2. Prowadzimy TERM-em i wysyłamy go na KAŻDĄ znaną grupę, nie tylko na grupę lidera:
+        //    to wnuki przeżyły pomiar z T7 §3.1, a wnuk we własnej grupie przeżywa nawet ten.
+        let mut termed: BTreeMap<i32, Instant> = BTreeMap::new();
+        let mut killed: BTreeSet<i32> = BTreeSet::new();
+        self.term_new_groups(&mut termed);
 
-        // 3. Dowód, wciąż w oknie łaski: lider bywa najszybszy, a płacimy za wnuki.
-        let left = grace.saturating_sub(began.elapsed());
-        if self.prove_gone(left).await {
-            self.proved_dead = true;
-            return GroupProof::Dead {
-                status: self.status,
-            };
-        }
+        // Sufit CAŁOŚCI, nie pojedynczej grupy: każda ma własny zegar łaski, więc grupa odkryta
+        // w oknie schodzi później niż lider. Trzy okna mieszczą dwie fale nowych grup; po nich
+        // uczciwą odpowiedzią jest `Alive`, a nie kolejne czekanie (niezmiennik 6).
+        let ceiling = began + grace * 3 + PROOF_AFTER_KILL;
+        let mut next_rescan = began + RESCAN_EVERY;
 
-        // 4. Okno minęło — dopiero teraz dziewiątka, i też na grupę.
-        let _ = self.child.start_kill();
-        let reaped = timeout(PROOF_AFTER_KILL, self.child.wait()).await;
-        if let Ok(Ok(status)) = reaped {
-            self.status = Some(status);
-        }
-        if self.prove_gone(PROOF_AFTER_KILL).await {
-            self.proved_dead = true;
-            return GroupProof::Dead {
-                status: self.status,
-            };
-        }
-
-        // Bez `ESRCH` nie wolno powiedzieć „nie żyje" (niezmiennik 6). To jest wynik do
-        // obsłużenia przez wołającego, nie błąd do zalogowania: ktoś w tej grupie dalej biegnie
-        // — i wraca razem z adresem, pod którym da się go dalej pytać.
-        GroupProof::Alive {
-            group: Some(self.group),
-        }
-    }
-
-    /// Czy w grupie nie ma już **nikogo**.
-    ///
-    /// 2026-09 — pytamy przez `nix::killpg` z `None`, bo `process-wrap` odrzuca `signal(0)` jako
-    /// `EINVAL`. Fallback z prawdziwym sygnałem zamieniał sondę w salwę TERM/KILL co 10 ms.
-    ///
-    /// Każda inna odpowiedź to „żywa", łącznie z `EPERM`, który znaczy, że grupa istnieje, tylko
-    /// nie jest nasza. Niezmiennik 6 nie zna stanu „chyba nie żyje".
-    #[cfg(unix)]
-    fn group_is_gone(&self) -> bool {
-        use nix::errno::Errno;
-        use nix::sys::signal::killpg;
-        use nix::unistd::Pid;
-
-        match killpg(Pid::from_raw(self.group.pgid), None) {
-            Err(Errno::ESRCH) => true,
-            Ok(()) | Err(_) => false,
-        }
-    }
-
-    /// Pętla dowodowa: pyta jądro co [`PROOF_POLL`], aż odpowie `ESRCH` albo minie `limit`.
-    ///
-    /// 2026-08-15 — to jest ta pętla, której brak dał w T7 §3.1 `total=2 orphaned=2`: status
-    /// lidera mówił „zabity", a dwoje wnucząt biegło pod PID 1 i paliło limit. Wnuka nie widzi
-    /// żaden nasz `wait()`, więc jedynym źródłem prawdy jest jądro.
-    async fn prove_gone(&mut self, limit: Duration) -> bool {
-        let deadline = Instant::now() + limit;
         loop {
-            if self.group_is_gone() {
-                return true;
+            // Zebranie lidera jest częścią dowodu, nie sprzątaniem po nim: zombie NADAL
+            // odpowiada na sygnał zerowy, więc grupa z zombie w środku nigdy nie da `ESRCH`.
+            // `try_wait`, a nie `wait().await`: pożyczka na całe okno łaski nie zostawiłaby
+            // uchwytu na przegląd drzewa, a przegląd jest tu ważniejszy niż jedno przebudzenie.
+            if self.status.is_none()
+                && let Ok(Some(status)) = self.child.try_wait()
+            {
+                self.status = Some(status);
             }
-            if Instant::now() >= deadline {
-                return false;
+
+            // 3. Przegląd powtarzamy NIEZALEŻNIE od tego, czy lider jeszcze żyje. Poprzednia
+            //    wersja patrzyła drugi raz tylko przy żywym liderze — a potomek utworzony
+            //    w obsłudze SIGTERM rodzi się dokładnie wtedy, kiedy lider od tej samej
+            //    piętnastki umiera, więc wymykał się w całości (Z-01c).
+            let now = Instant::now();
+            if now >= next_rescan {
+                self.rescan();
+                next_rescan = now + RESCAN_EVERY;
+                // Grupa odkryta później dostaje pełną eskalację OD SIGTERM-a, z własnym zegarem.
+                self.term_new_groups(&mut termed);
             }
+
+            // 4. Okno minęło — dopiero teraz dziewiątka, osobno dla każdej grupy.
+            self.kill_overdue(&termed, &mut killed, grace);
+
+            // 5. `Dead` wolno oddać dopiero, kiedy KAŻDA znaleziona grupa milczy. Bez `ESRCH`
+            //    nie wolno powiedzieć „nie żyje" (niezmiennik 6) — a to jest wynik do obsłużenia
+            //    przez wołającego, nie błąd do zalogowania: ktoś dalej biegnie i wraca razem
+            //    z adresem, pod którym da się go pytać.
+            let Some(alive) = self.first_survivor() else {
+                self.proved_dead = true;
+                return GroupProof::Dead {
+                    status: self.status,
+                };
+            };
+            if Instant::now() >= ceiling {
+                return GroupProof::Alive { group: Some(alive) };
+            }
+
             sleep(PROOF_POLL).await;
         }
     }
+
+    /// Dopisuje do wiedzy tego uchwytu wszystko, co `ps` wie o naszym drzewie **teraz**.
+    ///
+    /// Wyłącznie dopisuje: `pgid`, który raz był nasz, zostaje jednostką dowodu do końca:
+    /// grupa zniknięta z `ps` między dwoma przeglądami i tak musi odpowiedzieć `ESRCH`.
+    #[cfg(unix)]
+    fn rescan(&mut self) {
+        let (pids, groups) = descendants_of(&self.tree.descendants);
+        self.tree.descendants.extend(pids);
+        self.tree.groups.extend(groups);
+    }
+
+    /// Piętnastka dla każdej grupy, która jeszcze jej nie dostała — i **tylko** dla takiej.
+    ///
+    /// Zegar łaski jest per grupa, bo to, że coś powstało później, nie czyni tego mniej wartym
+    /// łaski: prowadzenie dziewiątką kosztuje transkrypt i zamek sesji [T1 §4.6]. Mapa `termed`
+    /// jest jednocześnie strażnikiem powtórzeń — druga piętnastka w to samo miejsce przewraca
+    /// kryterium Z-2 („okno łaski dostarcza dokładnie jeden SIGTERM").
+    #[cfg(unix)]
+    fn term_new_groups(&mut self, termed: &mut BTreeMap<i32, Instant>) {
+        let leader = self.group.pgid;
+        for &pgid in &self.tree.groups {
+            if termed.contains_key(&pgid) {
+                continue;
+            }
+            termed.insert(pgid, Instant::now());
+            if pgid == leader {
+                // Lider idzie przez `process-wrap`, bo to ten sam uchwyt, który zbiera jego
+                // status. Gołe `killpg` obok niego byłoby DRUGIM nadawcą do tej samej grupy.
+                let _ = self.child.signal(SIGNAL_TERM);
+            } else {
+                let _ = signal_group(pgid, SIGNAL_TERM);
+            }
+        }
+    }
+
+    /// Dziewiątka dla każdej grupy, której **własne** okno łaski już minęło. Raz na grupę.
+    #[cfg(unix)]
+    fn kill_overdue(
+        &mut self,
+        termed: &BTreeMap<i32, Instant>,
+        killed: &mut BTreeSet<i32>,
+        grace: Duration,
+    ) {
+        let leader = self.group.pgid;
+        for (&pgid, &at) in termed {
+            if killed.contains(&pgid) || at.elapsed() < grace {
+                continue;
+            }
+            killed.insert(pgid);
+            if pgid == leader {
+                let _ = self.child.start_kill();
+            } else {
+                let _ = signal_group(pgid, SIGNAL_KILL);
+            }
+        }
+    }
+
+    /// Pierwsza grupa, która nadal odpowiada na sygnał zerowy — czyli adres, pod którym wołający
+    /// ma kogo dalej pytać. `None` znaczy, że milczą wszystkie, i tylko wtedy wolno mówić
+    /// „nie żyje" (niezmiennik 6).
+    ///
+    /// Grupa lidera idzie pierwsza, bo to o niej wołający wie najwięcej i to jej adres widzi
+    /// człowiek w dzienniku nieudanego startu (`codex::stop_startup_process`).
+    #[cfg(unix)]
+    fn first_survivor(&self) -> Option<GroupId> {
+        if !group_is_gone(self.group.pgid) {
+            return Some(self.group);
+        }
+        self.tree
+            .groups
+            .iter()
+            .copied()
+            .find(|&pgid| pgid != self.group.pgid && !group_is_gone(pgid))
+            // `pid` równe `pgid` nie przez uproszczenie, tylko z definicji POSIX: identyfikatorem
+            // grupy JEST pid jej lidera, nawet kiedy tego lidera już nikt nie zbierze [T7 §6.2].
+            .map(|pgid| GroupId { pid: pgid, pgid })
+    }
+}
+
+/// Czy w grupie `pgid` nie ma już **nikogo**.
+///
+/// 2026-09 — pytamy przez `nix::killpg` z `None`, bo `process-wrap` odrzuca `signal(0)` jako
+/// `EINVAL`. Fallback z prawdziwym sygnałem zamieniał sondę w salwę TERM/KILL co 10 ms.
+///
+/// Każda inna odpowiedź to „żywa", łącznie z `EPERM`, który znaczy, że grupa istnieje, tylko
+/// nie jest nasza. Niezmiennik 6 nie zna stanu „chyba nie żyje".
+///
+/// 2026-09 (Z-01c) — wolna funkcja, a nie metoda: od tego dnia dowód dotyczy KAŻDEJ grupy,
+/// którą krok uruchomił, a nie wyłącznie grupy lidera.
+#[cfg(unix)]
+fn group_is_gone(pgid: i32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::killpg;
+    use nix::unistd::Pid;
+
+    match killpg(Pid::from_raw(pgid), None) {
+        Err(Errno::ESRCH) => true,
+        Ok(()) | Err(_) => false,
+    }
+}
+
+/// Domknięcie przechodnie drzewa potomków `seeds` i zbiór grup, w których ono siedzi.
+///
+/// Domykamy od WSZYSTKICH znanych `pid`-ów, nie od samego lidera: po jego śmierci potomkowie
+/// mają `ppid == 1` i od lidera nie prowadzi do nich już żadna krawędź (Z-01c, 2026-09).
+///
+/// `ps` przez podproces, tak samo jak [`machine_booted_at`] czyta `sysctl`: `libc` jest w tej
+/// skrzyni „tylko po stałe sygnałów" (`Cargo.toml`), a przejście po `kinfo_proc` z ręki kupuje
+/// `unsafe` i strukturę jądra za odczyt, który dzieje się cztery razy na sekundę przez sekundy.
+///
+/// Awaria `ps` oddaje puste zbiory i jest odpowiedzią, nie wyjątkiem: wiedza o grupie lidera
+/// mieszka w [`Supervised::groups`] od startu, więc brak przeglądu zawęża eskalację do tego, co
+/// wiedzieliśmy wcześniej — nigdy jej nie zeruje.
+#[cfg(unix)]
+fn descendants_of(seeds: &BTreeSet<i32>) -> (BTreeSet<i32>, BTreeSet<i32>) {
+    let Ok(listed) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,pgid="])
+        .output()
+    else {
+        return (BTreeSet::new(), BTreeSet::new());
+    };
+    let text = String::from_utf8_lossy(&listed.stdout);
+
+    let mut tree: Vec<(i32, i32, i32)> = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(Ok(pid)), Some(Ok(parent)), Some(Ok(group))) = (
+            fields.next().map(str::parse::<i32>),
+            fields.next().map(str::parse::<i32>),
+            fields.next().map(str::parse::<i32>),
+        ) else {
+            continue;
+        };
+        tree.push((pid, parent, group));
+    }
+
+    // Powtarzamy przebieg, dopóki cokolwiek dochodzi: `ps` nie obiecuje, że dziecko stoi w
+    // wydruku niżej niż rodzic, a jeden przebieg po nieuporządkowanej liście gubi wnuki.
+    let mut found = seeds.clone();
+    loop {
+        let before = found.len();
+        for &(pid, parent, _) in &tree {
+            if found.contains(&parent) {
+                found.insert(pid);
+            }
+        }
+        if found.len() == before {
+            break;
+        }
+    }
+
+    let groups = tree
+        .iter()
+        .filter(|(pid, _, _)| found.contains(pid))
+        .map(|&(_, _, group)| group)
+        // DWAJ STRAŻNICY, oba o poprawności, nie o higienie [T7 §10.2]. Pierwszy: grupę bierzemy
+        // tylko wtedy, gdy jej liderem jest ktoś z NASZEGO domknięcia — `killpg` po cudzej
+        // grupie jest błędem poprawności, a proces, który przeszedł do grupy obcej, nie jest już
+        // czymś, co ten krok uruchomił. Drugi: nigdy własna grupa Loadouta ani `pgid <= 0`,
+        // bo `killpg(0, …)` to strzał w samego siebie razem z całym oknem.
+        .filter(|group| *group > 0 && *group != own_process_group() && found.contains(group))
+        .collect();
+
+    (found, groups)
 }
 
 /// Nadzorowana grupa jest ocalałym sama z siebie: ma adres i ma czasownik, którym schodzi.
@@ -2205,6 +2410,26 @@ impl Drop for Supervised {
     fn drop(&mut self) {
         if self.proved_dead {
             return;
+        }
+
+        // 2026-09 (Z-01c) — gwardia obejmuje ten sam zbiór grup co [`Supervised::stop`], bo
+        // przegląd drzewa JEST synchroniczny: `ps` przez `std::process::Command`, bez runtime'u.
+        // Do tego dnia stała tu dziewiątka w sam `pgid` lidera, więc wszystko, co krok odpalił
+        // we własnej grupie, przeżywało porzucenie uchwytu w całości.
+        //
+        // Przegląd idzie PRZED zabiciem lidera i to jest cała jego wartość: po piętnastce
+        // krawędzie `ppid` do uciekinierów już nie istnieją.
+        //
+        // Czego ta gwardia dalej NIE robi i nie zrobi: łaski ani dowodu `ESRCH`. Jest
+        // synchroniczna i biegnie także wtedy, gdy runtime się zwija, więc nie ma tu czego
+        // czekać — kto chce, żeby `claude` zdążył zamknąć sesję, ten woła `stop()`.
+        let (pids, groups) = descendants_of(&self.tree.descendants);
+        self.tree.descendants.extend(pids);
+        self.tree.groups.extend(groups);
+        for &pgid in &self.tree.groups {
+            if pgid != self.group.pgid {
+                let _ = signal_group(pgid, SIGNAL_KILL);
+            }
         }
 
         // 2026-08-15 — dziewiątka bez łaski, bo to jest ścieżka, na której wołający wyszedł
@@ -2368,6 +2593,12 @@ pub fn spawn_with_environment(
         stdin: kept,
         status: None,
         proved_dead: false,
+        // Zasiew wiedzy o drzewie: jedna grupa i jeden `pid`. Reszta dochodzi z przeglądów
+        // w [`Supervised::stop`] — tam, gdzie wiadomo, że coś ma zejść (Z-01c, 2026-09).
+        tree: Box::new(ProcessTree {
+            groups: BTreeSet::from([pid]),
+            descendants: BTreeSet::from([pid]),
+        }),
     })
 }
 
