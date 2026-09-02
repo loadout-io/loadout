@@ -62,12 +62,15 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Outcome,
-    Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages, unknown_price_notice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
+    FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
+    unknown_price_notice,
 };
 use crate::engine::line::{Action, Tool};
 use crate::engine::stream;
-use crate::engine::supervisor::{self, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised};
+use crate::engine::supervisor::{
+    self, CLOSE_CEILING, DEFAULT_GRACE, GroupId, GroupProof, StdinPlan, Supervised,
+};
 use crate::evidence::{EvidenceStreams, EvidenceTarget, EvidenceWriter};
 
 /// Etykieta tego vendora — ta sama w [`SessionRef::vendor`] i w [`AgentDriver::id`].
@@ -116,6 +119,10 @@ const APP_OUTCOME_CAPACITY: usize = 4;
 /// uchwytu. `Alive` nie może wyjść z tej funkcji razem z jedynym właścicielem procesu.
 const START_CLEANUP_RETRY: Duration = Duration::from_secs(1);
 
+/// Jedno zdanie dla każdej próby podmiany uchwytu nad grupą bez dowodu `ESRCH`.
+const STILL_ALIVE_AFTER_ESCALATION: &str = "the Codex App Server is still alive after a failed \
+start; Loadout retains its handle and will retry";
+
 /// Tylko ten wariant pozwala porzucic uchwyt procesu i joiny czytnikow. `Alive` nie znaczy
 /// „stop sie nie udal, posprzataj mimo to", tylko „jadro nadal widzi grupe" — wiec caly stan
 /// musi zostac w handle, aby kolejne Stop moglo ponowic eskalacje (niezmiennik 6).
@@ -137,10 +144,7 @@ async fn stop_startup_process(process: &mut Supervised) -> GroupProof {
         if proof_allows_cleanup(&proof) {
             return proof;
         }
-        tracing::error!(
-            "the Codex App Server is still alive after a failed start; Loadout retains its handle \
-             and will retry"
-        );
+        tracing::error!(STILL_ALIVE_AFTER_ESCALATION);
         tokio::time::sleep(START_CLEANUP_RETRY).await;
     }
 }
@@ -1748,14 +1752,20 @@ impl AgentHandle for CodexConversationHandle {
             return Err(error);
         }
         let waited = match self.process.as_mut() {
-            Some(process) => process.wait().await,
+            Some(process) => timeout(CLOSE_CEILING, process.wait()).await,
             None => return Ok(None),
         };
         let status = match waited {
-            Ok(status) => status,
-            Err(error) => {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => {
                 let _ = self.force_stop().await;
                 return Err(error.into());
+            }
+            Err(_) => {
+                // 2026-09 — zamknięcie future'a nie zatrzymuje procesu. Pełna eskalacja zostaje
+                // w supervisorze, a typ błędu mówi rdzeniowi, że dowody nie są uszkodzone.
+                let _ = self.force_stop().await;
+                return Err(DidNotLetGo.into());
             }
         };
         /* 2026-08-28 — GRUPA SCHODZI PRZEZ DOWÓD, NIE PRZEZ PORZUCENIE UCHWYTU.
@@ -3248,11 +3258,14 @@ impl AgentHandle for CodexHandle {
             );
         };
 
-        // Zebranie poprzedniego procesu jest częścią tury, nie sprzątaniem po niej: zombie NADAL
-        // odpowiada na sygnał zerowy, więc grupa z zombie w środku nigdy nie da `ESRCH`
-        // (niezmiennik 6).
+        // 2026-09 — zebranie lidera nie jest końcem grupy: poprzednia tura mogła zostawić wnuka,
+        // którego `wait()` nigdy nie zobaczy. Podmiana uchwytu jest legalna dopiero po `ESRCH`;
+        // `Alive` zostawia wszystkie cztery pola poprzedniej tury na miejscu (niezmiennik 6).
         if let Some(previous) = self.process.as_mut() {
-            let _reaped = previous.wait().await;
+            let proof = previous.stop(DEFAULT_GRACE).await;
+            if !proof_allows_cleanup(&proof) {
+                anyhow::bail!(STILL_ALIVE_AFTER_ESCALATION);
+            }
         }
         self.drain_current().await;
 
@@ -3338,7 +3351,7 @@ impl AgentHandle for CodexHandle {
         proof
     }
 
-    /// Koniec sesji: czeka, aż bieżąca tura wyjdzie **sama**.
+    /// Koniec sesji: czeka z sufitem, aż bieżąca tura wyjdzie **sama**.
     ///
     /// Wejścia nie ma tu czego zamykać — `codex exec` dostał EOF razem z promptem, bo bez niego
     /// w ogóle by nie ruszył. To jest ta połowa kontraktu, którą Codex spełnia za darmo, i ta
@@ -3347,11 +3360,21 @@ impl AgentHandle for CodexHandle {
         let Some(process) = self.process.as_mut() else {
             return Ok(None);
         };
-        let status = process.wait().await?;
-        self.drain_current().await;
-        // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta sama
-        // różnica, którą mierzy dowód z `cancel()`.
-        Ok(status.code())
+        if let Ok(status) = timeout(CLOSE_CEILING, process.wait()).await {
+            let status = status?;
+            self.drain_current().await;
+            // `None` znaczy „proces zginął od sygnału i kodu po prostu nie ma" — to jest ta
+            // sama różnica, którą mierzy dowód z `cancel()`.
+            Ok(status.code())
+        } else {
+            // 2026-09 — upływ czasu anuluje tylko future Rusta. Proces zawsze przechodzi
+            // jeszcze przez politykę supervisora i zostaje u uchwytu bez dowodu `Dead`.
+            let proof = process.stop(DEFAULT_GRACE).await;
+            if proof_allows_cleanup(&proof) {
+                self.drain_current().await;
+            }
+            Err(DidNotLetGo.into())
+        }
     }
 
     /// Dowód po turze, która skończyła się sama.
