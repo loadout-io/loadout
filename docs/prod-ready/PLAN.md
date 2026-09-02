@@ -292,11 +292,11 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-28 | `z28-tests-into-it` | `prompts/Z-28.md` | R | X→C | duże | 0.4 | **LANDED** `2026-09-02` | mechaniczne; po wlaniu orkiestrator dopisuje allowlistę do `checks/tests-listed.sh` (python3) |
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — prompt był niepełny; zastąpione przez Z-01b |
 | Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | **ZAMKNIĘTE jako za szerokie** — decyzją właściciela 2026-09-03 rozbite na Z-01c i Z-01d |
-| Z-01c | `z01c-live-kill` | `prompts/Z-01c.md` | R | C→X | duże | Z-04 | TODO | Stop i limit czasu zabijają każdą grupę, którą krok utworzył |
+| Z-01c | `z01c-live-kill` | `prompts/Z-01c.md` | R | C→X | duże | Z-04 | RUNNING | Stop i limit czasu zabijają każdą grupę, którą krok utworzył |
 | Z-01d | `z01d-pgids-recovery` | `prompts/Z-01d.md` | R | C→X | duże | Z-01c | TODO | znacznik na wszystkich drogach spawnu, `pgids` w `run.json`, reaper po awarii | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | **LANDED** `2026-09-02` | dwie rundy, 13 min; zawężony test biegnie 1 s |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | **LANDED** `2026-09-03` | jedna runda, 911 s | |
-| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | RUNNING (2. podejście, prompt z regułą o szkieletach) | `run.rs` 11 k linii |
+| Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | **LANDED** `2026-09-03` | drugie podejście, trzy rundy; merge rozwiązany ręcznie | `run.rs` 11 k linii |
 | Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | **LANDED** `2026-09-03` | trzy rundy | |
 | Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
 | Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
@@ -376,6 +376,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 11:20 · Z-04 · **LANDED** za drugim podejściem, trzy rundy. Poprawka promptu (reguła o szkieletach z `todo!()` plus wklejona uwaga z pierwszej rundy) zadziałała — to samo zadanie, które wcześniej stanęło. Lądowanie wymagało ręcznego rozwiązania konfliktu z Z-05: oba dotknęły `run.rs` i `codex.rs`, wzięta struktura z Z-05 i sufit z Z-04. Pełne CI 276 s · C→X
 - 2026-09-03 09:45 · AWARIA MASZYNY, nie kodu · runda naprawcza Z-04 zginęła na `cannot execute binary file`: Claude Code aktualizował się globalnie o 22:21 i podmieniał binarkę w miejscu, a bieg trafił w okno zapisu. Mylące dwa razy — plik nazywa się `claude.exe`, ale `file` mówi `Mach-O arm64`, a komunikat wskazuje ścieżkę homebrew, choć wywołanie idzie przez opakowanie Supersetu. Po protokole: przyczyna maszynowa, więc jedno powtórzenie, nie `BLOCKED` · ręka
 - 2026-09-03 09:40 · Z-05 · LANDED, trzy rundy, pełne CI 295 s · X→C
 - 2026-09-03 09:15 · DECYZJE WŁAŚCICIELA · (1) Z-01 rozbite na Z-01c (żywe zabijanie: migawka i eskalacja dla każdej grupy, test na produkcyjnym `Supervised::stop()`) i Z-01d (znacznik na wszystkich drogach spawnu, `pgids` w `run.json`, reaper po awarii). (2) Z-04 wznowione. (3) `repair-agent-app-preflight` do uratowania w części rustowej, `repair-readme-truth` skasowane jako bezprzedmiotowe (README przepisany dla 0.2), dwa pozostałe do napisania od nowa, gdy będą potrzebne. (4) 58 starych gałęzi osiągalnych z backupu skasowanych; 35 nieosiągalnych zostaje · ręka
