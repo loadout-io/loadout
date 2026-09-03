@@ -23,6 +23,7 @@
 //! Ten moduł nie zna ani biegu, ani okna: dostaje dwie ścieżki i nazwę gałęzi, oddaje fakt.
 //! Zdanie dla człowieka składa [`super::RunError`], bo tylko ono zna nazwę kroku.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -49,6 +50,10 @@ pub(super) const NOT_COPIED: [&str; 4] = [".git", ".loadout", "node_modules", "t
 /// Ukośnik na końcu jest treścią: bez niego wzorzec łapałby też plik o nazwie zaczynającej się
 /// od `.loadout`, którego nie zostawiliśmy tam my.
 const OURS: &str = ".loadout/";
+
+/// Ile nowych plików może wnieść commit kroku, zanim największe katalogi zostaną poza nim.
+const HOW_MUCH_UNTRACKED_FITS_IN_A_COMMIT: u64 = 50 * MEBIBYTE;
+const MEBIBYTE: u64 = 1024 * 1024;
 
 /// Jak powstało drzewo tego kroku.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,11 +276,10 @@ pub enum Kept {
     Nothing,
 }
 
-/// Co zostało po kroku i czego przy okazji NIE dało się sprzątnąć.
+/// Co zostało po kroku i czego przy okazji NIE dało się sprzątnąć albo zapisać.
 ///
-/// Dwa pola, bo to są dwa niezależne fakty o jednym zamknięciu: pierwszy mówi, gdzie jest praca,
-/// drugi — co po niej zostało wbrew nam. Jedno pole musiałoby wybrać jedno z dwóch, a krok,
-/// którego praca jest bezpiecznie na gałęzi, umie zostawić katalog i odwrotnie.
+/// Trzy pola, bo to są trzy niezależne fakty o jednym zamknięciu: gdzie jest praca, co po niej
+/// zostało wbrew nam i czego świadomie nie zapisaliśmy. Jedno pole musiałoby zgubić któryś z nich.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Closed {
     /// Gdzie jest praca tego kroku.
@@ -285,6 +289,8 @@ pub struct Closed {
     /// `None` znaczy „sprzątnięte", nie „nie wiem": obie komendy sprzątające albo się udały,
     /// albo złożyły tu swoje zdanie. Wołający ma je zapisać tam, gdzie człowiek czyta o biegu.
     pub tidied: Option<String>,
+    /// Jedno zdanie dla człowieka o ciężkich, nieśledzonych artefaktach poza commitem kroku.
+    pub left_behind: Option<String>,
 }
 
 /// Zamyka drzewo kroku: commit i sprzątanie, kiedy jest co zapisać, samo sprzątanie, kiedy nie ma.
@@ -335,26 +341,36 @@ pub fn finish(
     let dirty = git(dest, &["status", "--porcelain"]).is_ok_and(|said| !said.trim().is_empty());
 
     if dirty {
-        if let Err(said) = save(dest, message) {
-            // Commit się nie udał: drzewo zostaje na dysku razem z pracą, a bieg ma o tym
-            // powiedzieć. Cicha strata jest tu najgorszym możliwym kształtem: bieg wygląda na
-            // udany, a jedyna kopia pracy leży poza gitem, w katalogu, którego nikt nie szuka.
-            tracing::warn!(
-                branch,
-                said,
-                "the step's work could not be saved on its branch; leaving the folder in place"
-            );
-            return Closed {
-                kept: Kept::LeftInPlace {
-                    branch: branch.to_owned(),
-                    why: could_not_save(branch, dest, &said),
-                },
-                tidied: None,
-            };
+        let left_behind = match save(dest, message) {
+            Ok(left_behind) => left_behind,
+            Err(said) => {
+                // Commit się nie udał: drzewo zostaje na dysku razem z pracą, a bieg ma o tym
+                // powiedzieć. Cicha strata jest tu najgorszym możliwym kształtem: bieg wygląda na
+                // udany, a jedyna kopia pracy leży poza gitem, w katalogu, którego nikt nie szuka.
+                tracing::warn!(
+                    branch,
+                    said,
+                    "the step's work could not be saved on its branch; leaving the folder in place"
+                );
+                return Closed {
+                    kept: Kept::LeftInPlace {
+                        branch: branch.to_owned(),
+                        why: could_not_save(branch, dest, &said),
+                    },
+                    tidied: None,
+                    left_behind: None,
+                };
+            }
+        };
+        // 2026-09 (Z-8): półka albo ciężki katalog mogą być jedyną zmianą. Po ich wyłączeniu
+        // nie wolno ani robić pustego commita, ani zostawiać pustej gałęzi jako rzekomej pracy.
+        if !committed_over(dest, base) {
+            return close_empty_tree(project, dest, branch, left_behind);
         }
         return Closed {
             kept: Kept::OnABranch(branch.to_owned()),
             tidied: tidy_away(project, dest, branch),
+            left_behind,
         };
     }
 
@@ -364,10 +380,20 @@ pub fn finish(
         return Closed {
             kept: Kept::OnABranch(branch.to_owned()),
             tidied: tidy_away(project, dest, branch),
+            left_behind: None,
         };
     }
 
-    // Nic się nie zmieniło i nic nie zostało zacommitowane — zdejmujemy drzewo i gałąź.
+    close_empty_tree(project, dest, branch, None)
+}
+
+/// Zdejmuje drzewo i gałąź, kiedy po wyłączeniu własnych albo ciężkich plików nie ma pracy.
+fn close_empty_tree(
+    project: &Path,
+    dest: &Path,
+    branch: &str,
+    left_behind: Option<String>,
+) -> Closed {
     let mut left: Vec<String> = tidy_away(project, dest, branch).into_iter().collect();
     if let Err(said) = git(project, &["branch", "-D", branch]) {
         tracing::warn!(branch, said, "the empty branch could not be removed");
@@ -376,6 +402,7 @@ pub fn finish(
     Closed {
         kept: Kept::Nothing,
         tidied: (!left.is_empty()).then(|| left.join(" ")),
+        left_behind,
     }
 }
 
@@ -417,14 +444,135 @@ fn tidy_away(project: &Path, dest: &Path, branch: &str) -> Option<String> {
     Some(could_not_tidy(branch, dest, &said))
 }
 
-/// Zapisuje wszystko, co jest w drzewie, jako commit na jego gałęzi.
+/// Zapisuje pracę z drzewa jako commit na jego gałęzi.
 ///
-/// `add -A` bierze też pliki nowe: praca agenta to zwykle nowy plik, a commit bez nich byłby
-/// gałęzią, która niczego nie niesie.
-fn save(dest: &Path, message: &str) -> Result<(), String> {
-    git(dest, &["add", "-A"])?;
+/// `add -A` bierze też pliki nowe, ale dwa rodzaje nie należą do wyniku: półka umiejętności,
+/// którą położył Loadout, oraz największe wpisy pierwszego poziomu po przekroczeniu 50 MiB.
+/// Oba wyłączenia powstają tutaj, bo drugi zestaw reguł obok adaptera byłby pierwszym, który
+/// przestanie obowiązywać (niezmiennik 23).
+fn save(dest: &Path, message: &str) -> Result<Option<String>, String> {
+    let (heavy, left_behind) = what_does_not_belong_in_the_commit(dest)?;
+    let mut add = vec![
+        "add".to_owned(),
+        "-A".to_owned(),
+        "--".to_owned(),
+        ".".to_owned(),
+        format!(
+            ":(exclude,literal){}",
+            crate::skills::SHELF_THE_OTHER_FIVE_READ
+        ),
+    ];
+    add.extend(
+        heavy
+            .iter()
+            .map(|entry| format!(":(exclude,literal){}", entry.name)),
+    );
+    let args: Vec<&str> = add.iter().map(String::as_str).collect();
+    git(dest, &args)?;
+
+    // 2026-09 (Z-8): kiedy jedyną zmianą była półka albo duży katalog, `git commit` odmawia
+    // zdaniem „nothing to commit". To nie jest awaria zapisu pracy, bo pracy do zapisu nie ma.
+    if git(dest, &["diff", "--cached", "--name-only"])?
+        .trim()
+        .is_empty()
+    {
+        return Ok(left_behind);
+    }
     git(dest, &["commit", "--quiet", "--no-verify", "-m", message])?;
-    Ok(())
+    Ok(left_behind)
+}
+
+#[derive(Debug)]
+struct UntrackedTop {
+    name: String,
+    bytes: u64,
+    is_dir: bool,
+}
+
+/// Największe nowe wpisy pierwszego poziomu, które sprowadzą resztę pod limit, i zdanie o nich.
+fn what_does_not_belong_in_the_commit(
+    dest: &Path,
+) -> Result<(Vec<UntrackedTop>, Option<String>), String> {
+    let shelf = Path::new(crate::skills::SHELF_THE_OTHER_FIVE_READ);
+    let mut by_top: BTreeMap<String, (u64, bool)> = BTreeMap::new();
+    let mut total = 0_u64;
+
+    // `-z`, bo nazwa pliku może zawierać znak nowej linii. Dzielenie po wierszach zmieniłoby
+    // wtedy jeden plik w dwa nieistniejące i policzyło inny zbiór niż późniejsze `git add`.
+    for name in git(dest, &["ls-files", "--others", "--exclude-standard", "-z"])?
+        .split('\0')
+        .filter(|name| !name.is_empty())
+    {
+        let relative = Path::new(name);
+        if relative.starts_with(shelf) {
+            // Półka jest własnym plikiem Loadouta, nie pracą ani artefaktem agenta. Zawsze ma
+            // osobny pathspek i nie może sama przepchnąć prawdziwej pracy ponad limit.
+            continue;
+        }
+        let metadata = fs::symlink_metadata(dest.join(relative))
+            .map_err(|error| format!("could not measure {name}: {error}"))?;
+        let Some(top) = relative.components().next() else {
+            continue;
+        };
+        let top = top.as_os_str().to_string_lossy().into_owned();
+        let bytes = metadata.len();
+        total = total.saturating_add(bytes);
+        let entry = by_top
+            .entry(top.clone())
+            .or_insert_with(|| (0, dest.join(&top).is_dir()));
+        entry.0 = entry.0.saturating_add(bytes);
+    }
+
+    if total <= HOW_MUCH_UNTRACKED_FITS_IN_A_COMMIT {
+        return Ok((Vec::new(), None));
+    }
+
+    let mut biggest: Vec<UntrackedTop> = by_top
+        .into_iter()
+        .map(|(name, (bytes, is_dir))| UntrackedTop {
+            name,
+            bytes,
+            is_dir,
+        })
+        .collect();
+    biggest.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let mut kept = total;
+    let mut heavy = Vec::new();
+    for entry in biggest {
+        if kept <= HOW_MUCH_UNTRACKED_FITS_IN_A_COMMIT {
+            break;
+        }
+        kept = kept.saturating_sub(entry.bytes);
+        heavy.push(entry);
+    }
+
+    let bytes = heavy
+        .iter()
+        .fold(0_u64, |sum, entry| sum.saturating_add(entry.bytes));
+    let names = heavy
+        .iter()
+        .map(|entry| {
+            if entry.is_dir {
+                format!("{}/", entry.name)
+            } else {
+                entry.name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let megabytes = bytes.saturating_add(MEBIBYTE - 1) / MEBIBYTE;
+    let limit = HOW_MUCH_UNTRACKED_FITS_IN_A_COMMIT / MEBIBYTE;
+    let left_behind = format!(
+        "Loadout left {megabytes} MB from {names} out of this step's commit because a step branch \
+         does not carry more than {limit} MB of new files."
+    );
+    Ok((heavy, Some(left_behind)))
 }
 
 /// Zdejmuje drzewo robocze razem z jego wpisem w rejestrze.
