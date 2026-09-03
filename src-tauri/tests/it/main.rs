@@ -52,6 +52,7 @@ mod a_set_runs_as_an_ordinary_workflow;
 mod a_skill_is_frozen_for_the_run;
 mod a_skill_list_says_what_each_one_is_for;
 mod a_step_borrows_from_the_host;
+mod a_step_that_commits_its_own_work;
 mod a_suggestion_can_be_discarded;
 mod a_suggestion_needs_a_because;
 mod a_vendor_failure_names_the_next_move;

@@ -271,6 +271,22 @@ pub enum Kept {
     Nothing,
 }
 
+/// Co zostało po kroku i czego przy okazji NIE dało się sprzątnąć.
+///
+/// Dwa pola, bo to są dwa niezależne fakty o jednym zamknięciu: pierwszy mówi, gdzie jest praca,
+/// drugi — co po niej zostało wbrew nam. Jedno pole musiałoby wybrać jedno z dwóch, a krok,
+/// którego praca jest bezpiecznie na gałęzi, umie zostawić katalog i odwrotnie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Closed {
+    /// Gdzie jest praca tego kroku.
+    pub kept: Kept,
+    /// Jedno zdanie dla człowieka, kiedy katalog albo gałąź zostały wbrew nam — **ze ścieżką**.
+    ///
+    /// `None` znaczy „sprzątnięte", nie „nie wiem": obie komendy sprzątające albo się udały,
+    /// albo złożyły tu swoje zdanie. Wołający ma je zapisać tam, gdzie człowiek czyta o biegu.
+    pub tidied: Option<String>,
+}
+
 /// Zamyka drzewo kroku: commit i sprzątanie, kiedy jest co zapisać, samo sprzątanie, kiedy nie ma.
 ///
 /// **Krok, który nic nie zmienił, nie ma prawa zostawić gałęzi.** Po tygodniu biegów `git
@@ -292,7 +308,30 @@ pub enum Kept {
 /// **Sprzątamy dopiero PO udanym zapisie i nigdy przed nim.** Kolejność jest tu całą treścią:
 /// katalog skasowany przed commitem, który się nie uda, jest jedyną operacją w tym module,
 /// która umie stracić czyjąś robotę.
-pub fn finish(project: &Path, dest: &Path, branch: &str, message: &str) -> Kept {
+///
+/// # 2026-09-03 (Z-7) — CZYSTE DRZEWO NIE ZNACZY „NIC SIĘ NIE STAŁO"
+///
+/// Do tego dnia całe pytanie brzmiało `status --porcelain`, a pusta odpowiedź prowadziła prosto
+/// do `branch -D`. Agent, który sam zacommitował swoją pracę na gałąź kroku — a to jest normalny
+/// tryb pracy implementera — zostawia dokładnie takie drzewo: czyste, bo wszystko już zapisał.
+/// Kasowaliśmy mu wtedy gałąź razem z commitami, czyli **jedyną kopię jego pracy**: po `branch -D`
+/// nie ma jej w `git log`, nie ma w `git branch` i nie sięga do niej nic poza `git fsck`.
+///
+/// Pyta się więc dwoma pytaniami, tymi samymi, co [`touched`]: czy jest co commitować i czy nad
+/// punktem startu stoi commit. Krok, który zacommitował sam, dostaje `Kept::OnABranch` **bez
+/// nowego commita na wierzchu** — pracę ma już zapisaną tak, jak chciał ją zapisać.
+///
+/// **Wątpliwość znaczy „zostaw gałąź".** `base` nieznany (brak markera, nieczytelny marker) albo
+/// git, który nie odpowiada, dają tu ten sam wybór co commit: gałąź zostaje. Odwrotny wybór to ta
+/// sama cicha strata, przed którą stoi cały ten moduł — a jedna zbędna gałąź kosztuje wiersz
+/// w `git branch`.
+pub fn finish(
+    project: &Path,
+    dest: &Path,
+    branch: &str,
+    message: &str,
+    base: Option<&str>,
+) -> Closed {
     let dirty = git(dest, &["status", "--porcelain"]).is_ok_and(|said| !said.trim().is_empty());
 
     if dirty {
@@ -305,34 +344,77 @@ pub fn finish(project: &Path, dest: &Path, branch: &str, message: &str) -> Kept 
                 said,
                 "the step's work could not be saved on its branch; leaving the folder in place"
             );
-            return Kept::LeftInPlace {
-                branch: branch.to_owned(),
-                why: could_not_save(branch, dest, &said),
+            return Closed {
+                kept: Kept::LeftInPlace {
+                    branch: branch.to_owned(),
+                    why: could_not_save(branch, dest, &said),
+                },
+                tidied: None,
             };
         }
-        // Praca jest na gałęzi, więc w katalogu nie ma już niczego, czego git nie zna.
-        // Zdejmujemy go RĘKAMI GITA, nie `remove_dir_all`: samo skasowanie plików zostawia wpis
-        // w rejestrze drzew, a taki wpis odmawia potem założenia drzewa pod tą samą ścieżką.
-        // Błąd tylko logujemy — praca jest już bezpieczna, a nieusunięty katalog nie jest
-        // powodem, żeby zepsuć wynik biegu.
-        if let Err(said) = remove_tree(project, dest) {
-            tracing::debug!(
-                said,
-                "the work folder could not be removed after the commit"
-            );
-        }
-        return Kept::OnABranch(branch.to_owned());
+        return Closed {
+            kept: Kept::OnABranch(branch.to_owned()),
+            tidied: tidy_away(project, dest, branch),
+        };
     }
 
-    // Nic się nie zmieniło — zdejmujemy drzewo i gałąź. Błędy tu tylko logujemy: bieg jest już
-    // po wszystkim, a nieusunięty katalog nie jest powodem, żeby zepsuć jego wynik.
-    if let Err(said) = remove_tree(project, dest) {
-        tracing::debug!(said, "the empty work folder could not be removed");
+    // Czyste drzewo z commitem ponad punktem startu to praca zapisana ręką agenta. Katalog
+    // schodzi jak po naszym własnym commicie, gałąź zostaje nietknięta.
+    if committed_over(dest, base) {
+        return Closed {
+            kept: Kept::OnABranch(branch.to_owned()),
+            tidied: tidy_away(project, dest, branch),
+        };
     }
+
+    // Nic się nie zmieniło i nic nie zostało zacommitowane — zdejmujemy drzewo i gałąź.
+    let mut left: Vec<String> = tidy_away(project, dest, branch).into_iter().collect();
     if let Err(said) = git(project, &["branch", "-D", branch]) {
-        tracing::debug!(said, "the empty branch could not be removed");
+        tracing::warn!(branch, said, "the empty branch could not be removed");
+        left.push(could_not_tidy(branch, dest, &said));
     }
-    Kept::Nothing
+    Closed {
+        kept: Kept::Nothing,
+        tidied: (!left.is_empty()).then(|| left.join(" ")),
+    }
+}
+
+/// Czy na tej gałęzi stoi commit, którego nie było w punkcie startu drzewa.
+///
+/// Drugie z dwóch pytań [`touched`], zadane tu z tego samego powodu: agent, który commituje sam,
+/// zostawia czyste drzewo i zrobioną pracę. Punkt startu bierze się z markera TEGO kroku, a nie
+/// z `HEAD` projektu — krok wznowiony odbija się od gałęzi poprzedniego biegu
+/// (`commands::run::where_it_left_off`), więc `HEAD` odpowiadałby tu na inne pytanie i liczył
+/// cudze commity jako jego.
+///
+/// **Wątpliwość znaczy „tak".** Powód stoi przy [`finish`]: pomyłka w tę stronę zostawia jedną
+/// gałąź za dużo, w drugą — kasuje czyjąś pracę.
+fn committed_over(dest: &Path, base: Option<&str>) -> bool {
+    let Some(base) = base else {
+        return true;
+    };
+    let range = format!("{base}..HEAD");
+    git(dest, &["rev-list", "--count", &range]).map_or(true, |said| said.trim() != "0")
+}
+
+/// Zdejmuje katalog kroku po tym, jak praca jest już bezpieczna — i oddaje ZDANIE, kiedy się nie
+/// da.
+///
+/// Zdejmujemy go RĘKAMI GITA, nie `remove_dir_all`: samo skasowanie plików zostawia wpis
+/// w rejestrze drzew, a taki wpis odmawia potem założenia drzewa pod tą samą ścieżką.
+///
+/// 2026-09-03 (Z-7) — WARN I ZDANIE, NIE `debug!`. Nieusunięty katalog nadal nie jest powodem,
+/// żeby zepsuć wynik biegu — ale jest powodem, żeby o nim powiedzieć: niesie pełny checkout
+/// repozytorium i blokuje następny bieg pod tą samą ścieżką, a dziennika debugowego nie czyta
+/// nikt. Do dziś człowiek czytał zielony bieg nad katalogiem, o którym nic mu nie powiedziało.
+fn tidy_away(project: &Path, dest: &Path, branch: &str) -> Option<String> {
+    let said = remove_tree(project, dest).err()?;
+    tracing::warn!(
+        branch,
+        said,
+        "the work folder could not be removed after the step"
+    );
+    Some(could_not_tidy(branch, dest, &said))
 }
 
 /// Zapisuje wszystko, co jest w drzewie, jako commit na jego gałęzi.
@@ -368,6 +450,21 @@ fn could_not_save(branch: &str, dest: &Path, said: &str) -> String {
     format!(
         "Loadout could not put this step's work on the branch \"{branch}\" ({first}), so the \
          folder it worked in was left exactly as it is: {}",
+        dest.display()
+    )
+}
+
+/// Zdanie o tym, czego po kroku nie dało się sprzątnąć — **też ze ścieżką**.
+///
+/// Ta sama zasada, co przy [`could_not_save`], i ten sam powód: bez ścieżki człowiek dowiaduje
+/// się, że coś zostało, i musi sam znaleźć jeden katalog wśród kilkudziesięciu innych. Zdanie
+/// wymienia oba możliwe leżaki — katalog i gałąź — bo składają je dwie różne komendy, każda ze
+/// swoim własnym powodem od gita w nawiasie.
+fn could_not_tidy(branch: &str, dest: &Path, said: &str) -> String {
+    let first = said.lines().next().unwrap_or("").trim();
+    format!(
+        "Loadout could not tidy up after this step ({first}), so the folder it worked in, or the \
+         branch \"{branch}\" it stands on, is still here: {}",
         dest.display()
     )
 }
