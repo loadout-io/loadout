@@ -304,8 +304,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | **LANDED** `2026-09-02` | tylko `docs/`; może biec obok |
 | Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | **LANDED** `2026-09-03` | jedna runda |
 | Z-08 | `z08-skills-outside-commit` | `prompts/Z-08.md` | R | X→C | | Z-07 | **LANDED** `2026-09-03` | dwie rundy | |
-| Z-09 | `z09-sweeper` | `prompts/Z-09.md` | R | C→X | duże | Z-08 | RUNNING | pięć punktów, jeden bieg; jeśli kod 3 — podziel na `z09a` (reconcile+prune) i `z09b` (kopie, forget, exclude) |
-| Z-10 | `z10-blocking-offload` | `prompts/Z-10.md` | R | C→X | duże | Z-09 | TODO | |
+| Z-09 | `z09-sweeper` | `prompts/Z-09.md` | R | C→X | duże | Z-08 | **LANDED** `2026-09-03` | trzy rundy; sufit tur podniesiony raz, podział niepotrzebny | pięć punktów, jeden bieg; jeśli kod 3 — podziel na `z09a` (reconcile+prune) i `z09b` (kopie, forget, exclude) |
+| Z-10 | `z10-blocking-offload` | `prompts/Z-10.md` | R | C→X | duże | Z-09 | RUNNING | |
 | Z-26 | `z26-terminal-eviction` | `prompts/Z-26.md` | R | X→C | | Z-25, Z-10 | TODO | jedna linia w `chat.rs` → liczy się jako R |
 | Z-27 | `z27-card-truth` | `prompts/Z-27.md` | TS | X→C | | Z-26 | TODO | pięć drobnych; `PastRunRow` + lustro drutu = `invoke-args` |
 | Z-11 | `z11-skill-tool` | `prompts/Z-11.md` | R | C→X | | Z-10 | TODO | żywa wyrocznia `--ignored`; orkiestrator odpala ją raz po wlaniu (3,75 s) |
@@ -382,6 +382,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 12:40 · Z-09 · LANDED, trzy rundy, CI 318 s. Najgrubsze zadanie kolejki: uderzyło w sufit 250 tur z 21 plikami pracy w środku, wznowione z sufitem 400 — podział na dwa, który plan przewidywał, okazał się niepotrzebny. Kopie robocze starych biegów, osierocone worktree i gałęzie `loadout/*` mają teraz zamiatacz; kopia plikowa znika po biegu, a podfolder repo jako workspace mówi wprost, że praca nie wyląduje na gałęzi (3,8 GB i 89 worktree w urc-monorepo to była ta wada) · C→X
 - 2026-09-03 08:20 · Z-08 · LANDED, dwie rundy, CI 295 s. Katalog umiejętności nie wchodzi już do commita kroku ani do gałęzi wynikowej — do dziś każdy bieg z umiejętnościami wnosił skille Loadouta w PR człowieka · X→C
 - 2026-09-03 07:15 · Z-07 · LANDED, jedna runda, CI 301 s. Gałąź kroku nie ginie już, gdy agent sam zacommituje całą pracę i zostawi czyste drzewo — a to była cicha utrata pracy człowieka: `finish` sądził po `status --porcelain`, więc czyste drzewo z commitami czytało się jak „nic nie zrobił" i szło do `branch -D` · C→X
 - 2026-09-03 06:30 · Z-06 · LANDED, trzy rundy, CI 301 s. Wyjście z menu i ⌘Q idą teraz przez `ExitRequested`, wstrzymywana jest KAŻDA prośba dopóki sprzątanie trwa (pierwsze podejście przepuszczało drugą i kończyło proces w środku eskalacji zabijania), sprzątanie odpala się najwyżej raz, a zapadka przechodzi w `Done` na `Drop`, więc także po panice. Indeks zamyka się z `journal_size_limit`, a test na to ma kontrolę negatywną i cytuje zmierzone 42 MB. `eprintln!` w moście zamienione na zapis ignorujący błąd — panika „failed printing to stderr" z dziennika 31.08 nie ma już wejścia · C→X
