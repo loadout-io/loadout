@@ -298,11 +298,11 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | **LANDED** `2026-09-03` | jedna runda, 911 s | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | **LANDED** `2026-09-03` | drugie podejście, trzy rundy; merge rozwiązany ręcznie | `run.rs` 11 k linii |
 | Z-05 | `z05-turn-proof` | `prompts/Z-05.md` | R | X→C | | Z-04 | **LANDED** `2026-09-03` | trzy rundy | |
-| Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | TODO | ⌘Q potwierdzić ręcznie po wlaniu — wpis w Dzienniku |
+| Z-06 | `z06-exit-requested` | `prompts/Z-06.md` | R | C→X | | Z-05 | **LANDED** `2026-09-03` | trzy rundy; ⌘Q na żywym oknie DO POTWIERDZENIA (niżej) |
 | Z-24 | `z24-one-stamp` | `prompts/Z-24.md` | TS | C→X | | 0.5 | **LANDED** `2026-09-02` | jedna runda, 7 checków, CI 256 s |
 | Z-25 | `z25-processes-publish` | `prompts/Z-25.md` | TS | C→X | | Z-24 | **LANDED** `2026-09-02` | decyzja o `react-virtual` → jeśli „usunąć", orkiestrator robi to w `package.json` po wlaniu |
 | Z-29 | `z29-fixtures-redacted` | `prompts/Z-29.md` | TS | X→C | | 0.5 | **LANDED** `2026-09-02` | tylko `docs/`; może biec obok |
-| Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | TODO | utrata pracy człowieka |
+| Z-07 | `z07-finish-keeps-commits` | `prompts/Z-07.md` | R | C→X | | Z-06 | RUNNING | utrata pracy człowieka |
 | Z-08 | `z08-skills-outside-commit` | `prompts/Z-08.md` | R | X→C | | Z-07 | TODO | |
 | Z-09 | `z09-sweeper` | `prompts/Z-09.md` | R | C→X | duże | Z-08 | TODO | pięć punktów, jeden bieg; jeśli kod 3 — podziel na `z09a` (reconcile+prune) i `z09b` (kopie, forget, exclude) |
 | Z-10 | `z10-blocking-offload` | `prompts/Z-10.md` | R | C→X | duże | Z-09 | TODO | |
@@ -350,8 +350,13 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 
 - **po Z-28:** allowlista plików `tests/*.rs` w `checks/tests-listed.sh` (python3, atomowo);
   `checks.json` `rust-test.budget_s` z 3600 na 1500 (60 linków mniej).
-- **po Z-06:** ręczny test ⌘Q z żywym dublerem (`FakeDriver` przez `npm run app`) — wynik do
-  Dziennika; jeśli agenci przeżyli, Z-06 wraca do `TODO` jako `z06b` z opisem, co zostało.
+- **po Z-06 — DO ZROBIENIA, gdy kolejka będzie cicha.** Połowa indeksowa jest już dowiedziona
+  automatycznie i dobrze: `quitting_leaves_the_index_small` buduje sytuację (czytelnik trzyma
+  migawkę, dziennik rośnie), ma **kontrolę negatywną** na to, że sytuacja naprawdę powstała,
+  i cytuje zmierzone 42 MB. Zostaje połowa procesowa: prawdziwe okno, żywy bieg, wyjście
+  z menu, potem `ps`. Wymaga zbudowanej aplikacji, czyli ciężkiego `cargo` — nie wolno tego
+  robić, gdy biegnie zadanie (niezmiennik 26). Zdarzenie ⌘Q wysyła
+  `osascript -e 'quit app "Loadout"'`, więc test da się zrobić bez dotykania klawiatury.
 - **po Z-11:** `cargo test --test it -- --ignored skills_reach_claude` raz (płatne ~0,05 USD).
 - **po Z-15:** zamknij aplikację, `rm ~/.loadout/loadout.db ~/.loadout/loadout.db-wal ~/.loadout/loadout.db-shm`,
   uruchom, sprawdź, że historia biegów jest kompletna (niezmiennik 4), zapisz rozmiar nowej bazy.
@@ -377,6 +382,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 06:30 · Z-06 · LANDED, trzy rundy, CI 301 s. Wyjście z menu i ⌘Q idą teraz przez `ExitRequested`, wstrzymywana jest KAŻDA prośba dopóki sprzątanie trwa (pierwsze podejście przepuszczało drugą i kończyło proces w środku eskalacji zabijania), sprzątanie odpala się najwyżej raz, a zapadka przechodzi w `Done` na `Drop`, więc także po panice. Indeks zamyka się z `journal_size_limit`, a test na to ma kontrolę negatywną i cytuje zmierzone 42 MB. `eprintln!` w moście zamienione na zapis ignorujący błąd — panika „failed printing to stderr" z dziennika 31.08 nie ma już wejścia · C→X
 - 2026-09-03 05:05 · rescue-preflight · merge **COFNIĘTY** (`612bbf74`) i przepisany na zadanie **Z-34**. Trzy konflikty rozwiązałem (titlebar na rzecz dzisiejszego, oba sterowniki na rzecz wspólnego `probe::run`), clippy czyste, ale pełne CI złapało prawdziwą czerwień: dwa testy z gałęzi żądają stopki, która CZYTA sondę, a ja zostawiłem stopkę z bezwarunkowym „Claude · Codex ready". Port nie jest mechaniczny — dzisiejszy pasek fałduje się do ikon (`⌘B`), czego gałąź nie znała, a to co pokazać na zwiniętej kropce jest decyzją projektową, nie rozwiązaniem konfliktu. Część rustowa (sonda jako jeden rdzeń dla obu vendorów, komenda, 276 linii kryteriów) jest gotowa i wchodzi do promptu Z-34 jako materiał · ręka
 - 2026-09-03 04:10 · Z-01d · **LANDED**, dwie rundy — i tym samym KRYTYCZNA wada audytu jest domknięta w całości. Weryfikator odrzucił raz, znów na produkcyjnej drodze: `SearchEnvironmentDriver` nie delegował nowej metody, więc oba vendory szły do spawnu bez znacznika, a test tego nie widział, bo podstawiał atrapę implementującą metodę wprost. Lądowanie: pierwsze pełne CI padło na `supervisor_timeout_kills` — test mierzący limit czasu, jeden z jedenastu odblokowanych w R-2. Zmierzone: 3/3 samotnie w 0,38 s, pas rustowy zielony w powtórce (182 s), pełna bramka zielona (258 s). Flak zajętej maszyny, nie regresja — bramka biegła zaraz po zakończeniu biegu · C→X
 - 2026-09-03 03:20 · AWARIA MASZYNY nr 3 i JEJ NAPRAWA · trzecie zabicie biegu przez aktualizację vendora (`claude not found in PATH`, kod 127, po 30 min pracy). Trzy razy w jednej fali to nie przypadek, więc zamiast czwartego powtórzenia: `DISABLE_AUTOUPDATER=1` w środowisku procesu vendora (zmienna potwierdzona `strings` w binarce) plus JEDNO ponowienie po 15 s, wyłącznie na dwóch sygnaturach chwilowego braku binarki. Niezmiennik 28: skrypt przed promptem · ręka
