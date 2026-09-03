@@ -67,7 +67,8 @@
 //! eskalacji ([`AgentHandle::cancel`]). EOF jest osobnym czasownikiem
 //! ([`AgentHandle::close`]) i znaczy „koniec sesji", nigdy „koniec tury".
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
@@ -1620,9 +1621,14 @@ impl ClaudeDecoder {
             return Vec::new();
         }
 
-        // Całe mapowanie linia → zdarzenia stoi w JEDNYM match, razem z gałęzią śmiecia: to jest
-        // ta lista, którą czyta się, pytając „co ten sterownik w ogóle rozumie".
-        match serde_json::from_str::<ClaudeLine>(line) {
+        /* JEDNO `from_str` NA LINIĘ, TAKŻE TĄ DROGĄ (2026-09, Z-14). Do dziś stało tu drugie
+         * parsowanie tej samej linii: wołający ze świeżym `Value` (pętla czytająca sterownika,
+         * której granica prywatności potrzebuje koperty przed zapisem na dysk) płacił pełne
+         * przejście przez `serde_json` po raz drugi — raz na `Value`, raz na `ClaudeLine`.
+         * Kształt czyta teraz [`Self::push_parsed`] z gotowej wartości, a ta gałąź jest
+         * wyłącznie tym jednym parsowaniem dla wołających, którzy wartości nie mają. */
+        match serde_json::from_str::<Value>(line) {
+            Ok(value) => self.push_parsed(&value),
             Err(error) => {
                 self.unparsed += 1;
                 // Treści linii tu nie ma, i to jest świadome: surowy strumień leży już na dysku
@@ -1633,6 +1639,26 @@ impl ClaudeDecoder {
                     %error,
                     "a line of the agent stream could not be read; dropping it"
                 );
+                Vec::new()
+            }
+        }
+    }
+
+    /// To samo, dla wołającego, który tę linię **już** sparsował.
+    ///
+    /// Bierze wyłącznie wartość i nigdy napisu — właśnie po to, żeby nie dało się tędy
+    /// przepuścić linii przez `serde_json` drugi raz (2026-09, Z-14).
+    ///
+    /// Nieczytelna linia liczy się tu tak samo jak w [`Self::push`], bo to ta sama awaria widziana
+    /// o krok później: `JSON` się wczytał, ale nie w kształcie, który znamy. Rozmiaru linii nie
+    /// ma w dzienniku i to nie jest przeoczenie — o tej porażce mówi kształt, a nie liczba bajtów.
+    pub fn push_parsed(&mut self, value: &Value) -> Vec<AgentEvent> {
+        // Całe mapowanie linia → zdarzenia stoi w JEDNYM match, razem z gałęzią śmiecia: to jest
+        // ta lista, którą czyta się, pytając „co ten sterownik w ogóle rozumie".
+        match ClaudeLine::deserialize(value) {
+            Err(error) => {
+                self.unparsed += 1;
+                tracing::debug!(%error, "a line of the agent stream could not be read; dropping it");
                 Vec::new()
             }
             Ok(ClaudeLine::System(line)) => self.system(&line),
@@ -2164,7 +2190,7 @@ async fn talk(
     mut pipe: ChildStdin,
     mut inbox: mpsc::Receiver<ToAgent>,
     native: Arc<NativeTurns>,
-    private: Arc<Mutex<Vec<Vec<u8>>>>,
+    private: Arc<Mutex<PrivateTurns>>,
     mut hush: oneshot::Receiver<()>,
 ) {
     loop {
@@ -2193,13 +2219,13 @@ async fn talk(
         {
             let mut known = private.lock().unwrap_or_else(PoisonError::into_inner);
             match &said {
-                Said::Plain(ToAgent::Turn(text)) => remember_private_text(&mut known, text),
+                Said::Plain(ToAgent::Turn(text)) => known.remember_turn(text),
                 Said::Native(turn) => {
-                    remember_private_text(&mut known, &turn.text);
+                    known.remember_turn(&turn.text);
                     for image in turn.images.as_slice() {
                         let encoded =
                             base64::engine::general_purpose::STANDARD.encode(image.bytes());
-                        remember_private_text(&mut known, &encoded);
+                        known.remember_image(&encoded);
                     }
                 }
                 Said::Plain(ToAgent::Interrupt(_)) => {}
@@ -2298,7 +2324,7 @@ async fn drain_complaints(
     into: Arc<Mutex<Complaint>>,
     mut evidence: Option<EvidenceWriter>,
     target: Option<EvidenceTarget>,
-    private: Arc<Mutex<Vec<Vec<u8>>>>,
+    private: Arc<Mutex<PrivateTurns>>,
 ) {
     let mut stderr = BufReader::new(stderr);
     let mut bytes = Vec::with_capacity(8 * 1024);
@@ -2315,7 +2341,8 @@ async fn drain_complaints(
                 break;
             }
         };
-        let private_line = contains_private(&bytes[..read], &private);
+        // Bez koperty: skarga nie jest `JSON`-em, więc zostaje sam skan podciągów.
+        let private_line = contains_private(&bytes[..read], None, &private);
         if !private_line
             && let Some(writer) = evidence.as_mut()
             && let Err(error) = writer.write(&bytes[..read]).await
@@ -2349,8 +2376,33 @@ async fn drain_complaints(
 struct PumpEvidence {
     writer: Option<EvidenceWriter>,
     target: Option<EvidenceTarget>,
-    private: Arc<Mutex<Vec<Vec<u8>>>>,
+    private: Arc<Mutex<PrivateTurns>>,
     complaint: Arc<Mutex<Complaint>>,
+}
+
+/// Kładzie surowe bajty w obu miejscach, w których ich potem szukają: w transkrypcie kroku
+/// i w pliku dowodowym. Oddaje pisarza dowodów, albo `None`, jeśli ten odmówił bajtów.
+///
+/// Osobna funkcja, bo [`pump`] ma sufit stu linii i to jest ten jego kawałek, który da się
+/// przeczytać w oderwaniu: dwa ujścia, ta sama linia, żaden błąd nie kończy pętli
+/// (niezmiennik 5).
+async fn tee_raw_line(
+    bytes: &[u8],
+    transcript: Option<&mut Recorder>,
+    mut evidence: Option<EvidenceWriter>,
+) -> Option<EvidenceWriter> {
+    if let Some(recorder) = transcript
+        && let Err(error) = recorder.raw(bytes).await
+    {
+        tracing::warn!(%error, "the step transcript would not take a line of the stream");
+    }
+    if let Some(writer) = evidence.as_mut()
+        && let Err(error) = writer.write(bytes).await
+    {
+        tracing::warn!(%error, "the agent stdout evidence would not take more bytes");
+        evidence = None;
+    }
+    evidence
 }
 
 /// Czyta stdout linia po linii, kładzie **bajty** w transkrypcie kroku i sypie zdarzeniami,
@@ -2398,36 +2450,41 @@ async fn pump(
             }
         }
 
-        let private_line = contains_private(&buffer, &private);
+        /* JEDNO PARSOWANIE NA LINIĘ (2026-09, Z-14). Ta sama wartość sądzi prywatność i karmi
+         * dekoder. Do tego dnia linia szła przez `serde_json` dwa razy — raz w filtrze, raz
+         * w `stream::decode` — czyli dwa parsery odpowiadały osobno na pytanie „czym ta linia
+         * jest", a rozjazd między nimi byłby dziurą w granicy prywatności widoczną dopiero
+         * z pliku dowodowego. */
+        let readable = std::str::from_utf8(&buffer).ok().map(str::trim);
+        let parsed = readable
+            .filter(|text| !text.is_empty())
+            .and_then(|text| serde_json::from_str::<Value>(text).ok());
+
         // Nieznana linia zostaje byte-exact, ale echo wejscia jest najpierw rozpoznawane i
         // pomijane. Claude serializuje cudzyslowy, newline i backslash, wiec samo szukanie
         // nieucieczonego promptu nie stanowiloby granicy prywatnosci.
-        if !private_line
-            && let Some(recorder) = transcript.as_mut()
-            && let Err(error) = recorder.raw(&buffer).await
-        {
-            tracing::warn!(%error, "the step transcript would not take a line of the stream");
-        }
-        if !private_line
-            && let Some(writer) = evidence.as_mut()
-            && let Err(error) = writer.write(&buffer).await
-        {
-            tracing::warn!(%error, "the agent stdout evidence would not take more bytes");
-            evidence = None;
+        if !contains_private(&buffer, parsed.as_ref(), &private) {
+            evidence = tee_raw_line(&buffer, transcript.as_mut(), evidence).await;
         }
 
-        let Ok(text) = std::str::from_utf8(&buffer) else {
+        let Some(text) = readable else {
             // Bajty nie-UTF-8 są już w transkrypcie i tam zostają; dla dekodera to linia nie do
             // przeczytania, a nie powód, żeby przestać czytać strumień.
             continue;
         };
 
-        let text = text.trim();
         if text.is_empty() {
             // Pusta linia nie jest uszkodzeniem: NDJSON kończy się nią przy każdym normalnym
             // wyjściu.
             continue;
         }
+
+        let Some(value) = parsed else {
+            // Linia, której nie da się przeczytać jako `JSON`, jest już w transkrypcie i tam
+            // zostaje. Dla dekodera znaczy dokładnie tyle, co `Decoded::Unrecognised` znaczyła
+            // przed tą zmianą: jedną linię mniej, nigdy koniec odczytu (niezmiennik 5).
+            continue;
+        };
 
         // Zdarzenia i fakty o narzędziu z JEDNEJ linii i JEDNYM wywołaniem. `stream::decode`
         // pyta dekoder o zdarzenia neutralne wobec vendora i z tej samej linii dokłada
@@ -2436,7 +2493,7 @@ async fn pump(
         // drugą implementacją tej samej polityki (niezmiennik 23), a parowanie zdarzenia
         // z faktem po czymkolwiek innym niż wspólna linia rozjeżdża się na pierwszym
         // strumieniu, w którym jedna wiadomość niesie dwa bloki.
-        let stream::Decoded::Events(from_line) = stream::decode(&mut decoder, text) else {
+        let stream::Decoded::Events(from_line) = stream::decode_parsed(&mut decoder, &value) else {
             continue;
         };
 
@@ -2532,36 +2589,171 @@ async fn pump(
     drop(outcomes);
 }
 
-fn contains_private(bytes: &[u8], private: &Arc<Mutex<Vec<Vec<u8>>>>) -> bool {
-    let is_user_echo = serde_json::from_slice::<Value>(bytes)
-        .ok()
-        .and_then(|line| line.get("type").and_then(Value::as_str).map(str::to_owned))
-        .is_some_and(|kind| kind == "user");
-    is_user_echo
-        || private
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+/// Ile ostatnich tur pamiętamy jako prywatne.
+///
+/// 2026-09 (Z-14) — SUFIT, BO LISTA BEZ SUFITU JEST DRUGIM MIEJSCEM, W KTÓRYM GADATLIWA SESJA
+/// ZJADA PAMIĘĆ OKNA (pierwszym jest bufor skarg, patrz [`COMPLAINT_KEPT`]). Rosła dotąd o dwa
+/// wpisy na każdą turę i nic jej nigdy nie zdejmowało, a każdy wpis jest skanowany w KAŻDEJ
+/// linii strumienia — więc setna tura płaciła za dziewięćdziesiąt dziewięć poprzednich.
+/// Szesnaście, bo echo wejścia przychodzi w tej samej turze albo w następnej; starsze tury
+/// trzymamy wyłącznie na wypadek vendora, który echo opóźnia.
+const TURNS_REMEMBERED: usize = 16;
+
+/// Najkrótsza tura, dla której skan podciągów w ogóle się odzywa.
+///
+/// 2026-09 (Z-14) — DOLNA GRANICA JEST TU CAŁYM LEKARSTWEM. Skan podciągów dopasowuje się do
+/// dowolnego miejsca w linii, więc im krótsza tura, tym więcej CUDZEGO tekstu wygląda jak nasz:
+/// tura „ok" trafia w `input_tokens` i wycinała z pliku dowodowego wynik tury, czyli tę jedną
+/// linię, po której poznaje się, że krok się skończył. Prywatności krótkich tur pilnuje
+/// [`PrivateTurns::is_our_echo`] — porównanie treści koperty, dokładne i bez fałszywych trafień.
+const NEEDLE_FLOOR: usize = 32;
+
+/// Co ten proces wysłał — i jedyna podstawa, na jakiej wolno wyciąć linię ze strumienia.
+///
+/// # Dlaczego nie wystarczy `type == "user"` (2026-09, Z-14)
+///
+/// Bo bez `--replay-user-messages` linia `type:"user"` **nigdy** nie jest echem naszego wejścia.
+/// Jest wynikiem czynności: blok `tool_result`, z którego powstaje `ToolEnd`, a z niego
+/// `FileEdit`. Odrzucanie jej po samym `type` kosztowało dwie rzeczy naraz — `store::rebuild`
+/// odtwarzał historię bez ani jednego wiersza `Edited` i `Ran`, a paczka diagnostyczna nie
+/// miała wyjścia komendy, która się nie udała. Echo poznaje się więc po TREŚCI koperty, którą
+/// sami zbudowaliśmy ([`user_envelope`]), a nie po jej nagłówku.
+#[derive(Default)]
+struct PrivateTurns {
+    /// Treść ostatnich tur, dosłownie tak, jak poszła w bloku `text` koperty.
+    turns: VecDeque<String>,
+    /// Hasze `source.data` ostatnich obrazów.
+    ///
+    /// Hasz, nie base64: obraz waży do 5 MiB, a igła tej długości była porównywana z każdym
+    /// oknem każdej linii strumienia. Niestabilność [`std::hash::DefaultHasher`] między
+    /// wersjami Rusta nic tu nie kosztuje — ta liczba żyje wyłącznie w pamięci jednego procesu
+    /// i nigdy nie ląduje na dysku.
+    images: VecDeque<u64>,
+    /// Igły bajtowe: tura i jej postać po ucieczce `JSON`-a. Drugi, niezależny strażnik —
+    /// dla tur krótszych niż [`NEEDLE_FLOOR`] pusty z rozmysłem.
+    needles: VecDeque<Vec<u8>>,
+}
+
+impl PrivateTurns {
+    /// Zapamiętuje jedną turę człowieka.
+    ///
+    /// Duplikat nie wchodzi po raz drugi: ta sama tura powtórzona zajmowałaby dwa miejsca pod
+    /// sufitem i wypychała spod niego turę, której jeszcze nikt nie odbił.
+    fn remember_turn(&mut self, text: &str) {
+        if text.is_empty() || self.turns.iter().any(|known| known == text) {
+            return;
+        }
+        self.turns.push_back(text.to_owned());
+        while self.turns.len() > TURNS_REMEMBERED {
+            self.turns.pop_front();
+        }
+        // Dolna granica: krótkiej tury pilnuje wyłącznie porównanie treści koperty
+        // (powód w całości przy [`NEEDLE_FLOOR`]).
+        if text.len() < NEEDLE_FLOOR {
+            return;
+        }
+        self.remember_needle(text.as_bytes().to_vec());
+        if let Ok(escaped) = serde_json::to_string(text) {
+            self.remember_needle(escaped.into_bytes());
+        }
+    }
+
+    /// Zapamiętuje jeden obraz — po haszu jego `source.data`, nigdy po samym base64.
+    fn remember_image(&mut self, encoded: &str) {
+        let digest = digest_of(encoded);
+        if self.images.contains(&digest) {
+            return;
+        }
+        self.images.push_back(digest);
+        while self.images.len() > TURNS_REMEMBERED {
+            self.images.pop_front();
+        }
+    }
+
+    /// Dokłada jedną igłę bajtową pod tym samym sufitem, co tury — po dwie na turę.
+    fn remember_needle(&mut self, needle: Vec<u8>) {
+        if self.needles.contains(&needle) {
+            return;
+        }
+        self.needles.push_back(needle);
+        while self.needles.len() > TURNS_REMEMBERED * 2 {
+            self.needles.pop_front();
+        }
+    }
+
+    /// Czy ta koperta jest echem czegoś, co sami wysłaliśmy.
+    ///
+    /// Sądzona jest TREŚĆ, nigdy nagłówek: blok `text` równy zapamiętanej turze albo blok
+    /// `image`, którego `source.data` ma zapamiętany hasz. Kształt `content` bywa u vendora
+    /// listą bloków albo gołym napisem i obie postacie są tu przewidziane (niezmiennik 5).
+    fn is_our_echo(&self, value: &Value) -> bool {
+        let Some(content) = value.pointer("/message/content") else {
+            return false;
+        };
+        if let Some(said) = content.as_str() {
+            return self.turns.iter().any(|known| known == said);
+        }
+        let Some(blocks) = content.as_array() else {
+            return false;
+        };
+        blocks
+            .iter()
+            .any(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") => block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|said| self.turns.iter().any(|known| known == said)),
+                Some("image") => block
+                    .pointer("/source/data")
+                    .and_then(Value::as_str)
+                    .is_some_and(|data| self.images.contains(&digest_of(data))),
+                _ => false,
+            })
+    }
+
+    /// Czy te bajty niosą którąkolwiek z zapamiętanych igieł.
+    ///
+    /// Pusta igła jest odsiewana, choć [`Self::remember_turn`] jej nie dopuszcza: `windows(0)`
+    /// **panikuje**, a panika w pętli czytającej zabiera cały bieg (niezmiennik 5, tabela §4).
+    fn hits(&self, bytes: &[u8]) -> bool {
+        self.needles
             .iter()
             .filter(|needle| !needle.is_empty())
             .any(|needle| bytes.windows(needle.len()).any(|window| window == needle))
-}
-
-fn remember_private_text(known: &mut Vec<Vec<u8>>, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    known.push(text.as_bytes().to_vec());
-    if let Ok(escaped) = serde_json::to_string(text) {
-        known.push(escaped.into_bytes());
     }
 }
 
-fn private_needles(prompt: &str, images: &ValidatedImages) -> Arc<Mutex<Vec<Vec<u8>>>> {
-    let mut private = Vec::new();
-    remember_private_text(&mut private, prompt);
+/// Hasz tekstu, wyłącznie do porównania z WŁASNĄ kopią tego, co sami wysłaliśmy.
+///
+/// Nie jest to funkcja kryptograficzna i nie musi nią być: obie strony porównania powstają
+/// w tym samym procesie, a liczba nigdy nie opuszcza pamięci (2026-09, Z-14).
+fn digest_of(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Czy tę linię wolno położyć na dysku.
+///
+/// `parsed` jest tą samą wartością, którą za chwilę dostanie dekoder — jedno parsowanie na
+/// linię, bo dwa parsery nad jedną linią to dwie odpowiedzi na pytanie „czym ta linia jest".
+/// `None` znaczy „to nie jest `JSON`" i zostaje wtedy sam skan podciągów: tak wygląda stderr
+/// w [`drain_complaints`].
+fn contains_private(
+    bytes: &[u8],
+    parsed: Option<&Value>,
+    private: &Arc<Mutex<PrivateTurns>>,
+) -> bool {
+    let known = private.lock().unwrap_or_else(PoisonError::into_inner);
+    parsed.is_some_and(|value| known.is_our_echo(value)) || known.hits(bytes)
+}
+
+fn private_turns(prompt: &str, images: &ValidatedImages) -> Arc<Mutex<PrivateTurns>> {
+    let mut private = PrivateTurns::default();
+    private.remember_turn(prompt);
     for image in images.as_slice() {
         let encoded = base64::engine::general_purpose::STANDARD.encode(image.bytes());
-        remember_private_text(&mut private, &encoded);
+        private.remember_image(&encoded);
     }
     Arc::new(Mutex::new(private))
 }
@@ -3119,7 +3311,7 @@ impl ClaudeDriver {
                 .map_or_else(|| spec.run_id.to_string(), |session| session.id.clone()),
         };
 
-        let private = private_needles(&spec.prompt, &self.images);
+        let private = private_turns(&spec.prompt, &self.images);
         let envelope = user_envelope(&spec.prompt, &self.images).inspect_err(|_error| {
             if let Some(target) = &self.evidence {
                 target.mark_incomplete();
@@ -3249,4 +3441,154 @@ async fn first_answer(stdout: ChildStdout) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    //! Granica prywatności ujścia — kryterium stoi przy regule, którą sądzi.
+    //!
+    //! # Dlaczego TUTAJ, a nie w `tests/it/`
+    //!
+    //! Bo tamte kryteria sądzą PLIK po prawdziwym biegu i to jest ich robota: czy linia wyniku
+    //! czynności dojechała na dysk (`stream_raw_tee_live`), czy historia odbudowana z pliku mówi,
+    //! co krok zrobił (`z14_rebuilt_history_keeps_what_the_tools_did`). Ani jedno z nich nie
+    //! widzi natomiast, ILE ta granica pamięta po stu turach — a to jest jedyna rzecz w tym
+    //! pakiecie, którą da się zepsuć bez zmiany ani jednego bajtu na dysku. Wzorzec „kryterium
+    //! przy regule" jest w repo (`commands::history`, `workflow::check`).
+
+    use serde_json::json;
+
+    use super::{NEEDLE_FLOOR, PrivateTurns, TURNS_REMEMBERED};
+
+    /// Tura dłuższa niż [`NEEDLE_FLOOR`], czyli taka, która igłę bajtową naprawdę zakłada.
+    fn long_turn(number: usize) -> String {
+        format!("please look at the comma splitter one more time, round {number}")
+    }
+
+    /// Koperta, którą buduje [`super::user_envelope`] — tekst i opcjonalny obraz.
+    fn envelope(text: &str, image: Option<&str>) -> serde_json::Value {
+        let mut content = vec![json!({"type": "text", "text": text})];
+        if let Some(data) = image {
+            content.push(json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": data},
+            }));
+        }
+        json!({"type": "user", "message": {"role": "user", "content": content}})
+    }
+
+    #[test]
+    fn a_hundred_turns_leave_a_bounded_list_of_needles() {
+        assert!(
+            long_turn(0).len() >= NEEDLE_FLOOR,
+            "a fixture below the floor would prove nothing about the ceiling: it would leave no \
+             needles at all"
+        );
+
+        let mut known = PrivateTurns::default();
+        for round in 0..100 {
+            known.remember_turn(&long_turn(round));
+            // Ta sama tura powtórzona: lista ma się od niej nie ruszyć.
+            known.remember_turn(&long_turn(round));
+        }
+
+        assert!(
+            known.turns.len() <= TURNS_REMEMBERED,
+            "a hundred turns left {} of them remembered. Every one of these is compared against \
+             every line the agent app writes, so a list that only grows makes the last turn of a \
+             long conversation pay for all the ones before it",
+            known.turns.len(),
+        );
+        assert!(
+            known.needles.len() <= TURNS_REMEMBERED * 2,
+            "a hundred turns left {} needles. Each turn contributes at most two - what the \
+             person typed and the same thing with JSON escapes - so anything above twice the \
+             ceiling means the list is either unbounded or holding duplicates",
+            known.needles.len(),
+        );
+        assert!(
+            known.hits(long_turn(99).as_bytes()),
+            "the turn that just happened has to be caught by the substring guard, or the \
+             ceiling has thrown away the wrong end of the list"
+        );
+        assert!(
+            !known.hits(long_turn(0).as_bytes()),
+            "the first of a hundred turns is long gone, and a guard still holding it is a guard \
+             with no ceiling at all"
+        );
+    }
+
+    #[test]
+    fn a_short_turn_is_remembered_without_becoming_a_substring_needle() {
+        assert!(
+            "ok".len() < NEEDLE_FLOOR,
+            "this fixture is the short turn, so it has to stand below the floor"
+        );
+        let mut known = PrivateTurns::default();
+        known.remember_turn("ok");
+
+        assert!(
+            !known.hits(br#"{"type":"result","usage":{"input_tokens":1420}}"#),
+            "two letters a person typed may not cut somebody else's line out of the file. That \
+             is exactly what happened: \"ok\" sits inside \"input_tokens\", so the line ending \
+             the turn disappeared from the evidence a person attaches to a bug report"
+        );
+        assert!(
+            known.is_our_echo(&envelope("ok", None)),
+            "the short turn still has to be recognised when it comes back as our own envelope. \
+             Dropping the substring guard for it is only safe because this exact comparison \
+             takes over"
+        );
+    }
+
+    #[test]
+    fn an_image_is_compared_by_its_hash_and_never_scanned_as_base64() {
+        let data = "iVBORw0KGgoAAAANSUhEUg==";
+        let mut known = PrivateTurns::default();
+        known.remember_turn(&long_turn(1));
+        known.remember_image(data);
+
+        assert!(
+            !known.hits(data.as_bytes()),
+            "an image may not become a needle scanned inside every line: one of them weighs up \
+             to five megabytes and it would be compared against every window of every line the \
+             agent app writes"
+        );
+        assert!(
+            known.is_our_echo(&envelope(&long_turn(1), Some(data))),
+            "our own envelope carrying that image has to be recognised, and the only honest way \
+             left is comparing the image against the copy we sent"
+        );
+        assert!(
+            !known.is_our_echo(&envelope(
+                "something nobody here has ever said",
+                Some("Zm9v")
+            )),
+            "somebody else's picture and somebody else's words are not our turn coming back"
+        );
+    }
+
+    #[test]
+    fn a_tool_result_is_never_read_as_an_echo_of_what_we_typed() {
+        let mut known = PrivateTurns::default();
+        known.remember_turn(&long_turn(2));
+
+        let result = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01",
+                    "content": "Applied 1 edit to src/csv.rs",
+                }],
+            },
+        });
+        assert!(
+            !known.is_our_echo(&result),
+            "this shape carries what an action returned, not what a person typed, and it is the \
+             only place that answer travels. Reading it as our own input is what left rebuilt \
+             histories with no changed files and no commands at all"
+        );
+    }
 }

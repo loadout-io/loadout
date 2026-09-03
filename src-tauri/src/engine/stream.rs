@@ -291,6 +291,20 @@ pub fn decode(claude: &mut ClaudeDecoder, line: &str) -> Decoded {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return Decoded::Unrecognised;
     };
+    decode_parsed(claude, &value)
+}
+
+/// To samo, dla wołającego, który tę linię **już** sparsował.
+///
+/// 2026-09 (Z-14) — SZEW ISTNIEJE PO TO, ŻEBY PARSOWANIE BYŁO JEDNO NA LINIĘ. Pętla czytająca
+/// sterownika potrzebuje koperty przed zapisem na dysk (granica prywatności poznaje echo po
+/// treści, nie po `type`), a chwilę później potrzebuje jej dekoder. Druga runda przez
+/// `serde_json` byłaby drugą odpowiedzią na pytanie „czym ta linia jest" — a rozjazd między
+/// dwiema odpowiedziami widać dopiero z pliku dowodowego, czyli po fakcie.
+///
+/// Napisu tu nie ma i to jest cały mechanizm: klasyfikacja, fakty o narzędziu i dekoder czytają
+/// **tę jedną** wartość, więc drugie parsowanie nie ma którędy wrócić.
+pub fn decode_parsed(claude: &mut ClaudeDecoder, value: &Value) -> Decoded {
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Decoded::Unrecognised;
     };
@@ -301,7 +315,7 @@ pub fn decode(claude: &mut ClaudeDecoder, line: &str) -> Decoded {
     // treść zginęła po drodze, i policzenie jej jest jedynym sposobem, żeby ktoś się o tym
     // kiedykolwiek dowiedział.
     let complete = match kind {
-        "assistant" | "user" => content_of(&value).is_some(),
+        "assistant" | "user" => content_of(value).is_some(),
         "rate_limit_event" => value.get("rate_limit_info").is_some(),
         _ => true,
     };
@@ -309,9 +323,9 @@ pub fn decode(claude: &mut ClaudeDecoder, line: &str) -> Decoded {
         return Decoded::Unrecognised;
     }
 
-    let facts = tool_facts(&value);
+    let facts = tool_facts(value);
     let events = claude
-        .push(line)
+        .push_parsed(value)
         .into_iter()
         .map(|event| {
             // Sparowanie po `id`, nie po pozycji: sterownik wypuszcza z jednego bloku raz
