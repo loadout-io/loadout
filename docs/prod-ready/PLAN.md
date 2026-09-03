@@ -293,7 +293,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-01 | `z01-descendants` | `prompts/Z-01.md` | R | C→X | duże | Z-28 | **BLOCKED** — prompt był niepełny; zastąpione przez Z-01b |
 | Z-01b | `z01b-descendants` | `prompts/Z-01b.md` | R | C→X | duże | Z-02 | **ZAMKNIĘTE jako za szerokie** — decyzją właściciela 2026-09-03 rozbite na Z-01c i Z-01d |
 | Z-01c | `z01c-live-kill` | `prompts/Z-01c.md` | R | C→X | duże | Z-04 | **LANDED** `2026-09-03` | JEDNA runda po sześciu odrzuceniach szerokiej wersji | Stop i limit czasu zabijają każdą grupę, którą krok utworzył |
-| Z-01d | `z01d-pgids-recovery` | `prompts/Z-01d.md` | R | C→X | duże | Z-01c | RUNNING | znacznik na wszystkich drogach spawnu, `pgids` w `run.json`, reaper po awarii | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
+| Z-01d | `z01d-pgids-recovery` | `prompts/Z-01d.md` | R | C→X | duże | Z-01c | **LANDED** `2026-09-03` | dwie rundy; CI raz czerwone na flaku, zielone w powtórce | znacznik na wszystkich drogach spawnu, `pgids` w `run.json`, reaper po awarii | ten sam zakres z trzema wymaganiami, które weryfikator odkrył przez trzy rundy | krytyczne; wymaga aktywnych testów z 0.4 (R-2) |
 | Z-02 | `z02-zero-probe` | `prompts/Z-02.md` | R | X→C | | Z-01 | **LANDED** `2026-09-02` | dwie rundy, 13 min; zawężony test biegnie 1 s |
 | Z-03 | `z03-heavy-permit` | `prompts/Z-03.md` | R | C→X | | Z-02 | **LANDED** `2026-09-03` | jedna runda, 911 s | |
 | Z-04 | `z04-settle-guard` | `prompts/Z-04.md` | R | C→X | duże | Z-03 | **LANDED** `2026-09-03` | drugie podejście, trzy rundy; merge rozwiązany ręcznie | `run.rs` 11 k linii |
@@ -376,6 +376,8 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 04:10 · Z-01d · **LANDED**, dwie rundy — i tym samym KRYTYCZNA wada audytu jest domknięta w całości. Weryfikator odrzucił raz, znów na produkcyjnej drodze: `SearchEnvironmentDriver` nie delegował nowej metody, więc oba vendory szły do spawnu bez znacznika, a test tego nie widział, bo podstawiał atrapę implementującą metodę wprost. Lądowanie: pierwsze pełne CI padło na `supervisor_timeout_kills` — test mierzący limit czasu, jeden z jedenastu odblokowanych w R-2. Zmierzone: 3/3 samotnie w 0,38 s, pas rustowy zielony w powtórce (182 s), pełna bramka zielona (258 s). Flak zajętej maszyny, nie regresja — bramka biegła zaraz po zakończeniu biegu · C→X
+- 2026-09-03 03:20 · AWARIA MASZYNY nr 3 i JEJ NAPRAWA · trzecie zabicie biegu przez aktualizację vendora (`claude not found in PATH`, kod 127, po 30 min pracy). Trzy razy w jednej fali to nie przypadek, więc zamiast czwartego powtórzenia: `DISABLE_AUTOUPDATER=1` w środowisku procesu vendora (zmienna potwierdzona `strings` w binarce) plus JEDNO ponowienie po 15 s, wyłącznie na dwóch sygnaturach chwilowego braku binarki. Niezmiennik 28: skrypt przed promptem · ręka
 - 2026-09-03 00:12 · AWARIA MASZYNY nr 2 · Z-01d zginęło w fazie planu na kodzie 1, ale w transkrypcie stoi `api_error_status: 429`, `terminal_reason: api_error` i zdanie „You’ve hit your session limit · resets 12:50am". To nie jest porażka sprawdzenia — a kod 1 po protokole znaczy właśnie „sprawdzenie padło", więc rozpoznanie idzie z transkryptu, nie z kodu. Właściciel przelogował się, sonda `claude -p` odpowiedziała, bieg wznowiony bez zmian w zleceniu · ręka
 - 2026-09-03 12:15 · Z-01c · **LANDED w JEDNEJ rundzie** — to jest odpowiedź na pytanie, czy rozbicie Z-01 było słuszne. Ta sama praca w szerokiej wersji dostała sześć odrzuceń; zawężona do samego żywego zabijania (migawka drzewa, pełna eskalacja dla każdej odkrytej grupy, druga migawka także po zejściu lidera, test na produkcyjnym `Supervised::stop()`) przeszła za pierwszym razem. Stop i limit czasu zabijają teraz wszystko, co krok uruchomił. Pełne CI 322 s · C→X
 - 2026-09-03 11:20 · Z-04 · **LANDED** za drugim podejściem, trzy rundy. Poprawka promptu (reguła o szkieletach z `todo!()` plus wklejona uwaga z pierwszej rundy) zadziałała — to samo zadanie, które wcześniej stanęło. Lądowanie wymagało ręcznego rozwiązania konfliktu z Z-05: oba dotknęły `run.rs` i `codex.rs`, wzięta struktura z Z-05 i sufit z Z-04. Pełne CI 276 s · C→X
@@ -414,7 +416,12 @@ Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem
 
 ---
 
-## 6. Z-01 — dlaczego stoi i co wymaga twojej decyzji
+## 6. Z-01 — ZAMKNIĘTE 2026-09-03 (zapis dla historii)
+
+> **ZAMKNIĘTE.** Właściciel wybrał wariant A. `Z-01c` (żywe zabijanie) przeszło
+> w JEDNEJ rundzie, `Z-01d` (znacznik, `pgids`, reaper) w dwóch. Sekcja zostaje, bo
+> niesie sześć znalezisk, których żaden check nie widział — i to jest najlepszy zapis
+> tego, po co w tym repo stoi weryfikacja cross-vendor.
 
 Dwa podejścia (`z01-descendants`, `z01b-descendants`), po trzy rundy każde, **sześć odrzuceń**,
 każde na innej prawdziwej dziurze, każde przy ZIELONYCH checkach. Praca stoi w dwóch worktree
