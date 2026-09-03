@@ -46,7 +46,7 @@ use crate::engine::drivers::{
     RunSpec, ToAgent, ValidatedImages, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen, suggested};
-use crate::engine::supervisor::GroupProof;
+use crate::engine::supervisor::{self, GroupProof};
 use crate::evidence::{
     ConversationEnd, ConversationMetadata, ConversationVendor, EvidenceFailureKind, EvidenceTarget,
     ImageFact, SafeInputManifest, TurnCounters,
@@ -63,6 +63,14 @@ use crate::skills::{Roots, StepSkills};
 /// jego wiersza — czyli w podpis, który widać na ekranie. Nazwa kroku biegu nie może z nim
 /// kolidować, bo rozmowa i bieg nie stoją w jednym strumieniu w tej samej chwili.
 pub const LEAD: &str = "Lead";
+
+/// Co stoi w slocie KROKU znacznika procesu rozmowy lidera (2026-09, Z-01d).
+///
+/// Rozmowa nie ma kroków — nie ma grafu, nie ma `run.json`, nie ma `steps[]`. Ta stała jest więc
+/// odpowiedzią „to nie jest krok żadnego biegu", wypisaną wprost, żeby człowiek czytający `ps`
+/// nie szukał w historii kafelka o tym numerze. Slot BIEGU niesie obok niej identyfikator samej
+/// rozmowy — powód w całości przy jedynym wołającym, [`begin_thread`].
+const LEAD_CONVERSATION_STEP: &str = "lead-conversation";
 
 /// Ile zdarzeń mieści się w kanale sesji rozmowy.
 ///
@@ -3041,6 +3049,19 @@ async fn begin_thread(
         // trzeciego ramienia, wiec ta furtka nie jest osiagalna z okna.
         None => driver,
     };
+    /* ZNACZNIK JAKO OSTATNIE OPAKOWANIE (2026-09, Z-01d), z tego samego wymuszonego powodu, co
+     * w `commands::run::configured_driver_for_agent`: każde z tych opakowań oddaje KLON
+     * sterownika, więc znacznik założony przed dowodami zginąłby przy `with_evidence` — cicho,
+     * bo wszystko dalej się kompiluje i rozmowa dalej rusza.
+     *
+     * ROZMOWA LIDERA NIE JEST BIEGIEM i to jest treść tej wartości, nie obejście. W slocie biegu
+     * stoi identyfikator TEJ rozmowy, więc most Codeksa (App Server) daje się rozpoznać w `ps`,
+     * a jednocześnie nie może się zrównać z żadnym `run.json` → `id`: gdyby jego `pgid` kiedyś
+     * trafił pod numer zapisany przy jakimś kroku, sprzątanie zobaczy cudzy znacznik i nie
+     * wyśle ani jednego sygnału. `None` byłoby tu gorsze — brak znacznika znaczy dla reapera
+     * „nie da się przeczytać", czyli zgodę na normalną eskalację. */
+    let tag = supervisor::StepTag::new(&conversation.to_string(), LEAD_CONVERSATION_STEP);
+    let driver = driver.for_step(&tag).unwrap_or(driver);
     let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENTS);
     let mut handle = match driver.start_conversation(spec, images, events).await {
         Ok(handle) => handle,

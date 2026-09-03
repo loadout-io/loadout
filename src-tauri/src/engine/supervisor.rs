@@ -1541,6 +1541,62 @@ pub fn open_private_file(
 /// ([`StdinPlan`]), nigdy w argv i nigdy w pliku tymczasowym.
 pub const PASSTHROUGH: &[&str] = &["PATH", "HOME", "LANG", "TERM", "TMPDIR", "USER"];
 
+/// Nazwa zmiennej, którą **każdy** proces kroku niesie identyfikator swojego biegu.
+///
+/// 2026-09 (Z-01d) — po awarii aplikacji z całego biegu zostaje `run.json` i garść liczb; sam
+/// `pgid` nie mówi, czyja to grupa, bo `kern.maxproc` na macOS wynosi 16 000 i numery przewijają
+/// się w godzinach [T7 ryzyko 2]. Odzyskiwanie porównuje więc tę wartość z `id` odzyskiwanego
+/// biegu, a grupa oznaczona **cudzym** biegiem nie dostaje ani jednego sygnału.
+///
+/// Wartością jest identyfikator BIEGU (`run.json` → `id`), nigdy identyfikator sesji vendora.
+/// Poprzednie podejście brało tu `RunSpec::run_id`, czyli `job.session` — a odzyskiwanie
+/// porównywało to z `run.json.id`, więc własna żywa grupa wychodziła obca i nie dostawała
+/// sygnału w ogóle. Jedynym konstruktorem jest [`StepTag`] i tylko dlatego tej pomyłki nie da
+/// się powtórzyć przez podanie innego napisu.
+///
+/// Zmienna, a nie argv, i to nie jest wygoda: dziecko przekazuje środowisko wnukom bez ani jednej
+/// linii kodu po naszej stronie, a argv widzi wyłącznie ten jeden proces, którego my uruchomiliśmy
+/// — czyli dokładnie nie ten, który przeżywa awarię [T7 §3.1].
+pub const TAG_RUN: &str = "LOADOUT_RUN";
+
+/// To samo dla kroku. Nie uczestniczy w decyzji o strzale — jest po to, żeby człowiek patrzący
+/// w `ps` wiedział, **który kafelek** zostawił tę grupę.
+pub const TAG_STEP: &str = "LOADOUT_STEP";
+
+/// Znacznik jednego kroku jednego biegu, wpuszczany do środowiska każdego jego procesu.
+///
+/// Typ, a nie para napisów, wyłącznie po to, żeby konstruktor mógł żądać tych dwóch wartości,
+/// które naprawdę stoją w `run.json` — powód w całości przy [`TAG_RUN`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepTag {
+    run: String,
+    step: String,
+}
+
+impl StepTag {
+    /// `run` to `run.json` → `id`, `step` to `run.json` → `steps[].id`. Inne wartości nie mają tu
+    /// czego szukać: odzyskiwanie porównuje pierwszą z nich **co do bajta**.
+    #[must_use]
+    pub fn new(run: &str, step: &str) -> Self {
+        Self {
+            run: run.to_owned(),
+            step: step.to_owned(),
+        }
+    }
+
+    /// Bieg, do którego należy proces noszący ten znacznik.
+    #[must_use]
+    pub fn run(&self) -> &str {
+        &self.run
+    }
+
+    /// Krok, który go uruchomił.
+    #[must_use]
+    pub fn step(&self) -> &str {
+        &self.step
+    }
+}
+
 /// Dowód, że to program podany do [`Command`] nie istniał w chwili startu procesu.
 ///
 /// `ENOENT` ze spawnu jest niejednoznaczne: ten sam kod wraca dla brakującego katalogu
@@ -2218,6 +2274,27 @@ impl Supervised {
         }
     }
 
+    /// Każda grupa procesów, o której ten uchwyt wie — po świeżym przeglądzie drzewa.
+    ///
+    /// # Po co to jest osobno od [`Supervised::stop`] (2026-09, Z-01d)
+    ///
+    /// Bo to jest zdanie **do zapisania w `run.json`**, a nie do wykonania. Krok, który schodzi,
+    /// zabiera ze sobą jedyny uchwyt: po nim zostaje plik, a w pliku do tego dnia stała jedna
+    /// liczba — `pgid` lidera. Wszystko, co krok odpalił we własnej grupie (a Claude Code robi
+    /// tak z KAŻDĄ komendą narzędzia Bash), było dla odzyskiwania po awarii niewidzialne, bo
+    /// nigdy nie zostało nigdzie zapisane.
+    ///
+    /// **Zapamiętuje**, nie tylko oddaje: `tree.groups` rośnie, więc następna eskalacja tego
+    /// samego uchwytu obejmie także to, co widać było tylko teraz. Cena, którą trzeba nazwać:
+    /// przegląd idzie domknięciem po `ppid`, więc potomek osierocony **przed** tym wywołaniem
+    /// jest tu tak samo niewidzialny, jak w `stop()`. To jest ta luka, którą zamyka dopiero
+    /// znacznik z [`TAG_RUN`] i skan po nim w odzyskiwaniu.
+    #[cfg(unix)]
+    pub fn descendant_groups(&mut self) -> Vec<i32> {
+        self.rescan();
+        self.tree.groups.iter().copied().collect()
+    }
+
     /// Dopisuje do wiedzy tego uchwytu wszystko, co `ps` wie o naszym drzewie **teraz**.
     ///
     /// Wyłącznie dopisuje: `pgid`, który raz był nasz, zostaje jednostką dowodu do końca:
@@ -2317,6 +2394,76 @@ fn group_is_gone(pgid: i32) -> bool {
         Err(Errno::ESRCH) => true,
         Ok(()) | Err(_) => false,
     }
+}
+
+/// Czy w grupie `pgid` nie ma już nikogo — **publiczne okno** na ten sam pomiar, którym schodzi
+/// każda grupa tego pliku.
+///
+/// 2026-09 (Z-01d) — istnieje dla odzyskiwania po awarii aplikacji, które musi odróżnić grupę
+/// pustą (nie ma czego sprzątać, i to jest dowód, nie domysł) od grupy żywej, **zanim** wyśle do
+/// niej pierwszy sygnał. Bez tego rozróżnienia sprzątanie meldowałoby jako posprzątane wszystko,
+/// czego nawet nie tknęło.
+///
+/// Nazwa mówi „pusta", a nie „martwa", i to jest różnica z niezmiennika 6: `EPERM` znaczy „grupa
+/// istnieje i nie jest nasza", więc `false` obejmuje także ją.
+#[cfg(unix)]
+#[must_use]
+pub fn group_is_empty(pgid: i32) -> bool {
+    group_is_gone(pgid)
+}
+
+/// Identyfikator biegu, którego proces siedzi w grupie `pgid` — odczytany z jego środowiska.
+///
+/// # Dlaczego `None` NIE znaczy „cudza grupa" (2026-09, Z-01d)
+///
+/// Bo znaczy „nie da się przeczytać". Zmierzone na tym macOS: `ps -E` oddaje pełne środowisko
+/// procesu uruchomionego z binarium spoza ochrony systemu, ale dla `/bin/sh` i `/bin/sleep` nie
+/// pokazuje ani jednej zmiennej. Potraktowanie braku znacznika jako obcości zamieniłoby więc
+/// każdą sierotę po powłoce w grupę, której nie wolno tknąć — czyli skasowałoby całe sprzątanie
+/// dokładnie tam, gdzie jest najbardziej potrzebne. Odmowa strzału należy się wyłącznie grupie,
+/// która **powiedziała**, że jest czyjaś.
+///
+/// Dopasowanie po całym słowie: `LOADOUT_RUN=abc` nie ma prawa złapać `LOADOUT_RUN=abcdef`, bo
+/// identyfikatory biegów bywają prefiksami swoich sąsiadów, a różnica między własną a cudzą
+/// grupą jest tu różnicą między sprzątaniem a strzałem w niewinny proces.
+///
+/// `ps` przez podproces, dokładnie jak [`descendants_of`] i [`machine_booted_at`]: przejście po
+/// `kinfo_proc` z ręki kupuje `unsafe`, które w tej skrzyni jest `deny`.
+#[cfg(unix)]
+#[must_use]
+pub fn run_behind_group(pgid: i32) -> Option<String> {
+    let listed = std::process::Command::new("ps")
+        .args(["-E", "-ax", "-o", "pid=,ppid=,pgid=,command="])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&listed.stdout);
+
+    let wanted = format!("{TAG_RUN}=");
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        // Trzy liczby, potem komenda razem z doklejonym środowiskiem. `pid` i `ppid` są tu
+        // wyłącznie po to, żeby zjeść kolumny stojące przed `pgid` — tej trójki nie da się
+        // zamówić w innej kolejności, a licząc od końca nie wiadomo, gdzie kończy się argv.
+        let (Some(_pid), Some(_parent), Some(Ok(group))) = (
+            fields.next(),
+            fields.next(),
+            fields.next().map(str::parse::<i32>),
+        ) else {
+            continue;
+        };
+        if group != pgid {
+            continue;
+        }
+        let said = fields.collect::<Vec<_>>().join(" ");
+        for word in said.split_whitespace() {
+            if let Some(value) = word.strip_prefix(&wanted)
+                && !value.is_empty()
+            {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Domknięcie przechodnie drzewa potomków `seeds` i zbiór grup, w których ono siedzi.
@@ -2475,15 +2622,36 @@ impl Drop for Supervised {
 /// Cooldown po nieudanym spawnie — ochrona przed burzą restartów — wszedłby dokładnie tutaj,
 /// wokół gałęzi błędu. Nie w v1: bez pętli ponawiania nie ma czego tłumić.
 pub fn spawn(command: Command, stdin: StdinPlan) -> io::Result<Supervised> {
-    spawn_with_environment(command, stdin, &[])
+    spawn_tagged(command, stdin, &[], None)
 }
 
 /// Wariant dla jawnie zatwierdzonych Connections. Nazwy i wartości są rozstrzygnięte przez
 /// backend tuż przed startem; wartości nie trafiają do argv, pliku ani webviewa.
 pub fn spawn_with_environment(
+    command: Command,
+    stdin: StdinPlan,
+    environment: &[(String, OsString)],
+) -> io::Result<Supervised> {
+    spawn_tagged(command, stdin, environment, None)
+}
+
+/// Ta sama droga do systemu, plus **znacznik biegu** w środowisku dziecka.
+///
+/// 2026-09 (Z-01d) — jedyna droga, którą znacznik z [`StepTag`] wchodzi do procesu, i dlatego
+/// jedyna, którą wolno startować cokolwiek należącego do kroku. Dwie pomyłki, obie zmierzone
+/// w poprzednim podejściu i obie zamknięte tutaj kształtem, a nie umową:
+///
+/// * krok `serve` szedł do systemu z pominięciem drogi, która znacznik ustawia, więc jego procesy
+///   nie dostawały go wcale. Dlatego `spawn` i [`spawn_with_environment`] są dziś **opakowaniami**
+///   tej funkcji z jawnym `None`, a nie osobnymi drogami — pominięcie znacznika trzeba napisać;
+/// * znacznik stał PRZED pętlą po `environment`, więc zatwierdzone Połączenie ze zmienną o tej
+///   samej nazwie cicho go nadpisywało. Dlatego stoi **za** wszystkim innym: to ostatni zapis
+///   wygrywa, a odzyskiwanie porównuje tę wartość z `run.json`.
+pub fn spawn_tagged(
     mut command: Command,
     stdin: StdinPlan,
     environment: &[(String, OsString)],
+    tag: Option<&StepTag>,
 ) -> io::Result<Supervised> {
     let program = command.as_std().get_program().to_os_string();
     let current_dir = command.as_std().get_current_dir().map(Path::to_path_buf);
@@ -2521,6 +2689,14 @@ pub fn spawn_with_environment(
     command.env("PATH", child_path);
     for (name, value) in environment {
         command.env(name, value);
+    }
+    // ZNACZNIK NA SAMYM KOŃCU, za listą przepuszczaną i za Połączeniami (2026-09, Z-01d).
+    // Zmienna o tej nazwie przyniesiona z Połączeń nadpisałaby go, gdyby stał wyżej — a wtedy
+    // odzyskiwanie widziałoby cudzy napis tam, gdzie porównuje identyfikator biegu, i albo
+    // odpuściłoby własną sierotę, albo strzeliło do niewinnego procesu.
+    if let Some(tag) = tag {
+        command.env(TAG_RUN, tag.run());
+        command.env(TAG_STEP, tag.step());
     }
 
     let mut wrapped = into_own_group(command);

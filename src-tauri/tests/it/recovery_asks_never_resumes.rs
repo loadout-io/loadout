@@ -44,6 +44,10 @@ fn row(step_id: &str, run_id: &str, step_status: &str, pgid: Option<i32>) -> Rec
         run_boot_id: Some(BOOT.to_owned()),
         pid: pgid,
         pgid,
+        // Pusto i `false`: to kryterium jest o wznowieniu, którego nie ma, i sądzi wiersz
+        // z jedną grupą — dokładnie taki, jaki pisała każda wersja przed Z-01d (2026-09).
+        pgids: Vec::new(),
+        death_proof: false,
     }
 }
 
@@ -136,7 +140,12 @@ fn interrupted_steps_leave_only_cleanup_and_status_facts() -> Result<()> {
         "failed is the step status and interrupted remains its separate reason"
     );
     assert_eq!(
-        plan.reap,
+        // Same numery grup: od Z-01d cel niesie obok nich identyfikator biegu, a to kryterium
+        // pyta wyłącznie o to, KTÓRE grupy wchodzą do planu (2026-09).
+        plan.reap
+            .iter()
+            .map(|target| target.pgid)
+            .collect::<Vec<i32>>(),
         vec![5001, 5002],
         "only process groups belonging to cut-off steps may be reaped"
     );

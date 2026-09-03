@@ -77,9 +77,23 @@ pub struct RecoveryRow {
     pub run_boot_id: Option<String>,
     /// PID lidera grupy, jeśli spawn do niego doszedł. Nieużywany przez żadną decyzję.
     pub pid: Option<i32>,
-    /// PGID grupy procesów agenta. Jedyna liczba, po której da się sprzątnąć sierotę, i jedyna,
-    /// którą wolno podać domykaczowi z [`apply`].
+    /// PGID grupy procesów agenta. Liczba, po której da się sprzątnąć sierotę stojącą w grupie
+    /// lidera — i jedna z tych, które wolno podać domykaczowi z [`apply`].
     pub pgid: Option<i32>,
+    /// **Każda** grupa procesów, którą ten krok uruchomił, razem z grupą lidera.
+    ///
+    /// 2026-09 (Z-01d) — do tego dnia było tu wyłącznie [`RecoveryRow::pgid`], czyli zdanie
+    /// o JEDNEJ grupie. Claude Code uruchamia każdą komendę narzędzia Bash we własnej grupie, więc
+    /// wszystko, co taka powłoka odpali, leżało poza sprzątaniem po awarii — a osierocony proces
+    /// pali limit u dostawcy w tle (niezmiennik 6). Pole jest **obok** `pgid`, nigdy zamiast:
+    /// starszy plik biegu ma tu pustą listę i nadal daje się posprzątać po liderze
+    /// (niezmiennik 25).
+    pub pgids: Vec<i32>,
+    /// Czy krok dostał z jądra dowód, że po jego grupach nie zostało nic.
+    ///
+    /// Czyta to jedyna decyzja, która patrzy na kroki **skończone**: krok zamknięty bez dowodu
+    /// zostawił coś, co dalej może biec ([`RowVerdict::LeftBehind`]).
+    pub death_proof: bool,
 }
 
 /// Maszyna, na której Loadout właśnie wstał. Obie liczby przyjeżdżają z zewnątrz, bo obie
@@ -115,15 +129,35 @@ pub struct Machine {
 /// Cztery listy, każda adresowana identyfikatorem, i żadnej sesji ani decyzji o wznowieniu.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct RecoveryPlan {
-    /// `pgid`-y do sprzątnięcia, w kolejności wierszy, bez duplikatów. Pusta lista jest
+    /// Grupy do sprzątnięcia, w kolejności wierszy, bez duplikatów. Pusta lista jest
     /// poprawnym planem: po restarcie maszyny sieroty już nie żyją.
-    pub reap: Vec<i32>,
+    pub reap: Vec<ReapTarget>,
     /// Biegi, które mają dostać [`RUN_INTERRUPTED`].
     pub run_status: Vec<RunStatusChange>,
     /// Kroki, które mają dostać [`STEP_FAILED`] z powodem [`STEP_REASON_INTERRUPTED`].
     pub step_status: Vec<StepStatusChange>,
     /// Wiersze, o których nie dało się rozstrzygnąć — **wypisane, nie pominięte**.
     pub unreadable: Vec<Unreadable>,
+}
+
+/// Jedna grupa procesów do sprzątnięcia razem z biegiem, do którego **ma** należeć.
+///
+/// # Dlaczego to nie jest gołe `i32` (2026-09, Z-01d)
+///
+/// Bo sam numer grupy nie wystarcza do podjęcia decyzji, a poprzednie podejście przyjmowało, że
+/// wystarcza. `kern.maxproc` na macOS wynosi 16 000, więc numery przewijają się w godzinach:
+/// grupa pod zapisanym `pgid` bywa dziś czymś zupełnie innym. Domykacz musi więc móc **zapytać
+/// tę grupę**, do kogo należy — a do tego potrzebuje identyfikatora biegu, z którym porówna
+/// znacznik z jej środowiska (`engine::supervisor::TAG_RUN`).
+///
+/// Sam plik dalej nie wykonuje ani jednego wywołania systemowego: porównanie dzieje się
+/// w domykaczu, który wjeżdża do [`apply`] argumentem (nagłówek modułu).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReapTarget {
+    /// Bieg, którego ta grupa ma być. Ta sama wartość, którą niesie `run.json` → `id`.
+    pub run_id: String,
+    /// Grupa procesów. Przeszła już przez [`usable_pgid`], więc jest dodatnia i nie jest nasza.
+    pub pgid: i32,
 }
 
 /// Bieg i status, który ma dostać.
@@ -344,6 +378,34 @@ fn usable_pgid(pgid: Option<i32>, own_pgid: i32) -> Result<i32, &'static str> {
     Ok(pgid)
 }
 
+/// Wszystkie grupy tego wiersza, które wolno zabić — grupa lidera i każda, którą krok założył
+/// obok niej.
+///
+/// 2026-09 (Z-01d) — `pgid` idzie PIERWSZY i to nie jest kolejność dla porządku: to o nim wołający
+/// wie najwięcej, to on stoi w starszych plikach biegów i to jego numer widzi człowiek w zdaniu
+/// o ocalałym. Duplikaty znikają, bo `pgids` niesie grupę lidera także wtedy, gdy `pgid` ją już
+/// wymienił, a dwa sygnały do jednej grupy to drugi sygnał wysłany do grupy, której już nie ma.
+///
+/// Odmowa jest ta sama, co dla pojedynczej wartości, i dotyczy CAŁEGO wiersza: `0`, liczba ujemna
+/// albo nasza własna grupa na dowolnej pozycji znaczą, że tego wiersza nie umiemy przeczytać —
+/// a wiersz odrzucony po cichu i wiersz, którego filtr nie zobaczył, dają identyczny plan
+/// i różnią się dopiero na liście nieczytelnych.
+fn usable_pgids(row: &RecoveryRow, own_pgid: i32) -> Result<Vec<i32>, &'static str> {
+    let mut usable: Vec<i32> = Vec::new();
+    for candidate in row.pgid.into_iter().chain(row.pgids.iter().copied()) {
+        let pgid = usable_pgid(Some(candidate), own_pgid)?;
+        if !usable.contains(&pgid) {
+            usable.push(pgid);
+        }
+    }
+    if usable.is_empty() {
+        // Ani jednego numeru: spawn nie doszedł do zapisu. Ta sama odmowa, co przed
+        // wprowadzeniem `pgids`, żeby wiersz bez grupy dalej mówił, dlaczego nic z nim nie robimy.
+        return Err(reason::PGID_MISSING);
+    }
+    Ok(usable)
+}
+
 /// Co jeden wiersz znaczy dla planu.
 #[derive(Debug)]
 enum RowVerdict {
@@ -351,8 +413,23 @@ enum RowVerdict {
     Settled,
     /// Krok przerwany awarią aplikacji.
     CutOff {
-        /// Grupa do sprzątnięcia. `None`, kiedy strażnik czasu startu nie przepuścił.
-        reap: Option<i32>,
+        /// Grupy do sprzątnięcia, w kolejności zapisu. Pusto, kiedy strażnik czasu startu nie
+        /// przepuścił albo kiedy spawn nie doszedł do zapisu żadnego numeru.
+        reap: Vec<i32>,
+    },
+    /// Krok **skończony**, po którym zostały grupy bez dowodu śmierci.
+    ///
+    /// 2026-09 (Z-01d) — trzeci werdykt, bo dwa poprzednie nie umiały opisać najczęstszego
+    /// przypadku, dla którego to sprzątanie w ogóle istnieje: bieg zatrzymany przez człowieka
+    /// kończy się jako `cancelled`, jego kroki jako `cancelled`, a wnuk, którego eskalacja nie
+    /// dosięgła, biegnie dalej. Dla `Settled` był to wiersz bez znaczenia, a `CutOff` przepisałby
+    /// status zamkniętego biegu na „przerwany" i skłamał o tym, co się stało.
+    ///
+    /// Sam reap, zero zmian statusu: bieg zszedł tak, jak zszedł, a jedyne, czego jeszcze
+    /// potrzebuje, to żeby ktoś dobił to, co po nim zostało.
+    LeftBehind {
+        /// Grupy do sprzątnięcia. Pusto oznacza wiersz, o którym nie ma nic do powiedzenia.
+        reap: Vec<i32>,
     },
 }
 
@@ -365,17 +442,29 @@ fn read_row(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static
     let Some(state) = step_state(&row.step_status) else {
         return Err(reason::UNKNOWN_STEP);
     };
-    match state {
+    let cut_off = match state {
         // Jedyne dwa stany, w których awaria aplikacji mogła przerwać krok w locie.
-        StepState::Ready | StepState::Running => {}
+        StepState::Ready | StepState::Running => true,
         // Wyliczone po jednym zamiast `_`: ósmy stan kroku ma tutaj **nie skompilować**.
         // Cichym skutkiem `_` byłoby uznanie nowego stanu za skończony, czyli porzucenie
         // sierocego procesu bez ani jednego słowa w planie.
+        //
+        // 2026-09 (Z-01d) — te pięć stanów NIE kończy już wiersza bezwarunkowo: krok zamknięty
+        // bez dowodu śmierci zostawił coś, co dalej może biec, i to jest osobny werdykt niżej.
         StepState::Pending
         | StepState::Succeeded
         | StepState::Failed
         | StepState::Cancelled
-        | StepState::Skipped => return Ok(RowVerdict::Settled),
+        | StepState::Skipped => false,
+    };
+    // Krok skończony wchodzi dalej wyłącznie wtedy, gdy nie ma dowodu ORAZ wypisał, jakie grupy
+    // po sobie zostawił. Drugi warunek jest tu strażnikiem, nie wygodą (2026-09, Z-01d): pusta
+    // lista znaczy „ten wiersz o grupach nic nie mówi", a nie „grup nie było". Tak wygląda
+    // KAŻDY wiersz z indeksu SQLite (`rows_to_judge`), bo pełną listę niosą wyłącznie pliki
+    // (niezmiennik 4) — bez tego warunku skasowanie `loadout.db` zmieniałoby to, do czego
+    // sprzątanie strzela.
+    if !cut_off && (row.death_proof || row.pgids.is_empty()) {
+        return Ok(RowVerdict::Settled);
     }
 
     // Strażnik. Rozróżnienie, które tu stoi, jest całym AC-1: BRAK czasu startu to niewiedza
@@ -383,14 +472,28 @@ fn read_row(row: &RecoveryRow, machine: &Machine) -> Result<RowVerdict, &'static
     // odpowiedzią — „restart maszyny już zabił sieroty" — więc wiersz zostaje obsłużony
     // w całości, tylko bez sprzątania. Nie ma czego zabijać, zostaje fakt przerwania do zapisu.
     let Some(recorded_boot) = row.run_boot_id.as_deref() else {
+        // Krok skończony bez dowodu i bez czasu startu jest wierszem, o którym nie wiemy nic
+        // ponad to, co już stoi w pliku: statusu nie przepisujemy, a strzelać nie wolno.
+        // Wypisanie go jako nieczytelnego przy KAŻDYM otwarciu folderu zamieniłoby jedną
+        // starą awarię w listę, która nigdy nie maleje.
+        if !cut_off {
+            return Ok(RowVerdict::Settled);
+        }
         return Err(reason::NO_BOOT_TIME);
     };
     if recorded_boot != machine.boot_id {
-        return Ok(RowVerdict::CutOff { reap: None });
+        if !cut_off {
+            return Ok(RowVerdict::Settled);
+        }
+        return Ok(RowVerdict::CutOff { reap: Vec::new() });
     }
 
-    let pgid = usable_pgid(row.pgid, machine.own_pgid)?;
-    Ok(RowVerdict::CutOff { reap: Some(pgid) })
+    let reap = usable_pgids(row, machine.own_pgid)?;
+    if cut_off {
+        Ok(RowVerdict::CutOff { reap })
+    } else {
+        Ok(RowVerdict::LeftBehind { reap })
+    }
 }
 
 /// Wiersze, które odzyskiwanie ma osądzić: kroki biegów, które baza wciąż uważa za żywe.
@@ -420,9 +523,39 @@ pub fn rows_to_judge(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Recove
             run_boot_id: row.get(4)?,
             pid: row.get(5)?,
             pgid: row.get(6)?,
+            /* PUSTO I `false`, I TO NIE JEST BRAKUJĄCA KOLUMNA (2026-09, Z-01d). Pliki są prawdą,
+             * SQLite jest indeksem (niezmiennik 4): `loadout.db` musi dać się skasować bez utraty
+             * czegokolwiek, więc pole, którego nie da się odtworzyć z plików, nie ma prawa tam
+             * powstać. Pełną listę grup i dowód śmierci niesie `run.json`, a czyta je
+             * `commands::reconcile::rows_from_files` — czyli ta droga, która widzi biegi folderu.
+             * Ta tutaj zna wyłącznie bibliotekę i zostaje przy tym, co w niej naprawdę stoi. */
+            pgids: Vec::new(),
+            death_proof: false,
         })
     })?;
     rows.collect()
+}
+
+/// Dopisuje grupy tego wiersza do planu, po jednej pozycji na grupę.
+///
+/// Duplikat znika bez słowa i to jest decyzja, nie usterka: dwa `SIGTERM` do tej samej grupy to
+/// drugi sygnał wysłany do grupy, która już nie istnieje. Porównujemy po samym `pgid`, nie po
+/// całym celu: ta sama grupa wpisana przy dwóch krokach jednego biegu jest jedną grupą, a numer
+/// powtórzony w DWÓCH biegach znaczy, że co najmniej jeden z nich się myli — i wtedy jedno
+/// pytanie o znacznik jest tym, co rozstrzyga, zamiast dwóch sygnałów w ciemno.
+///
+/// Wektor zamiast zbioru, bo kolejność wierszy jest częścią kontraktu, a wierszy jest tyle, ile
+/// kroków w biegu (~20).
+fn plan_the_reap(plan: &mut RecoveryPlan, row: &RecoveryRow, reap: &[i32]) {
+    for &pgid in reap {
+        if plan.reap.iter().any(|target| target.pgid == pgid) {
+            continue;
+        }
+        plan.reap.push(ReapTarget {
+            run_id: row.run_id.clone(),
+            pgid,
+        });
+    }
 }
 
 /// Rozstrzyga, co zrobić z wierszami zastanymi przy starcie. **Niczego nie wykonuje.**
@@ -450,6 +583,9 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
         };
         match read_row(row, machine) {
             Ok(RowVerdict::Settled) => {}
+            // Krok skończony bez dowodu: sam reap, ani jednej zmiany statusu. Powód w całości
+            // przy [`RowVerdict::LeftBehind`] (2026-09, Z-01d).
+            Ok(RowVerdict::LeftBehind { reap }) => plan_the_reap(&mut plan, row, &reap),
             Ok(RowVerdict::CutOff { reap }) => {
                 let known_run = plan
                     .run_status
@@ -461,13 +597,7 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
                         status: RUN_INTERRUPTED.to_owned(),
                     });
                 }
-                // Duplikat znika bez słowa i to jest decyzja, nie usterka: dwa `SIGTERM` do tej
-                // samej grupy to drugi sygnał wysłany do grupy, która już nie istnieje. Wektor
-                // zamiast zbioru, bo kolejność wierszy jest częścią kontraktu, a wierszy jest
-                // tyle, ile kroków w biegu (~20).
-                if let Some(pgid) = reap.filter(|pgid| !plan.reap.contains(pgid)) {
-                    plan.reap.push(pgid);
-                }
+                plan_the_reap(&mut plan, row, &reap);
                 plan.step_status.push(StepStatusChange {
                     step_id: row.step_id.clone(),
                     status: STEP_FAILED.to_owned(),
@@ -491,21 +621,24 @@ pub fn decide(rows: &[RecoveryRow], machine: &Machine) -> RecoveryPlan {
 /// (niezmiennik 3, niezmiennik 6). Każda grupa dostaje **dokładnie jedno** wywołanie — eskalacja
 /// jest w środku domykacza, nie tutaj, i [`ReapOutcome::Foreign`] nie ma jej prawa dostać.
 #[must_use]
-pub fn apply(plan: &RecoveryPlan, reap: &mut dyn FnMut(i32) -> ReapOutcome) -> RecoveryReport {
+pub fn apply(
+    plan: &RecoveryPlan,
+    reap: &mut dyn FnMut(&ReapTarget) -> ReapOutcome,
+) -> RecoveryReport {
     let mut report = RecoveryReport::default();
 
-    for &pgid in &plan.reap {
+    for target in &plan.reap {
         // Trzy odpowiedzi, trzy listy, i tylko jedna z nich jest dowodem. Cichy błąd, którego
         // ten `match` nie dopuszcza: `_ => report.reaped.push(pgid)`, czyli potraktowanie
         // każdego niezerowego wyniku `kill` jako „już nie żyje" i zameldowanie posprzątanego
         // biegu, którego nikt nie sprzątnął (niezmiennik 6).
-        match reap(pgid) {
-            ReapOutcome::ProvenDead => report.reaped.push(pgid),
-            ReapOutcome::StillAlive => report.unproven.push(pgid),
+        match reap(target) {
+            ReapOutcome::ProvenDead => report.reaped.push(target.pgid),
+            ReapOutcome::StillAlive => report.unproven.push(target.pgid),
             // Bez `continue`, bez drugiego wywołania: eskalacja do `SIGKILL` na cudzej grupie
             // trafiłaby dokładnie w ten niewinny proces, przed którym broni strażnik czasu
             // startu. Jedno wywołanie na grupę jest tu własnością pętli, nie zaleceniem.
-            ReapOutcome::Foreign => report.foreign.push(pgid),
+            ReapOutcome::Foreign => report.foreign.push(target.pgid),
         }
     }
 

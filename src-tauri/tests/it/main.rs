@@ -43,6 +43,7 @@ mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;
 mod a_round_sees_its_own_past;
 mod a_run_always_settles;
+mod a_run_leaves_its_groups_where_recovery_can_find_them;
 mod a_run_leaves_one_branch_to_look_at;
 mod a_run_leaves_suggestions;
 mod a_run_stops_at_its_budget;

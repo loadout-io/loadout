@@ -820,6 +820,28 @@ pub trait AgentDriver: Send + Sync {
         None
     }
 
+    /// Ten sam sterownik, tylko wiedzący, **czyj bieg i czyj krok** uruchamia.
+    ///
+    /// # Po co to istnieje (2026-09, Z-01d)
+    ///
+    /// Bo po awarii aplikacji z całego biegu zostają pliki i garść numerów grup, a numery
+    /// procesów przewijają się na macOS w godzinach. Znacznik ([`supervisor::StepTag`]) jedzie do
+    /// środowiska każdego procesu kroku i jest jedyną rzeczą, po której odzyskiwanie odróżni
+    /// własną sierotę od cudzego, niewinnego procesu pod tym samym `pgid`.
+    ///
+    /// Metoda na TRAICIE z domyślnym `None`, dokładnie jak [`AgentDriver::with_evidence`]
+    /// i z tego samego zmierzonego powodu: bieg trzyma sterownik jako `Arc<dyn AgentDriver>`,
+    /// więc budowniczy żyjący na konkretnym typie jest z niego nieosiągalny. `None` znaczy „ten
+    /// vendor nie startuje własnego procesu, więc nie ma czego znaczyć" — tak odpowiada każda
+    /// atrapa, która o tym szwie nic nie wie, i ani jeden dubel w tym drzewie nie zmienia się
+    /// o linię (niezmiennik 23).
+    ///
+    /// Argument jest **znacznikiem gotowym**, nie parą napisów: wartość, którą odzyskiwanie
+    /// porównuje co do bajta, ma jeden konstruktor i jedno źródło (powód przy [`supervisor::TAG_RUN`]).
+    fn for_step(&self, _tag: &supervisor::StepTag) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
     /// Ten sam sterownik z sufitem ceny należącym do tego klona.
     ///
     /// Domyślne `None` jest honest-red szkieletem T-126: wołający musi odmówić przed `start`,
@@ -1066,6 +1088,26 @@ pub trait AgentHandle: Send {
     /// Statusu nie ma, bo nie było czyjego odebrać.
     async fn proof_of_death(&mut self) -> GroupProof {
         GroupProof::Dead { status: None }
+    }
+
+    /// **Każda** grupa procesów, którą ta sesja uruchomiła — nie tylko grupa lidera.
+    ///
+    /// 2026-09 (Z-01d) — czyta to księga biegu i zapisuje jako `pgids` przy kroku, na każdej
+    /// drodze zejścia. Bez tego z kroku zostawał w `run.json` sam `pgid` lidera, a wszystko, co
+    /// krok odpalił we własnej grupie, nie miało po awarii aplikacji kogo poprosić o sprzątnięcie
+    /// (niezmiennik 6). `group()` jest zdaniem o JEDNEJ grupie i takie zostaje: to jest adres
+    /// sesji, a nie spis tego, co po niej biegnie.
+    ///
+    /// `&mut self`, bo odpowiedź wymaga świeżego przeglądu drzewa procesów i uchwyt go zapamiętuje
+    /// ([`supervisor::Supervised::descendant_groups`]).
+    ///
+    /// Domyślnie pusto: sesja bez procesu — `absent`, dublery — nie ma czego wymienić, a pusta
+    /// lista znaczy dokładnie to, co mówi, i niczego w księdze nie kasuje (zapis jest addytywny).
+    ///
+    /// Synchronicznie, tak samo jak przegląd drzewa w `Supervised::stop`: `ps` idzie przez
+    /// `std::process::Command`, więc nie ma tu na co czekać.
+    fn descendant_groups(&mut self) -> Vec<i32> {
+        Vec::new()
     }
 }
 

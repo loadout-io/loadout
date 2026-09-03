@@ -82,10 +82,51 @@ pub struct Reconciled {
 /// plik biegu jest uszkodzony, traci znacznie więcej niż jeden wiersz historii.
 #[must_use]
 pub fn reconcile_runs(project: &Path) -> Reconciled {
-    with_reaper(project, &mut |pgid| match supervisor::reap_group(pgid) {
+    with_reaper(project, &mut reap_if_it_is_ours)
+}
+
+/// Jedyna polityka strzału do zastanej grupy — i **jedyne** miejsce, w którym mieszka.
+///
+/// # Trzy odpowiedzi w tej kolejności, i kolejność jest treścią (2026-09, Z-01d)
+///
+/// 1. **Grupa pusta** → dowód śmierci, bez ani jednego sygnału. To jest najczęstszy przypadek po
+///    awarii: numer stoi w pliku, a proces zszedł dawno temu. Zapytanie idzie pierwsze, bo bez
+///    niego pusta grupa przechodziłaby przez pełną eskalację i wyglądała jak sprzątanie, którego
+///    nie było.
+/// 2. **Znacznik nazywa INNY bieg** → grupa jest obca i nie dostaje **niczego**. Numery procesów
+///    przewijają się na macOS w godzinach, więc `pgid` zapisany przez nas potrafi dziś należeć do
+///    czyjejś pracy — a jeśli ta praca sama mówi, czyja jest, to jest to najtwardsza odpowiedź,
+///    jaką da się dostać. Poprzednie podejście uznawało każde `Some(...)` za zgodę na zabicie
+///    i zostało za to odrzucone: znacznik JAKIEGOKOLWIEK biegu nie jest znacznikiem TEGO biegu.
+/// 3. **Brak znacznika albo znacznik tego biegu** → normalna eskalacja przez `reap_group`.
+///    Brak znaczy „nie da się przeczytać", nigdy „cudza": powód w całości przy
+///    [`supervisor::run_behind_group`]. Grupa pod `/bin/sh` nie pokazuje ani jednej zmiennej,
+///    a to jest dokładnie ta sierota, dla której całe to sprzątanie istnieje.
+fn reap_if_it_is_ours(target: &recovery::ReapTarget) -> recovery::ReapOutcome {
+    if supervisor::group_is_empty(target.pgid) {
+        return recovery::ReapOutcome::ProvenDead;
+    }
+    if let Some(behind) = supervisor::run_behind_group(target.pgid)
+        && behind != target.run_id
+    {
+        return recovery::ReapOutcome::Foreign;
+    }
+    match supervisor::reap_group(target.pgid) {
         supervisor::GroupProof::Dead { .. } => recovery::ReapOutcome::ProvenDead,
         supervisor::GroupProof::Alive { .. } => recovery::ReapOutcome::StillAlive,
-    })
+    }
+}
+
+/// Ta sama polityka, wystawiona odzyskiwaniu z biblioteki (`lib::recover_from_last_time`).
+///
+/// 2026-09 (Z-01d) — istnieje, bo do tego dnia tamta droga miała **własną kopię** decyzji o tym,
+/// kiedy wolno strzelić do grupy: dwa ramiona `match` nad `reap_group`, bez pytania o znacznik.
+/// Polityka mieszka w jednym rdzeniu, a adaptery mają po pięć linii (niezmiennik 23) — dwie
+/// kopie znaczyłyby, że sprzątanie po awarii zabija cudze grupy dokładnie wtedy, gdy biegi
+/// mieszkają w bibliotece, a nie w folderze.
+#[must_use]
+pub fn reap_what_is_ours(plan: &recovery::RecoveryPlan) -> recovery::RecoveryReport {
+    recovery::apply(plan, &mut reap_if_it_is_ours)
 }
 
 /// To samo, z **wstrzykniętym** domykaczem grup procesów.
@@ -98,7 +139,7 @@ pub fn reconcile_runs(project: &Path) -> Reconciled {
 #[must_use]
 pub fn with_reaper(
     project: &Path,
-    reap: &mut dyn FnMut(i32) -> recovery::ReapOutcome,
+    reap: &mut dyn FnMut(&recovery::ReapTarget) -> recovery::ReapOutcome,
 ) -> Reconciled {
     let (rows, where_they_live) = rows_from_files(project);
     /* PUSTA LISTA NIE KOŃCZY TEGO PRZEBIEGU, i kryterium złapało tu prawdziwy błąd. „Nie ma
@@ -126,22 +167,14 @@ pub fn with_reaper(
     // 2026-08-27: sam licznik `unproven` ukrywał finansowo istotną sierotę przed człowiekiem.
     // Łączymy wynik domykacza z oryginalnym wierszem, bo tylko plik niesie oba identyfikatory,
     // które pozwalają rozpoznać ocalały proces bez zgadywania po samym PGID.
-    let survivor_warnings: BTreeMap<String, String> = rows
-        .iter()
-        .filter_map(|row| {
-            let pgid = row.pgid?;
-            report
-                .unproven
-                .contains(&pgid)
-                .then(|| (row.step_id.clone(), survivor_warning(row.pid, pgid)))
-        })
-        .collect();
+    let survivor_warnings = what_the_person_has_to_read(&rows, &report);
 
     let mut done = Reconciled {
         reaped: report.reaped.len(),
         still_alive: report.unproven.len(),
         ..Reconciled::default()
     };
+    let mut rewritten: Vec<&String> = Vec::new();
     for change in &plan.run_status {
         let Some(dir) = where_they_live.get(&change.run_id) else {
             continue;
@@ -152,12 +185,123 @@ pub fn with_reaper(
             .map(|one| (one.step_id.as_str(), one.status.as_str()))
             .collect();
         if write_back(dir, &change.status, &steps, &survivor_warnings) {
+            rewritten.push(&change.run_id);
             done.runs += 1;
             done.steps += steps.len();
         }
     }
+    /* ZDANIE MUSI DOJŚĆ TAKŻE DO BIEGU, KTÓREGO NIKT NIE PRZEPISUJE (2026-09, Z-01d).
+     *
+     * Pętla wyżej chodzi po `plan.run_status`, czyli po biegach, którym odzyskiwanie zmienia
+     * status. Bieg zatrzymany przez człowieka schodzi jednak jako `cancelled` i to jest o nim
+     * PRAWDA — nikt tego nie przepisuje, więc ani jedno zdanie o jego ocalałym nie miało jak
+     * trafić do pliku. Z okna wyglądało to na bieg zamknięty czysto, przy grupie, która dalej
+     * biegła i dalej paliła limit (niezmiennik 29). */
+    done.steps += write_back_warnings(&where_they_live, &rewritten, &rows, &survivor_warnings);
     done.runs += parked;
     done
+}
+
+/// Zdanie dla człowieka przy każdym kroku, którego grupa **nie** dostała dowodu śmierci.
+///
+/// Mapa po `step_id`, bo tak adresuje ją zapis do pliku, i po każdej grupie tego kroku, nie tylko
+/// po `pgid` lidera (2026-09, Z-01d): grupa obca i grupa, która przeżyła eskalację, to dwie różne
+/// wiadomości, a obie muszą dojechać do tego samego pola błędu.
+fn what_the_person_has_to_read(
+    rows: &[RecoveryRow],
+    report: &recovery::RecoveryReport,
+) -> BTreeMap<String, String> {
+    let mut warnings = BTreeMap::new();
+    for row in rows {
+        for pgid in row.pgid.into_iter().chain(row.pgids.iter().copied()) {
+            /* GRUPA OBCA IDZIE PIERWSZA, bo mówi coś, czego drugie zdanie nie mówi wcale: nie
+             * „nie udało się zatrzymać", tylko „to nie jest nasze i nie tknęliśmy tego". */
+            if report.foreign.contains(&pgid) {
+                warnings.insert(row.step_id.clone(), foreign_warning(pgid));
+                break;
+            }
+            if report.unproven.contains(&pgid) {
+                warnings.insert(row.step_id.clone(), survivor_warning(row.pid, pgid));
+                break;
+            }
+        }
+    }
+    warnings
+}
+
+/// Dopisuje samo zdanie o grupie do biegów, których status **jest prawdziwy** i zostaje.
+///
+/// Zwraca liczbę przepisanych kroków. Statusu nie tyka ani razu i to jest cała różnica wobec
+/// [`write_back`]: bieg zamknięty jako `cancelled` ma takim zostać, a wiedza o jego ocalałym
+/// jest dopiskiem do kroku, nie powodem, żeby przepisać cokolwiek innego.
+fn write_back_warnings(
+    where_they_live: &BTreeMap<String, PathBuf>,
+    already_rewritten: &[&String],
+    rows: &[RecoveryRow],
+    warnings: &BTreeMap<String, String>,
+) -> usize {
+    let mut written = 0;
+    for (run_id, dir) in where_they_live {
+        if already_rewritten.contains(&run_id) {
+            continue;
+        }
+        let mine: BTreeMap<&str, &str> = rows
+            .iter()
+            .filter(|row| &row.run_id == run_id)
+            .filter_map(|row| {
+                warnings
+                    .get(&row.step_id)
+                    .map(|said| (row.step_id.as_str(), said.as_str()))
+            })
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        written += note_on_steps(dir, &mine);
+    }
+    written
+}
+
+/// Wpisuje zdanie przy wymienionych krokach `run.json` — **w miejsce**, bez gubienia pól.
+///
+/// Ten sam idiom, co [`write_back`], i z tego samego powodu: plik biegu niesie migawkę grafu
+/// i klucze, których ta wersja może nie znać, więc czytamy i piszemy `Value`.
+fn note_on_steps(dir: &Path, said: &BTreeMap<&str, &str>) -> usize {
+    let Some(mut run) = read_run(dir) else {
+        return 0;
+    };
+    let mut written = 0;
+    {
+        let Some(rows) = run
+            .as_object_mut()
+            .and_then(|map| map.get_mut("steps"))
+            .and_then(Value::as_array_mut)
+        else {
+            return 0;
+        };
+        for row in rows.iter_mut() {
+            let Some(step) = row.as_object_mut() else {
+                continue;
+            };
+            let id = step
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let Some(warning) = said.get(id.as_str()) else {
+                continue;
+            };
+            // Wcześniejszy błąd kroku nie może ukryć faktu o jego grupie: historia renderuje
+            // tylko to jedno pole (`PastStepWire.error`).
+            step.insert("error".to_owned(), Value::String((*warning).to_owned()));
+            written += 1;
+        }
+    }
+    if written > 0 && publish_run(dir, &run) {
+        written
+    } else {
+        0
+    }
 }
 
 /// Biegi, które stały na PYTANIU, kiedy okno zniknęło.
@@ -277,6 +421,16 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
                     one.get("status").and_then(Value::as_str),
                     Some("ready" | "running")
                 )
+            })
+            /* TRZECI WARUNEK: KROK ZOSTAWIŁ GRUPY I NIE MA DOWODU (2026-09, Z-01d).
+             *
+             * Bez niego bieg zatrzymany przez człowieka jest tu NIEWIDZIALNY — schodzi jako
+             * `cancelled`, jego kroki jako `cancelled`, a wnuk, którego eskalacja nie dosięgła,
+             * biegnie dalej i dalej pali limit u dostawcy. To jest dokładnie ten przypadek, dla
+             * którego zapis `pgids` w ogóle powstał, i do tego dnia nikt go nawet nie czytał. */
+            || steps.iter().any(|one| {
+                !numbers(one, "pgids").is_empty()
+                    && one.get("death_proof").and_then(Value::as_bool) != Some(true)
             });
         if !has_cut_off_work {
             continue;
@@ -291,6 +445,10 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
                 run_boot_id: boot.clone(),
                 pid: number(step, "pid"),
                 pgid: number(step, "pgid"),
+                pgids: numbers(step, "pgids"),
+                // Brak klucza czyta się jak „nie dowiedziono", nigdy jak „dowiedziono": starsze
+                // pliki biegów nie mają go wcale, a `false` jest jedyną bezpieczną odpowiedzią.
+                death_proof: step.get("death_proof").and_then(Value::as_bool) == Some(true),
             });
         }
     }
@@ -385,6 +543,19 @@ fn survivor_warning(leader_pid: Option<i32>, process_group_id: i32) -> String {
     }
 }
 
+/// Zdanie o grupie, która **należy do innego biegu** — czyli do której Loadout nie strzelił.
+///
+/// 2026-09 (Z-01d) — po angielsku (D5) i bez naszych słów z drutu (niezmiennik 14). Osobne od
+/// [`survivor_warning`], bo mówi o czymś innym: tamto znaczy „próbowaliśmy i nie wyszło", a to
+/// znaczy „nie próbowaliśmy, bo to nie nasze". Człowiek robi po nich dwie różne rzeczy — po
+/// tamtym idzie ubić proces, po tym nie ma czego ubijać, a numer w pliku jest po prostu stary.
+fn foreign_warning(process_group_id: i32) -> String {
+    format!(
+        "The process group written down for this step now belongs to a different run, so Loadout \
+         left it alone. Nothing was stopped: PGID {process_group_id}."
+    )
+}
+
 /// `run.json` tego katalogu, albo `None`. Nieczytelny plik jest jednym biegiem mniej.
 fn read_run(dir: &Path) -> Option<Value> {
     let bytes = std::fs::read(dir.join(RUN_FILE)).ok()?;
@@ -402,4 +573,18 @@ fn number(step: &Value, key: &str) -> Option<i32> {
     step.get(key)
         .and_then(Value::as_i64)
         .and_then(|one| i32::try_from(one).ok())
+}
+
+/// Lista liczb spod `key`. Brak klucza, zła forma i pozycja, która liczbą nie jest, dają pustą
+/// listę albo o jedną pozycję mniej — nigdy odmowy otwarcia folderu (niezmiennik 5).
+fn numbers(step: &Value, key: &str) -> Vec<i32> {
+    step.get(key)
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_i64)
+                .filter_map(|one| i32::try_from(one).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }

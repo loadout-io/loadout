@@ -180,10 +180,15 @@ fn start_two(processes: &Processes, dir: &Path, tag: &str) -> Result<Pair, Box<d
     for which in ["one", "two"] {
         let marker = unique_marker(&format!("{tag}-{which}"));
         let line = format!("{} {} {marker}", parent.display(), grandchild.display());
-        started.push(processes.start(&StartSpec {
-            command: line,
-            cwd: dir.to_path_buf(),
-        })?);
+        // 2026-09 (Z-01d) — `None`: to kryterium sądzi rzecz zamówioną z wiersza wejścia, a ta
+        // nie należy do żadnego kroku żadnego biegu.
+        started.push(processes.start(
+            &StartSpec {
+                command: line,
+                cwd: dir.to_path_buf(),
+            },
+            None,
+        )?);
         markers.push(marker);
     }
 

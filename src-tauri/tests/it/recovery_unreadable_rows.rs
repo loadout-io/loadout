@@ -22,6 +22,10 @@ fn row(step_id: &str, run_id: &str, run_status: &str, step_status: &str, pgid: i
         run_boot_id: Some(BOOT.to_owned()),
         pid: Some(pgid),
         pgid: Some(pgid),
+        // Pusto i `false`: to kryterium jest o wierszach, których nie da się przeczytać, i sądzi
+        // wiersz z jedną grupą — dokładnie taki, jaki pisała każda wersja przed Z-01d (2026-09).
+        pgids: Vec::new(),
+        death_proof: false,
     }
 }
 
@@ -92,7 +96,11 @@ fn unknown_states_are_named_and_recovery_metadata_cannot_block_cleanup() {
     );
 
     assert_eq!(
-        plan.reap,
+        // Same numery grup: od Z-01d cel niesie obok nich identyfikator biegu (2026-09).
+        plan.reap
+            .iter()
+            .map(|target| target.pgid)
+            .collect::<Vec<i32>>(),
         GOOD_PGIDS.to_vec(),
         "five readable process groups are cleaned once; the duplicate group is deduplicated"
     );
