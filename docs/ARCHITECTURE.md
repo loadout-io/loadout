@@ -196,12 +196,23 @@ dotyczy więc responsywności przycisku Stop, nie pozwolenia na porzucenie proce
   `failed`, a `pending` jako `skipped` albo `cancelled`. To domknięcie, nie przejście.
 - **Sufit budżetu** (T-94) — krok zatrzymany sufitem czyta się jako `skipped`, nigdy `cancelled`:
   na ekranie „cancelled" znaczy „nacisnąłeś Stop".
-- **Sufit jest miękki przy równoległości.** Scheduler liczy ceny wyłącznie zakończonych kroków;
-  kroki już uruchomione kończą swoje tury. Przy `N` startach naraz rachunek może więc dojść
-  do około `N ×` ustawionej kwoty. Claude dostaje w `--max-budget-usd` pozostałą kwotę, ale
-  pojedyncza tura Codeksa jest wyceniana dopiero po zakończeniu. Po T-149 końcowe
-  `run.json.spent_usd` obejmuje także koszt udanej refleksji; decyzje schedulera nadal liczą
-  tylko kroki, ponieważ refleksja biegnie dopiero po grafie.
+- **Sufit jest DZIELONY między kroki, które biegną razem** (poprawione 2026-09-03, Z-13b).
+  Do tego dnia scheduler liczył ceny wyłącznie kroków zakończonych, a każdy z `N` startujących
+  naraz dostawał w `--max-budget-usd` CAŁĄ pozostałą kwotę, jakby był jedyny — rachunek mógł
+  więc dojść do około `N ×` ustawionej kwoty, zanim ktokolwiek to zauważył. Dziś reszta jest
+  dzielona przez szerokość równoległości i **rezerwowana na czas tury**, a rezerwacja znika
+  przy `record_turn`, kiedy wraca prawdziwy koszt.
+
+  Dzielnikiem jest szerokość, nie liczba już biegnących — i to jest cała treść tej poprawki.
+  Pierwsze podejście dzieliło przez `running_now + 1`, co przy pierwszym starcie daje jeden:
+  krok numer jeden rezerwował wszystko, a reszta lądowała jako pominięta. Sufit wydatku
+  wyłączał wtedy równoległość, czyli łamał niezmiennik 11, żeby spełnić samego siebie.
+
+  Co z tego NIE wynika: ścieżka `exec` Codeksa (w odróżnieniu od App Servera) nie ma sygnału
+  zużycia w trakcie tury, więc tam sufit działa dopiero po jej zakończeniu — jedna tura ponad
+  udział jest nadal możliwa. Po T-149 końcowe `run.json.spent_usd` obejmuje także koszt udanej
+  refleksji, ale `REFLECTION_BUDGET_USD` jest stałą POZA księgą biegu: refleksja wydaje obok
+  sufitu, który postawił człowiek (zgłoszone przez bieg Z-13b, do rozstrzygnięcia osobno).
 
 ---
 
