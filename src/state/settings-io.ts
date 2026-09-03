@@ -43,6 +43,23 @@ export interface Settings {
    * Brak klucza znaczy „nikt nie wybierał", nie „rozwinięte na siłę".
    */
   readonly navCollapsed?: boolean;
+  /**
+   * Ile ostatnich biegów zostaje w folderze projektu. `0` znaczy „wszystkie".
+   *
+   * 2026-09 (Z-9) — CZWARTY WYBÓR, i pierwszy, który KASUJE. Folder biegu niesie strumienie
+   * agentów, przekazania i kopie notatek; nic ich nigdy nie przycinało. Zmierzone u właściciela
+   * 2026-09-02: 87 folderów biegów w jednym projekcie, 3,8 GB.
+   *
+   * **Zero znaczy „trzymaj wszystkie", nie „nie trzymaj nic"** — cały powód stoi po drugiej
+   * stronie granicy (`commands::settings::SettingsWire::keep_last_runs`) i jest jednym zdaniem:
+   * zero dostaje od Rusta KAŻDY dzisiejszy plik, więc odwrotne czytanie skasowałoby człowiekowi
+   * całą historię przy pierwszym uruchomieniu po tej zmianie.
+   *
+   * `?` z tego samego powodu, co przy `navCollapsed`: plik zapisany przez wcześniejszą wersję
+   * Loadouta tego klucza nie ma, a atrapa granicy w kryteriach przeglądarkowych oddaje wyłącznie
+   * to, co scena wymieniła.
+   */
+  readonly keepLastRuns?: number;
 }
 
 /**
@@ -69,6 +86,7 @@ export function saveSettings(args: {
   defaultLead: string;
   defaultBudgetUsd: number;
   navCollapsed: boolean;
+  keepLastRuns: number;
 }): Promise<Settings> {
   return invoke<Settings>('save_settings', args);
 }

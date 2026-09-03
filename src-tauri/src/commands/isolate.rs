@@ -123,6 +123,120 @@ pub fn is_a_repo(project: &Path) -> bool {
     }
 }
 
+/// Czy `project` leży WEWNĄTRZ repozytorium, ale nie jest jego korzeniem.
+///
+/// Dokładna negacja [`is_a_repo`] w obrębie tego jednego pytania, i to jest cały powód, dla
+/// którego stoi tu, obok tamtej, a nie u wołającego: oba pytania czytają to samo wyjście gita,
+/// a rozjazd między nimi znaczyłby folder, o którym Loadout mówi „nie repozytorium" i zaraz potem
+/// „podfolder repozytorium".
+///
+/// 2026-09 (Z-9) — POWSTAŁO DLA JEDNEGO ZDANIA PRZY STARCIE. Folder wewnątrz cudzego
+/// repozytorium przechodzi przez [`make_from_after_add`] gałęzią kopii plikowej, bo `is_a_repo`
+/// odpowiada o nim „nie" — a to znaczy, że praca kroku nie ląduje na żadnej gałęzi i nie ma
+/// drogi powrotnej do gita. Do dziś nic tego nie mówiło: człowiek wybierał podkatalog swojego
+/// monorepo i dostawał bieg, który wygląda dokładnie jak bieg w korzeniu.
+#[must_use]
+pub fn inside_a_repo_but_not_its_root(project: &Path) -> bool {
+    let Ok(top) = git(project, &["rev-parse", "--show-toplevel"]) else {
+        return false;
+    };
+    match (fs::canonicalize(top.trim()), fs::canonicalize(project)) {
+        (Ok(top), Ok(here)) => top != here,
+        // „Nie wiem" znaczy tu „nie mów nic". Zdanie o podfolderze postawione nad folderem,
+        // którego ścieżki nie da się rozwiązać, jest zdaniem o czymś, czego nie sprawdziliśmy.
+        _ => false,
+    }
+}
+
+/// Zdejmuje z rejestru wpisy o drzewach, których katalogów już nie ma.
+///
+/// 2026-09 (Z-9) — DRUGA POŁOWA SPRZĄTANIA, KTÓREJ NIE ROBIŁO NIC. `worktree remove` zdejmuje
+/// katalog razem z jego wpisem, ale katalog skasowany czyjąkolwiek inną ręką — `rm -rf` człowieka,
+/// przerwany bieg, kopia projektu przeniesiona na inny dysk — zostawia wpis, którego nie widać
+/// nigdzie poza `git worktree list`. Taki wpis ODMAWIA założenia drzewa pod tą samą ścieżką, więc
+/// jest nie tylko śmieciem: jest odmową następnego biegu tego kroku. Zmierzone u właściciela
+/// 2026-09-02 na `urc-monorepo`: 89 wpisów przy 87 istniejących katalogach.
+///
+/// `prune` sam z siebie nie tyka drzewa, które stoi na dysku — decyduje o tym git, a nie my.
+pub fn prune_trees(project: &Path) -> Result<(), String> {
+    git(project, &["worktree", "prune"]).map(|_| ())
+}
+
+/// Dopisuje `.loadout/` do listy, którą czyta wyłącznie git tego projektu — idempotentnie.
+///
+/// # Dlaczego `.git/info/exclude`, a NIE `.gitignore`
+///
+/// 2026-09 (Z-9). `.gitignore` jest plikiem CZŁOWIEKA i jest w jego commicie: dopisanie tam
+/// czegokolwiek jest zmianą, której nie zamawiał, i wyjeżdża w jego następnym commicie do jego
+/// współpracowników. `info/exclude` jest listą prywatną tego jednego klona — dokładnie to samo
+/// wyciszenie, zero śladu w historii.
+///
+/// # Po co to w ogóle jest
+///
+/// Bo bez tego wszystko, co Loadout zostawia w projekcie, czyta się jako nieśledzona praca
+/// człowieka. Zmierzone 2026-08-19 na `~/Projects/meetnotes`: ze 188 plików nieśledzonych
+/// **171 było zawartością katalogu poprzedniego biegu**. `make_from_after_add` filtruje je
+/// u siebie po [`OURS`], więc do promptu nie jadą — ale `git status`, który człowiek uruchamia
+/// sam u siebie, nie zna żadnego naszego filtru.
+///
+/// Wspólny katalog gita, nie `.git`: w drzewie roboczym `.git` jest PLIKIEM ze wskaźnikiem,
+/// a lista wyciszeń jest jedna na całe repozytorium.
+pub fn exclude_our_folder(project: &Path) -> Result<(), String> {
+    let said = git(project, &["rev-parse", "--git-common-dir"])?;
+    let common = Path::new(said.trim());
+    // Git oddaje tę ścieżkę WZGLĘDNĄ (zwykle samo `.git`), liczoną od katalogu, w którym go
+    // zawołano — a zawołaliśmy go w `project`.
+    let common = if common.is_absolute() {
+        common.to_path_buf()
+    } else {
+        project.join(common)
+    };
+    let info = common.join("info");
+    let exclude = info.join("exclude");
+    let text = match fs::read_to_string(&exclude) {
+        Ok(text) => text,
+        // Świeży klon nie ma tego pliku i to jest stan normalny, nie awaria dysku.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+    if text.lines().any(|line| line.trim() == OURS) {
+        return Ok(());
+    }
+    let mut next = text;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(WHY_OURS_IS_HERE);
+    next.push_str(OURS);
+    next.push('\n');
+    fs::create_dir_all(&info).map_err(|error| error.to_string())?;
+    replace_in_place(&info, &exclude, &next)
+}
+
+/// Zdanie, które człowiek czyta w swoim `info/exclude`, kiedy się w niego zajrzy.
+///
+/// Po angielsku (D5), bo to jest plik w jego repozytorium, a nie nasza dokumentacja. Wiersz bez
+/// wyjaśnienia w cudzym pliku konfiguracji jest zagadką, którą ktoś kiedyś skasuje.
+const WHY_OURS_IS_HERE: &str =
+    "# Loadout keeps this project's runs here; only this clone sees this line.\n";
+
+/// Zapisuje plik przez plik tymczasowy i `rename`, w tym samym katalogu.
+///
+/// TĘDY, A NIE `fs::write`, i to jest wymóg, nie ostrożność na zapas: piszemy do CUDZEGO pliku
+/// konfiguracji gita. `fs::write` obcina cel przed pierwszym bajtem, więc przerwany zapis
+/// zostawia człowiekowi pustą listę wyciszeń zamiast jego własnej. `rename` w obrębie jednego
+/// katalogu jest atomowe — czytelnik widzi albo poprzednią treść w całości, albo nową.
+fn replace_in_place(dir: &Path, path: &Path, text: &str) -> Result<(), String> {
+    let writing = dir.join("exclude.loadout-writing");
+    fs::write(&writing, text).map_err(|error| error.to_string())?;
+    fs::rename(&writing, path).map_err(|error| {
+        // Nieudany `rename` zostawia plik tymczasowy w cudzym `.git/info/`. Zdejmujemy go, bo
+        // to jedyny moment, w którym ktokolwiek jeszcze o nim wie.
+        let _ = fs::remove_file(&writing);
+        error.to_string()
+    })
+}
+
 /// Robi krokowi własne drzewo w `dest`.
 ///
 /// `dest` jeszcze nie istnieje — `git worktree add` wymaga, żeby nie istniał, a kopia i tak

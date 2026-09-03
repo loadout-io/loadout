@@ -151,6 +151,9 @@ const AUTHORED: Authored = {
 /** Tryb bocznego menu, który człowiek wybrał. `true` — patrz komentarz przy wierszu Settings. */
 const NAV_COLLAPSED = true;
 
+/** Ile ostatnich biegów zostaje w folderze projektu. NIE zero: zero jest tu domyślne. */
+const KEEP_LAST_RUNS = 20;
+
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
 const TRIGGER_DRAFT: triggers.TriggerDraft = {
   source: 'linear',
@@ -673,6 +676,19 @@ const WIRES: readonly Wire[] = [
     call: () =>
       run.forgetRunBranches(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
   },
+  /* 2026-09 (Z-9) — CZWARTA KRAWĘDŹ HISTORII, dopisana, nic nie usunięte i żaden istniejący
+   * wiersz nie przepisany. Bez niej pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
+   * `forgetRun`. Ta waży najwięcej z całej czwórki: po drugiej stronie granicy kasuje FOLDER
+   * biegu, czyli wszystko, co po nim zostało na dysku — a nazwa komendy sklejona ze zmiennej albo
+   * klucz, którego Rust nie ma, robiłyby z niej przycisk, który nic nie zdejmuje i nic o tym nie
+   * mówi. */
+  {
+    where: 'run',
+    what: 'forgetRun',
+    command: 'forget_run',
+    given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'],
+    call: () => run.forgetRun(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
+  },
   {
     where: 'workspaces',
     what: 'listWorkspaces',
@@ -725,13 +741,19 @@ const WIRES: readonly Wire[] = [
     what: 'saveSettings',
     command: 'save_settings',
     given: [
-      { defaultLead: AGENT_ID, defaultBudgetUsd: DEFAULT_BUDGET_USD, navCollapsed: NAV_COLLAPSED },
+      {
+        defaultLead: AGENT_ID,
+        defaultBudgetUsd: DEFAULT_BUDGET_USD,
+        navCollapsed: NAV_COLLAPSED,
+        keepLastRuns: KEEP_LAST_RUNS,
+      },
     ],
     call: () =>
       settings.saveSettings({
         defaultLead: AGENT_ID,
         defaultBudgetUsd: DEFAULT_BUDGET_USD,
         navCollapsed: NAV_COLLAPSED,
+        keepLastRuns: KEEP_LAST_RUNS,
       }),
   },
   /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.

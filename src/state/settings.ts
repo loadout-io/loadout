@@ -1,5 +1,6 @@
-/* JEDYNY dom tego, co Loadout robi domyślnie, po stronie okna (niezmiennik 13). Trzy fakty:
- * kto prowadzi rozmowę, ile wolno wydać na jeden bieg i czy boczne menu stoi zwinięte.
+/* JEDYNY dom tego, co Loadout robi domyślnie, po stronie okna (niezmiennik 13). Cztery fakty:
+ * kto prowadzi rozmowę, ile wolno wydać na jeden bieg, czy boczne menu stoi zwinięte i ile
+ * ostatnich biegów zostaje w folderze projektu.
  *
  * CZYM TO JEST, A CZYM NIE JEST. „Domyślny lider" to jeden globalny wybór, który Run bierze,
  * kiedy człowiek nie powiedział inaczej w pasku. Run go POKAZUJE i nie trzyma drugiej kopii:
@@ -56,6 +57,36 @@ const budgetListeners = new Set<() => void>();
 let narrow = false;
 const navListeners = new Set<() => void>();
 
+/**
+ * Ile ostatnich biegów zostaje w folderze projektu. Czwarty wybór tego pliku, od 2026-09 (Z-9).
+ *
+ * `0`, czyli „wszystkie", dopóki dysk nie odpowie — i to jest tutaj mocniejszy wymóg niż przy
+ * dwóch wyborach wyżej: ta liczba KASUJE katalogi biegów. Każda inna wartość podstawiona przed
+ * pierwszą odpowiedzią z pliku byłaby retencją, o którą nikt nie prosił, wykonaną na czyjejś
+ * historii.
+ */
+let kept = 0;
+const keptListeners = new Set<() => void>();
+
+/** Ile ostatnich biegów zostaje w folderze projektu. `0` znaczy „wszystkie". */
+export function keepLastRuns(): number {
+  return kept;
+}
+
+/** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
+export function subscribeToKeepLastRuns(listener: () => void): () => void {
+  keptListeners.add(listener);
+  return () => {
+    keptListeners.delete(listener);
+  };
+}
+
+function rememberKept(runs: number): void {
+  if (runs === kept) return;
+  kept = runs;
+  for (const listener of keptListeners) listener();
+}
+
 /** Czy boczne menu stoi zwinięte do samych ikon. */
 export function navIsCollapsed(): boolean {
   return narrow;
@@ -95,8 +126,13 @@ function rememberNav(collapsed: boolean): void {
  */
 export function collapseNav(collapsed: boolean): Promise<string | null> {
   rememberNav(collapsed);
-  return saveSettings({ defaultLead: chosen, defaultBudgetUsd: ceiling, navCollapsed: collapsed })
-    .then(kept)
+  return saveSettings({
+    defaultLead: chosen,
+    defaultBudgetUsd: ceiling,
+    navCollapsed: collapsed,
+    keepLastRuns: kept,
+  })
+    .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not remember the side nav mode.'));
 }
 
@@ -177,6 +213,16 @@ function navIn(answer: unknown): boolean {
   return typeof said === 'boolean' ? said : narrow;
 }
 
+/* Liczba trzymanych biegów z odpowiedzi granicy — a kiedy jej w niej nie ma, ZOSTAJE TA, KTÓRĄ
+ * JUŻ MAMY. Ta sama decyzja, co przy dwóch wyborach obok, i z ostrzejszym powodem: „nie wiem"
+ * nie ma prawa ustawić liczby, po której kasują się katalogi biegów. Liczba ujemna i liczba
+ * z przecinkiem nie są odpowiedzią w ogóle — Rust trzyma to pole na `u32`. */
+function keptIn(answer: unknown): number {
+  if (typeof answer !== 'object' || answer === null) return kept;
+  const said = (answer as { keepLastRuns?: unknown }).keepLastRuns;
+  return typeof said === 'number' && Number.isInteger(said) && said >= 0 ? said : kept;
+}
+
 /** Jedno pytanie do dysku na okno; następni wołający dostają tę samą obietnicę. */
 let asked: Promise<string | null> | null = null;
 
@@ -192,6 +238,7 @@ export function loadSettings(): Promise<string | null> {
       remember(leadIn(settings));
       rememberCeiling(ceilingIn(settings));
       rememberNav(navIn(settings));
+      rememberKept(keptIn(settings));
       return null;
     })
     .catch((error: unknown) => why(error, 'Loadout could not read what it does by default.'));
@@ -210,8 +257,13 @@ export function loadSettings(): Promise<string | null> {
  * drugą połowę (`src-tauri/src/commands/settings.rs`, `save_settings_inner`).
  */
 export function chooseDefaultLead(id: string): Promise<string | null> {
-  return saveSettings({ defaultLead: id, defaultBudgetUsd: ceiling, navCollapsed: narrow })
-    .then(kept)
+  return saveSettings({
+    defaultLead: id,
+    defaultBudgetUsd: ceiling,
+    navCollapsed: narrow,
+    keepLastRuns: kept,
+  })
+    .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not save who leads by default.'));
 }
 
@@ -228,18 +280,51 @@ export function chooseDefaultLead(id: string): Promise<string | null> {
  * ten jeden wybór, przy którym pomyłka kosztuje pieniądze.
  */
 export function chooseDefaultBudgetUsd(dollars: number): Promise<string | null> {
-  return saveSettings({ defaultLead: chosen, defaultBudgetUsd: dollars, navCollapsed: narrow })
-    .then(kept)
+  return saveSettings({
+    defaultLead: chosen,
+    defaultBudgetUsd: dollars,
+    navCollapsed: narrow,
+    keepLastRuns: kept,
+  })
+    .then(saved)
     .catch((error: unknown) =>
       why(error, 'Loadout could not save how much a run may spend by default.'),
     );
 }
 
-/** Co robimy z potwierdzonym wpisem — jedno miejsce dla obu zapisów wyżej. */
-function kept(settings: Settings): null {
+/**
+ * Zapisuje, ile ostatnich biegów zostaje w folderze projektu. Oddaje zdanie odmowy albo `null`.
+ *
+ * DYSK PIERWSZY, jak przy liderze i suficie, i tu jest to najostrzejszy z trzech powodów: ta
+ * liczba KASUJE katalogi biegów przy następnym otwarciu folderu. Stan okna, który wyprzedził
+ * plik, pokazywałby retencję, której Loadout nie wykona — albo, w drugą stronę, nie pokazywałby
+ * tej, którą wykona.
+ *
+ * `0` jest tu WARTOŚCIĄ, nie pustką: znaczy „trzymaj wszystkie" i jest jedyną drogą powrotną
+ * z raz wpisanej liczby. Odmowa na zerze zamykałaby człowieka w retencji, której nie da się
+ * wyłączyć.
+ *
+ * NIESIE CAŁY WPIS, bo plik jest jeden (`commands::settings::save_settings_inner`).
+ */
+export function chooseKeepLastRuns(runs: number): Promise<string | null> {
+  return saveSettings({
+    defaultLead: chosen,
+    defaultBudgetUsd: ceiling,
+    navCollapsed: narrow,
+    keepLastRuns: runs,
+  })
+    .then(saved)
+    .catch((error: unknown) =>
+      why(error, 'Loadout could not save how many past runs to keep in a project folder.'),
+    );
+}
+
+/** Co robimy z potwierdzonym wpisem — jedno miejsce dla wszystkich zapisów wyżej. */
+function saved(settings: Settings): null {
   remember(leadIn(settings));
   rememberCeiling(ceilingIn(settings));
   rememberNav(navIn(settings));
+  rememberKept(keptIn(settings));
   /* Zapisane wybory są od tej chwili tym, co odda `loadSettings()` następnemu ekranowi:
    * bez tego powrót na Run czytałby dysk odpowiedzią zapamiętaną przed zapisem. */
   asked = Promise.resolve(null);

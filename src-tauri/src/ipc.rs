@@ -1399,16 +1399,38 @@ impl AppState {
                 return;
             }
         }
-        let done = crate::commands::reconcile::reconcile_runs(project);
-        if done.runs > 0 || done.still_alive > 0 {
+        /* ILE BIEGÓW ZOSTAJE, CZYTAMY Z PLIKU, NIE ZE STANU OKNA (2026-09, Z-9).
+         *
+         * To jest jedyna droga, którą retencja w ogóle dochodzi do dysku, i jedyna chwila,
+         * w której wolno kasować katalogi biegów: sprzątanie biegnie, zanim to okno cokolwiek
+         * uruchomi, więc każdy bieg zastany tutaj należy do kogoś, kogo już nie ma.
+         *
+         * Nieczytelny plik wyborów znaczy „nie kasuj nic" (`Keep::everything`), a nie „kasuj
+         * domyślnie": pomyłka w tę stronę kosztuje miejsce na dysku, w drugą — całą historię
+         * projektu. */
+        let keep = match crate::commands::settings::read_settings_inner(&self.home) {
+            Ok(settings) => crate::commands::reconcile::Keep::last_runs(settings.keep_last_runs),
+            Err(error) => {
+                tracing::error!(
+                    "what Loadout does by default could not be read, so no run was forgotten \
+                     in {}: {error}",
+                    project.display()
+                );
+                crate::commands::reconcile::Keep::everything()
+            }
+        };
+        let done = crate::commands::reconcile::reconcile_runs_keeping(project, &keep);
+        if done.runs > 0 || done.still_alive > 0 || done.closed > 0 || done.forgotten > 0 {
             tracing::info!(
                 "{}: {} run(s) and {} step(s) were left over by a closed window, \
-                 {} group(s) proven dead, {} still alive",
+                 {} group(s) proven dead, {} still alive, {} folder(s) closed, {} run(s) forgotten",
                 project.display(),
                 done.runs,
                 done.steps,
                 done.reaped,
                 done.still_alive,
+                done.closed,
+                done.forgotten,
             );
         }
     }
@@ -2361,6 +2383,30 @@ pub async fn forget_run_branches(
     })
 }
 
+/// Zdejmuje CAŁY bieg: jego gałęzie i jego katalog. Oddaje nazwy zdjętych gałęzi.
+///
+/// 2026-09 (Z-9) — DRUGA POŁOWA TEGO, CO ZOSTAWAŁO NA ZAWSZE. Gałęzie biegu dało się zdjąć od
+/// T-95 ([`forget_run_branches`]); jego katalog — ze strumieniami agentów, przekazaniami i kopiami
+/// notatek — nie schodził **niczym**. Zmierzone u właściciela 2026-09-02: 87 katalogów biegów
+/// w jednym projekcie, 3,8 GB, jedyną drogą było `rm -rf` z terminala.
+///
+/// Ta sama ostrożność, co przy gałęziach, i ta sama całościowość: kiedy którakolwiek gałąź tego
+/// biegu jest w tej chwili otwarta do pracy w innym folderze, nie znika ANI JEDNA rzecz — ani
+/// gałąź, ani katalog. Powód i kolejność w całości stoją przy `history::forget_run_inner`.
+#[tauri::command]
+pub async fn forget_run(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    run: String,
+) -> Result<Vec<String>, String> {
+    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    commands::history::forget_run_inner(&project, &run).map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
 ///
 /// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
@@ -2549,7 +2595,7 @@ pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Zapisuje wszystkie trzy domyślne wybory i oddaje to, co ma teraz plik.
+/// Zapisuje wszystkie cztery domyślne wybory i oddaje to, co ma teraz plik.
 ///
 /// 2026-08-29 — DWA ARGUMENTY, JEDNO WYWOŁANIE, bo plik jest jeden. Zapis niosący samo wskazanie
 /// lidera nadpisywałby sufit tym, co akurat miało okno, a zapis niosący samą kwotę robiłby to
@@ -2558,17 +2604,21 @@ pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
 /// 2026-08-31 — TRZECI ARGUMENT, tą samą drogą i z tego samego powodu: tryb bocznego menu jest
 /// wyborem człowieka, a nie stanem okna, więc mieszka w tym samym pliku i jedzie tym samym
 /// wywołaniem.
+///
+/// 2026-09 (Z-9) — CZWARTY ARGUMENT: ile ostatnich biegów zostaje w folderze projektu.
 #[tauri::command]
 pub fn save_settings(
     default_lead: &str,
     default_budget_usd: f64,
     nav_collapsed: bool,
+    keep_last_runs: u32,
 ) -> Result<commands::settings::SettingsWire, String> {
     commands::settings::save_settings_inner(
         &crate::loadout_dir(),
         default_lead,
         default_budget_usd,
         nav_collapsed,
+        keep_last_runs,
     )
     .map_err(|error| error.to_string())
 }
@@ -3436,6 +3486,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         draft_skill,
         drop_eval_variant,
         forget_run_branches,
+        forget_run,
         install_skill,
         list_agents,
         list_eval_sets,

@@ -1,5 +1,6 @@
-//! Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś dwa pola: kto
-//! prowadzi rozmowę i ile wolno wydać na jeden bieg.
+//! Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś cztery pola: kto
+//! prowadzi rozmowę, ile wolno wydać na jeden bieg, czy boczne menu stoi zwinięte i ile
+//! ostatnich biegów zostaje w folderze projektu.
 //!
 //! **Ani jednego `use tauri::` i ani jednego `#[tauri::command]`** — jak w całym tym katalogu.
 //! Skorupy stoją w `src/ipc.rs` i mają po dwie linie (niezmiennik 1).
@@ -65,9 +66,10 @@ fn shipped_ceiling_usd() -> f64 {
 
 /// Co Loadout robi domyślnie, na drucie.
 ///
-/// Trzy pola, bo trzy wybory — i tak ma zostać, dopóki nie zajdzie potrzeba czwartego. Struktura
-/// „na przyszłość" jest tu tym samym długiem, co migracja schematu „na przyszłość" (AGENTS.md §4);
-/// trzecie pole doszło 2026-08-31, kiedy tryb bocznego menu naprawdę zaczął być wyborem.
+/// Cztery pola, bo cztery wybory — i tak ma zostać, dopóki nie zajdzie potrzeba piątego.
+/// Struktura „na przyszłość" jest tu tym samym długiem, co migracja schematu „na przyszłość"
+/// (AGENTS.md §4); trzecie pole doszło 2026-08-31, kiedy tryb bocznego menu naprawdę zaczął być
+/// wyborem, a czwarte 2026-09, kiedy katalogi biegów zaczęły zajmować gigabajty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsWire {
@@ -103,6 +105,23 @@ pub struct SettingsWire {
     /// w którym widać wszystko — bezpieczna odpowiedź dla kogoś, kto nigdy nie wybierał.
     #[serde(default)]
     pub nav_collapsed: bool,
+    /// Ile ostatnich biegów zostaje w folderze projektu. `0` znaczy „wszystkie".
+    ///
+    /// 2026-09 (Z-9) — CZWARTY WYBÓR, i pierwszy, który KASUJE. Katalog biegu niesie strumienie
+    /// agentów, przekazania i kopie notatek; nic ich nigdy nie przycinało. Zmierzone u właściciela
+    /// 2026-09-02 na `urc-monorepo`: 87 katalogów biegów, 3,8 GB, jedyna droga to `rm -rf`.
+    ///
+    /// **`0` jako „wszystkie", a nie „nic".** Pole z `serde(default)` na typie liczbowym dostaje
+    /// zero od pliku zapisanego przez wcześniejszą wersję Loadouta, czyli od KAŻDEGO dzisiejszego
+    /// pliku — a gdyby zero znaczyło „nie trzymaj nic", pierwsze uruchomienie po tej zmianie
+    /// skasowałoby człowiekowi całą historię, której nikt go nie pytał, czy chce stracić. Dlatego
+    /// domyślną odpowiedzią jest bezczynność, a przycinanie zaczyna się od jawnej liczby w oknie.
+    ///
+    /// Przechowuje **liczbę biegów, nie wiek**: „ostatnie 20" jest odpowiedzią, którą człowiek
+    /// umie sprawdzić w tej samej sekundzie, patrząc na listę. „Nie starsze niż 30 dni" wymaga od
+    /// niego arytmetyki na datach, żeby zgadnąć, co właśnie zniknie.
+    #[serde(default)]
+    pub keep_last_runs: u32,
 }
 
 /// Świeża biblioteka: nikt nie prowadzi, a bieg ma sufit, którego nikt nie musiał wpisywać.
@@ -115,6 +134,8 @@ impl Default for SettingsWire {
             default_lead: String::new(),
             default_budget_usd: SHIPPED_CEILING_USD,
             nav_collapsed: false,
+            // Zero znaczy „trzymaj wszystkie" — powód w całości przy polu.
+            keep_last_runs: 0,
         }
     }
 }
@@ -194,6 +215,7 @@ pub fn save_settings_inner(
     default_lead: &str,
     default_budget_usd: f64,
     nav_collapsed: bool,
+    keep_last_runs: u32,
 ) -> Result<SettingsWire, SettingsError> {
     if !default_budget_usd.is_finite() || default_budget_usd < SMALLEST_CEILING_USD {
         return Err(SettingsError::NotAnAmount(default_budget_usd));
@@ -201,6 +223,11 @@ pub fn save_settings_inner(
     let settings = SettingsWire {
         default_lead: default_lead.trim().to_owned(),
         default_budget_usd,
+        // Liczba biegów NIE JEST sądzona, i to jest wybór: każda wartość `u32` jest tu
+        // odpowiedzią, którą człowiek ma prawo dać (zero znaczy „wszystkie"). Odmowa nie
+        // miałaby czego bronić, a typ zamyka jedyny kształt, który byłby pomyłką — liczbę
+        // ujemną.
+        keep_last_runs,
         // Tryb menu NIE JEST sadzony: zwiniete i rozwiniete sa oba poprawnymi odpowiedziami,
         // a odmowa nie mialaby czego bronic. Kwota obok ma swoja podloge, bo pomylka w niej
         // kosztuje pieniadze; tu najgorsze, co moze sie stac, to menu w trybie, ktorego

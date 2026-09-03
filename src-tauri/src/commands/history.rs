@@ -304,6 +304,14 @@ pub enum HistoryError {
     /// pliki są prawdą (niezmiennik 4).
     #[error("Loadout could not take \"{branch}\" away: {said}")]
     CouldNotForget { branch: String, said: String },
+
+    /// Gałęzie zeszły, katalogu nie dało się zdjąć.
+    ///
+    /// **ZE ŚCIEŻKĄ**, z tego samego powodu, z którego niesie ją zdanie o nieposprzątanym drzewie
+    /// (`isolate::could_not_tidy`): bez niej człowiek dowiaduje się, że coś zostało, i musi sam
+    /// znaleźć jeden katalog wśród kilkudziesięciu innych.
+    #[error("Loadout could not take the folder of this run away: {said}. It is still here: {path}")]
+    CouldNotForgetRun { path: String, said: String },
 }
 
 /// Wszystkie biegi TEGO projektu, od najnowszego. Projekt bez `runs/` daje pustą listę.
@@ -430,6 +438,35 @@ pub fn forget_run_branches_inner(project: &Path, run: &str) -> Result<Vec<String
         })?;
         gone.push(name);
     }
+    Ok(gone)
+}
+
+/// Zapomina o biegu w całości: jego gałęzie i jego katalog. Oddaje nazwy zdjętych gałęzi.
+///
+/// # 2026-09 (Z-9) — TRZECIA POŁOWA SPRZĄTANIA, i pierwsza, która zdejmuje KATALOG
+///
+/// Do tego dnia dało się zdjąć gałęzie biegu ([`forget_run_branches_inner`]) i nie dało się zdjąć
+/// jego katalogu **niczym**: ani po biegu, ani przy otwarciu folderu, ani przyciskiem. Katalog
+/// biegu niesie strumienie agentów, przekazania i kopie notatek — u właściciela 2026-09-02 było
+/// ich w jednym projekcie 87, na 3,8 GB, i jedyną drogą był `rm -rf` z terminala.
+///
+/// # GAŁĘZIE PIERWSZE, i kolejność jest tu całą treścią
+///
+/// Po dwa niezależne powody. **Ostrożność:** [`forget_run_branches_inner`] odmawia CAŁOŚCIOWO,
+/// kiedy którakolwiek gałąź tego biegu jest w tej chwili wyjęta do pracy — a odmowa po skasowaniu
+/// katalogu byłaby zdaniem „nic nie ruszyłem" nad projektem, w którym zniknęła już historia biegu.
+/// **Adresowanie:** przedrostek gałęzi bierze się z `run.json` (`isolate::branch_for` po `id`
+/// biegu), więc po skasowaniu katalogu nie ma z czego go policzyć i gałęzie zostałyby na zawsze,
+/// bez niczego, co je jeszcze wymienia.
+pub fn forget_run_inner(project: &Path, run: &str) -> Result<Vec<String>, HistoryError> {
+    let gone = forget_run_branches_inner(project, run)?;
+    // Po nazwę katalogu pytamy TĘ SAMĄ funkcję, co wszystko inne w tym module: zapora na
+    // wędrówkę po ścieżkach mieszka w jednym miejscu, a ta droga kasuje rekurencyjnie.
+    let dir = one_run_dir(project, run)?;
+    fs::remove_dir_all(&dir).map_err(|error| HistoryError::CouldNotForgetRun {
+        path: dir.display().to_string(),
+        said: error.to_string(),
+    })?;
     Ok(gone)
 }
 

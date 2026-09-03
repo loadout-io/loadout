@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::isolate;
 use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy};
 use crate::engine::supervisor;
 use crate::recovery::{self, Machine, RecoveryRow};
@@ -69,9 +70,49 @@ pub struct Reconciled {
     pub reaped: usize,
     /// Ile grup **wciąż żyje** mimo zamknięcia aplikacji. Nie zero znaczy sierotę palącą limit.
     pub still_alive: usize,
+    /// Ile drzew roboczych domknięto po biegach, których nikt już nie prowadzi (2026-09, Z-9).
+    pub closed: usize,
+    /// Ile biegów zeszło z dysku, bo człowiek prosił o krótszą historię (2026-09, Z-9).
+    pub forgotten: usize,
 }
 
-/// Uzgadnia biegi tego folderu z tym, co naprawdę żyje na maszynie.
+/// Ile biegów zostaje w folderze projektu po sprzątaniu.
+///
+/// Typ, a nie goła liczba, i to jest wybór na jedno konkretne ryzyko: `reconcile_runs_keeping`
+/// KASUJE katalogi, więc argument `0` czytany jako „nie trzymaj nic" byłby jednym znakiem między
+/// sprzątaniem i skasowaniem całej historii projektu. Konstruktor [`Keep::everything`] nazywa
+/// bezczynność po imieniu i jest tym, co dostaje każdy wołający, który o retencję nie prosił.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keep {
+    /// Ile najświeższych biegów zostaje. `None` znaczy „wszystkie" i jest domyślną odpowiedzią.
+    last_runs: Option<usize>,
+}
+
+impl Keep {
+    /// Nic nie schodzi z dysku. Odpowiedź dla folderu, o którego historię nikt nie prosił.
+    #[must_use]
+    pub const fn everything() -> Self {
+        Self { last_runs: None }
+    }
+
+    /// Zostaje `how_many` najświeższych biegów. `0` znaczy „wszystkie", nie „żaden".
+    ///
+    /// Zero jedzie tu z `SettingsWire::keep_last_runs`, gdzie jest wartością, którą `serde`
+    /// wstawia KAŻDEMU dzisiejszemu plikowi — powód w całości stoi przy tamtym polu. Przełożenie
+    /// „zero to wszystkie" mieszka w jednym miejscu i to jest to miejsce.
+    #[must_use]
+    pub const fn last_runs(how_many: u32) -> Self {
+        Self {
+            last_runs: if how_many == 0 {
+                None
+            } else {
+                Some(how_many as usize)
+            },
+        }
+    }
+}
+
+/// Uzgadnia biegi tego folderu z tym, co naprawdę żyje na maszynie, i **nic nie kasuje**.
 ///
 /// Wołane z [`crate::workspace`] w chwili otwarcia folderu — raz na folder, spod zamka na liście
 /// kart, czyli w jedynej chwili, w której nikt inny tych plików nie trzyma.
@@ -82,7 +123,200 @@ pub struct Reconciled {
 /// plik biegu jest uszkodzony, traci znacznie więcej niż jeden wiersz historii.
 #[must_use]
 pub fn reconcile_runs(project: &Path) -> Reconciled {
-    with_reaper(project, &mut reap_if_it_is_ours)
+    reconcile_runs_keeping(project, &Keep::everything())
+}
+
+/// To samo, plus retencja: `keep` mówi, ile biegów zostaje w folderze.
+///
+/// # 2026-09 (Z-9) — dlaczego sprzątanie jest TUTAJ, a nie w [`with_reaper`]
+///
+/// Bo `with_reaper` odpowiada na inne pytanie i ma jednego wołającego poza produkcją: kryterium,
+/// które podstawia własny domykacz grup procesów, żeby sprawdzić, że NIC nie zostało zabite.
+/// Sprzątanie wciągnięte tam zmieniłoby znaczenie tamtego szwu — a jego podpis jest przypięty
+/// dwoma kryteriami.
+///
+/// **Cztery kroki, wszystkie PO odzyskiwaniu**, i ta kolejność jest treścią: bieg, który zginął
+/// razem z aplikacją, dopiero co dostał tu status `interrupted`, więc dopiero teraz jest
+/// widoczny jako bieg, którego nikt już nie prowadzi. Domknięcie w odwrotnej kolejności
+/// pominęłoby dokładnie ten jeden przypadek, dla którego to sprzątanie istnieje.
+#[must_use]
+pub fn reconcile_runs_keeping(project: &Path, keep: &Keep) -> Reconciled {
+    let mut done = with_reaper(project, &mut reap_if_it_is_ours);
+    done.closed = close_what_the_runs_left(project);
+    // PO domknięciu, nie przed: `worktree remove` zdejmuje swój wpis sam, a `prune` sprząta po
+    // katalogach, które zniknęły cudzą ręką — po przerwanym biegu, po `rm -rf` człowieka, po
+    // projekcie przeniesionym na inny dysk. Wpis bez katalogu odmawia potem założenia drzewa
+    // pod tą samą ścieżką, czyli następnego biegu tego kroku.
+    if let Err(said) = isolate::prune_trees(project) {
+        tracing::debug!(
+            project = %project.display(),
+            said,
+            "git would not tidy up its own list of places to work"
+        );
+    }
+    // Cicho, bo to jest uprzejmość wobec cudzego repozytorium, a nie warunek pracy: folder, do
+    // którego nie wolno nam dopisać jednej linii wyciszenia, dalej jest folderem, w którym
+    // Loadout biega.
+    if let Err(said) = isolate::exclude_our_folder(project) {
+        tracing::debug!(
+            project = %project.display(),
+            said,
+            "our own folder could not be added to the list only this clone of the project reads"
+        );
+    }
+    done.forgotten = forget_all_but_the_last(project, keep);
+    done
+}
+
+/// Domyka drzewa robocze biegów, których nikt już nie prowadzi. Oddaje liczbę domkniętych.
+///
+/// # Po co to istnieje
+///
+/// Sprzątanie po biegu żyło do 2026-09 wyłącznie w `commands::run::close_the_trees`, czyli
+/// w kodzie biegu, który właśnie się kończy. Bieg ubity razem z aplikacją nie kończy się nigdy:
+/// zostawiał katalog z pełnym checkoutem repozytorium, wpis w rejestrze gita i pracę agenta,
+/// która nigdy nie doszła na gałąź. Zmierzone u właściciela 2026-09-02 na `urc-monorepo`:
+/// 87 katalogów `work/`, 89 wpisów, 99 gałęzi, 3,8 GB.
+///
+/// # TĄ SAMĄ `isolate::finish`, i to jest cały sens (niezmiennik 23)
+///
+/// Nie „skasuj katalog", tylko dokładnie ta funkcja, którą woła koniec biegu: praca ląduje na
+/// gałęzi, gałąź po kroku, który nic nie zrobił, schodzi, a katalog zdejmuje git razem ze swoim
+/// wpisem. Druga polityka sprzątania obok byłaby tą, która kiedyś skasuje czyjąś pracę —
+/// `remove_dir_all` w tym miejscu zdejmuje jedyną kopię tego, co agent zdążył napisać.
+///
+/// # Bieg w stanie NIETERMINALNYM zostaje nietknięty
+///
+/// `running` i `paused` znaczą „ktoś to prowadzi". Uzgodnienie wyżej właśnie przepisało na
+/// `interrupted` te, których nikt nie prowadzi, więc wszystko, co dalej stoi w `running`, należy
+/// do biegu żywego w TEJ sesji — a drzewo zamknięte pod pracującym agentem to jego katalog
+/// roboczy skasowany w połowie zdania.
+fn close_what_the_runs_left(project: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(project.join(RUNS_DIR)) else {
+        return 0;
+    };
+    let mut closed = 0;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let Some(run) = read_run(&dir) else { continue };
+        if !is_over(&run) {
+            continue;
+        }
+        let title = run
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut said: BTreeMap<String, String> = BTreeMap::new();
+        for tree in crate::commands::run::trees_left_in(&dir) {
+            let step = the_step_called(&run, &tree.key);
+            let isolate::Closed { kept, tidied, .. } = isolate::finish(
+                project,
+                &tree.cwd,
+                &tree.branch,
+                // Ten sam temat commita, co po zwykłym biegu (`commands::run::close_one_tree`):
+                // człowiek czytający `git log` dzień później ma poznać bieg i krok.
+                &format!(
+                    "{title}: {}",
+                    step.as_ref().map_or(&tree.key, |one| &one.name)
+                ),
+                Some(tree.head.as_str()),
+            );
+            closed += 1;
+            let mut says: Vec<String> = Vec::new();
+            if let isolate::Kept::LeftInPlace { why, .. } = kept {
+                says.push(why);
+            }
+            says.extend(tidied);
+            /* ZDANIE MUSI DOJŚĆ TAM, GDZIE CZŁOWIEK JE CZYTA (niezmiennik 29). Wartość zwrócona
+             * przez `isolate::finish` dowodzi, że mechanizm istnieje; opis biegu otwarty w oknie
+             * (`history::read_run_inner` → `PastStepWire.error`) jest jedynym miejscem, w którym
+             * ktokolwiek dowie się, że w projekcie stoi katalog, którego nie dało się zdjąć. */
+            if let (Some(step), false) = (step, says.is_empty()) {
+                said.insert(step.id, says.join(" "));
+            }
+        }
+        if !said.is_empty() {
+            let rows: BTreeMap<&str, &str> = said
+                .iter()
+                .map(|(id, one)| (id.as_str(), one.as_str()))
+                .collect();
+            note_on_steps(&dir, &rows);
+        }
+    }
+    closed
+}
+
+/// Czy tego biegu nikt już nie prowadzi.
+///
+/// Lista jest ZAMKNIĘTA po drugiej stronie: `running` i `paused` znaczą „trwa", a każdy inny
+/// status — także taki, którego ta wersja nie zna — znaczy „skończony". Odwrotny warunek
+/// („wymień statusy końcowe") przy pierwszym nowym statusie zostawiałby drzewa w ciszy.
+fn is_over(run: &Value) -> bool {
+    !matches!(
+        run.get("status").and_then(Value::as_str),
+        Some("running" | "paused")
+    )
+}
+
+/// Krok tego biegu o tym kluczu pracy — jego identyfikator i nazwa dla człowieka.
+///
+/// `node_key`, nie `id`: klucz pracy jest nazwą katalogu w `work/` i nazwą pliku markera, a to
+/// tym samym słowem nazywa kafelek plik workflow. `None` znaczy „opis biegu tego kroku już nie
+/// zna" — drzewo domykamy tak czy owak, bo stoi na dysku niezależnie od tego, co o nim wiemy.
+fn the_step_called(run: &Value, work_key: &str) -> Option<NamedStep> {
+    run.get("steps")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|one| one.get("node_key").and_then(Value::as_str) == Some(work_key))
+        .map(|one| NamedStep {
+            id: text(one, "id"),
+            name: text(one, "name"),
+        })
+}
+
+/// Krok w dwóch słowach: czym się adresuje w pliku i jak się nazywa na ekranie.
+struct NamedStep {
+    id: String,
+    name: String,
+}
+
+/// Zdejmuje z dysku biegi starsze niż `keep` ostatnich. Oddaje liczbę zapomnianych.
+///
+/// # TĄ SAMĄ DROGĄ, CO PRZYCISK (niezmiennik 23)
+///
+/// `history::forget_run_inner`, nie własne `remove_dir_all`: retencja i „forget this run" to
+/// jedna czynność zamówiona na dwa sposoby, a kopia tej polityki tutaj byłaby tą, która pominie
+/// ostrożność. Ostrożność jest konkretna: bieg, którego gałąź jest W TEJ CHWILI wyjęta do pracy
+/// w innym drzewie, nie schodzi wcale — ani gałąź, ani katalog.
+///
+/// Odmowa jednego biegu **nie zatrzymuje pozostałych**: to jest sprzątanie w tle przy otwarciu
+/// folderu, a nie czynność, którą ktoś właśnie zamówił i której odpowiedzi czeka. Zdanie idzie
+/// do dziennika.
+fn forget_all_but_the_last(project: &Path, keep: &Keep) -> usize {
+    let Some(last_runs) = keep.last_runs else {
+        return 0;
+    };
+    // `run_dirs` oddaje biegi od NAJŚWIEŻSZEGO (nazwa katalogu otwiera się znacznikiem czasu
+    // UTC), więc „zostaw N ostatnich" jest tu pominięciem pierwszych N pozycji.
+    let mut forgotten = 0;
+    for dir in super::handoffs::run_dirs(project)
+        .into_iter()
+        .skip(last_runs)
+    {
+        let Some(name) = dir.file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        match super::history::forget_run_inner(project, name) {
+            Ok(_) => forgotten += 1,
+            Err(error) => tracing::debug!(
+                run = name,
+                said = %error,
+                "this run was not forgotten, so the folder keeps one more than asked"
+            ),
+        }
+    }
+    forgotten
 }
 
 /// Jedyna polityka strzału do zastanej grupy — i **jedyne** miejsce, w którym mieszka.

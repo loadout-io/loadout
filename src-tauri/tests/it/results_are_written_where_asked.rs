@@ -174,11 +174,22 @@ const WORKFLOW: &str = r#"{
       "instructions": "own: do the work and say what you found.",
       "folder": { "use": "fresh-copy" },
       "at": { "x": 0, "y": 480 }
+    },
+    {
+      "kind": "agent",
+      "id": "s_reads",
+      "name": "Reads",
+      "agent": "01990000-0000-7000-8000-00000000092a",
+      "overrides": {},
+      "instructions": "reads: do the work and say what you found.",
+      "folder": { "use": "same-copy" },
+      "at": { "x": 0, "y": 720 }
     }
   ],
   "links": [
     { "from": "s_plain", "to": "s_filed" },
-    { "from": "s_filed", "to": "s_own" }
+    { "from": "s_filed", "to": "s_own" },
+    { "from": "s_own", "to": "s_reads" }
   ]
 }
 "#;
@@ -257,14 +268,14 @@ async fn the_answer_lands_under_the_path_the_person_typed() -> Result<(), Box<dy
 
     assert_eq!(
         report.steps,
-        vec![StepState::Succeeded; 3],
-        "all three steps have to finish for the files below to mean anything; they ended as {:?}",
+        vec![StepState::Succeeded; 4],
+        "all four steps have to finish for the files below to mean anything; they ended as {:?}",
         report.steps
     );
     assert_eq!(
         seen.labels(),
-        vec!["plain", "filed", "own"],
-        "all three steps have to reach the agent app, or this criterion is about work that never \
+        vec!["plain", "filed", "own", "reads"],
+        "all four steps have to reach the agent app, or this criterion is about work that never \
          happened"
     );
 
@@ -291,14 +302,30 @@ async fn the_answer_lands_under_the_path_the_person_typed() -> Result<(), Box<dy
     // ── (c) ŚCIEŻKA NADPISANA NA KROKU WYGRYWA, I LICZY SIĘ OD FOLDERU TEGO KROKU ──────────
     // Krok pracuje we własnej kopii plików, więc „względem folderu kroku" i „względem folderu
     // projektu" są tu DWIEMA różnymi odpowiedziami — dla kroku `project` byłyby jedną.
-    let mine = files_named(&report.dir, "own.md");
+    //
+    // 2026-09 (Z-9) — PYTA O TO KROK NASTĘPNY, NIE KATALOG PO BIEGU. Kopia plikowa jest od tego
+    // dnia sprzątana po biegu razem z drzewami gita, więc `files_named(&report.dir, …)` szukałby
+    // w katalogu, którego już nie ma. Pytanie idzie do jedynego miejsca, w którym ten plik
+    // komukolwiek służy: do kroku `same-copy`, który stoi za tamtym w TYM SAMYM folderze. Ani
+    // jedna asercja nie ubyła — ta jest mocniejsza, bo dowodzi, że odpowiedź jest CZYTELNA tam,
+    // gdzie ma być, a nie tylko że plik gdzieś leżał.
+    let read_by_the_next_step = seen.what("reads").ok_or_else(|| {
+        format!(
+            "the step that works in that same copy found nothing at \"{OVERRIDDEN}\". The path is \
+             read from the folder the step works in — the one it was given, not the one the \
+             workflow started in — and until this change nothing but the folder listing said so"
+        )
+    })?;
     assert_eq!(
-        mine.len(),
-        1,
-        "the step with its own copy of your files, told to file its answer at \"{OVERRIDDEN}\", \
-         left {} such file(s) inside this run: {mine:?}. The path is read from the folder the \
-         step works in — the one it was given, not the one the workflow started in",
-        mine.len()
+        read_by_the_next_step, SAID,
+        "the answer under \"{OVERRIDDEN}\" is not what the agent said, read from the folder the \
+         next step works in"
+    );
+    assert!(
+        seen.what("plain").is_none() && seen.what("filed").is_none(),
+        "a step that works in the project folder found the answer of a step that works in its own \
+         copy. Those are two different folders, and mixing them is how a run edits the folder a \
+         person is working in"
     );
     assert!(
         !bench.project.path().join(OVERRIDDEN).exists(),
@@ -486,27 +513,6 @@ fn why_it_failed(report: &RunReport) -> Result<String, Box<dyn Error>> {
     Ok(why.to_owned())
 }
 
-/// Ścieżki plików o tej nazwie, gdziekolwiek pod tym katalogiem.
-fn files_named(root: &Path, name: &str) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut stack = vec![root.to_owned()];
-    while let Some(at) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&at) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.file_name().is_some_and(|one| one == name) {
-                found.push(path);
-            }
-        }
-    }
-    found.sort();
-    found
-}
-
 /// Wszystko, co leży w folderze projektu poza katalogiem samego Loadouta — po ścieżkach
 /// względnych.
 ///
@@ -590,12 +596,29 @@ async fn run_it(
 // ── co dubler zobaczył ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
-struct Seen(Mutex<Vec<String>>);
+struct Seen {
+    labels: Mutex<Vec<String>>,
+    /// Co każdy krok zastał pod [`OVERRIDDEN`] w swoim własnym folderze, kiedy ruszał.
+    ///
+    /// 2026-09 (Z-9) — POWSTAŁO, BO KATALOG KOPII NIE PRZEŻYWA JUŻ BIEGU. Kopia plikowa jest od
+    /// tego dnia sprzątana po biegu razem z drzewami gita (`commands::run::close_one_copy`), więc
+    /// pytanie „czy odpowiedź wylądowała w folderze KROKU" nie ma po biegu czego czytać. Zadaje
+    /// się je więc w chwili, w której odpowiedź komukolwiek służy: krokowi, który idzie po tamtym
+    /// w TYM SAMYM folderze. Jest to pytanie mocniejsze od poprzedniego — tamto zaglądało do
+    /// katalogu, którego nikt już nie otwierał.
+    filed: Mutex<Vec<(String, String)>>,
+}
 
 impl Seen {
     /// **Synchroniczne z rozmysłem** (niezmiennik 8): guard powstaje i ginie w jednym wywołaniu,
     /// więc nie ma wyrażenia, w którym dożyłby do `await`.
-    fn record(&self, label: String) {
+    fn record(&self, label: String, cwd: &Path) {
+        if let Ok(text) = fs::read_to_string(cwd.join(OVERRIDDEN)) {
+            self.filed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((label.clone(), text));
+        }
         self.lock().push(label);
     }
 
@@ -603,8 +626,18 @@ impl Seen {
         self.lock().clone()
     }
 
+    /// Co ten krok przeczytał pod wskazaną ścieżką w swoim folderze, albo `None`.
+    fn what(&self, label: &str) -> Option<String> {
+        self.filed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(who, _)| who == label)
+            .map(|(_, text)| text.clone())
+    }
+
     fn lock(&self) -> MutexGuard<'_, Vec<String>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.labels.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -647,7 +680,7 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        self.seen.record(label_of(&spec.prompt));
+        self.seen.record(label_of(&spec.prompt), &spec.cwd);
         let session = SessionRef {
             vendor: VENDOR,
             id: spec.run_id.to_string(),
