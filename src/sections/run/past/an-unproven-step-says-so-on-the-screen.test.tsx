@@ -41,6 +41,7 @@ const RUN: PastRunRow = {
   folder: '20260902-101500__0198a1f2-3b4c-7d5e-8f60-000000000904',
   when: '2026-09-02 10:15',
   title: 'Ship a feature',
+  workflowFile: 'ship-a-feature.json',
   state: 'failed',
   steps: 2,
   costUsd: 0.5,

@@ -76,15 +76,7 @@ import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName } from './folders';
 import { openOneRun, theOneThatIsGoing } from './history-command';
-import {
-  answerTheLead,
-  listRuns,
-  openChat,
-  readRun,
-  sayToAgent,
-  sayToOrchestrator,
-  stop,
-} from './io';
+import { answerTheLead, listRuns, openChat, sayToAgent, sayToOrchestrator, stop } from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
 import { lead } from './lead';
@@ -109,7 +101,7 @@ import { cardOnTop, cardsIn, runTabs } from './tabs/store';
 import { newTerminal } from './tabs/terminal';
 import { PausedBanner } from './limits/paused-banner';
 import type { AgentFacts } from './rail/roster';
-import { agentStatusOf, roster } from './rail/roster';
+import { agentStatusOf, atWork, roster } from './rail/roster';
 import type { RailCard } from './rail/card';
 import { sayAfterRunningAgain, StartedThings } from './rail/rail';
 /* CO CZŁOWIEK URUCHOMIŁ KOMENDĄ — czytane TUTAJ, choć rysuje to komponent wyżej, bo o układ
@@ -934,8 +926,8 @@ export default function Run(): ReactElement {
    * tego terminalu. */
   useEffect(() => {
     if (onTop === null) return;
-    runTabs.getState().setAgents(onTop, cards.length);
-  }, [onTop, cards.length]);
+    runTabs.getState().setAgents(onTop, atWork(cards));
+  }, [onTop, cards]);
   const running = run.workflow !== '';
 
   /* KTÓRY WORKFLOW RUSZY, W NAGŁÓWKU — nazwa jako tytuł i lista jako ten sam element, a pod nim
@@ -1026,7 +1018,7 @@ export default function Run(): ReactElement {
     let alive = true;
     if (useRun.getState().workflow !== '') return undefined;
     listRuns(folder)
-      .then(async (rows) => {
+      .then((rows) => {
         if (!alive) return;
         /* HISTORIA TEGO FOLDERU WCHODZI DO PAMIĘCI EKRANU PRZY OKAZJI, i to jest ta sama
          * odpowiedź, nie drugi odczyt: karta ostatniego biegu w kolumnie strumienia i pytanie
@@ -1036,12 +1028,10 @@ export default function Run(): ReactElement {
         const going = theOneThatIsGoing(rows);
         if (going === null) return;
         if (runFor(folder).getState().workflow !== '') return;
-        const opened = await readRun(folder, going.folder);
-        if (!alive || runFor(folder).getState().workflow !== '') return;
-        runFor(folder).getState().nowRunning(opened.title, [], folder, opened.workflowFile);
+        runFor(folder).getState().nowRunning(going.title, [], folder, going.workflowFile);
         showInStream(
           saidOf(
-            `"${opened.title}" was already going when this window opened, so the lines from ` +
+            `"${going.title}" was already going when this window opened, so the lines from ` +
               'before are not here. Stop reaches it.',
           ),
         );

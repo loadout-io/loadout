@@ -48,6 +48,7 @@ import { takeTheBudget } from './limits/chosen';
  * z Settings, a nie to, co akurat trzyma pasek. Powód przy `theCeilingFor` niżej. */
 import { defaultBudgetUsd } from '../../state/settings';
 import type { TriggerClaim } from '../triggers/io';
+import { ONE_RUN_AT_A_TIME, aRunIsGoing, holdTheRun, letTheRunGo } from './going';
 
 /**
  * Ile wolno wydać na bieg, który właśnie rusza — i skąd ta kwota pochodzi.
@@ -103,39 +104,6 @@ export interface WhatIsRunning {
    */
   readonly links?: readonly Link[] | undefined;
 }
-
-/**
- * Bieg, który idzie **teraz**, albo `null`.
- *
- * Stan modułu, nie stan komponentu, i to jest ta sama decyzja, co przy `runFeed`
- * (`src/sections/run/feed/live.ts`): bieg nie kończy się dlatego, że człowiek wszedł do
- * Agentów. Zapadka trzymana w komponencie znika razem z ekranem sekcji, a wtedy powrót do
- * Pracy i kliknięcie Start startują drugi bieg tego samego workflow.
- */
-/* `unknown`, nie `void`, od 2026-08-23: zapadkę biorą teraz także wznowienie i powtórzenie
- * kroku, a te oddają zdanie o zmienionym pliku. Zapadka nigdy nie czyta tej wartości — pilnuje
- * wyłącznie tego, czy bieg jeszcze trwa — więc typ ma o niej milczeć, zamiast wymuszać rzutowanie
- * u każdego wołającego. */
-let going: Promise<unknown> | null = null;
-
-/**
- * Co powiedzieć drugiemu naciśnięciu Run, kiedy pierwszy bieg jeszcze nie wrócił.
- *
- * ZDANIE NAZYWA NASTĘPNY RUCH (DESIGN §8), bo odmowa bez wyjścia zostawia człowieka dokładnie
- * tam, gdzie był — a tutaj wyjście jest jedno kliknięcie dalej. Mówi też DLACZEGO: bez powodu
- * czyta się to jak ograniczenie na złość, a prawdziwy powód jest finansowy — Loadout prowadzi
- * jeden bieg naraz, żeby Stop zawsze sięgał tego, który pracuje.
- *
- * NIE JEST TO DRUGA KOPIA `ALREADY_GOING` z `src-tauri/src/ipc.rs`, choć czyta się podobnie,
- * i nie da się jej stamtąd wziąć: zapadka `going` odpowiada ZAMIAST wołać Rusta — i musi tak
- * robić, bo dwa biegi jednego workflow to dwa zestawy agentów piszących po tych samych plikach
- * (niezmiennik 12) — więc po tamtej stronie granicy nikt tej sytuacji nie widzi i nie ma o niej
- * czego powiedzieć. Zdanie od autora, którego nikt nie zapytał, nie jest odpowiedzią na to samo
- * pytanie.
- */
-const ONE_RUN_AT_A_TIME =
-  'That run is still going, and Loadout leads one at a time so that Stop always reaches the one ' +
-  'that is working. Press Stop first, then press Run again.';
 
 /**
  * Start: uruchamia otwarty workflow.
@@ -215,7 +183,7 @@ export function start(
   /** Whether Loadout should take its private learning turn after this run. */
   reflectionEnabled = true,
 ): Promise<void> {
-  if (going !== null) {
+  if (aRunIsGoing()) {
     /* ZAPADKA ZOSTAJE I NIC NIE WOŁA — zmienia się tylko to, co z niej wypada. Drugi bieg tego
      * samego workflow nadal nie ma prawa dojść do Rusta (niezmiennik 12, `start-invokes.test.tsx`
      * tego pilnuje), a `going` zwalnia dopiero `finally` pierwszego biegu. */
@@ -316,7 +284,7 @@ export function start(
     claim,
     lines,
   }).finally(() => {
-    going = null;
+    letTheRunGo();
     /* Bieg zszedł — także wtedy, gdy zszedł odmową Rusta. Bez tego Stop zostaje na ekranie na
      * zawsze i jest kontrolką bez roboty (niezmiennik 16), a pasek loadoutu opisuje bieg,
      * którego nie ma. `finally`, nie `then`: odmowa jest zejściem tak samo jak koniec.
@@ -332,7 +300,7 @@ export function start(
      * człowiek patrzy na zakres B, zdejmowałby przypięte pytanie z cudzej sesji. */
     view.runEnded();
   });
-  going = run;
+  holdTheRun(run);
   return run;
 }
 
@@ -679,7 +647,7 @@ function asARun(
   folder: string | null,
   send: (lines: Channel<unknown[]>) => Promise<string | null>,
 ): Promise<string | null> {
-  if (going !== null) return Promise.reject(ONE_RUN_AT_A_TIME);
+  if (aRunIsGoing()) return Promise.reject(ONE_RUN_AT_A_TIME);
 
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
@@ -703,12 +671,12 @@ function asARun(
   session.getState().nowRunning(name, [], folder, fileName);
 
   const run = send(lines).finally(() => {
-    going = null;
+    letTheRunGo();
     // Odtworzenie, nie zerowanie; powód stoi przy [`whatWasRunning`].
     putBack();
     view.runEnded();
   });
-  going = run;
+  holdTheRun(run);
   return run;
 }
 
@@ -890,6 +858,8 @@ export interface PastRunRow {
   readonly when: string;
   /** Jak workflow nazywa sam siebie. Pusty, kiedy Rust nie dał rady przeczytać opisu. */
   readonly title: string;
+  /** Dzisiejsza nazwa pliku workflow, albo pusty napis, kiedy pliku nie ma już w bibliotece. */
+  readonly workflowFile: string;
   /** Słowo z drutu (`succeeded`, `failed`, …). Tłumaczy je `./history-command.ts`. */
   readonly state: string;
   /** Ile kroków miał ten bieg. */

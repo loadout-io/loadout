@@ -54,6 +54,7 @@ function ran(when: string, title: string, state: string): PastRunRow {
     folder: when.replace(/[^0-9]/g, '') + '__x',
     when,
     title,
+    workflowFile: title.toLowerCase().replaceAll(' ', '-') + '.json',
     state,
     steps: 1,
     costUsd: null,

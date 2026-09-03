@@ -29,6 +29,7 @@ function row(folder: string, state: string): PastRunRow {
     folder,
     when: '2026-08-23 14:56',
     title: `Run ${folder}`,
+    workflowFile: 'run.json',
     state,
     steps: 22,
     costUsd: null,

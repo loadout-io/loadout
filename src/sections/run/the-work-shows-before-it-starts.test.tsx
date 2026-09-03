@@ -81,6 +81,7 @@ const LAST: PastRunRow = {
   folder: '20260830-181200__0198a1f2-3b4c-7d5e-8f60-0000000000aa',
   when: '2026-08-30 18:12',
   title: 'Ship a feature',
+  workflowFile: 'ship-a-feature.json',
   state: 'succeeded',
   steps: 4,
   costUsd: 3.41,

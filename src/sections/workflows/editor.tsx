@@ -195,6 +195,15 @@ export function WorkflowEditor({
    * uczciwa i kompletna — bez wyciszania czegokolwiek. */
   useEffect(() => {
     void store.getState().recheck();
+    return () => {
+      /* 2026-09 (Z-27): timer autosave'u należy do tego montażu i znika razem z nim. Cleanup
+       * spłukuje najnowszą rewizję; odmowa jest już zapisana przez magazyn, a po odmontowaniu
+       * nie ma ekranu, na którym dodatkowe odrzucenie obietnicy mogłoby stanąć. */
+      void store
+        .getState()
+        .flush()
+        .catch(() => undefined);
+    };
   }, [store]);
 
   /* KAŻDY kafelek, nie tylko krok agenta z rozwiązanym agentem. Rodzaj kroku i to, czy agent
@@ -407,6 +416,18 @@ export function WorkflowEditor({
           className="fade-in shrink-0 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
         >
           {visibleSaveRefusal(state.couldNotSave)}
+        </p>
+      )}
+
+      {/* ODMOWA SPRAWDZENIA JEST INNYM FAKTEM NIŻ ODMOWA ZAPISU (niezmiennik 13). Plik może
+          być już na dysku, kiedy walidator odmawia odpowiedzi, więc wspólny pasek mówiłby
+          człowiekowi „not saved” o udanym zapisie. */}
+      {state.said === null ? null : (
+        <p
+          data-could-not-check
+          className="fade-in shrink-0 border-b border-fail-edge bg-fail-soft px-4 py-2 text-body text-fail"
+        >
+          {state.said}
         </p>
       )}
 

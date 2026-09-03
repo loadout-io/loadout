@@ -28,6 +28,7 @@ const ROW: PastRunRow = {
   folder: FOLDER,
   when: '2026-08-26 13:20',
   title: 'Frozen memory history',
+  workflowFile: 'frozen-memory-history.json',
   state: 'failed',
   steps: 2,
   costUsd: null,
