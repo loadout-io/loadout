@@ -160,7 +160,7 @@ Dla każdej z: `repair-agent-app-preflight`, `repair-bounded-check-output`,
 | repair-bounded-evidence | PUSTA | wskazywała ten sam commit co serve-reap-hardening; własnej pracy nie miała |
 | repair-global-diagnostics | ODŁOŻONE — decyzja właściciela 2026-09-03 | do napisania od nowa jako zwykłe zadanie, jeśli nadal potrzebne; cała praca jest w plikach interfejsu przepisanych w 0.2. Gałąź `h-repair-global-diagnostics` zostaje jako materiał źródłowy |
 | repair-readme-truth | **SKASOWANE** 2026-09-03 | README przepisany dla 0.2, praca bezprzedmiotowa; gałąź usunięta |
-| repair-agent-app-preflight | URATOWANE, czeka na bramkę | gałąź `rescue-preflight`: konflikt w `titlebar.tsx` rozwiązany na rzecz dzisiejszego paska, cała część rustowa (`drivers/probe.rs` 184 linie, `commands/agent_apps.rs`, 276 linii testów) plus store i widok stanu przeniesione |
+| repair-agent-app-preflight | PRZENIESIONE DO KOLEJKI jako **Z-34** | merge próbowany i cofnięty (`612bbf74`): część rustowa przenosi się czysto, ale testy żądają stopki czytającej sondę, a dzisiejszy pasek fałduje się do ikon — czego gałąź nie znała. Port nie jest mechaniczny, więc idzie przez pętlę z weryfikatorem, a gałąź zostaje materiałem źródłowym |
 | repair-trigger-open-app-honesty | ODŁOŻONE — decyzja właściciela 2026-09-03 | to samo; gałąź `h-repair-trigger-open-app-honesty` zostaje jako materiał źródłowy |
 
 Kryterium: `git branch --no-merged main | wc -l` = liczba gałęzi z otwartym stanem w `.git/h/`;
@@ -321,6 +321,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-21 | `z21-borrow-review` | `prompts/Z-21.md` | R | C→X | | Z-20 | TODO | |
 | Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | TODO | |
 | Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | TODO | sonda `env_vars` Codeksa PRZED startem; wynik dopisz do promptu jako akapit „Wynik sondy" |
+| Z-34 | `z34-agent-app-preflight` | `prompts/Z-34.md` | R+TS | C→X | | — | TODO | z uratowanej gałęzi: sonda gotowości CLI zamiast bezwarunkowego „Claude · Codex ready" |
 | Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | Z-23 | TODO | |
 | Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | TODO | |
 | Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | TODO | |
@@ -376,6 +377,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 05:05 · rescue-preflight · merge **COFNIĘTY** (`612bbf74`) i przepisany na zadanie **Z-34**. Trzy konflikty rozwiązałem (titlebar na rzecz dzisiejszego, oba sterowniki na rzecz wspólnego `probe::run`), clippy czyste, ale pełne CI złapało prawdziwą czerwień: dwa testy z gałęzi żądają stopki, która CZYTA sondę, a ja zostawiłem stopkę z bezwarunkowym „Claude · Codex ready". Port nie jest mechaniczny — dzisiejszy pasek fałduje się do ikon (`⌘B`), czego gałąź nie znała, a to co pokazać na zwiniętej kropce jest decyzją projektową, nie rozwiązaniem konfliktu. Część rustowa (sonda jako jeden rdzeń dla obu vendorów, komenda, 276 linii kryteriów) jest gotowa i wchodzi do promptu Z-34 jako materiał · ręka
 - 2026-09-03 04:10 · Z-01d · **LANDED**, dwie rundy — i tym samym KRYTYCZNA wada audytu jest domknięta w całości. Weryfikator odrzucił raz, znów na produkcyjnej drodze: `SearchEnvironmentDriver` nie delegował nowej metody, więc oba vendory szły do spawnu bez znacznika, a test tego nie widział, bo podstawiał atrapę implementującą metodę wprost. Lądowanie: pierwsze pełne CI padło na `supervisor_timeout_kills` — test mierzący limit czasu, jeden z jedenastu odblokowanych w R-2. Zmierzone: 3/3 samotnie w 0,38 s, pas rustowy zielony w powtórce (182 s), pełna bramka zielona (258 s). Flak zajętej maszyny, nie regresja — bramka biegła zaraz po zakończeniu biegu · C→X
 - 2026-09-03 03:20 · AWARIA MASZYNY nr 3 i JEJ NAPRAWA · trzecie zabicie biegu przez aktualizację vendora (`claude not found in PATH`, kod 127, po 30 min pracy). Trzy razy w jednej fali to nie przypadek, więc zamiast czwartego powtórzenia: `DISABLE_AUTOUPDATER=1` w środowisku procesu vendora (zmienna potwierdzona `strings` w binarce) plus JEDNO ponowienie po 15 s, wyłącznie na dwóch sygnaturach chwilowego braku binarki. Niezmiennik 28: skrypt przed promptem · ręka
 - 2026-09-03 00:12 · AWARIA MASZYNY nr 2 · Z-01d zginęło w fazie planu na kodzie 1, ale w transkrypcie stoi `api_error_status: 429`, `terminal_reason: api_error` i zdanie „You’ve hit your session limit · resets 12:50am". To nie jest porażka sprawdzenia — a kod 1 po protokole znaczy właśnie „sprawdzenie padło", więc rozpoznanie idzie z transkryptu, nie z kodu. Właściciel przelogował się, sonda `claude -p` odpowiedziała, bieg wznowiony bez zmian w zleceniu · ręka
