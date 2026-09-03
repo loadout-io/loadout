@@ -40,6 +40,7 @@
 //!   historia czytana z indeksu znikałaby po jego skasowaniu, czyli dokładnie wtedy, kiedy
 //!   niezmiennik 4 obiecuje, że nic nie ginie.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -94,6 +95,8 @@ pub struct RunWire {
     pub when: String,
     /// Jak workflow nazywa SAM SIEBIE. Pusty, kiedy opisu nie dało się przeczytać.
     pub title: String,
+    /// Nazwa DZISIEJSZEGO pliku workflow, albo pusta, kiedy nie ma go już w bibliotece.
+    pub workflow_file: String,
     /// Słowo z drutu: `running`, `paused`, `succeeded`, `failed`, `cancelled`. Pusty, kiedy
     /// opisu nie dało się przeczytać.
     ///
@@ -322,7 +325,14 @@ pub enum HistoryError {
 /// awarią dysku: czerwony pasek na świeżej instalacji uczy człowieka ignorować czerwone paski.
 #[must_use]
 pub fn list_runs_inner(project: &Path) -> Vec<RunWire> {
-    run_dirs(project).iter().map(|dir| summary(dir)).collect()
+    /* 2026-09 (Z-27): indeks biblioteki powstaje RAZ na listę. `summary` wołane dla każdego
+     * biegu nie może za każdym razem ponownie czytać całego katalogu workflow — przy 87 biegach
+     * koszt wejścia na ekran rósłby do 87 pełnych skanów tych samych plików. */
+    let workflows = workflow_files();
+    run_dirs(project)
+        .iter()
+        .map(|dir| summary(dir, &workflows))
+        .collect()
 }
 
 /// Jeden bieg, otwarty do odczytu: jego kroki, ich strumienie i jego przekazania.
@@ -332,7 +342,8 @@ pub fn list_runs_inner(project: &Path) -> Vec<RunWire> {
 pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryError> {
     let dir = one_run_dir(project, run)?;
 
-    let head = summary(&dir);
+    let workflows = workflow_files();
+    let head = summary(&dir, &workflows);
     let described = read_description(&dir);
     let steps = match &described {
         Some(file) => file
@@ -378,10 +389,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         when: head.when,
         title: head.title,
         state: head.state,
-        workflow_file: described
-            .map(|file| file.workflow_id)
-            .and_then(|id| file_named(&id))
-            .unwrap_or_default(),
+        workflow_file: head.workflow_file,
         steps,
         // Przekazania są prawdziwe niezależnie od `run.json`: to osobne pliki z własnym
         // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
@@ -646,7 +654,7 @@ struct EffectiveAgent {
 }
 
 /// Wiersz listy dla jednego katalogu biegu.
-fn summary(dir: &Path) -> RunWire {
+fn summary(dir: &Path, workflows: &HashMap<String, String>) -> RunWire {
     let folder = file_name(dir);
     let when = when_of(&folder);
 
@@ -655,6 +663,7 @@ fn summary(dir: &Path) -> RunWire {
             folder,
             when,
             title: String::new(),
+            workflow_file: String::new(),
             state: String::new(),
             steps: 0,
             cost_usd: None,
@@ -677,11 +686,16 @@ fn summary(dir: &Path) -> RunWire {
     } else {
         Some(costs.iter().sum())
     };
+    let workflow_file = workflows
+        .get(&file.workflow_id)
+        .cloned()
+        .unwrap_or_default();
 
     RunWire {
         folder,
         when,
         title: file.title,
+        workflow_file,
         state: file.status,
         steps: file.steps.len(),
         cost_usd,
@@ -859,28 +873,43 @@ fn recorded_lines(run_dir: &Path, step: &str, agent: &str, vendor: &str) -> Vec<
     out
 }
 
-/// Nazwa pliku, pod którą ten workflow leży dziś w bibliotece.
+/// Indeks identyfikator → nazwa pliku dla dzisiejszej biblioteki workflow.
 ///
 /// Po identyfikatorze, nie po nazwie: nazwa pliku jest sluggiem tytułu i zmienia się razem z nim,
 /// a identyfikator jest tym, czym bieg zapamiętał, skąd przyszedł. Porządek jest ustalony, żeby
 /// dwa pliki o jednym identyfikatorze dawały za każdym razem ten sam wynik — `read_dir` nie
 /// obiecuje kolejności.
-fn file_named(workflow_id: &str) -> Option<String> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(crate::loadout_dir().join("workflows"))
-        .ok()?
+fn workflow_files() -> HashMap<String, String> {
+    let Ok(entries) = fs::read_dir(crate::loadout_dir().join("workflows")) else {
+        return HashMap::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|one| one == "json"))
         .collect();
     paths.sort();
-    paths.into_iter().find_map(|path| {
-        let named: Value = fs::read(&path)
+    let mut files = HashMap::new();
+    for path in paths {
+        let Some(named) = fs::read(&path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
-        (named.get("id")?.as_str()? == workflow_id)
-            .then(|| path.file_name()?.to_str().map(str::to_owned))
-            .flatten()
-    })
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        else {
+            continue;
+        };
+        let Some(id) = named.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(file) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        /* Posortowana pierwsza nazwa wygrywa. `or_insert` zachowuje tę decyzję także wtedy,
+         * gdy dwa ręcznie edytowane pliki niosą ten sam identyfikator. */
+        files
+            .entry(id.to_owned())
+            .or_insert_with(|| file.to_owned());
+    }
+    files
 }
 
 #[cfg(test)]

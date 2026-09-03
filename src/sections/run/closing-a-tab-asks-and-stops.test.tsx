@@ -122,10 +122,10 @@ describe('closing a tab with a live run asks first, and stopping really stops', 
         'was never cancelled.',
     ).toBe(true);
     expect(
-      source.includes('cards.length'),
-      'the count has to come from the same list that draws the agents list. A second source ' +
-        'for "how many are working" is a second answer to one question (invariant 13), and the ' +
-        'two would drift on the first run that ends.',
+      source.includes('atWork(cards)'),
+      '2026-09 (Z-27): the count has to be derived from the same list that draws the agents, ' +
+        'but only its working and needs-you states are live. Using the list length kept done ' +
+        'and failed agents on the tab forever; a second source would still violate invariant 13.',
     ).toBe(true);
   });
 });

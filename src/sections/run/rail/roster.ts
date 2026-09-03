@@ -63,6 +63,14 @@ export interface RosterInput {
   readonly agents: readonly AgentFacts[];
 }
 
+/** Ilu agentów z tej listy pracuje teraz albo czeka na decyzję człowieka. */
+export function atWork(cards: readonly RailCard[]): number {
+  /* 2026-09 (Z-27): roster jest historią i po zejściu biegu zachowuje kafelki `done`, `failed`
+   * oraz `stopped`. Liczba na karcie opisuje wyłącznie TERAZ, więc długość historii dawała
+   * pulsującą kropkę i pytanie przy zamknięciu godzinę po pracy (ARCHITECTURE §6a reguła 4). */
+  return cards.filter((card) => card.status === 'working' || card.status === 'needs you').length;
+}
+
 /**
  * Stan kroku → stan agenta na kafelku.
  *

@@ -63,6 +63,7 @@ function row(when: string, title: string, extra: Partial<PastRunRow> = {}): Past
     folder: when.replace(/[-: ]/g, '') + '__0198a1f2',
     when,
     title,
+    workflowFile: title === '' ? '' : 'workflow.json',
     state: 'succeeded',
     steps: 2,
     costUsd: 1,

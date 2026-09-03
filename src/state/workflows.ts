@@ -350,6 +350,8 @@ export interface WorkflowState {
    * i nic o tym nie mówiło. Plik właściciela ma `s_1` i `s_3`, bez `s_2`.
    */
   couldNotSave: string | null;
+  /** Zdanie odmowy z ostatniego sprawdzenia. Osobny fakt od zapisu, więc osobne pole. */
+  said: string | null;
   /** Jedyna droga, którą nowy dokument wchodzi do stanu — i miejsce na stos cofnij/ponów. */
   commit: (next: WorkflowFile) => void;
   /**
@@ -364,6 +366,8 @@ export interface WorkflowState {
   recheck: () => Promise<void>;
   /** Zapisuje otwarty dokument i odświeża uwagi. Odrzucenie jest widoczne dla wołającego. */
   saveNow: () => Promise<void>;
+  /** Spłukuje odliczanie autosave'u i zapisuje najnowszą rewizję przed zamknięciem edytora. */
+  flush: () => Promise<void>;
   /** Zmiana wiersza panelu, wyrażona wartościami EFEKTYWNYMI. Różnicę liczy `applyPanelEdit`. */
   editStep: (stepId: string, agent: Agent, edit: Overrides) => void;
   /** `Reset` przy jednym wierszu: kasuje jeden klucz patcha i tylko jeden. */
@@ -392,6 +396,9 @@ const AUTOSAVE_MS = 400;
  * Mówi, CO się nie udało, i mówi, że plik został nietknięty. „Something went wrong" w miejscu,
  * w którym znamy czynność, jest gorsze niż brak zdania: człowiek nie wie nawet, czego szukać. */
 const COULD_NOT_SAVE = 'This workflow was not saved, so the file on disk is still the older one.';
+
+/** Zdanie zapasowe, kiedy sprawdzenie odrzuciło bez własnego wyjaśnienia. */
+const COULD_NOT_CHECK = 'Loadout could not check this workflow.';
 
 /** Magazyn otwartego dokumentu.
  *
@@ -465,6 +472,7 @@ export function createWorkflowStore(
      * i ekran twierdziłby, że ma niezapisane zmiany, zanim ktokolwiek czegokolwiek dotknął. */
     savedDocument: open,
     couldNotSave: null,
+    said: null,
 
     /* Jedno miejsce, w którym dokument się zmienia. Stos cofnij/ponów (PLAN §7, v1.1) wchodzi
      * TUTAJ i nigdzie indziej — dopisany przy każdej akcji z osobna byłby pięcioma stosami,
@@ -505,7 +513,14 @@ export function createWorkflowStore(
     recheck: async () => {
       /* Uwagi liczy Rust (T-12). Gdyby liczył je też front, mielibyśmy dwa zdania o tym samym
        * defekcie i jedno z nich zawsze byłoby nieaktualne (niezmiennik 13). */
-      set({ notes: await io.check(get().document) });
+      try {
+        set({ notes: await io.check(get().document), said: null });
+      } catch (error: unknown) {
+        /* 2026-09 (Z-27): odmowa sprawdzenia nie jest odmową zapisu. Stare uwagi zostają, bo
+         * Rust nie oddał nowszej listy, a osobne zdanie pozwala ekranowi powiedzieć prawdę bez
+         * fałszywego „not saved” nad plikiem, który właśnie został zapisany (niezmiennik 13). */
+        set({ said: why(error, COULD_NOT_CHECK) });
+      }
     },
 
     /* Zapis i odświeżenie uwag jednym ruchem, bo to jest jedna decyzja użytkownika: „zapisz to,
@@ -544,6 +559,17 @@ export function createWorkflowStore(
         set({ couldNotSave: why(error, COULD_NOT_SAVE) });
         throw error;
       }
+    },
+
+    flush: async () => {
+      /* 2026-09 (Z-27): odmontowanie następuje przed upływem debounce'u, więc sam timer ginie
+       * razem z magazynem i ostatnie litery nigdy nie docierają do dysku. Najpierw odbieramy mu
+       * prawo do późniejszego, podwójnego zapisu, potem wchodzimy w ten sam szeregowy ogon. */
+      if (autosave !== null) {
+        clearTimeout(autosave);
+        autosave = null;
+      }
+      await get().saveNow();
     },
 
     rename: (name: string) => {

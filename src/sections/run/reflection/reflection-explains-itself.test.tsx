@@ -54,6 +54,7 @@ function row(folder: string, title: string): PastRunRow {
     folder,
     when: '2026-08-29 10:15',
     title,
+    workflowFile: 'ship-a-feature.json',
     state: 'succeeded',
     steps: 1,
     costUsd: 1,

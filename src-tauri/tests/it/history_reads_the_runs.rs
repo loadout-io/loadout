@@ -40,6 +40,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use loadout_lib::commands::history::{list_runs_inner, read_run_inner};
 use loadout_lib::engine::line::{Line, LineKind};
@@ -62,6 +63,12 @@ const OLDEST: &str = "20260810-081500__0198a1f2-3b4c-7d5e-8f60-000000000001";
 const MIDDLE_TORN: &str = "20260812-101112__0198a1f2-3b4c-7d5e-8f60-000000000002";
 const MIDDLE_BARE: &str = "20260814-235959__0198a1f2-3b4c-7d5e-8f60-000000000003";
 const NEWEST: &str = "20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004";
+
+/** Flaga prywatnego procesu testowego, w którym HOME może bezpiecznie wskazać fiksturę. */
+const Z27_CHILD: &str = "LOADOUT_Z27_HISTORY_CHILD";
+
+/** Korzeń fikstury przekazany prywatnemu procesowi testowemu. */
+const Z27_ROOT: &str = "LOADOUT_Z27_HISTORY_ROOT";
 
 /// Krok, którego strumień naprawdę zapisano. Nazwa pliku transkryptu bierze się z tego napisu.
 const BUILD_STEP: &str = "0198a1f2-3b4c-7d5e-8f60-00000000000b";
@@ -291,6 +298,56 @@ fn the_rows_carry_what_the_files_say_not_what_the_scan_made_up() {
         oldest.cost_usd, None,
         "not one step of that run said what it cost. Nothing measured and cost nothing are two \
          different sentences on a screen, and only None can carry the first one."
+    );
+}
+
+#[test]
+fn the_list_row_carries_the_workflows_name_from_todays_library() {
+    if std::env::var_os(Z27_CHILD).is_some() {
+        let root = PathBuf::from(
+            std::env::var_os(Z27_ROOT).expect("the isolated history test has its fixture root"),
+        );
+        let project = project_with_four_runs(&root);
+        let workflows = root.join(".loadout").join("workflows");
+        std::fs::create_dir_all(&workflows).unwrap();
+        std::fs::write(
+            workflows.join("renamed-today.json"),
+            r#"{"id":"ship-a-feature.json"}"#,
+        )
+        .unwrap();
+
+        let listed = list_runs_inner(&project);
+        let newest = listed
+            .iter()
+            .find(|one| one.folder == NEWEST)
+            .expect("the newest run is on the list");
+        assert_eq!(
+            newest.workflow_file, "renamed-today.json",
+            "the list already knows the current workflow file, so mounting Run must not open \
+             every full transcript just to discover this one name"
+        );
+        return;
+    }
+
+    /* 2026-09 (Z-27): `loadout_dir()` czyta HOME procesu. Nie wolno podmieniać go w scalonym
+     * celu `it`, bo pozostałe testy biegną równolegle i zaczęłyby czytać cudzą fiksturę. Ten sam
+     * plik testowy uruchamiamy więc jako dziecko z prywatnym HOME; proces rodzica i wszystkie
+     * sąsiednie moduły zachowują środowisko człowieka bez jednej zmiany. */
+    let root = tempfile::tempdir().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("history_reads_the_runs::the_list_row_carries_the_workflows_name_from_todays_library")
+        .arg("--nocapture")
+        .env("HOME", root.path())
+        .env(Z27_CHILD, "1")
+        .env(Z27_ROOT, root.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the isolated history assertion failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

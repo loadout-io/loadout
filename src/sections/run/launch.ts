@@ -26,6 +26,7 @@ import type { Choice } from './choices';
 import { start } from './io';
 import { cardForRun } from './tabs/store';
 import type { TriggerClaim } from '../triggers/io';
+import { ONE_RUN_AT_A_TIME, aRunIsGoing } from './going';
 
 /** Co powiedzieć, kiedy nie ma czego uruchomić. */
 export const NOTHING_TO_RUN =
@@ -131,6 +132,12 @@ export async function launchRun(
    * projektu, który akurat jest na ekranie. Legacy claim bez targetu odmawia przed kartą i IPC. */
   const folder = claim === null ? (activeWorkspace()?.folder ?? null) : (claim.workspace ?? null);
   if (folder === null) return claim === null ? NO_FOLDER : TRIGGER_NO_WORKSPACE;
+
+  /* 2026-09 (Z-27): odmowa stoi PRZED kartą. `start` ma własną zapadkę dla wszystkich
+   * pozostałych dróg, ale sprawdzenie dopiero tam pozwalało `cardForRun` przemianować żywy bieg
+   * na workflow, którego Rust nigdy nie dostał. W jednym tyknięciu nie ma `await` między tym
+   * pytaniem a zapadką w `start`, więc obie odpowiedzi dotyczą tej samej chwili. */
+  if (aRunIsGoing()) return ONE_RUN_AT_A_TIME;
 
   /* KARTA POWSTAJE TU, czyli w jedynym miejscu, które wie JEDNOCZEŚNIE, jak nazywa się workflow
    * i w którym zakresie pójdzie. Przed `start`, nie po nim: `start` rozwiązuje się dopiero
