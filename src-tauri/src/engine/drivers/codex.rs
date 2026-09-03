@@ -3201,18 +3201,6 @@ async fn emit(
     }
 }
 
-/// Pierwsza niepusta linia, jaką powiedziała binarka. Tyle wystarczy na pytanie o wersję.
-async fn first_answer(stdout: ChildStdout) -> Option<String> {
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim();
-        if !line.is_empty() {
-            return Some(line.to_owned());
-        }
-    }
-    None
-}
-
 /// Żywa sesja `codex` — **wiele procesów**, jedna tożsamość.
 ///
 /// To jest cała różnica wobec `ClaudeHandle`, w którym proces jest jeden na całą sesję. Tura
@@ -3574,50 +3562,21 @@ impl AgentDriver for CodexDriver {
         vec!["-c".to_owned(), format!("{EFFORT_KEY}={level}")]
     }
 
-    /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
-    /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
-    ///
-    /// Najprościej, jak się da, i to jest świadome — ekranu ustawień na tym nie budujemy
-    /// („Świadomie poza zakresem"). Nieudany start jest odpowiedzią w **każdej** postaci, nie
-    /// tylko przy braku pliku: binarka bez prawa wykonania i binarka, której nie ma, znaczą dla
-    /// użytkownika dokładnie to samo zdanie.
+    /// Wspólny rdzeń odróżnia prawdziwy brak od niedziałającej binarki i pilnuje limitu,
+    /// strumieni oraz dowodu śmierci bez vendorowej kopii polityki (niezmienniki 6 i 23).
     async fn probe(&self) -> anyhow::Result<Probe> {
-        let mut command = Command::new(&self.binary);
-        command.arg("--version");
-
-        // Przez ten sam start co bieg, a nie własną komendą obok: `env_clear()` plus jawna lista
-        // przepuszczanych zmiennych mieszka w jednym rdzeniu (niezmiennik 23), a `/dev/null` na
-        // wejściu oszczędza czekanie na EOF, którego nikt by nie wysłał.
-        //
-        // BEZ ZNACZNIKA, tak samo jak sonda Claude'a i z tego samego powodu (2026-09, Z-01d):
-        // sonda wersji nie należy do żadnego biegu, a jej `pgid` nie trafia do żadnego `run.json`.
-        let mut process = match supervisor::spawn_tagged(command, StdinPlan::Null, &[], None) {
-            Ok(process) => process,
-            Err(_error) => {
-                tracing::debug!(
-                    "the agent CLI could not be started, so the setup screen has its answer"
-                );
-                return Ok(Probe {
-                    found: false,
-                    version: None,
-                });
-            }
-        };
-
-        let mut version = None;
-        if let Some(stdout) = process.stdout() {
-            version = first_answer(stdout).await;
-        }
-
-        // Zebranie procesu jest częścią jego uruchomienia, nie sprzątaniem po nim: zombie nadal
-        // odpowiada na sygnał zerowy, więc niezebrany `--version` zostawiłby grupę, której nikt
-        // nigdy nie udowodni martwej (niezmiennik 6).
-        let _reaped = process.wait().await;
-
-        Ok(Probe {
-            found: true,
-            version,
-        })
+        /* JEDEN RDZEŃ, nie kopia per vendor (niezmiennik 23). Do 2026-09-03 obaj
+         * sterownicy mieli tu własne trzydzieści linii tego samego: `--version`, pierwsza
+         * odpowiedź, zebranie procesu. `probe::run` jest tą samą polityką w jednym miejscu,
+         * a adapter ma pięć znaków — to jest kształt, w którym skanowanie sekretów
+         * po cichu NIE umiera.
+         *
+         * Sonda idzie przez `supervisor::spawn`, nie `spawn_tagged`, i to jest odpowiedź,
+         * nie pominięcie (2026-09, Z-01d): sonda wersji nie należy do ŻADNEGO biegu, więc
+         * nie ma czym się oznaczyć, a jej `pgid` nie trafia do żadnego `run.json`. Znacznik
+         * zgodny z jakimkolwiek biegiem kazałby odzyskiwaniu zabijać sondę, której nikt
+         * w tym biegu nie zamawiał. */
+        super::probe::run(&self.binary, &self.configuration).await
     }
 
     async fn start(
