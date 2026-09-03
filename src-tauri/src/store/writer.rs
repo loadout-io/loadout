@@ -267,9 +267,42 @@ async fn serve(mut conn: Connection, mut inbox: mpsc::Receiver<Job>) {
                 let _ = reply.send(read_pragmas(&conn));
             }
             // Kanał jest FIFO, więc w tym miejscu wszystko, co ktokolwiek wysłał przed
-            // zamknięciem, jest już zapisane. Dlatego wolno wyjść bez dopytywania.
-            Job::Close => break,
+            // zamknięciem, jest już zapisane. Dlatego wolno domknąć dziennik i wyjść bez
+            // dopytywania.
+            Job::Close => {
+                truncate_the_journal(&conn);
+                break;
+            }
         }
+    }
+}
+
+/// Przepisuje dziennik do bazy i **przycina plik**, jako ostatnia rzecz przed końcem pisarza.
+///
+/// # 2026-09 (Z-6) — dlaczego samo zamknięcie połączenia nie wystarcza
+///
+/// `SQLite` domyka i kasuje `-wal` dopiero wtedy, gdy ginie OSTATNIE połączenie do bazy. Okno
+/// trzyma czytelników przez całe swoje życie ([`super::Store::reader`]), więc przy wyjściu
+/// z aplikacji ten warunek nie zachodzi nigdy — a domknięcia, które `SQLite` robi sam po drodze,
+/// zerują dziennik do ponownego użycia i zostawiają plik przy jego znaku wysokiej wody. Zmierzone
+/// 2026-09-02: `loadout.db-wal` przeżywał zamknięcie okna z dziesiątkami megabajtów.
+///
+/// `TRUNCATE`, nie `PASSIVE`: dopiero ten wariant zmienia rozmiar pliku. Czeka przy tym na
+/// czytelników — najdłużej [`super::BUSY_TIMEOUT_MS`], bo tyle stoi na tym połączeniu.
+///
+/// **Zajętość nie zatrzymuje wyjścia.** Pierwsza kolumna odpowiedzi to `busy`; jedynka znaczy
+/// „ktoś jeszcze czytał", czyli dziennik zostaje na następne uruchomienie — a to jest stan
+/// poprawny, w przeciwieństwie do aplikacji, która nie umie się zamknąć.
+fn truncate_the_journal(conn: &Connection) {
+    let busy: rusqlite::Result<i64> =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0));
+    match busy {
+        Ok(0) => {}
+        Ok(_) => tracing::warn!(
+            "the index journal was still in use when Loadout closed it, so it stays on disk until \
+             the next start"
+        ),
+        Err(error) => tracing::warn!("the index journal could not be closed down: {error}"),
     }
 }
 

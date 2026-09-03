@@ -16,6 +16,8 @@
 //!   stoi w naszej grupie procesów — więc most też w niej stoi, ginie razem z nią i wchodzi
 //!   do dowodu śmierci. Serwer nasłuchujący po stronie aplikacji stałby poza tym dowodem.
 
+use std::io::{self, Write as _};
+
 fn main() {
     /* ROZGAŁĘZIENIE PRZED TAURI, i to jest cała jego treść: proces mostu nie otwiera okna,
      * nie zakłada bazy i nie czyta biblioteki. Jest rurą, która umie ramkować MCP.
@@ -28,7 +30,14 @@ fn main() {
         .is_some_and(|first| first == loadout_lib::bridge::host::FLAG)
     {
         let Some(socket) = argv.next() else {
-            eprintln!(
+            // 2026-09 (Z-6) — `writeln!` z porzuconym wynikiem, nigdy `eprintln!`. Ten makro
+            // PANIKUJE, kiedy zapis się nie uda („failed printing to stderr: Broken pipe" stoi
+            // w dzienniku z 31.08), a most działa dokładnie tam, gdzie to się zdarza: wychodzi
+            // razem z vendorem, więc drugi koniec bywa już zamknięty. W release stoi
+            // `panic = "abort"`, czyli panika w tym miejscu zamienia uczciwy kod wyjścia
+            // w przerwany proces — i nikt nie dowie się, czego brakowało.
+            let _ = writeln!(
+                io::stderr(),
                 "Loadout needs the socket path after {}.",
                 loadout_lib::bridge::host::FLAG
             );

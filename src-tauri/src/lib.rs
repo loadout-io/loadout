@@ -8,7 +8,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tauri::Manager;
 
@@ -427,6 +427,123 @@ pub async fn recover_from_last_time(
     Ok((counts.0, counts.1, report))
 }
 
+/// W którym miejscu drogi wyjścia stoi ta aplikacja.
+///
+/// # 2026-09 (Z-6) — TRZY STANY, NIE DWA, i ta różnica jest cała treścią niezmiennika 6
+///
+/// Pierwsze podejście miało tu jednorazowy `AtomicBool` i przepuszczało KAŻDE kolejne żądanie
+/// wyjścia. To nie był kompromis, tylko wada: drugie ⌘Q wciśnięte w trakcie sprzątania kończyło
+/// proces natychmiast — w środku eskalacji zabijania, przed dowodami śmierci grup i przed
+/// domknięciem indeksu. Czyli dokładnie ta sierota, przed którą stoi cała ta droga.
+///
+/// „Zamykanie trwa" i „posprzątane" muszą więc być osobnymi odpowiedziami, bo wołający robi na
+/// nich dwie różne rzeczy: pod pierwszą wstrzymuje wyjście i NIE odpala drugiego sprzątania, pod
+/// drugą nie wstrzymuje już nic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WayOut {
+    /// Nikt jeszcze nie prosił o wyjście.
+    Open,
+    /// Sprzątanie idzie TERAZ: biegi schodzą i każdy ma jeszcze oddać dowód śmierci swojej grupy.
+    ClosingDown,
+    /// Sprzątanie się skończyło. Od tej chwili nie ma już czego chronić.
+    Done,
+}
+
+/// Zapadka drogi wyjścia, wspólna dla obu zdarzeń okna.
+///
+/// Jedna na proces i **wspólna z premedytacją**: czerwony guzik i ⌘Q to dwa różne zdarzenia Tauri
+/// nad jedną robotą, więc dwie osobne zapadki znaczyłyby dwa sprzątania naraz nad tymi samymi
+/// procesami.
+///
+/// To NIE jest globalny bool anulowania z niezmiennika 7: nie odpowiada na pytanie „czy ta
+/// operacja jest anulowana", nie przecieka między operacjami i nigdy nie wraca do `Open`.
+/// Odpowiada na jedno pytanie całego procesu — jak daleko zaszła droga wyjścia.
+///
+/// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): każde wzięcie tego zamka
+/// mieści się w jednym wyrażeniu, a sprzątanie czeka na dowody już bez niego.
+#[derive(Debug)]
+struct TheWayOut {
+    phase: Mutex<WayOut>,
+}
+
+impl TheWayOut {
+    fn new() -> Self {
+        Self {
+            phase: Mutex::new(WayOut::Open),
+        }
+    }
+
+    /// Czy TEN wołający ma odpalić sprzątanie. Odpowiada „tak" dokładnie raz na proces.
+    ///
+    /// Drugie i trzecie żądanie dostają `false` i mają wyłącznie wstrzymać wyjście: sprzątanie
+    /// jest już w drodze, a druga jego kopia biłaby się z pierwszą o te same procesy i mogłaby
+    /// dojść do końca szybciej, czyli wyjść przed dowodami, na które tamta jeszcze czeka.
+    fn mine_to_close(&self) -> bool {
+        let mut phase = self.phase.lock().unwrap_or_else(PoisonError::into_inner);
+        if *phase == WayOut::Open {
+            *phase = WayOut::ClosingDown;
+            return true;
+        }
+        false
+    }
+
+    /// Czy sprzątanie się już skończyło.
+    ///
+    /// Wołający przestaje wtedy wstrzymywać cokolwiek — i to jest jednocześnie jedyne wyjście
+    /// awaryjne tej zapadki: gdyby `app.exit(0)` gdzieś przepadło, ⌘Q dalej zamyka aplikację.
+    fn finished(&self) -> bool {
+        *self.phase.lock().unwrap_or_else(PoisonError::into_inner) == WayOut::Done
+    }
+}
+
+/// Przestawia zapadkę na [`WayOut::Done`], KTÓRYMKOLWIEK wyjściem ze sprzątania.
+///
+/// 2026-09 (Z-6) — `Drop`, a nie linia na końcu zadania, i to jest różnica między aplikacją, którą
+/// da się zamknąć zawsze, a taką, która po panice w sprzątaniu przestaje odpowiadać na ⌘Q na
+/// zawsze: dopóki stoi `ClosingDown`, każde żądanie wyjścia jest wstrzymywane. Tokio połyka paniki
+/// na granicy zadania, więc bez tej gwardii ten jeden przypadek zostawiałby okno bez wyjścia.
+#[derive(Debug)]
+struct ClosedWhenDropped(Arc<TheWayOut>);
+
+impl Drop for ClosedWhenDropped {
+    fn drop(&mut self) {
+        *self.0.phase.lock().unwrap_or_else(PoisonError::into_inner) = WayOut::Done;
+    }
+}
+
+/// Sprzątnij — najwyżej raz — i wyjdź. **Wspólne ciało obu dróg wyjścia.**
+///
+/// # 2026-09 (Z-6) — dlaczego jedno ciało, a nie dwa domknięcia
+///
+/// Bo czerwony guzik i ⌘Q to dwa RÓŻNE zdarzenia Tauri nad jedną robotą, a dwie kopie tej samej
+/// odpowiedzi rozjeżdżają się po cichu: pierwsze podejście miało tu dwie i to właśnie w jednej
+/// z nich drugie żądanie kończyło proces w środku eskalacji zabijania. Tutaj zostaje wyłącznie
+/// transport — całą politykę trzyma [`ipc::AppState::close_everything_down`] (niezmiennik 23),
+/// a każde ze zdarzeń ma po pięć linii adaptera: „nie wstrzymuj po sprzątaniu, wstrzymaj
+/// w trakcie, zawołaj to".
+///
+/// `exit(0)`, nie `destroy()`: zniszczenie ostatniego okna każe Tauri wysłać
+/// `ExitRequested { code: None }`, czyli to samo zdarzenie, co ⌘Q — więc obsługa musiałaby ten
+/// jeden przypadek przepuszczać, a przepuszczając go, przepuszczałaby też drugie ⌘Q wciśnięte
+/// w trakcie sprzątania. Nasze własne wyjście jedzie z kodem, którego tamta obsługa nie tyka.
+fn leave_when_everything_is_down(app: &tauri::AppHandle, way_out: &Arc<TheWayOut>) {
+    // Sprzątanie odpala się najwyżej raz na proces: druga jego kopia biłaby się z pierwszą o te
+    // same procesy i mogłaby dojść do `exit` przed dowodami, na które tamta jeszcze czeka.
+    if !way_out.mine_to_close() {
+        return;
+    }
+    let app = app.clone();
+    let way_out = Arc::clone(way_out);
+    tauri::async_runtime::spawn(async move {
+        let cleaned_up = ClosedWhenDropped(way_out);
+        app.state::<ipc::AppState>().close_everything_down().await;
+        // Zapadka przechodzi w `Done` TU, przed `exit(0)`: od tej chwili każde żądanie wyjścia
+        // jest prawdziwe i nikt go już nie wstrzymuje.
+        drop(cleaned_up);
+        app.exit(0);
+    });
+}
+
 /// Otwiera okno. Cała powłoka po stronie Rusta zaczyna się tutaj i tutaj kończy.
 pub fn run() {
     match install_logging(&loadout_dir()) {
@@ -461,6 +578,9 @@ pub fn run() {
         home.display(),
         project.display()
     );
+
+    // Jedna zapadka na obie drogi wyjścia; powód, dla którego jest wspólna, stoi przy [`TheWayOut`].
+    let way_out = Arc::new(TheWayOut::new());
 
     let outcome = tauri::Builder::default()
         .setup(move |app| {
@@ -545,52 +665,31 @@ pub fn run() {
             }
         }))
         /* ZAMKNIĘCIE OKNA ZATRZYMUJE BIEG, i to jest transport, nie polityka: całą decyzję
-         * podejmuje `commands::run::stop_before_closing` (niezmiennik 1 i 23), a tutaj zostaje
+         * podejmuje `ipc::AppState::close_everything_down` (niezmiennik 1 i 23), a tutaj zostaje
          * wyłącznie „wstrzymaj zamknięcie, zawołaj, potem zamknij".
          *
          * `prevent_close` PRZED czymkolwiek innym: bez tego okno znika w tej samej chwili, proces
          * kończy się razem z nim, a zadanie zatrzymujące bieg nie ma już gdzie działać — czyli
          * agenci zostają żywi, dokładnie tak, jak było do 2026-08-19.
          *
-         * `destroy()` na końcu, także po błędzie: okno, którego nie da się zamknąć, bo
-         * zatrzymywanie biegu się nie udało, zamykałoby człowieka wewnątrz aplikacji. Zdanie
-         * o niepowodzeniu idzie do dziennika — a odzyskiwanie przy następnym starcie jest siecią
-         * pod tym przypadkiem i tam już jest. */
-        .on_window_event(|window, event| {
-            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
-                return;
-            };
-            api.prevent_close();
-            let window = window.clone();
-            tauri::async_runtime::spawn(async move {
-                let state = window.state::<ipc::AppState>();
-                /* KAŻDY ŻYWY FOLDER, nie jeden uchwyt: od 2026-08-28 zapadka biegu jest
-                 * kluczowana workspace'em, więc dwa foldery mogą mieć swoje biegi w tej samej
-                 * chwili. Zamknięcie okna sięgające do jednego z nich zostawiłoby drugi żywy
-                 * pod PID 1 — dokładnie tę sierotę, przed którą stoi cała ta obsługa. */
-                if let Err(error) = state.stop_every_live_run_before_closing().await {
-                    tracing::error!("closing anyway: the run could not be stopped: {error}");
+         * `prevent_close` BEZWARUNKOWO, a sprzątanie najwyżej raz: drugie kliknięcie w czerwony
+         * guzik ma tylko wstrzymać zamknięcie, nigdy odpalić drugą kopię sprzątania nad tymi
+         * samymi procesami. Reszta — łącznie z tym, czym się kończy — stoi przy
+         * [`leave_when_everything_is_down`]. */
+        .on_window_event({
+            let way_out = Arc::clone(&way_out);
+            move |window, event| {
+                let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                    return;
+                };
+                // Po posprzątaniu okno wolno zamknąć: nie ma już czego chronić, a to jest
+                // jednocześnie wyjście awaryjne, gdyby `exit(0)` gdzieś przepadło.
+                if way_out.finished() {
+                    return;
                 }
-                /* Rozmowa z orchestratorem też jest procesem — po zamknięciu okna przeszłaby pod
-                 * PID 1 i pracowała dalej, a odzyskiwanie po niej nie posprząta, bo rozmowa nie ma
-                 * wpisu w indeksie biegów. */
-                state.close_chat().await;
-                /* 2026-08-23 — TRZECIA LINIA, ZGŁOSZONA WE WŁASNYM NAGŁÓWKU
-                 * (`AppState::close_started`) i nieobsadzona, bo tamto zadanie nie miało tego
-                 * pliku w swoim zakresie. Bez niej `npm run dev` podniesiony przez `/start`
-                 * albo przez kafelek „uruchom i zostaw" przeżywa zamknięcie okna, przechodzi
-                 * pod PID 1 i trzyma port — a odzyskiwanie po nim nie posprząta, bo nie ma go
-                 * w indeksie biegów. Rzecz, której Loadout jest właścicielem, ma umrzeć
-                 * z Loadoutem (niezmiennik 6). */
-                for proof in state.close_started().await {
-                    if matches!(proof, engine::supervisor::GroupProof::Alive { .. }) {
-                        tracing::error!(
-                            "something Loadout started was still alive after the full stop; look                              for it in Activity Monitor"
-                        );
-                    }
-                }
-                let _ = window.destroy();
-            });
+                api.prevent_close();
+                leave_when_everything_is_down(window.app_handle(), &way_out);
+            }
         })
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -598,10 +697,140 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(ipc::command_handler())
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
 
-    if let Err(error) = outcome {
-        tracing::error!("Loadout could not open its window: {error}");
-        std::process::exit(1);
+    let app = match outcome {
+        Ok(app) => app,
+        Err(error) => {
+            tracing::error!("Loadout could not open its window: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    /* ⌘Q I QUIT Z MENU NIE ZAMYKAJĄ OKNA — kończą aplikację, i to jest cała treść tej obsługi.
+     *
+     * Z AUDYTU 2026-09-02 (L-6): `CloseRequested` dostaje wyłącznie czerwony guzik i ⌘W. Wyjście
+     * z menu wysyła `RunEvent::ExitRequested` i do tego dnia nie łapał go nikt, więc proces
+     * znikał, zanim cokolwiek zdążyło zejść — agenci przechodzili pod PID 1 i palili limit
+     * dalej (niezmiennik 6), a `loadout.db-wal` zostawał z dziesiątkami megabajtów.
+     *
+     * `code: None` to prośba człowieka; `code: Some(_)` niesie nasze własne `exit(0)` — z obu
+     * dróg — i **nie wolno** go wstrzymywać. Aplikacja, która odmawia własnemu wyjściu, jest
+     * niezamykalna, a to jest gorsze niż wszystko, przed czym ta obsługa stoi.
+     *
+     * 2026-09 (Z-6) — WSTRZYMUJEMY KAŻDĄ PROŚBĘ, DOPÓKI SPRZĄTANIE TRWA, a nie tylko pierwszą.
+     * Pierwsze podejście przepuszczało drugą i kończyło proces w środku eskalacji zabijania,
+     * przed dowodami śmierci grup i przed domknięciem indeksu — czyli łamało niezmiennik 6
+     * dokładnie tam, gdzie miało go dowieść. Sprzątanie odpala się przy tym najwyżej raz
+     * ([`TheWayOut::mine_to_close`]), bo druga jego kopia biłaby się z pierwszą o te same procesy.
+     *
+     * Że to się nie zamienia w okno bez wyjścia, stoi na dwóch rzeczach, obie mierzalne: każdy
+     * krok sprzątania ma własny sufit czasu (`AppState::close_everything_down`), a zapadka
+     * przechodzi w `Done` na `Drop`, więc także po panice. */
+    app.run(move |app, event| {
+        let tauri::RunEvent::ExitRequested {
+            code: None, api, ..
+        } = event
+        else {
+            return;
+        };
+        // Posprzątane: nie ma czego wstrzymywać. Wstrzymanie tutaj zamieniłoby zgubione `exit(0)`
+        // w aplikację, której nie da się zamknąć.
+        if way_out.finished() {
+            return;
+        }
+        api.prevent_exit();
+        leave_when_everything_is_down(app, &way_out);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{ClosedWhenDropped, TheWayOut};
+
+    /// Co robi powłoka okna z odpowiedziami zapadki — te same dwa pytania, w tej samej kolejności,
+    /// co w obu domknięciach w [`super::run`].
+    ///
+    /// Zdarzeń Tauri nie da się w teście podstawić: `RunEvent` i `ExitRequestApi` przychodzą
+    /// z pętli zdarzeń, której bez okna nie ma. Sądzimy więc DECYZJĘ, bo to ona była wadą —
+    /// transport nad nią to dwa `if`-y, jeden na zdarzenie.
+    fn what_the_shell_would_do(way_out: &TheWayOut) -> (bool, bool) {
+        if way_out.finished() {
+            return (false, false);
+        }
+        (true, way_out.mine_to_close())
+    }
+
+    #[test]
+    fn a_second_way_out_is_held_back_and_never_starts_a_second_cleanup() {
+        let way_out = Arc::new(TheWayOut::new());
+
+        // Pierwsza prośba: wstrzymaj i sprzątaj.
+        let (held, mine) = what_the_shell_would_do(&way_out);
+        assert!(
+            held,
+            "the first request for the way out was not held back at all"
+        );
+        assert!(
+            mine,
+            "nobody was told to do the cleanup, so the first request would leave the runs going"
+        );
+
+        // TU PADAŁO PIERWSZE PODEJŚCIE. Zapadka była jednorazowym boolem i drugą prośbę
+        // PRZEPUSZCZAŁA, czyli kończyła proces w środku eskalacji zabijania — przed dowodami
+        // śmierci grup i przed domknięciem indeksu (niezmiennik 6).
+        let cleaned_up = ClosedWhenDropped(Arc::clone(&way_out));
+        for which in ["second", "third"] {
+            let (held, mine) = what_the_shell_would_do(&way_out);
+            assert!(
+                held,
+                "the {which} request for the way out was let through while the cleanup was still \
+                 going. It ends the process in the middle of the kill escalation: the groups never \
+                 answer for their death and the index is left open — which is the orphan this \
+                 whole path exists to prevent"
+            );
+            assert!(
+                !mine,
+                "the {which} request was told to do the cleanup as well. Two cleanups race over \
+                 the same processes, and the one that finishes first leaves while the other is \
+                 still waiting for proof"
+            );
+        }
+
+        // Sprzątanie się skończyło: od tej chwili prośba jest prawdziwa i nikt jej nie wstrzymuje.
+        drop(cleaned_up);
+        let (held, mine) = what_the_shell_would_do(&way_out);
+        assert!(
+            !held,
+            "a request for the way out is still held back after the cleanup finished. Nothing is \
+             left to protect, and holding it back is how a lost exit turns into an app that \
+             cannot be closed at all"
+        );
+        assert!(
+            !mine,
+            "the cleanup was started a second time after it had already finished"
+        );
+    }
+
+    #[test]
+    fn a_panicking_cleanup_still_leaves_a_way_out() {
+        let way_out = Arc::new(TheWayOut::new());
+        assert!(way_out.mine_to_close(), "the cleanup never started");
+
+        /* Tokio połyka paniki na granicy zadania, więc zadanie sprzątające po prostu SIĘ KOŃCZY
+         * i żadna linia po panice już nie biegnie. Gdyby `Done` ustawiała taka linia, zapadka
+         * stałaby w `ClosingDown` do końca życia procesu, a wtedy każde ⌘Q byłoby wstrzymywane —
+         * czyli okno bez wyjścia (2026-09). Zwinięcie stosu przez panikę porzuca gwardię
+         * dokładnie tak, jak porzuca ją tutaj `drop`. */
+        drop(ClosedWhenDropped(Arc::clone(&way_out)));
+
+        assert!(
+            way_out.finished(),
+            "the way out stayed shut after the cleanup task ended without reaching its last \
+             line. Every request to leave would be held back from now until the process dies, \
+             and there would be no way to make it die"
+        );
     }
 }

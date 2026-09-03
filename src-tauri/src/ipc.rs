@@ -661,6 +661,14 @@ impl fmt::Debug for AppState {
     }
 }
 
+/// Ile najdłużej wolno domykać indeks przy wyjściu z aplikacji.
+///
+/// 2026-09 (Z-6). Domknięcie dziennika czeka na czytelników, a czytelnikiem jest każde okno tej
+/// aplikacji — więc bez sufitu wyjście umiałoby nie nastąpić. Aplikacja, której nie da się
+/// zamknąć, jest gorsza niż indeks z dziennikiem na dysku: dziennik następne uruchomienie
+/// domknie samo, a z niezamykalnym oknem człowiek zostaje sam.
+const CLOSING_THE_INDEX_CEILING: Duration = Duration::from_secs(5);
+
 impl AppState {
     /// Składa stan aplikacji z rzeczy, które umie zbudować wyłącznie powłoka okna.
     ///
@@ -698,6 +706,61 @@ impl AppState {
         }
     }
 
+    /// Kończy wszystko, co ta aplikacja prowadzi, i domyka indeks. **Cała droga wyjścia.**
+    ///
+    /// # 2026-09 (Z-6) — dlaczego to jest JEDNO ciało, a nie lista w powłoce okna
+    ///
+    /// Do tego dnia ta lista stała w `lib.rs`, w obsłudze `CloseRequested`, i była jedyną kopią.
+    /// ⌘Q ani Quit z menu nie zamykają okna — kończą aplikację — więc szły zupełnie inną drogą
+    /// (`RunEvent::ExitRequested`), której nikt nie obsługiwał: proces znikał, a agenci
+    /// przechodzili pod PID 1 i palili limit dalej (niezmiennik 6). Polityka mieszka od dziś
+    /// w jednym rdzeniu, a powłoka okna ma po pięć linii na zdarzenie (niezmiennik 23).
+    ///
+    /// Kolejność jest wiążąca i wynika z tego, co po czym pisze: najpierw schodzą procesy, które
+    /// jeszcze coś zapisują, a dopiero na końcu domyka się indeks. Odwrócenie oznaczałoby
+    /// domknięty dziennik i pisarza, który po nim jeszcze raz dopisuje.
+    ///
+    /// **Żadna porażka nie zabiera drogi następnym krokom** i żaden z nich nie kończy tej funkcji
+    /// wcześniej. Pierwsze `?` w środku zostawiałoby żywego agenta za każdym razem, gdy
+    /// zatrzymanie któregoś biegu się nie udało — czyli dokładnie wtedy, kiedy sprzątanie po nim
+    /// jest do czegoś potrzebne.
+    pub async fn close_everything_down(&self) {
+        /* KAŻDY ŻYWY FOLDER, nie jeden uchwyt: od 2026-08-28 zapadka biegu jest kluczowana
+         * workspace'em, więc dwa foldery mogą mieć swoje biegi w tej samej chwili. Wyjście
+         * sięgające do jednego z nich zostawiłoby drugi żywy pod PID 1 — dokładnie tę sierotę,
+         * przed którą stoi cała ta droga. */
+        if let Err(error) = self.stop_every_live_run_before_closing().await {
+            tracing::error!("closing anyway: the run could not be stopped: {error}");
+        }
+        /* Rozmowa z orchestratorem też jest procesem — po zamknięciu okna przeszłaby pod
+         * PID 1 i pracowała dalej, a odzyskiwanie po niej nie posprząta, bo rozmowa nie ma
+         * wpisu w indeksie biegów. */
+        self.close_chat().await;
+        /* 2026-08-23 — bez tej linii `npm run dev` podniesiony przez `/start` albo przez
+         * kafelek „uruchom i zostaw" przeżywa zamknięcie okna, przechodzi pod PID 1 i trzyma
+         * port — a odzyskiwanie po nim nie posprząta, bo nie ma go w indeksie biegów. Rzecz,
+         * której Loadout jest właścicielem, ma umrzeć z Loadoutem (niezmiennik 6). */
+        for proof in self.close_started().await {
+            if matches!(proof, crate::engine::supervisor::GroupProof::Alive { .. }) {
+                tracing::error!(
+                    "something Loadout started was still alive after the full stop; look for it \
+                     in Activity Monitor"
+                );
+            }
+        }
+        /* INDEKS NA KOŃCU, pod sufitem czasu. Domknięcie przepisuje dziennik do bazy i przycina
+         * plik; bez niego `loadout.db-wal` przeżywa wyjście z dziesiątkami megabajtów
+         * (zmierzone 2026-09-02). Sufit stoi przy [`CLOSING_THE_INDEX_CEILING`]. */
+        match tokio::time::timeout(CLOSING_THE_INDEX_CEILING, self.store.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::error!("the index could not be closed down: {error}"),
+            Err(_) => tracing::error!(
+                "the index was still busy after {} s, so Loadout is leaving it to the next start",
+                CLOSING_THE_INDEX_CEILING.as_secs()
+            ),
+        }
+    }
+
     /// Kończy **wszystko**, co człowiek uruchomił komendą, i oddaje po jednym dowodzie na rzecz.
     ///
     /// Wołane przy zamykaniu okna, obok zatrzymania biegu i rozmowy z liderem. Powód jest ten
@@ -706,18 +769,14 @@ impl AppState {
     /// biegów. `npm run dev` trzymający port 5273 po zamknięciu okna jest tego najtańszym
     /// przykładem; agent palący limit w tle jest najdroższym.
     ///
-    /// # Nikt jej jeszcze nie woła, i to jest ZGŁOSZENIE, nie przeoczenie (AGENTS.md §7)
+    /// # Kto ją woła
     ///
-    /// Obsługa `CloseRequested` mieszka w `src-tauri/src/lib.rs`, poza blokiem OWNS tego zadania,
-    /// i woła stamtąd dwie linie: `commands::run::stop_before_closing` oraz
-    /// [`AppState::close_chat`]. Trzecia — `state.close_started().await;` — należy do tej samej
-    /// listy i tam ma stanąć. Dopóki jej tam nie ma, `/start` przeżywa zamknięcie okna. To samo
-    /// zdanie mówi wprost nagłówek kryterium AC-2 tego zadania: dowodzi ono drugiej połowy, czyli
-    /// że droga, którą zamknięcie ma zawołać, kończy KAŻDĄ rzecz i oddaje dowód po każdej.
+    /// [`AppState::close_everything_down`], czyli JEDYNA droga wyjścia z aplikacji — ta sama dla
+    /// czerwonego guzika i dla ⌘Q. Do 2026-09 (Z-6) nie wołał jej nikt i było to zgłoszenie
+    /// zapisane w tym miejscu (AGENTS.md §7): powłoka okna wołała wtedy dwie linie z trzech,
+    /// więc `/start` przeżywał zamknięcie okna.
     ///
-    /// `pub`, a nie `pub(crate)`, dokładnie z tego powodu: wołającego w tej skrzyni jeszcze nie
-    /// ma, a `pub(crate)` bez wołającego to `dead_code`, czyli czerwona bramka za brak jednej
-    /// linii w cudzym pliku. Dowód, że ta droga naprawdę kończy każdą rzecz, stoi w
+    /// Dowód, że ta droga naprawdę kończy każdą rzecz, stoi w
     /// `tests/it/started_processes_die_with_the_window.rs` — o jedną warstwę niżej, na
     /// [`commands::processes::Processes::close`], bo `AppState` wymaga w teście otwartej bazy
     /// i fabryki sterowników.
