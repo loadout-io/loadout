@@ -6,7 +6,6 @@ import { useEffect } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { useAgentApps } from './state/agent-apps';
 import { useTriggers } from './state/triggers';
 import { useSectionStore } from './ui/shell/section-store';
 import './styles/global.css';
@@ -22,12 +21,6 @@ function Root(): ReactElement {
     return () => {
       useTriggers.getState().stopWatching();
     };
-  }, []);
-
-  /* Migawka CLI nie blokuje pierwszej klatki ani żadnej czynności. `check` współdzieli pracę,
-   * więc ponowny montaż i Retry na trwającym odczycie nie uruchamiają drugiego procesu. */
-  useEffect(() => {
-    void useAgentApps.getState().check();
   }, []);
 
   return <App section={section} />;

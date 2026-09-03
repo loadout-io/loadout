@@ -20,9 +20,18 @@
  * Pliki czytamy przez `existsSync(p) ? readFileSync(p) : ''`, żeby test padał na asercji
  * o treści, nigdy na otwarciu pliku (AGENTS.md §2a p. 5).
  *
- * ZMIANA PUNKTU O STOPCE, 2026-08-31. Statyczna deklaracja zdolności zniknęła: stopka czyta
- * ulotny store rzeczywistych sond. Kryterium pyta więc o widoczne stany początkowe i o brak
- * bezwarunkowej deklaracji, nie próbuje wywnioskować wyniku procesu z mapowania typów.
+ * ZMIANA PUNKTU O STOPCE, 2026-08-18. Do dziś brzmiał on „stopka nazywa KAŻDEGO dostawcę z unii
+ * `Vendor`" i egzekwował nieprawdę: `src-tauri/src/lib.rs:288` daje Codeksowi sterownik
+ * `Absent::new("codex", "T-10")`, którego `probe` oddaje `found: false`, a `start` odmawia — więc
+ * „Claude · Codex ready" obiecywało gotowość rzeczy, która przy pierwszym kroku mówi „nie".
+ * Kryterium było WĘŻSZE niż niezmiennik, którego pilnuje (16: kontrolka bez skutku jest gorsza
+ * niż jej brak), i przechodziło wyłącznie wtedy, gdy napis kłamał.
+ *
+ * Nowa wersja jest MOCNIEJSZA w obie strony i dalej nie ma w sobie wpisanej listy: zbiór
+ * dostawców niedziałających czyta z `lib.rs` w tym samym biegu. Stopka musi nazwać każdego,
+ * kogo aplikacja umie uruchomić, i NIE nazwać ani jednego, którego nie umie. Dzień, w którym
+ * Codex dostanie prawdziwy sterownik, jest dniem, w którym ten punkt świeci na czerwono, dopóki
+ * stopka o tym nie powie — czyli dokładnie to, czego stara wersja miała pilnować.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -34,6 +43,8 @@ import { PANE_GAP, SideNav } from './titlebar';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CONF = resolve(ROOT, 'src-tauri/tauri.conf.json');
+const AGENTS = resolve(ROOT, 'src/state/agents.ts');
+const LIB = resolve(ROOT, 'src-tauri/src/lib.rs');
 
 /**
  * Wysokość trzech świateł plus odstęp, licząc od `trafficLightPosition.y`. Stała fizyczna
@@ -60,6 +71,22 @@ function lightsTop(): number | null {
   if (!Array.isArray(windows) || windows.length === 0) return null;
   const y = (windows[0] as { trafficLightPosition?: { y?: unknown } }).trafficLightPosition?.y;
   return typeof y === 'number' ? y : null;
+}
+
+/** Nazwy dostawców z unii `Vendor`, skrócone do pierwszego członu (`claude-code` → `claude`). */
+function vendorWords(): readonly string[] {
+  const union = /export type Vendor =([^;]*);/.exec(fileText(AGENTS))?.[1] ?? '';
+  return [...union.matchAll(/'([^']+)'/g)].map((hit) => (hit[1] ?? '').split('-')[0] ?? '');
+}
+
+/**
+ * Dostawcy, którym `src-tauri/src/lib.rs` daje sterownik `Absent` — czyli ci, których `probe`
+ * oddaje `found: false`, a `start` odmawia. Czytane z Rusta, nie wpisane tutaj: wpisana lista
+ * przechodziłaby dalej w dniu, w którym Codex zacznie naprawdę działać, i stopka milczałaby
+ * o nowej możliwości.
+ */
+function absentVendors(): readonly string[] {
+  return [...fileText(LIB).matchAll(/Absent::new\(\s*"([^"]+)"/g)].map((hit) => hit[1] ?? '');
 }
 
 /** Zadeklarowany górny odstęp wyrenderowanej nawigacji. */
@@ -113,7 +140,7 @@ describe('the nav carries the brand and the status, and the lights cover neither
     ).toBeLessThan(wordAt);
   });
 
-  it('pins a footer to the bottom with dynamic checks and no unconditional promise', () => {
+  it('pins a footer to the bottom with a liveness dot, naming what can really run', () => {
     const footer = footerHtml(navMarkup);
 
     expect(
@@ -133,9 +160,44 @@ describe('the nav carries the brand and the status, and the lights cover neither
         'status dots — so this is the one place a `rounded-full` belongs.',
     ).toContain('rounded-full');
 
-    expect(footer).toContain('Checking Claude Code…');
-    expect(footer).toContain('Checking Codex…');
-    expect(footer.toLowerCase()).not.toContain('ready');
+    const vendors = vendorWords();
+    expect(
+      vendors.length,
+      'no vendors were read out of the Vendor union in src/state/agents.ts, so the check below ' +
+        'would pass on an empty list. Decision D3 puts two vendors in v1 and the union is where ' +
+        'that fact lives.',
+    ).toBeGreaterThan(0);
+
+    const said = footer.replace(/<[^>]*>/g, ' ').toLowerCase();
+    const absent = absentVendors();
+    const runnable = vendors.filter((word) => !absent.includes(word));
+
+    /* KONTROLA PRZECIW PUSTEMU PORÓWNANIU. Gdyby `lib.rs` się nie wczytał, `absent` byłoby puste,
+     * każdy dostawca liczyłby się jako działający i punkt niżej mierzyłby coś innego, niż mówi.
+     * Plik, który mapuje dostawców na sterowniki, MUSI nazywać każdego z nich. */
+    const rust = fileText(LIB).toLowerCase();
+    expect(
+      vendors.filter((word) => !rust.includes(word.toLowerCase())),
+      'src-tauri/src/lib.rs does not name every vendor from the Vendor union, so it is not the ' +
+        'driver mapping this check thinks it read and the two assertions below would run on an ' +
+        'empty list of absent vendors',
+    ).toEqual([]);
+
+    expect(
+      runnable.filter((word) => !said.includes(word.toLowerCase())),
+      'the footer does not name every vendor the application can actually run, so a capability ' +
+        'the user has is one the user is never told about. Footer says: ' +
+        said,
+    ).toEqual([]);
+    expect(
+      absent.filter((word) => said.includes(word.toLowerCase())),
+      'the footer claims a vendor that CANNOT run a step. src-tauri/src/lib.rs hands that ' +
+        'vendor `Absent`, whose probe answers found:false and whose start refuses — so the ' +
+        'sentence promises readiness the first step then denies. A control that lies is worse ' +
+        'than a missing one (invariant 16), and this footer is the one place the application ' +
+        'says anything about its surroundings. Footer says: ' +
+        said,
+    ).toEqual([]);
   });
 
   it('starts below the macOS lights, using the inset the window config implies', () => {

@@ -1452,16 +1452,6 @@ pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Lokalna migawka dwóch CLI. Stan Tauri jest jedynym argumentem, więc okno woła bez payloadu.
-#[tauri::command]
-pub async fn check_agent_apps(
-    state: State<'_, AppState>,
-) -> Result<Vec<commands::agent_apps::AgentAppWire>, ()> {
-    // Klon zamyka pożyczkę `State` przed `await`; Tauri wymaga od przyszłości komendy `'static`.
-    let drivers = std::sync::Arc::clone(&state.drivers);
-    Ok(commands::agent_apps::check_agent_apps_inner(&drivers).await)
-}
-
 /// Nazwa pliku z okna → żądanie biegu, liczone tą samą regułą, którą liczy lista.
 ///
 /// 2026-08-17 — do 2026-08-29 stała tu **druga kopia** `commands::workflows::in_library`,
@@ -3368,7 +3358,6 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         apply_eval_fix,
         apply_setup,
         author_skill,
-        check_agent_apps,
         check_trigger,
         check_workflow,
         close_terminal,
