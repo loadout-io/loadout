@@ -223,8 +223,8 @@ fn every_item_type_maps_to_its_own_event() {
             // dokładały się do sufitu wydatku i nikt nie wiedział dlaczego — bieg wyglądał
             // na darmowy. Ten wiersz jest tamtym zdaniem; nie wolno go usunąć, żeby lista
             // „się zgadzała".
-            "Notice",    // cena tego modelu nie jest znana
-            "Finished",  // turn.completed
+            "Notice",   // cena tego modelu nie jest znana
+            "Finished", // turn.completed
         ],
         "the mapping from T2 section 9.3, whole. item.updated is deliberately absent from this \
          list: the type exists (T1 correction 9), but a live timer for command_execution is out \
