@@ -37,6 +37,7 @@
 //!   chroni przed niczym, bo testowała nasze API.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use rusqlite::{Connection, OpenFlags};
 use tokio::runtime::Handle;
@@ -68,6 +69,18 @@ const JOURNAL_MODE_WAL: &str = "wal";
 /// `PRAGMA synchronous` = 1. Nazwana stała, bo `1` w wywołaniu nie mówi, że chodzi o `NORMAL`,
 /// a sąsiednie `0` i `2` znaczą `OFF` i `FULL`.
 const SYNCHRONOUS_NORMAL: i64 = 1;
+
+/// `PRAGMA journal_size_limit` — do ilu bajtów `SQLite` przycina dziennik po każdym domknięciu.
+///
+/// 2026-09 (Z-6). Bez tej pragmy dziennik nie kurczy się NIGDY: domknięcie przepisuje strony do
+/// bazy i zeruje dziennik do ponownego użycia, ale plik zostaje przy swoim znaku wysokiej wody.
+/// Zmierzone 2026-09-02 na żywej bibliotece: `loadout.db-wal` miał 42 MB przy bazie, w której
+/// nic tyle nie ważyło.
+///
+/// Cztery mebibajty, bo dokładnie tam `SQLite` sam sięga po domknięcie (`wal_autocheckpoint`
+/// = 1000 stron po 4 KiB). Liczba niższa kazałaby mu przycinać plik częściej, niż i tak go
+/// domyka — czyli płacić za zmianę rozmiaru pliku w środku biegu, nie oszczędzać.
+pub const JOURNAL_SIZE_LIMIT_BYTES: i64 = 4 * 1024 * 1024;
 
 /// Wszystko, czym ten moduł umie odmówić.
 #[derive(Debug, thiserror::Error)]
@@ -120,10 +133,10 @@ pub enum StoreError {
 /// Skrót, którego używa cały moduł.
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-/// Cztery pragmy, które muszą czytać się **tak samo na każdym połączeniu**.
+/// Pięć pragm, które muszą czytać się **tak samo na każdym połączeniu**.
 ///
 /// Podział, o który się tu potyka każdy: `journal_mode` jest własnością **bazy** i trwa
-/// w pliku, a pozostałe trzy są własnością **połączenia**. Dlatego gołe połączenie do bazy,
+/// w pliku, a pozostałe są własnością **połączenia**. Dlatego gołe połączenie do bazy,
 /// którą ktoś kiedyś przestawił na WAL, dalej melduje `wal` — i jednocześnie `busy_timeout`
 /// równy zeru oraz **wyłączone** klucze obce.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -136,6 +149,8 @@ pub struct Pragmas {
     pub synchronous: i64,
     /// `PRAGMA journal_mode` — na bazie plikowej ma być `wal`.
     pub journal_mode: String,
+    /// `PRAGMA journal_size_limit` — w bajtach; `-1` znaczy „bez sufitu", czyli wartość domyślną.
+    pub journal_size_limit: i64,
 }
 
 /// Wiersz `runs`, w kształcie, w jakim przychodzi z `run.json`.
@@ -274,7 +289,15 @@ pub struct Store {
     /// Uchwyt do jedynego zadania, które pisze.
     writer: Writer,
     /// Samo zadanie — [`Store::close`] na nie czeka, żeby „zapisane" znaczyło zapisane.
-    task: JoinHandle<()>,
+    ///
+    /// 2026-09 (Z-6) — `Mutex<Option<…>>`, A NIE GOŁY UCHWYT, i to jest jedyny powód tej
+    /// zmiany: magazyn należy do [`crate::ipc::AppState`], które okno widzi wyłącznie przez
+    /// `&self`, więc `close(self)` nie miał jak zostać zawołany przy ⌘Q. Zabranie uchwytu przez
+    /// `take()` czyni drugie zamknięcie ciszą zamiast zawisu na uchwycie, którego już nie ma.
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): `take()` mieści się
+    /// w jednym wyrażeniu, które oddaje zamek, a dopiero zabrany uchwyt jedzie w `await`.
+    task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Store {
@@ -291,7 +314,7 @@ impl Store {
         Ok(Self {
             path: path.to_path_buf(),
             writer,
-            task,
+            task: Mutex::new(Some(task)),
         })
     }
 
@@ -353,19 +376,30 @@ impl Store {
             .await
     }
 
-    /// Zamyka kanał i **czeka**, aż pisarz dopisze wszystko, co dostał.
+    /// Zamyka kanał i **czeka**, aż pisarz dopisze wszystko, co dostał i domknie dziennik.
     ///
     /// Bez czekania „zapisane" znaczy tylko „wysłane", a to jest różnica, którą widać dopiero
     /// wtedy, gdy ktoś zamyka aplikację w trakcie biegu.
-    pub async fn close(self) -> Result<()> {
-        // Rozbiór na części, bo `writer` musi wysłać zlecenie zamknięcia ZANIM oddamy sterowanie
-        // na `task.await`. Samo `drop(writer)` nie wystarcza i nie jest to detal: wołający, który
-        // trzyma własny klon [`Writer`] — a trzyma go każdy, kto cokolwiek zapisał — zostawia
-        // w kanale żywego nadawcę, więc pętla pisarza nie ma prawa się skończyć i `await` niżej
-        // wisi bez końca.
-        let Self { writer, task, .. } = self;
-        writer.shutdown().await?;
-        drop(writer);
+    ///
+    /// **Drugie wywołanie jest ciszą, nie błędem.** Przy ⌘Q i przy czerwonym guziku ta sama droga
+    /// zamykania biegnie z dwóch różnych zdarzeń okna (`lib.rs`), więc „zamknięte już zamknięte"
+    /// jest poprawną odpowiedzią, a nie usterką (niezmiennik 7 w duchu).
+    pub async fn close(&self) -> Result<()> {
+        // Zamek na jedno wyrażenie i nigdy przez `await` (niezmiennik 8). Uchwyt zabrany —
+        // nie ma go już dla nikogo innego, więc to wywołanie jest tym jedynym, które czeka.
+        let Some(task) = self
+            .task
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        else {
+            return Ok(());
+        };
+        // Zlecenie zamknięcia idzie ZANIM oddamy sterowanie na `task.await`. Samo porzucenie
+        // uchwytu pisarza nie wystarcza i nie jest to detal: wołający, który trzyma własny klon
+        // [`Writer`] — a trzyma go każdy, kto cokolwiek zapisał — zostawia w kanale żywego
+        // nadawcę, więc pętla pisarza nie ma prawa się skończyć i `await` niżej wisi bez końca.
+        self.writer.shutdown().await?;
         // Zadanie pisarza nie panikuje ani nie jest anulowane, więc `JoinError` znaczy tu
         // wyłącznie „coś jest bardzo nie tak"; zgłaszamy to jako martwego pisarza, bo dla
         // wołającego skutek jest dokładnie ten.
@@ -405,10 +439,18 @@ pub fn apply_pragmas(conn: &Connection) -> Result<()> {
     // czytelniku objawia się jako losowe „Save failed" raz na dwa dni, a w meetnotes zajęło to
     // dwóch pisarzy w tle, zanim ktokolwiek zrozumiał, co widzi.
     conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+
+    // 2026-09 (Z-6) — SUFIT DZIENNIKA. Bez niego domknięcie zeruje dziennik do ponownego użycia
+    // i zostawia plik przy znaku wysokiej wody, więc `loadout.db-wal` rośnie monotonicznie przez
+    // całe życie biblioteki i nigdy nie maleje (zmierzone 2026-09-02: 42 MB).
+    //
+    // Jest własnością POŁĄCZENIA, tak jak trójka wyżej, więc stoi tutaj, a nie raz przy otwarciu
+    // bazy: połączenie bez niego przycina dziennik po swoim domknięciu do niczego.
+    conn.pragma_update(None, "journal_size_limit", JOURNAL_SIZE_LIMIT_BYTES)?;
     Ok(())
 }
 
-/// Odczytuje te same cztery pragmy z **dowolnego** połączenia — także z gołego, otwartego
+/// Odczytuje ten sam komplet pragm z **dowolnego** połączenia — także z gołego, otwartego
 /// w teście.
 ///
 /// To, że ta funkcja przyjmuje `&Connection`, a nie `&Store`, jest częścią kontraktu AC-3:
@@ -423,5 +465,6 @@ pub fn read_pragmas(conn: &Connection) -> Result<Pragmas> {
         foreign_keys: conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?,
         synchronous: conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?,
         journal_mode: conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?,
+        journal_size_limit: conn.query_row("PRAGMA journal_size_limit", [], |row| row.get(0))?,
     })
 }

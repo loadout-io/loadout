@@ -30,6 +30,7 @@ pub mod library;
 pub mod serve;
 pub mod verbs;
 
+use std::io::{self, Write as _};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,17 @@ use serde_json::Value;
 /// Błąd wychodzi na `stderr` i kodem wyjścia, nigdy na `stdout`: tam płynie protokół, a jedna
 /// nasza linia w nim to vendor, który przestaje rozumieć most. Zmierzona pułapka Codeksa: nigdy
 /// `2>&1` na tym potoku.
+///
+/// # 2026-09 (Z-6) — dlaczego `writeln!` z porzuconym wynikiem, a nie `eprintln!`
+///
+/// Bo `eprintln!` PANIKUJE, kiedy zapis się nie uda: „failed printing to stderr: Broken pipe"
+/// stoi w dzienniku z 31.08. Most żyje razem z procesem vendora i wychodzi wtedy, kiedy tamten
+/// przestaje czytać — czyli zerwany drugi koniec jest tu stanem normalnym, nie awarią. W release
+/// stoi `panic = "abort"`, więc panika w tej linii zamieniałaby kod wyjścia, po którym wołający
+/// pozna przyczynę, w przerwany proces bez ani jednego zdania.
+///
+/// Kod wyjścia zostaje jedynym pewnym nośnikiem tej wiadomości i dlatego nie zmienia się razem
+/// z tą poprawką.
 pub fn run_bridge(socket: &Path) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -53,12 +65,12 @@ pub fn run_bridge(socket: &Path) {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("Loadout could not start its bridge: {error}");
+            let _ = writeln!(io::stderr(), "Loadout could not start its bridge: {error}");
             std::process::exit(1);
         }
     };
     if let Err(error) = runtime.block_on(serve::serve(socket)) {
-        eprintln!("Loadout's bridge stopped: {error}");
+        let _ = writeln!(io::stderr(), "Loadout's bridge stopped: {error}");
         std::process::exit(1);
     }
 }
