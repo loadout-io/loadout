@@ -32,7 +32,8 @@
  */
 import { createWorkspacesStore } from '../../../state/run-tabs';
 import type { WorkspaceTab, WorkspacesStore } from '../../../state/run-tabs';
-import { runFor } from '../../../state/run';
+import { knownRun } from '../../../state/run';
+import { forgetFeed } from '../feed/live';
 import { closeTerminal, stop } from '../io';
 
 /**
@@ -43,9 +44,9 @@ import { closeTerminal, stop } from '../io';
  * karcie było to niewidoczne, a przy drugiej znak `×` na karcie, w której nic nie chodzi, ubijał
  * bieg idący gdzie indziej — cudzą pracę, bez pytania i bez śladu.
  *
- * Rozstrzygamy tym, co okno WIE: `id` karty jest folderem jej biegu, a sesja tego folderu
- * (`runFor`) niesie nazwę workflow dokładnie wtedy, kiedy w tym folderze coś idzie. Silnik
- * prowadzi dziś jeden bieg naraz (zapadka `going` w `../io`), więc „w tym folderze coś idzie"
+ * Rozstrzygamy tym, co okno WIE: `id` karty jest folderem jej biegu, a istniejąca sesja tego
+ * folderu (`knownRun`) niesie nazwę workflow dokładnie wtedy, kiedy w tym folderze coś idzie.
+ * Silnik prowadzi dziś jeden bieg naraz (zapadka `going` w `../io`), więc „w tym folderze coś idzie"
  * jest równoważne „to jest TEN bieg, który zatrzyma `stop_run`" — i to jest cała uczciwość,
  * jaką ta funkcja może mieć bez argumentu po tamtej stronie granicy.
  *
@@ -60,7 +61,11 @@ import { closeTerminal, stop } from '../io';
  * zamykanej karty.
  */
 async function stopRunOf(tab: string): Promise<void> {
-  if (runFor(tab).getState().workflow === '' && runFor(null).getState().workflow === '') return;
+  /* 2026-09 (Z-26): samo pytanie przy `×` nie zakłada magazynu biegu pod identyfikatorem
+   * terminalu. Taki klucz nie jest folderem i żaden bieg nigdy niczego do niego nie zapisze. */
+  const here = knownRun(tab)?.getState().workflow ?? '';
+  const withoutScope = knownRun(null)?.getState().workflow ?? '';
+  if (here === '' && withoutScope === '') return;
   await stop();
 }
 
@@ -87,6 +92,9 @@ function endLeadOf(tab: string): void {
   closeTerminal(tab).catch(() => {
     /* Świadomie bez zdania: ekran tej karty właśnie zniknął, a powód stoi wyżej. */
   });
+  /* 2026-09 (Z-26): karta znika synchronicznie, więc jej model też schodzi w tej samej
+   * czynności. Wynik komendy dotyczy dowodu śmierci po stronie Rusta, nie zasięgu widoku. */
+  forgetFeed(tab);
 }
 
 /**

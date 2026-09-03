@@ -150,13 +150,27 @@ describe('two terminals in one folder keep two histories', () => {
     ).toBe(kept);
   });
 
-  it('keeps the lines of a terminal that a person closed', () => {
+  it('keeps a declined close intact and forgets the lines after a real close', () => {
     twoTerminalsInOneFolder('three-a', 'three-b');
 
     feedFor('three-a').appendLines([note(6, FIRST_SAID)]);
     feedFor('three-b').appendLines([note(7, SECOND_SAID)]);
+    const beforeClose = feedFor('three-b');
+
+    runTabs.getState().setAgents('three-b', 1);
+    runTabs.getState().requestClose('three-b');
+    runTabs.getState().dismissClose();
+    expect(
+      historyOf(feedFor('three-b').view),
+      'declining the close changed the terminal even though its card stayed on the bar',
+    ).toEqual([SECOND_SAID]);
+    expect(
+      feedFor('three-b'),
+      'declining the close rebuilt the stream instead of leaving it alone',
+    ).toBe(beforeClose);
 
     /* Karta bez pracujących agentów zamyka się od razu — ten przypadek nie zatrzymuje biegu. */
+    runTabs.getState().setAgents('three-b', 0);
     runTabs.getState().requestClose('three-b');
     expect(
       runTabs.getState().tabs.map((card) => card.id),
@@ -166,10 +180,12 @@ describe('two terminals in one folder keep two histories', () => {
 
     expect(
       historyOf(feedFor('three-b').view),
-      'closing a terminal threw its history away. The registry has no removal on purpose: what ' +
-        'the lead agent said stays readable, and a model dropped on the way out looks identical ' +
-        'right up to the moment somebody asks for it again.',
-    ).toEqual([SECOND_SAID]);
+      'closing a terminal kept its old history reachable under the identity of a future card',
+    ).toEqual([]);
+    expect(
+      feedFor('three-b'),
+      'closing a terminal kept the same stream object alive after its card disappeared',
+    ).not.toBe(beforeClose);
   });
 
   it('wakes the screen on the switch itself, not on the next line', () => {

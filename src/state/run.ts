@@ -471,7 +471,13 @@ export function createRunStore(): RunStore {
 
     answer(questionId: number, option: string): void {
       /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [FOUNDATIONS §2.2]. */
-      set((state) => ({ answers: [...state.answers, { questionId, option, who: 'you' }] }));
+      set((state) => {
+        const answers = [...state.answers, { questionId, option, who: 'you' as const }];
+        /* 2026-09 (Z-26): odpowiedź starsza niż okno linii nie ma już pytania, pod którym
+         * mogłaby stanąć. Tniemy głowę jak `lines`, żeby zachować najnowszy ciąg rozmowy. */
+        answers.splice(0, Math.max(0, answers.length - LINE_LIMIT));
+        return { answers };
+      });
     },
   }));
 }
@@ -526,6 +532,11 @@ export function runFor(workspace: string | null): RunStore {
   const fresh = createRunStore();
   sessions.set(key, fresh);
   return fresh;
+}
+
+/** Istniejący magazyn tego zakresu, bez zakładania go samym pytaniem. */
+export function knownRun(workspace: string | null): RunStore | undefined {
+  return sessions.get(workspace ?? NO_WORKSPACE);
 }
 
 /**

@@ -14,11 +14,10 @@
  * dokładnie wtedy, kiedy człowiek zajrzy do innego folderu — a wraca do niej z pustą historią
  * albo z »Thinking…« sprzed dwóch minut."
  *
- * Sesja POWSTAJE NA ŻĄDANIE i ZOSTAJE. Nic jej nie kasuje: `feeds` nie ma usuwania i to jest
- * treść wymogu, nie przeoczenie — model zwolniony przy przełączeniu wyglądałby identycznie do
- * chwili powrotu, a wtedy oddawałby pustą historię biegu, który nadal idzie. Sufit pamięci
- * niesie sam model (`LINE_LIMIT` wierszy okna), więc rejestr rośnie o tyle, ile folderów
- * człowiek naprawdę otworzył.
+ * Sesja POWSTAJE NA ŻĄDANIE i przeżywa PRZEŁĄCZENIE, ale nie zamknięcie terminalu. Model
+ * zwolniony przy przełączeniu oddawałby po powrocie pustą historię biegu, który nadal idzie;
+ * model zostawiony po `×` nie ma już drogi na ekran i trzyma do 2000 wierszy bez właściciela.
+ * 2026-09 (Z-26): `forgetFeed` jest więc częścią zamknięcia karty, nigdy aktywacji innej.
  *
  * 2026-08-20 (T-71) — SESJI JEST TYLE, ILE TERMINALI, NIE ILE ZAKRESÓW. Klucz był folderem, bo
  * folder był najdrobniejszą rzeczą, jaką okno umiało nazwać: karta BYŁA folderem
@@ -52,10 +51,9 @@ import type { HistoryRow, Scroller } from './model';
 import type { Incoming } from '../../../state/run';
 import { activeWorkspace, useWorkspaces } from '../../../state/workspaces';
 /* Magazyn kart, nie jego fabryka: pytanie brzmi „na którą kartę patrzy TO okno", a odpowiada na
- * nie egzemplarz. Import zamyka pętlę `./live` → `../tabs/store` → `../io` → `./live` i to jest
- * bezpieczne z konstrukcji, nie z nadziei: ani jeden z tych trzech modułów nie woła cudzej
- * funkcji w czasie wczytywania, a `runTabs` powstaje w `../tabs/store` z domknięcia, które
- * `../io` tylko przekazuje dalej. */
+ * nie egzemplarz. Import zamyka pętlę `./live` → `../tabs/store` → `./live` i jest bezpieczny
+ * z konstrukcji: `runTabs` powstaje z domknięcia, które sięga po `forgetFeed` dopiero przy
+ * zamknięciu karty, nigdy w czasie wczytywania modułu. */
 import { cardOnTop, runTabs } from '../tabs/store';
 
 /**
@@ -92,7 +90,7 @@ const scroller: Scroller = {
   },
 };
 
-/** Sesje, kluczowane tożsamością terminalu. Rośnie; nic z niej nie wypada. */
+/** Sesje kluczowane tożsamością terminalu; wpis żyje dokładnie tak długo, jak jego karta. */
 const feeds = new Map<string, Feed>();
 
 /**
@@ -117,6 +115,18 @@ export function feedFor(id: string): Feed {
   const fresh = createFeed(scroller);
   feeds.set(id, fresh);
   return fresh;
+}
+
+/** Zwalnia model zamkniętego terminalu; przełączenie karty nigdy tędy nie idzie. */
+export function forgetFeed(id: string): void {
+  /* 2026-09 (Z-26): zamknięta karta nie ma drogi powrotu do modelu. Pozostawienie wpisu
+   * zachowywało pełne okno historii za każdym kolejnym terminalem `＋`. */
+  feeds.delete(id);
+}
+
+/** Terminale, dla których żyje model strumienia — obserwator bilansu pamięci. */
+export function feedsAlive(): readonly string[] {
+  return [...feeds.keys()];
 }
 
 /**
