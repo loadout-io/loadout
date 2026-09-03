@@ -406,11 +406,15 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, start_new_session=True, env=child_env)
 
-    # Sygnatury chwilowego braku binarki vendora: pierwsza jest z opakowania Supersetu,
-    # druga z jadra przy pliku podmienianym w miejscu. Oba stany mijaja w sekundy, wiec JEDNO
-    # ponowienie zamienia stracona godzine pracy w stracone dziesiec sekund. Kazda inna
-    # przyczyna leci dalej bez ponawiania -- to nie jest miejsce na ogolna petle retry.
-    VENDOR_VANISHED = ("not found in PATH", "cannot execute binary file")
+    # Sygnatury awarii CHWILOWEJ, po ktorej ta sama praca ma szanse przejsc bez zmiany:
+    # pierwsza z opakowania Supersetu, druga z jadra przy binarce podmienianej w miejscu,
+    # trzecia to blad po stronie dostawcy (zmierzone 2026-09-03: `server_error` ubil runde
+    # naprawcza Z-10 po 40 minutach). Kazdy z tych stanow mija w sekundy, wiec JEDNO
+    # ponowienie zamienia stracona godzine w stracone dziesiec sekund. Kazda inna
+    # przyczyna leci dalej bez ponawiania -- to nie jest miejsce na ogolna petle retry,
+    # ktora zamaskowalaby prawdziwa czerwien.
+    VENDOR_VANISHED = ("not found in PATH", "cannot execute binary file",
+                       '"error":"server_error"')
 
     proc = spawn()
     try:
