@@ -749,6 +749,9 @@ export function createFeed(scroller: Scroller): Feed {
     waiting = waiting.filter((question) => question.id !== questionId);
     /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [FOUNDATIONS §2.2]. */
     answers = [...answers, { questionId, option, who: 'you' }];
+    /* 2026-09 (Z-26): odpowiedź starsza niż okno historii nie ma już wiersza pytania, pod
+     * którym ekran mógłby ją pokazać. Tniemy głowę, żeby najnowsza odpowiedź zawsze została. */
+    answers = answers.slice(-LINE_LIMIT);
     /* NADPISUJE, nie dokleja: agent stoi na JEDNYM pytaniu i dostanie JEDNO zdanie. Kolejka
      * zbierająca odpowiedzi wysłałaby przy drugim punkcie kontrolnym wszystkie poprzednie
      * jeszcze raz — a to jest ta klasa błędu, która wygląda jak agent, który nie słucha. */

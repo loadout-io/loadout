@@ -33,6 +33,7 @@
 mod a_blocked_way_out_takes_the_chosen_path;
 mod a_candidate_case_needs_a_reason;
 mod a_cell_needs_three_things_to_pass;
+mod a_closed_terminal_lets_its_pump_finish;
 mod a_copy_does_not_outlive_its_run;
 mod a_done_step_proves_its_group_is_dead;
 mod a_fix_may_not_move_what_it_is_measured_by;

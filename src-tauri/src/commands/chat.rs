@@ -703,9 +703,8 @@ pub struct Threads {
 
 #[derive(Default)]
 struct ThreadRegistry {
-    /// Kanał wierszy tego terminalu. Podmieniany przy każdym otwarciu ekranu, nigdy zamykany:
-    /// zamknięcie cudzej rozmowy przy przełączeniu byłoby zgubieniem wątku, o który chodzi
-    /// cała ta zmiana.
+    /// Kanał wierszy tego terminalu. Podmieniany przy każdym otwarciu ekranu, zdejmowany przy
+    /// zamknięciu jego karty; przełączenie na inną kartę nie jest zamknięciem żadnej z nich.
     lines: HashMap<String, Arc<Mutex<LineSink>>>,
     /// Actor tego terminalu. Tylko on posiada `Session`, więc `wait -> send` nie może zostać
     /// przeplecione drugą turą, a Stop może przerwać `wait` i przejść przez `cancel`.
@@ -2196,6 +2195,9 @@ impl Threads {
             .is_some_and(|current| current.same_as(thread))
         {
             state.live.remove(terminal);
+            /* 2026-09 (Z-26): nadajnik należy do tej samej karty co actor. Pozostawiony po
+             * dowodzie `Dead` utrzymywał pompę budzącą się co 16 ms bez widocznego odbiorcy. */
+            state.lines.remove(terminal);
             /* MOST SCHODZI RAZEM Z WĄTKIEM. Zostawiony, byłby gniazdem bez rozmowy — a plik,
              * pod którym nikt nie odpowiada, to most następnej sesji czekający w nieskończoność
              * na powitanie, które nie przyjdzie. */
@@ -2204,6 +2206,15 @@ impl Threads {
              * na nim stało, więc lider dostaje zdanie zamiast tury wiszącej bez końca. */
             state.waiting.remove(terminal);
         }
+    }
+
+    /// Zdejmuje sam widok terminalu, w którym nikt jeszcze nie rozpoczął rozmowy.
+    fn stop_watching(&self, terminal: &str) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .lines
+            .remove(terminal);
     }
 }
 
@@ -2523,7 +2534,13 @@ impl Threads {
             .unwrap_or_else(PoisonError::into_inner)
             .live
             .get(terminal)
-            .cloned()?;
+            .cloned();
+        let Some(thread) = thread else {
+            /* 2026-09 (Z-26): terminal tylko oglądany ma `lines`, ale nie ma `live`. Wczesne
+             * `?` zostawiało więc ostatniego nadawcę i pompę bez końca życia. */
+            self.stop_watching(terminal);
+            return None;
+        };
         let proof = thread.stop().await;
         /* `Alive` ZOSTAJE W REJESTRZE razem z jedynym uchwytem. Dopiero `Dead` albo brak sesji
          * pozwala usunąć actora; inaczej kolejne Close nie miałoby już czego zatrzymać. */
