@@ -218,11 +218,18 @@ fn every_item_type_maps_to_its_own_event() {
             "ToolEnd",   // web_search completed
             "ToolStart", // mcp_tool_call started
             "ToolEnd",   // mcp_tool_call completed
+            // 2026-09-03 (Z-12): ta fikstura nie podaje modelu, a krok bez modelu MUSI
+            // powiedzieć, że jego ceny nie znamy. Do tego dnia milczał, więc jego tury nie
+            // dokładały się do sufitu wydatku i nikt nie wiedział dlaczego — bieg wyglądał
+            // na darmowy. Ten wiersz jest tamtym zdaniem; nie wolno go usunąć, żeby lista
+            // „się zgadzała".
+            "Notice",    // cena tego modelu nie jest znana
             "Finished",  // turn.completed
         ],
         "the mapping from T2 section 9.3, whole. item.updated is deliberately absent from this \
          list: the type exists (T1 correction 9), but a live timer for command_execution is out \
          of scope for T-10, so the honest mapping is no event rather than a second ToolStart. \
+         The Notice before Finished is the price this fixture cannot know (Z-12). \
          It produced {events:?}"
     );
 
