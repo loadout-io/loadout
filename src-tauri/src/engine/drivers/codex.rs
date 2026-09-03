@@ -1249,6 +1249,11 @@ fn answer_app_server_request(
         } else {
             Ok(parsed.get("result").cloned().unwrap_or(Value::Null))
         };
+        if request.method == "thread/start"
+            && let Ok(response) = &answer
+        {
+            state.decoder.learn_model_from_thread_start(response);
+        }
         if request.reply.send(answer).is_err() {
             mark_evidence_incomplete(evidence_target);
         }
@@ -2323,9 +2328,13 @@ fn estimated_cost(model: &str, tokens: Tokens) -> Option<f64> {
     let price = PRICES
         .iter()
         .find(|price| model.starts_with(price.prefix))?;
+    // 2026-09 (Z-12): `input_tokens` Codeksa już zawiera `cached_input_tokens`. Liczenie obu
+    // kolumn jako osobnych wejść płaciło za cache dwa razy — w pamięci projektu pokazało
+    // 23,68 USD zamiast 5,53 USD — więc pełną stawkę dostają wyłącznie świeże tokeny.
+    let fresh_input = tokens.input.saturating_sub(tokens.cached);
     // `From<u64> for f64` nie istnieje. Parsowanie dziesiętnego zapisu zachowuje pełny zakres
     // licznika bez ryzykownego, wyciszanego rzutowania; dla każdego `u64` wynik jest skończony.
-    let input = tokens.input.to_string().parse::<f64>().ok()?;
+    let input = fresh_input.to_string().parse::<f64>().ok()?;
     let cached = tokens.cached.to_string().parse::<f64>().ok()?;
     let output = tokens.output.to_string().parse::<f64>().ok()?;
     Some((input * price.input + cached * price.cached + output * price.output) / 1_000_000.0)
@@ -2472,6 +2481,18 @@ impl CodexDecoder {
         Self {
             model,
             ..Self::default()
+        }
+    }
+
+    fn learn_model_from_thread_start(&mut self, response: &Value) {
+        // 2026-09 (Z-12): App Server 0.153.0 zwraca `model` obok `thread`, pod `/model`.
+        // Echo vendora uzupełnia brak, ale nie może nadpisać jawnego wyboru człowieka.
+        if self.model.is_none() {
+            self.model = response
+                .pointer("/model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+                .map(str::to_owned);
         }
     }
 
@@ -2690,11 +2711,9 @@ impl CodexDecoder {
             .as_deref()
             .and_then(|model| estimated_cost(model, tokens));
         let mut events = Vec::with_capacity(2);
-        if cost_usd.is_none()
-            && let Some(model) = self.model.clone()
-        {
+        if cost_usd.is_none() {
             events.push(AgentEvent::Notice {
-                text: unknown_price_notice(&model),
+                text: unknown_price_notice(self.model.as_deref()),
             });
         }
         events.push(AgentEvent::Finished(Outcome {
@@ -3685,9 +3704,12 @@ impl AgentDriver for CodexDriver {
 
 #[cfg(test)]
 mod app_server_pricing_tests {
-    use serde_json::json;
+    use std::collections::HashMap;
 
-    use super::{AgentEvent, AppServerState, Tokens};
+    use serde_json::json;
+    use tokio::sync::oneshot;
+
+    use super::{AgentEvent, AppServerState, PendingAppRequest, Tokens, answer_app_server_request};
 
     const TOKENS: Tokens = Tokens {
         input: 10_000,
@@ -3723,7 +3745,7 @@ mod app_server_pricing_tests {
         };
         assert_eq!(priced.len(), 1, "a known price must not emit a warning");
         assert_eq!(priced_outcome.tokens, TOKENS);
-        assert_eq!(priced_outcome.cost_usd, Some(0.261));
+        assert_eq!(priced_outcome.cost_usd, Some(0.256));
 
         let unknown = completed_turn(UNKNOWN_MODEL);
         assert!(
@@ -3740,6 +3762,50 @@ mod app_server_pricing_tests {
         };
         assert_eq!(unknown_outcome.tokens, TOKENS);
         assert_eq!(unknown_outcome.cost_usd, None);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_start_response_supplies_the_model_when_the_person_did_not() -> Result<(), String> {
+        let mut state = AppServerState::new(None);
+        let (reply, _answer) = oneshot::channel();
+        let mut pending = HashMap::from([(
+            7,
+            PendingAppRequest {
+                method: "thread/start",
+                reply,
+            },
+        )]);
+        assert!(answer_app_server_request(
+            &json!({
+                "id": 7,
+                "result": {
+                    "thread": { "id": "thread-priced" },
+                    "model": "gpt-5.6-sol"
+                }
+            }),
+            &mut pending,
+            &mut state,
+            None,
+        ));
+
+        state.begin_turn();
+        let events = state.notification(&json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": { "status": "completed" },
+                "usage": {
+                    "inputTokens": TOKENS.input,
+                    "cachedInputTokens": TOKENS.cached,
+                    "outputTokens": TOKENS.output
+                }
+            }
+        }));
+        let Some(AgentEvent::Finished(outcome)) = events.last() else {
+            return Err(format!("the App Server turn did not finish: {events:?}"));
+        };
+        assert_eq!(events.len(), 1, "the response named a priced model");
+        assert_eq!(outcome.cost_usd, Some(0.432));
         Ok(())
     }
 }

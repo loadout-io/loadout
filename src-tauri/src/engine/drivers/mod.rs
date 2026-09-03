@@ -294,7 +294,8 @@ pub enum AgentEvent {
 const UNKNOWN_PRICE_OPENS: &str = "The price for ";
 const UNKNOWN_PRICE_CLOSES: &str = " is not known.";
 
-pub(crate) fn unknown_price_notice(model: &str) -> String {
+pub(crate) fn unknown_price_notice(model: Option<&str>) -> String {
+    let model = model.unwrap_or("the model this step used");
     format!("{UNKNOWN_PRICE_OPENS}{model}{UNKNOWN_PRICE_CLOSES}")
 }
 

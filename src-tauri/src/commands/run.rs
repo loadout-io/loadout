@@ -9204,7 +9204,9 @@ impl Live {
         }
         let budget = self.budget_usd?;
         let spent = self.spent_so_far();
-        (spent >= budget).then(|| {
+        // 2026-09 (Z-12): księga, zdanie i flaga vendora rozliczają centy. Reszta mniejsza niż
+        // cent nie daje dodatniej kwoty, którą wolno przekazać CLI, więc jest już wydana.
+        (budget - spent < 0.01).then(|| {
             format!(
                 "Skipped: this run had spent ${spent:.2} of the ${budget:.2} it was allowed, so \
                  nothing new was started. Steps already working were left to finish."
