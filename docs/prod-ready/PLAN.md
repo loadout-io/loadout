@@ -60,10 +60,17 @@ scripts/h run <id> --prompt "$(cat docs/prod-ready/prompts/<ID>.md)" [--dev code
 | 2 | STOP po dwóch poprawkach albo NIE_WIEM albo bieg dotknął wyroczni | `BLOCKED` z pierwszym zdaniem `co_nie_dziala`; worktree zostaje do wglądu |
 | 3 | sufit czasu/tur | powtórz raz z `LOADOUT_MAX_TURNS=400 LOADOUT_BUDGET_DEV=70` i `--no-plan` (plan jest w stanie); drugi raz — `BLOCKED` |
 
-Po `land`: jeśli `ci.sh full` jest czerwone, merge zostaje na `main`. Gdy powód to `rust-fmt`,
-`web-fmt` albo pojedyncza uwaga clippy — popraw na `main`, `bash scripts/ci.sh full`, commit
-`fix(main): …`. Każdy inny powód: `git revert -m 1 HEAD`, `BLOCKED` z powodem. **Nigdy**
-`git reset --hard` (zablokowane w `deny`).
+Po `land`: jeśli `ci.sh full` jest czerwone, merge zostaje na `main`. Trzy powody wolno
+poprawić na `main` (`bash scripts/ci.sh full`, commit `fix(main): …`): `rust-fmt`, `web-fmt`,
+pojedyncza uwaga clippy — oraz **test rodzeństwa, który przypina zachowanie sprzed tej
+właśnie wlanej zmiany**. Ten czwarty dopisany 2026-09-03 po Z-12: zawężony check biegu nie
+odpala cudzych modułów (H-5), więc test wyliczający pełną sekwencję zdarzeń dowiaduje się
+o nowym zdaniu dopiero w pełnej bramce. Warunek jest ostry: wolno **DOPISAĆ** oczekiwanie
+opisujące nowe, zweryfikowane zachowanie, i **nigdy** osłabić albo usunąć asercję. Jeśli masz
+wątpliwość, czy to jedno czy drugie — to jest rewert.
+
+Każdy inny powód: `git revert -m 1 HEAD`, `BLOCKED` z powodem. **Nigdy** `git reset --hard`
+(zablokowane w `deny`).
 
 ### Czego orkiestrator nie robi
 
@@ -309,7 +316,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-26 | `z26-terminal-eviction` | `prompts/Z-26.md` | R | X→C | | Z-25, Z-10 | **LANDED** `2026-09-03` | jedna runda | jedna linia w `chat.rs` → liczy się jako R |
 | Z-27 | `z27-card-truth` | `prompts/Z-27.md` | TS | X→C | | Z-26 | **LANDED** `2026-09-03` | dwie rundy | pięć drobnych; `PastRunRow` + lustro drutu = `invoke-args` |
 | Z-11 | `z11-skill-tool` | `prompts/Z-11.md` | R | C→X | | Z-10 | **LANDED** `2026-09-03` | jedna runda; żywa wyrocznia potwierdzona | żywa wyrocznia `--ignored`; orkiestrator odpala ją raz po wlaniu (3,75 s) |
-| Z-12 | `z12-codex-pricing` | `prompts/Z-12.md` | R | X→C | | Z-11 | RUNNING | sonda zrobiona, wynik w zleceniu |
+| Z-12 | `z12-codex-pricing` | `prompts/Z-12.md` | R | X→C | | Z-11 | **LANDED** `2026-09-03` | dwie rundy; jeden test rodzeństwa dopisany na `main` |
 | Z-13 | `z13-budget-reservation` | `prompts/Z-13.md` | R | C→X | duże | Z-12 | TODO | |
 | Z-14 | `z14-tee-tool-results` | `prompts/Z-14.md` | R | C→X | | Z-13 | TODO | |
 | Z-15 | `z15-index-without-raw` | `prompts/Z-15.md` | R | C→X | duże | Z-14 | TODO | migracja addytywna; po wlaniu orkiestrator kasuje `~/.loadout/loadout.db*` (indeks odbuduje się) i zapisuje rozmiar przed/po |
@@ -392,6 +399,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 22:40 · Z-12 · LANDED, dwie rundy. Cache Codeksa nie jest już liczony dwa razy (wycena bywała kilkukrotnie zawyżona, więc sufit wydatku wyczerpywał się przedwcześnie), krok bez modelu mówi, że jego ceny nie znamy, a reszta budżetu poniżej centa jest odmową zamiast błędu parsera. Pełne CI po merge'u złapało jedno: `driver_codex_stream` wylicza CAŁĄ sekwencję zdarzeń dla fikstury bez modelu, więc przypinał zachowanie sprzed poprawki. Dopisane oczekiwanie (nie osłabiona asercja) i protokół rozszerzony o ten przypadek · X→C
 - 2026-09-03 21:50 · sonda przed Z-12 · `--max-budget-usd 0.00` jest **odrzucane przez CLI** jako niepoprawny argument, nie czytane jako brak limitu. Czyli krok z resztą poniżej centa dziś nie startuje wcale, a człowiek dostaje błąd parsera zamiast zdania o budżecie — trzeci punkt Z-12 jest pilniejszy, niż zakładał audyt. Wynik dopisany do zlecenia · ręka
 - 2026-09-03 21:40 · Z-11 · LANDED, jedna runda, CI 300 s. Umiejętności wreszcie mają czym się odpalić — a żywa wyrocznia (płatna, uruchomiona raz po wlaniu) potwierdza to na PRAWDZIWYM procesie: Claude ogłasza dokładnie te umiejętności, które bieg mu położył. To zamyka wadę, przez którą cała ścieżka kopiowania, hashowania i odmów była kosztem bez efektu · C→X
 - 2026-09-03 21:05 · Z-27 · LANDED, dwie rundy, CI 313 s. Karta przestała pulsować godzinę po biegu i pytać o agentów, których nie ma; odmówiony drugi Run nie przemianowuje karty żywego biegu; montaż ekranu nie ściąga już całej historii biegu przez IPC · X→C
