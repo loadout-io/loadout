@@ -307,8 +307,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-09 | `z09-sweeper` | `prompts/Z-09.md` | R | C→X | duże | Z-08 | **LANDED** `2026-09-03` | trzy rundy; sufit tur podniesiony raz, podział niepotrzebny | pięć punktów, jeden bieg; jeśli kod 3 — podziel na `z09a` (reconcile+prune) i `z09b` (kopie, forget, exclude) |
 | Z-10 | `z10-blocking-offload` | `prompts/Z-10.md` | R | C→X | duże | Z-09 | **LANDED** `2026-09-03` | dwa razy ubite maszynowo, potem jedna runda | |
 | Z-26 | `z26-terminal-eviction` | `prompts/Z-26.md` | R | X→C | | Z-25, Z-10 | **LANDED** `2026-09-03` | jedna runda | jedna linia w `chat.rs` → liczy się jako R |
-| Z-27 | `z27-card-truth` | `prompts/Z-27.md` | TS | X→C | | Z-26 | RUNNING | pięć drobnych; `PastRunRow` + lustro drutu = `invoke-args` |
-| Z-11 | `z11-skill-tool` | `prompts/Z-11.md` | R | C→X | | Z-10 | TODO | żywa wyrocznia `--ignored`; orkiestrator odpala ją raz po wlaniu (3,75 s) |
+| Z-27 | `z27-card-truth` | `prompts/Z-27.md` | TS | X→C | | Z-26 | **LANDED** `2026-09-03` | dwie rundy | pięć drobnych; `PastRunRow` + lustro drutu = `invoke-args` |
+| Z-11 | `z11-skill-tool` | `prompts/Z-11.md` | R | C→X | | Z-10 | RUNNING | żywa wyrocznia `--ignored`; orkiestrator odpala ją raz po wlaniu (3,75 s) |
 | Z-12 | `z12-codex-pricing` | `prompts/Z-12.md` | R | X→C | | Z-11 | TODO | sonda `--max-budget-usd 0.00` PRZED startem (sekcja 4) |
 | Z-13 | `z13-budget-reservation` | `prompts/Z-13.md` | R | C→X | duże | Z-12 | TODO | |
 | Z-14 | `z14-tee-tool-results` | `prompts/Z-14.md` | R | C→X | | Z-13 | TODO | |
@@ -392,6 +392,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 21:05 · Z-27 · LANDED, dwie rundy, CI 313 s. Karta przestała pulsować godzinę po biegu i pytać o agentów, których nie ma; odmówiony drugi Run nie przemianowuje karty żywego biegu; montaż ekranu nie ściąga już całej historii biegu przez IPC · X→C
 - 2026-09-03 20:20 · Z-26 · LANDED, jedna runda, CI 305 s. Zamknięty terminal zwalnia sesję i pompę po obu stronach granicy — do dziś każdy zamknięty terminal zostawiał `Feed` z dwoma tysiącami wierszy i pompę budzącą się co 16 ms na zawsze · X→C
 - 2026-09-03 19:40 · Z-10 · LANDED, CI 314 s. Bieg był ubity dwa razy maszynowo (limit sesji, potem `server_error` po stronie dostawcy w rundzie naprawczej, 40 minut pracy), za trzecim razem przeszedł w jednej rundzie. Ciężkie `git` i `fs` zeszły z wątku okna i z workerów, na których żyje Stop · C→X
 - 2026-09-03 19:15 · CZWARTA przyczyna maszynowa · `"error":"server_error"` dopisany do listy ponowień w `h.py`. Lista zostaje WĄSKA z premedytacją — trzy dokładne napisy, nie ogólna pętla retry, która zamaskowałaby prawdziwą czerwień · ręka
