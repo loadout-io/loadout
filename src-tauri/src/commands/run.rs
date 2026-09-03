@@ -7034,15 +7034,19 @@ fn stood_before<'a>(graph: &'a WorkflowFile, tile: &str, running: &BTreeSet<&str
 fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     for one in made {
         let Some(branch) = &one.branch else { continue };
-        let isolate::Closed { kept, tidied } = isolate::finish(
+        let isolate::Closed {
+            kept,
+            tidied,
+            left_behind,
+        } = isolate::finish(
             project,
             &one.cwd,
             branch,
             &format!("{}: {}", live.plan.title, one.step),
             base_of_tree(project, &live.plan.dir, &one.cwd).as_deref(),
         );
-        // Dwa zdania, jedno pole: krok umie i zostawić pracę poza gitem, i nie dać się
-        // sprzątnąć, a człowiek ma prawo przeczytać oba.
+        // Trzy zdania, jedno pole: krok umie zostawić pracę poza gitem, nie dać się sprzątnąć
+        // i świadomie pominąć duże nowe pliki, a człowiek ma prawo przeczytać każde z nich.
         let mut says: Vec<String> = Vec::new();
         match kept {
             isolate::Kept::LeftInPlace { branch, why } => {
@@ -7052,6 +7056,7 @@ fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
             kept => tracing::debug!(step = %one.step, ?kept, "the step's folder was closed"),
         }
         says.extend(tidied);
+        says.extend(left_behind);
         if says.is_empty() {
             continue;
         }
@@ -7201,13 +7206,12 @@ fn bring_in_what_each_step_borrowed(plan: &mut Plan, project: &Path) -> Result<(
     Ok(())
 }
 
-/// Kładzie umiejętności każdego kroku tam, gdzie vendorzy naprawdę zaglądają — **obiema drogami**.
+/// Kładzie umiejętności każdego kroku tam, gdzie jego sterownik naprawdę zagląda.
 ///
-/// DWIE PÓŁKI, BO VENDORZY MAJĄ DWIE. Claude Code przyjmuje katalog umiejętności wyłącznie
-/// argumentem (`--plugin-dir`, [S1 §3]); pozostałych pięciu nie umie go przyjąć w ogóle i czyta
-/// `.agents/skills/` w katalogu roboczym kroku [T5 §3.1]. Kładziemy więc obie i nie pytamy, który
-/// vendor to jest: warunek nazywający vendora w tym miejscu jest dokładnie tym drugim zestawem
-/// reguł, przez który w repo źródłowym po cichu umarło skanowanie sekretów (niezmiennik 23).
+/// DWIE DROGI, WYBRANE Z MOŻLIWOŚCI STEROWNIKA. Claude Code przyjmuje katalog umiejętności
+/// argumentem (`--plugin-dir`, [S1 §3]); pozostałych pięciu czyta `.agents/skills/` w katalogu
+/// roboczym kroku [T5 §3.1]. Pytamy `inheriting`, nie nazwę vendora: adapter pozostaje jedynym
+/// miejscem, które zna możliwości programu (niezmiennik 23).
 ///
 /// PO JEDNYM KATALOGU PLUGINU NA KROK ([`STEP_SKILLS_DIR`]), bo zbiór jest własnością kroku.
 ///
@@ -7237,9 +7241,13 @@ fn hand_the_skills_to_the_steps(plan: &mut Plan) -> Result<(), RunError> {
         // (założył je krok przed nim). Tamta odpowiedź w tym miejscu odmawiałaby krokowi, który
         // w folderze człowieka nie pracuje.
         let ours = job.cwd.starts_with(&run_dir);
-        job.skills
-            .into_the_step_folder(&job.cwd, ours, &name)
-            .map_err(|refusal| refused_by_the_skills(&refusal, tile_key))?;
+        // 2026-09 (Z-8): półka jest wyłącznie zastępstwem dla brakującej flagi. Kładzenie jej
+        // także sterownikowi z `--plugin-dir` wnosiło pliki Loadouta do commita kroku.
+        if job.driver.inheriting(&[]).is_none() {
+            job.skills
+                .into_the_step_folder(&job.cwd, ours, &name)
+                .map_err(|refusal| refused_by_the_skills(&refusal, tile_key))?;
+        }
 
         let into = run_dir.join(STEP_SKILLS_DIR).join(&node_key);
         let carried = rewrite::plugin_dir_from_the_library(&job.skills, &into)
@@ -9170,11 +9178,9 @@ impl Live {
                  Loadout stopped the step instead of starting it without them: an agent that \
                  quietly knows less than you picked answers as though there was nothing to know."
             )),
-            // UMIEJĘTNOŚCI TEGO KROKU MAJĄ DRUGĄ DROGĘ i już nią dojechały: leżą w katalogu
-            // roboczym pod `.agents/skills/` ([`hand_the_skills_to_the_steps`]), a odmowa
-            // rozmieszczenia zabrała cały bieg kilkadziesiąt linii wcześniej. Flaga jest tu
-            // dodatkiem dla jedynego vendora, który ją czyta — nie jedynym kanałem — więc jej
-            // brak nie zabiera krokowi niczego i nie ma o czym milczeć.
+            // UMIEJĘTNOŚCI TEGO KROKU MAJĄ DRUGĄ DROGĘ: sterownik bez flagi dostał je w katalogu
+            // roboczym pod `.agents/skills/` ([`hand_the_skills_to_the_steps`]). Sterownik z flagą
+            // wszedłby w `Some` wyżej, więc ten wariant znaczy dokładnie „półka już dojechała".
             None => Ok(Arc::clone(driver)),
         }
     }

@@ -473,14 +473,6 @@ impl AgentDriver for Fake {
         })
     }
 
-    /// Ten dubler UMIE przyjąć gotowy fragment argv — inaczej krok stanąłby na braku szwu, a to
-    /// kryterium nie o tym mówi.
-    fn inheriting(&self, _flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
-        Some(Arc::new(Self {
-            seen: Arc::clone(&self.seen),
-        }))
-    }
-
     async fn start(
         &self,
         spec: RunSpec,

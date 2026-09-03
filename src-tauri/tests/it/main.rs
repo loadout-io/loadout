@@ -282,6 +282,7 @@ mod skills_ingest_no_exec;
 mod skills_ingest_scanner;
 mod skills_ingest_selftest;
 mod skills_missing_stops_the_run;
+mod skills_outside_the_step_commit;
 mod skills_place_destinations;
 mod skills_place_discovery;
 mod skills_place_emit;
