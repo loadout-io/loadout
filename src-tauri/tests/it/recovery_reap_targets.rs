@@ -59,6 +59,10 @@ fn row(step_id: &str, step_status: &str, pgid: Option<i32>) -> RecoveryRow {
         run_boot_id: Some(BOOT.to_owned()),
         pid: pgid,
         pgid,
+        // Pusto i `false`: to kryterium sądzi cele wybrane z pojedynczego `pgid` — dokładnie taki
+        // wiersz, jaki pisała każda wersja przed Z-01d (2026-09).
+        pgids: Vec::new(),
+        death_proof: false,
     }
 }
 
@@ -93,7 +97,12 @@ fn only_a_pgid_that_is_safe_to_kill_reaches_the_reap_list() {
 
     // ── Cały wektor, nie jego długość ──────────────────────────────────────────────────────
     assert_eq!(
-        plan.reap,
+        // Same numery grup: od Z-01d cel niesie obok nich identyfikator biegu, a to kryterium
+        // pyta wyłącznie o to, KTÓRE grupy wolno zabić (2026-09).
+        plan.reap
+            .iter()
+            .map(|target| target.pgid)
+            .collect::<Vec<i32>>(),
         vec![SAFE_PGID],
         "of these six rows exactly one pgid is safe to kill. 0 means 'the caller's own group' \
          in killpg, so a row carrying it makes Loadout kill itself during startup and the crash \

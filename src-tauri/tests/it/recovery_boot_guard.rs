@@ -59,6 +59,10 @@ fn row(step_id: &str, step_status: &str, pgid: i32, boot: Option<&str>) -> Recov
         run_boot_id: boot.map(str::to_owned),
         pid: Some(pgid),
         pgid: Some(pgid),
+        // Pusto i `false`: to kryterium jest o strażniku czasu startu, więc sądzi wiersz z jedną
+        // grupą — dokładnie taki, jaki pisała każda wersja przed Z-01d (2026-09).
+        pgids: Vec::new(),
+        death_proof: false,
     }
 }
 
@@ -126,6 +130,12 @@ fn changed_step_ids(plan: &RecoveryPlan) -> Vec<String> {
         .collect()
 }
 
+/// Same numery grup z planu. Od Z-01d cel niesie obok nich identyfikator biegu, a to kryterium
+/// pyta wyłącznie o to, KTÓRE grupy wchodzą do planu i w jakiej kolejności (2026-09).
+fn groups_to_reap(plan: &RecoveryPlan) -> Vec<i32> {
+    plan.reap.iter().map(|target| target.pgid).collect()
+}
+
 #[test]
 fn a_changed_boot_time_turns_reaping_off_and_nothing_else_off() {
     let machine = machine();
@@ -135,7 +145,7 @@ fn a_changed_boot_time_turns_reaping_off_and_nothing_else_off() {
     // sprząta nigdy, przechodzi oba pozostałe przypadki i zostawia agenta na całą noc.
     let same = recovery::decide(&rows(Some(BOOT_NOW)), &machine);
     assert_eq!(
-        same.reap,
+        groups_to_reap(&same),
         vec![4321, 4322, 4323],
         "with the recorded boot time equal to this machine's, the two running steps and the \
          ready one have to be reaped, in row order. The two finished steps carry a pgid as well \

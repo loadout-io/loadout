@@ -37,8 +37,19 @@ const STRANGER: i32 = 4323;
 /// i trzeba czytać dwa kryteria, żeby wiedzieć, które zachowanie zniknęło.
 fn plan() -> RecoveryPlan {
     RecoveryPlan {
-        reap: vec![DEAD, ALIVE, STRANGER],
+        // 2026-09 (Z-01d): cel niesie obok numeru identyfikator biegu, bo produkcyjny domykacz
+        // pyta grupę, czyja jest, zanim cokolwiek wyśle. To kryterium jest o `apply` i o tym, co
+        // ono robi z TRZEMA odpowiedziami — identyfikator jest tu tylko nośnikiem.
+        reap: vec![target(DEAD), target(ALIVE), target(STRANGER)],
         ..RecoveryPlan::default()
+    }
+}
+
+/// Jeden cel tego samego, zmyślonego biegu.
+fn target(pgid: i32) -> recovery::ReapTarget {
+    recovery::ReapTarget {
+        run_id: "run-under-test".to_owned(),
+        pgid,
     }
 }
 
@@ -49,9 +60,9 @@ fn only_esrch_counts_as_death_and_eperm_is_somebody_else() {
     // ── Przebieg 1: po jednym z każdego ────────────────────────────────────────────────────
     let mut calls: Vec<i32> = Vec::new();
     let report = {
-        let mut closer = |pgid: i32| {
-            calls.push(pgid);
-            match pgid {
+        let mut closer = |target: &recovery::ReapTarget| {
+            calls.push(target.pgid);
+            match target.pgid {
                 DEAD => ReapOutcome::ProvenDead,
                 ALIVE => ReapOutcome::StillAlive,
                 _ => ReapOutcome::Foreign,
@@ -97,8 +108,8 @@ fn only_esrch_counts_as_death_and_eperm_is_somebody_else() {
     // ── Przebieg 2: wszystko z dowodem ─────────────────────────────────────────────────────
     let mut every_call: Vec<i32> = Vec::new();
     let clean = {
-        let mut closer = |pgid: i32| {
-            every_call.push(pgid);
+        let mut closer = |target: &recovery::ReapTarget| {
+            every_call.push(target.pgid);
             ReapOutcome::ProvenDead
         };
         recovery::apply(&plan, &mut closer)
@@ -128,7 +139,7 @@ fn only_esrch_counts_as_death_and_eperm_is_somebody_else() {
 
     // ── Przebieg 3: sama cudza grupa też nie jest czystym raportem ─────────────────────────
     let strangers = {
-        let mut closer = |_pgid: i32| ReapOutcome::Foreign;
+        let mut closer = |_target: &recovery::ReapTarget| ReapOutcome::Foreign;
         recovery::apply(&plan, &mut closer)
     };
     assert!(

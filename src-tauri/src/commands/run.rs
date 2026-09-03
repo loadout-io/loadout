@@ -216,7 +216,7 @@ use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::{
-    GroupId, GroupProof, KeepsLeftovers, Leftover, MissingProgram, PublicationIdentity,
+    GroupId, GroupProof, KeepsLeftovers, Leftover, MissingProgram, PublicationIdentity, StepTag,
 };
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
 use crate::inherit::rewrite;
@@ -7401,6 +7401,15 @@ struct StepRun {
     pid: Option<i32>,
     /// Grupa procesów — to po niej sprząta odzyskiwanie po awarii (T-20).
     pgid: Option<i32>,
+    /// **Każda** grupa, którą ten krok uruchomił, razem z grupą lidera.
+    ///
+    /// 2026-09 (Z-01d) — OBOK `pgid`, nigdy zamiast (niezmiennik 25). Tamto pole jest adresem
+    /// sesji i zapisuje się je przed pierwszym zdarzeniem; to jest spisem tego, co po kroku
+    /// zostało, i powstaje dopiero przy zejściu, bo dopiero wtedy wiadomo, co krok zdążył odpalić.
+    /// Bez niego z kroku zostawała po awarii jedna liczba, a `claude` uruchamia każdą komendę
+    /// narzędzia Bash we własnej grupie — czyli wszystko, co naprawdę pali limit, leżało poza
+    /// sprzątaniem.
+    pgids: Vec<i32>,
     /// Kod wyjścia.
     exit_code: Option<i32>,
     /// Czy supervisor dostał z jądra dowód, że cała grupa procesu nie żyje.
@@ -7611,6 +7620,7 @@ impl Live {
                 ended_at: None,
                 pid: None,
                 pgid: None,
+                pgids: Vec::new(),
                 exit_code: None,
                 death_proof: false,
                 cost_usd: None,
@@ -8205,12 +8215,18 @@ impl Live {
                 "This step has no command, so there is nothing to start.",
             );
         }
-        match self
-            .processes
-            .start(&crate::engine::drivers::command::StartSpec {
+        match self.processes.start(
+            &crate::engine::drivers::command::StartSpec {
                 command: line.to_owned(),
                 cwd: job.cwd.clone(),
-            }) {
+            },
+            /* ZE ZNACZNIKIEM, i to jest ta droga, którą poprzednie podejście go zgubiło
+             * (2026-09, Z-01d). Kafelek „uruchom i zostaw" idzie tędy — `Processes::start` →
+             * `start_to_stay` — czyli obok tej jednej funkcji, w której znacznik wtedy stał.
+             * Jego proces ma z rozmysłu przeżyć krok, więc po awarii aplikacji jest dokładnie
+             * tym, czego odzyskiwanie szuka. */
+            Some(self.tag_for(id)),
+        ) {
             Ok(started) => {
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -8320,6 +8336,44 @@ impl Live {
         }
     }
 
+    /// Znacznik, który każdy proces tego kroku poniesie w środowisku.
+    ///
+    /// # Jedno źródło obu wartości, i to jest cała treść tej funkcji (2026-09, Z-01d)
+    ///
+    /// `self.plan.id` i `self.plan.steps[id].id` to **dokładnie** te dwa napisy, które lądują
+    /// w `run.json` jako `id` biegu i `id` kroku — a odzyskiwanie porównuje pierwszy z nich co do
+    /// bajta. Poprzednie podejście brało tu `RunSpec::run_id`, czyli `job.session`, czyli
+    /// identyfikator SESJI vendora: ten sam napis, który stoi w `agent_session_id`, i nigdy równy
+    /// identyfikatorowi biegu. Skutek był cichy i dokładnie odwrotny do zamierzonego — własna
+    /// żywa grupa wychodziła obca i nie dostawała sygnału w ogóle.
+    fn tag_for(&self, id: StepId) -> StepTag {
+        StepTag::new(&self.plan.id, &self.plan.steps[id].id)
+    }
+
+    /// Dopisuje do księgi grupy, które ten krok po sobie zostawił.
+    ///
+    /// ADDYTYWNIE (niezmiennik 25): `pgids` rośnie i nigdy nie kasuje tego, co już w nim stoi,
+    /// a `pgid` zostaje tam, gdzie był. Krok bywa zatrzymywany kilka razy pod rząd — pierwsza
+    /// próba widzi drzewo, którego druga już nie zobaczy, bo lider zdążył zejść — więc zapis,
+    /// który podmienia listę, gubiłby dokładnie tę grupę, dla której to pole powstało.
+    ///
+    /// Pusta lista nie robi nic i nie pisze pliku: krok bez procesu (kafelek kontrolny, dubel bez
+    /// grupy) nie ma o czym meldować, a zapis „nic się nie stało" przy każdym kroku każdego biegu
+    /// to plik przepisywany bez powodu.
+    fn note_pgids(&self, id: StepId, groups: &[i32]) {
+        if groups.is_empty() {
+            return;
+        }
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            for &pgid in groups {
+                if !step.pgids.contains(&pgid) {
+                    step.pgids.push(pgid);
+                }
+            }
+        });
+    }
+
     /// Księga → `run.json` przez ten sam trwały publisher, którego używa recovery z T-202.
     fn spill(&self, book: &Book) -> Result<(), RunError> {
         let bytes = self.run_file_bytes(book)?;
@@ -8383,6 +8437,7 @@ impl Live {
                 },
                 pid: run.pid,
                 pgid: run.pgid,
+                pgids: &run.pgids,
                 exit_code: run.exit_code,
                 death_proof: run.death_proof,
                 started_at: run.started_at,
@@ -9287,9 +9342,16 @@ impl Live {
          * klonuje sterownik sprzed niego. Ten szew nie odmawia startu przy `None` — vendor bez
          * własnego procesu startowego nie ma czego zostawiać, a atrapy nie mają go wcale
          * (2026-09, Z-4). */
-        Ok(driver
+        let driver = driver
             .leaving_leftovers_with(Arc::clone(leftovers) as Arc<dyn KeepsLeftovers>)
-            .unwrap_or(driver))
+            .unwrap_or(driver);
+        /* ZNACZNIK IDZIE JAKO OSTATNI, i to jest ta sama wymuszona kolejność, co wyżej: każde
+         * z tych opakowań oddaje KLON sterownika, więc znacznik założony wcześniej zginąłby przy
+         * pierwszym następnym opakowaniu — cicho, bo wszystko dalej się kompiluje i bieg dalej
+         * rusza (2026-09, Z-01d). `None` nie odmawia startu: vendor bez własnego procesu nie ma
+         * czego znaczyć, a atrapy nie mają tego szwu wcale. */
+        let tag = self.tag_for(id);
+        Ok(driver.for_step(&tag).unwrap_or(driver))
     }
 
     /// Konfiguruje sterownik i oddaje mu nadajnik dokładnie raz.
@@ -9571,7 +9633,9 @@ impl Live {
         cancel: &CancellationToken,
         slot: &mut Option<limits::Slot>,
     ) -> StepReport {
-        let driver = CommandDriver::new();
+        // ZE ZNACZNIKIEM (2026-09, Z-01d): komenda sprawdzająca to najczęściej `npm test` albo
+        // `cargo test`, czyli dokładnie ta rzecz, która potrafi zostawić po sobie serwer w tle.
+        let driver = CommandDriver::new().for_step(self.tag_for(id));
         // START I CZEKANIE OSOBNO, a nie jednym `CommandDriver::run`, i to jest cała różnica
         // między księgą, która pomaga po awarii, a księgą, która opisuje przeszłość: `run` to
         // `start` plus `settle().await`, więc wraca dopiero PO całym sprawdzeniu — a `pid`
@@ -9618,7 +9682,7 @@ impl Live {
                  * „passed" nad grupą, która dalej odpowiada na sygnał zerowy, jest tym samym
                  * `Ok(())`, przed którym stoi `GroupProof` (niezmiennik 6) — tylko o warstwę
                  * obok kroku agenta. */
-                let proof = self.prove_check_settled(&mut live).await;
+                let proof = self.prove_check_settled(id, &mut live).await;
                 let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -9701,6 +9765,8 @@ impl Live {
         first_proof: GroupProof,
     ) -> StepReport {
         let proof = self.prove_check_dead(&mut live, first_proof).await;
+        // PRZED ZAPISEM DOWODU (2026-09, Z-01d) — powód przy `Live::note_pgids`.
+        self.note_pgids(id, &live.descendant_groups());
         let unproven = matches!(&proof, GroupProof::Alive { .. });
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
@@ -9743,6 +9809,8 @@ impl Live {
         first_proof: GroupProof,
     ) -> StepReport {
         let proof = self.prove_check_dead(&mut live, first_proof).await;
+        // PRZED ZAPISEM DOWODU (2026-09, Z-01d) — powód przy `Live::note_pgids`.
+        self.note_pgids(id, &live.descendant_groups());
         let unproven = matches!(&proof, GroupProof::Alive { .. });
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
@@ -9823,6 +9891,9 @@ impl Live {
         limit: Duration,
     ) -> (StepReport, GroupProof) {
         let proof = self.prove_agent_dead(handle).await;
+        // PRZED ZAPISEM DOWODU, na tej drodze jak na każdej innej (2026-09, Z-01d): uchwyt jeszcze
+        // żyje, więc jeszcze jest kogo zapytać, co ten krok po sobie zostawił.
+        self.note_pgids(id, &handle.descendant_groups());
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
             let step = &mut book.steps[id];
@@ -9857,6 +9928,10 @@ impl Live {
         handle: &mut dyn AgentHandle,
     ) -> (StepReport, GroupProof) {
         let proof = self.prove_agent_dead(handle).await;
+        // PRZED ZAPISEM DOWODU (2026-09, Z-01d). To jest ta droga, dla której cała ta praca
+        // powstała: po nieudanym Stopie ocalały wnuk nie trafiał do pliku, więc odzyskiwanie przy
+        // następnym otwarciu folderu nie miało czego szukać.
+        self.note_pgids(id, &handle.descendant_groups());
         let proven_dead = matches!(&proof, GroupProof::Dead { .. });
         self.update(|book| {
             let step = &mut book.steps[id];
@@ -9935,6 +10010,11 @@ impl Live {
                 self.prove_agent_dead(handle).await
             }
         };
+        // PRZED ZAPISEM DOWODU (2026-09, Z-01d). Także tutaj, choć to jest droga UDANA: `close()`
+        // zbiera lidera, a wnuk nie jest naszym dzieckiem i nie zobaczy go żaden nasz `wait()`
+        // [T7 §3.1] — więc krok, który zszedł sam, potrafi zostawić dokładnie taką samą grupę,
+        // jak krok zatrzymany siłą.
+        self.note_pgids(id, &handle.descendant_groups());
         let proven_dead = matches!(proof, GroupProof::Dead { .. });
         self.update(|book| book.steps[id].death_proof = proven_dead);
         Closed { how, code, proof }
@@ -10016,7 +10096,7 @@ impl Live {
     /// [`Checking::cancel`] jest już czystym [`crate::engine::supervisor::Supervised::stop`] —
     /// nie ma tu przerwania w paśmie do pominięcia, więc uchwyt komendy nie potrzebuje drugiego
     /// czasownika.
-    async fn prove_check_settled(&self, live: &mut Checking) -> GroupProof {
+    async fn prove_check_settled(&self, id: StepId, live: &mut Checking) -> GroupProof {
         // 2026-09 (Z-4) — `GroupProof`, nie `bool`. Ostatni `Alive` decyduje, że uchwyt komendy
         // i jej miejsce z puli jadą do rejestru ocalałych zamiast zginąć z ramką kroku, a `bool`
         // nie niesie ani adresu grupy, ani niczego, na czym dałoby się tę decyzję oprzeć.
@@ -10025,6 +10105,11 @@ impl Live {
         };
         for attempt in 1..=LIVE_STOP_ATTEMPTS {
             let proof = live.cancel().await;
+            // PRZED ODDANIEM DOWODU WOŁAJĄCEMU (2026-09, Z-01d), także na drodze udanej: wiersz
+            // powłoki bywa całym `npm test` z serwerem w tle, a zdanie o grupie lidera nie mówi
+            // o nim nic. `id` jest tu argumentem właśnie po to — bez niego ten zapis musiałby
+            // stać u wołającego, czyli w drugim miejscu na każdą z trzech dróg zejścia komendy.
+            self.note_pgids(id, &live.descendant_groups());
             if matches!(proof, GroupProof::Dead { .. }) {
                 return proof;
             }
@@ -10259,6 +10344,11 @@ impl Live {
                     resets_at: None,
                 });
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
+                // PRZED ZAPISEM DOWODU, tak samo jak na każdej innej drodze zejścia agenta
+                // (2026-09, Z-01d). Powtórzona awaria narzędzia kończy krok równie twardo jak
+                // Stop i równie łatwo zostawia wnuka we własnej grupie — a bez tej linii jego
+                // numer nie trafiał do `run.json` i odzyskiwanie nie miało czego szukać.
+                self.note_pgids(id, &handle.descendant_groups());
                 let proven_dead = matches!(proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -10276,6 +10366,11 @@ impl Live {
             }
             Ended::Turn(Err(error)) => {
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
+                // PRZED ZAPISEM DOWODU, tak samo jak na każdej innej drodze zejścia agenta
+                // (2026-09, Z-01d). Tura, która się przewróciła, zostawia wnuka równie chętnie
+                // jak tura zatrzymana — a to jest droga, którą krok schodzi po awarii sterownika,
+                // czyli dokładnie wtedy, gdy Loadout najmniej wie o tym, co jeszcze biegnie.
+                self.note_pgids(id, &handle.descendant_groups());
                 let proven_dead = matches!(&proof, GroupProof::Dead { .. });
                 self.update(|book| {
                     let step = &mut book.steps[id];
@@ -11710,6 +11805,14 @@ struct StepEntry<'a> {
     agent_session_id: Option<String>,
     pid: Option<i32>,
     pgid: Option<i32>,
+    /// Każda grupa procesów, którą ten krok uruchomił — powód w całości przy [`StepRun::pgids`].
+    ///
+    /// BRAK KLUCZA, KIEDY KROK NIE ZOSTAWIŁ ŻADNEJ, i to jest ta sama decyzja, co przy
+    /// `death_proof` i `repaired`: pusta lista przy każdym kafelku kontrolnym każdego biegu
+    /// w historii jest długością zapłaconą za milczenie. Odzyskiwanie czyta brak klucza jak pustą
+    /// listę (`commands::reconcile::numbers`), więc starsze pliki biegów znaczą dokładnie to samo.
+    #[serde(skip_serializing_if = "<[i32]>::is_empty")]
+    pgids: &'a [i32],
     exit_code: Option<i32>,
     /// Tylko rzeczywisty dowód supervisora. Brak pola oznacza „nie dowiedziono”, nigdy
     /// „dowiedziono, bo krok wygląda na zakończony”.

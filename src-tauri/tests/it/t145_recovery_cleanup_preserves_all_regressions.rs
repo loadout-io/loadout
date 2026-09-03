@@ -273,7 +273,11 @@ fn adapter_session_and_attempt_extremes_do_not_block_cleanup() -> Result<()> {
 
     let plan = recovery::decide(&fixture.rows()?, &machine());
     assert_eq!(
-        plan.reap,
+        // Same numery grup: od Z-01d cel niesie obok nich identyfikator biegu (2026-09).
+        plan.reap
+            .iter()
+            .map(|target| target.pgid)
+            .collect::<Vec<i32>>(),
         vec![SHARED_PGID],
         "both interrupted rows share one safe process group, so cleanup targets it once; the \
          finished row's leftover pgid must not enter the list"
@@ -347,7 +351,13 @@ fn a_run_changes_only_after_one_of_its_rows_is_proven_cut_off() -> Result<()> {
          change. A finished-only run and either unknown wire status provide no such proof"
     );
     assert_eq!(changed_step_ids(&plan), vec!["paused-live-step".to_owned()]);
-    assert_eq!(plan.reap, vec![8204]);
+    assert_eq!(
+        plan.reap
+            .iter()
+            .map(|target| target.pgid)
+            .collect::<Vec<i32>>(),
+        vec![8204]
+    );
     assert_eq!(
         unreadable_ids(&plan),
         vec![

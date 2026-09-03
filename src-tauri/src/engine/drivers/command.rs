@@ -269,6 +269,15 @@ impl Checking {
     pub async fn cancel(&mut self) -> GroupProof {
         self.handle.stop(supervisor::DEFAULT_GRACE).await
     }
+
+    /// **Każda** grupa, którą ta komenda uruchomiła — do zapisania w księdze biegu.
+    ///
+    /// 2026-09 (Z-01d) — pytanie idzie wprost do uchwytu, bo to on trzyma wiedzę o drzewie.
+    /// Krok „sprawdź" odpala wiersz powłoki, a wiersz powłoki potrafi być całym `npm test`
+    /// z serwerem w tle: `group()` mówi wtedy o liderze, a płaci się za wnuki [T7 §3.1].
+    pub fn descendant_groups(&mut self) -> Vec<i32> {
+        self.handle.descendant_groups()
+    }
 }
 
 /// Komenda, która przeżyła pełną eskalację, jest ocalałym dokładnie tak samo jak sesja agenta.
@@ -621,13 +630,31 @@ async fn read_both<Into: FnMut(&[u8])>(
 /// architektoniczne: krok „sprawdź" nazywa **rodzaj sterownika**, nie etap biegu. Planista
 /// dostaje z niego wynik i nie wie, że ten krok „jest bramką" — kolejność mieszka wyłącznie
 /// w grafie (niezmiennik 27).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CommandDriver;
+#[derive(Debug, Clone, Default)]
+pub struct CommandDriver {
+    /// Znacznik biegu i kroku dla procesów, które ten sterownik uruchomi (2026-09, Z-01d).
+    ///
+    /// POLE, a nie argument każdej z trzech dróg do systemu (`start`, `run`, `start_to_stay`),
+    /// i to jest cała odpowiedź na to, jak krok `serve` zgubił znacznik w poprzednim podejściu:
+    /// tam był argumentem jednej drogi, a `serve` szedł drugą i nie dostawał go wcale. Na polu
+    /// niesie go każda.
+    tag: Option<supervisor::StepTag>,
+}
 
 impl CommandDriver {
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self { tag: None }
+    }
+
+    /// Ten sam sterownik, tylko wiedzący, czyj bieg i czyj krok uruchamia.
+    ///
+    /// Bierze `self` przez wartość i oddaje nową wartość, bo `CommandDriver` jest tani i tworzony
+    /// na wywołanie — tu nie ma czego klonować zza `Arc`, w odróżnieniu od sterowników vendorów.
+    #[must_use]
+    pub fn for_step(mut self, tag: supervisor::StepTag) -> Self {
+        self.tag = Some(tag);
+        self
     }
 
     /// Startuje komendę we **własnej grupie procesów**, przez [`supervisor::spawn`].
@@ -642,7 +669,7 @@ impl CommandDriver {
         // `StdinPlan::Null` daje dziecku EOF natychmiast. Krok „sprawdź" nie ma promptu i nie ma
         // nic do powiedzenia komendzie — a odziedziczony stdin kosztuje sekundy czekania na
         // każdym kroku każdego biegu [T1 §4.6].
-        let handle = supervisor::spawn(command, StdinPlan::Null)?;
+        let handle = supervisor::spawn_tagged(command, StdinPlan::Null, &[], self.tag.as_ref())?;
         let group = handle.group();
         Ok(Checking {
             group,
@@ -678,7 +705,12 @@ impl CommandDriver {
         // Dzień, w którym `/start` ma przyjmować pisanie, jest dniem, w którym wchodzi tu
         // `StdinPlan::Keep` — nie ma go, bo nie ma kontrolki, która by to wysyłała
         // (niezmiennik 16).
-        let mut handle = supervisor::spawn(command, StdinPlan::Null)?;
+        //
+        // TĄ SAMĄ DROGĄ CO KROK „SPRAWDŹ", ze znacznikiem z pola (2026-09, Z-01d). To jest ta
+        // droga, na której poprzednie podejście znacznik zgubiło: `serve` szedł przez `Processes::
+        // start` → `start_to_stay`, czyli obok jedynej funkcji, która znacznik ustawiała.
+        let mut handle =
+            supervisor::spawn_tagged(command, StdinPlan::Null, &[], self.tag.as_ref())?;
         let group = handle.group();
 
         let output = StayingOutput {

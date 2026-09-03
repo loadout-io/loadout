@@ -31,6 +31,10 @@ fn interrupted(boot: Option<&str>) -> RecoveryRow {
         run_boot_id: boot.map(str::to_owned),
         pid: Some(4242),
         pgid: Some(4242),
+        // Pusto i `false`: to kryterium jest o zapisie czasu startu maszyny i sądzi wiersz z jedną
+        // grupą — dokładnie taki, jaki pisała każda wersja przed Z-01d (2026-09).
+        pgids: Vec::new(),
+        death_proof: false,
     }
 }
 
@@ -80,7 +84,9 @@ fn a_run_with_the_marker_is_judged_and_one_without_it_is_not() {
          {refusals:?}"
     );
     assert!(
-        plan.reap.contains(&4242),
+        // Po numerze grupy, bo od Z-01d cel niesie obok niego identyfikator biegu, a to kryterium
+        // jest o znaczniku czasu startu maszyny i o niczym innym (2026-09).
+        plan.reap.iter().any(|target| target.pgid == 4242),
         "a run left running on THIS boot has a process group worth proving dead; recovery named \
          none. Plan: {plan:?}"
     );

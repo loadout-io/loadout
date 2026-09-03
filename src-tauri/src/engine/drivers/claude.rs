@@ -914,6 +914,11 @@ pub struct ClaudeDriver {
     inherited: Vec<String>,
     /// Konfiguracja Connections wyłącznie dla tego kroku; wartości są redagowane przez Debug.
     configuration: DriverConfiguration,
+    /// Znacznik biegu i kroku, wpuszczany do środowiska procesu (2026-09, Z-01d).
+    ///
+    /// `None` znaczy „ten proces nie należy do żadnego kroku" i tak zostaje: sonda wersji nie ma
+    /// biegu, a jej `pgid` nie trafia do żadnego `run.json`.
+    tag: Option<supervisor::StepTag>,
 }
 
 impl std::fmt::Debug for ClaudeDriver {
@@ -994,6 +999,7 @@ impl ClaudeDriver {
             settings: None,
             inherited: Vec::new(),
             configuration: DriverConfiguration::default(),
+            tag: None,
         }
     }
 
@@ -1009,6 +1015,7 @@ impl ClaudeDriver {
             settings: None,
             inherited: Vec::new(),
             configuration: DriverConfiguration::default(),
+            tag: None,
         }
     }
 
@@ -2639,6 +2646,12 @@ impl AgentHandle for ClaudeHandle {
         Some(self.process.group())
     }
 
+    /// 2026-09 (Z-01d) — `claude` odpala każdą komendę narzędzia Bash we WŁASNEJ grupie, więc
+    /// zdanie o grupie lidera nie opisuje nawet połowy tego, co ta sesja zostawia po sobie.
+    fn descendant_groups(&mut self) -> Vec<i32> {
+        self.process.descendant_groups()
+    }
+
     /// Kolejna tura **tym samym procesem**: koperta na stdin, stdin zostaje otwarty.
     ///
     /// Koperta, jedna linia JSON [T1 §4.6]:
@@ -2870,7 +2883,12 @@ impl AgentDriver for ClaudeDriver {
         // Przez ten sam spawn co bieg, a nie własną komendą obok: `env_clear()` plus jawna lista
         // przepuszczanych zmiennych mieszka w jednym rdzeniu (niezmiennik 23), a `/dev/null` na
         // stdinie oszczędza tu 3 s ostrzeżenia `no stdin data received` [T1 §4.6].
-        let mut process = match supervisor::spawn(command, StdinPlan::Null) {
+        //
+        // BEZ ZNACZNIKA, i to jest odpowiedź, nie pominięcie (2026-09, Z-01d): sonda wersji nie
+        // należy do żadnego biegu, więc nie ma czym się oznaczyć, a jej `pgid` nie trafia do
+        // żadnego `run.json`. Znacznik zgodny z jakimkolwiek biegiem kazałby odzyskiwaniu
+        // zabijać sondę, której nikt nie zamawiał w tym biegu.
+        let mut process = match supervisor::spawn_tagged(command, StdinPlan::Null, &[], None) {
             Ok(process) => process,
             Err(_error) => {
                 tracing::debug!(
@@ -2972,6 +2990,16 @@ impl AgentDriver for ClaudeDriver {
         Some(Arc::new(self.clone().carrying_evidence(target)))
     }
 
+    /// Ten sterownik startuje własny proces, więc znacznik **bierze** (2026-09, Z-01d).
+    ///
+    /// Klon, nie mutacja pola, z tego samego powodu, co przy każdym innym szwie tego pliku:
+    /// znacznik jest per KROK, a sterownik bywa jeden na całą aplikację.
+    fn for_step(&self, tag: &supervisor::StepTag) -> Option<Arc<dyn AgentDriver>> {
+        let mut driver = self.clone();
+        driver.tag = Some(tag.clone());
+        Some(Arc::new(driver))
+    }
+
     /// Ten sterownik plik ustawień **ma** i to jest jego flaga — więc pisze go i bierze.
     ///
     /// 2026-08-23 (T-92) — TO JEST WOŁACZ, KTÓREGO SZUKAŁO T-53. Budowniczy na konkretnym typie
@@ -3028,13 +3056,16 @@ impl ClaudeDriver {
             }
         })?;
         let environment = self.environment_for_spawn();
-        let mut process = supervisor::spawn_with_environment(
+        let mut process = supervisor::spawn_tagged(
             self.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
             // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
             // bo po tej kopercie przyjdą następne — i przerwanie w paśmie.
             StdinPlan::Keep(format!("{envelope}\n")),
             &environment,
+            // Znacznik biegu do środowiska tury (2026-09, Z-01d). `claude` jest tu skryptem
+            // powłoki, więc to jego wnuki przeżywają awarię — a środowisko dziedziczą wszystkie.
+            self.tag.as_ref(),
         )
         .inspect_err(|_error| {
             if let Some(target) = &self.evidence {

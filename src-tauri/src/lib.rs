@@ -205,6 +205,19 @@ impl AgentDriver for SearchEnvironmentDriver {
             .map(|inner| self.wrapped(inner))
     }
 
+    /// 2026-09 (Z-01d) — TEJ DELEGACJI TU NIE BYŁO i to była cała różnica między znacznikiem,
+    /// który istnieje, a znacznikiem, który dojeżdża.
+    ///
+    /// Fabryka `agent_drivers_with_search` oddaje OBA produkcyjne sterowniki opakowane w ten
+    /// dekorator, więc `configured_driver_for_agent` woła `for_step` **na nim**, nie na
+    /// `ClaudeDriver` ani `CodexDriver`. Bez tej metody odpowiadał tu domyślny `None` z traitu,
+    /// wołający brał `unwrap_or(driver)` — czyli sterownik bez znacznika — i każdy prawdziwy
+    /// proces vendora szedł do `spawn_tagged` z `None`. Zielona bramka tego nie widziała, bo
+    /// testy podstawiają własny sterownik i tego dekoratora nie mają wcale.
+    fn for_step(&self, tag: &engine::supervisor::StepTag) -> Option<Arc<dyn AgentDriver>> {
+        self.inner.for_step(tag).map(|inner| self.wrapped(inner))
+    }
+
     fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
         self.inner.reflecting().map(|inner| self.wrapped(inner))
     }
@@ -222,6 +235,23 @@ impl AgentDriver for SearchEnvironmentDriver {
     }
 }
 
+/// Zakłada na sterownik dekorator zamrożonego świata wyszukiwania.
+///
+/// **Jedyna droga, którą powstaje [`SearchEnvironmentDriver`]**, i dlatego jest publiczna:
+/// bieg widzi sterowniki wyłącznie przez ten dekorator, więc każdy szew traitu, którego on nie
+/// deleguje, jest w produkcji martwy — niezależnie od tego, jak kompletny jest adapter vendora
+/// pod spodem. Kryterium, które chce dowieść, że coś dojeżdża do prawdziwego procesu, musi
+/// przejść tędy; sterownik podstawiony obok tej funkcji sądzi inny kształt niż ten, który
+/// biegnie u człowieka (2026-09, Z-01d — dokładnie tak zniknął znacznik biegu przy pierwszym
+/// podejściu, przy zielonej bramce).
+#[must_use]
+pub fn driver_with_frozen_search(
+    inner: Arc<dyn AgentDriver>,
+    path: std::ffi::OsString,
+) -> Arc<dyn AgentDriver> {
+    Arc::new(SearchEnvironmentDriver { inner, path })
+}
+
 /// Produkcyjna para sterowników z binarkami i środowiskiem zamrożonymi przed pierwszym biegiem.
 #[must_use]
 pub fn agent_drivers_with_search(search: &AgentCliSearch) -> Drivers {
@@ -230,19 +260,19 @@ pub fn agent_drivers_with_search(search: &AgentCliSearch) -> Drivers {
         environment: vec![("PATH".to_owned(), path.clone())],
         ..DriverConfiguration::default()
     };
-    let claude: Arc<dyn AgentDriver> = Arc::new(SearchEnvironmentDriver {
-        inner: Arc::new(
+    let claude = driver_with_frozen_search(
+        Arc::new(
             ClaudeDriver::with_binary(search.resolve("claude"))
                 .with_configuration(configuration.clone()),
         ),
-        path: path.clone(),
-    });
-    let codex: Arc<dyn AgentDriver> = Arc::new(SearchEnvironmentDriver {
-        inner: Arc::new(
+        path.clone(),
+    );
+    let codex = driver_with_frozen_search(
+        Arc::new(
             CodexDriver::with_binary(search.resolve("codex")).with_configuration(configuration),
         ),
         path,
-    });
+    );
     Arc::new(move |vendor| match vendor {
         Vendor::ClaudeCode => Arc::clone(&claude),
         Vendor::Codex => Arc::clone(&codex),
@@ -365,13 +395,13 @@ pub async fn recover_from_last_time(
     };
 
     let plan = recovery::decide(&rows, &machine);
-    let report = recovery::apply(
-        &plan,
-        &mut |pgid| match engine::supervisor::reap_group(pgid) {
-            engine::supervisor::GroupProof::Dead { .. } => recovery::ReapOutcome::ProvenDead,
-            engine::supervisor::GroupProof::Alive { .. } => recovery::ReapOutcome::StillAlive,
-        },
-    );
+    /* 2026-09 (Z-01d) — POLITYKA STRZAŁU PRZYJEŻDŻA Z RDZENIA, nie stoi tutaj drugi raz.
+     *
+     * Do tego dnia były w tym miejscu dwa ramiona `match` nad `reap_group` — czyli własna kopia
+     * decyzji o tym, kiedy wolno zabić zastaną grupę, bez pytania jej o znacznik biegu. Dwie
+     * kopie znaczyły, że ta droga zabija cudze grupy, a droga folderu ich nie tyka: różnica
+     * zależna wyłącznie od tego, gdzie mieszka bieg (niezmiennik 23). */
+    let report = commands::reconcile::reap_what_is_ours(&plan);
 
     // Zapis idzie JEDYNYM pisarzem (niezmiennik 2), a nie własnym połączeniem: drugie
     // połączenie zapisujące do tej bazy jest zakleszczeniem, nie „czasem wolniej", i

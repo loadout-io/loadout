@@ -53,7 +53,7 @@ use tokio_util::sync::CancellationToken;
 use crate::engine::drivers::command::{CommandDriver, StartSpec, Staying, StayingOutput};
 use crate::engine::drivers::{AgentHandle, SessionLeftover};
 use crate::engine::limits::Slot;
-use crate::engine::supervisor::{GroupId, GroupProof, KeepsLeftovers, Leftover};
+use crate::engine::supervisor::{GroupId, GroupProof, KeepsLeftovers, Leftover, StepTag};
 
 /// Co okno wie o jednej uruchomionej rzeczy.
 ///
@@ -327,8 +327,17 @@ impl Processes {
     /// rzecz żyje po powrocie tego wywołania. Wersja czekająca do końca komendy oddawałaby
     /// wołającemu wyłącznie nekrolog — nie byłoby czego pokazać na kafelku ani czego ubić przez
     /// cały czas, kiedy to naprawdę biegnie.
-    pub fn start(&self, spec: &StartSpec) -> io::Result<StartedProcess> {
-        let mut staying = CommandDriver::new().start_to_stay(spec)?;
+    ///
+    /// `tag` jest **argumentem**, nie czymś, co ten rejestr zna sam z siebie (2026-09, Z-01d):
+    /// tędy idzie zarówno kafelek „uruchom i zostaw" z grafu, który do biegu należy, jak i
+    /// `/start` z wiersza wejścia, który nie należy do żadnego. `None` mówi to drugie wprost,
+    /// zamiast wychodzić z pominiętego argumentu.
+    pub fn start(&self, spec: &StartSpec, tag: Option<StepTag>) -> io::Result<StartedProcess> {
+        let driver = match tag {
+            Some(tag) => CommandDriver::new().for_step(tag),
+            None => CommandDriver::new(),
+        };
+        let mut staying = driver.start_to_stay(spec)?;
         let natural_end = staying
             .natural_end()
             .ok_or_else(|| io::Error::other("a started command has no natural-end notification"))?;

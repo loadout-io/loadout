@@ -56,6 +56,10 @@ fn row(
         run_boot_id: Some(BOOT.to_owned()),
         pid: pgid,
         pgid,
+        // Pusto i `false`: to kryterium jest o siedmiu stanach kroku i sądzi wiersz z jedną grupą
+        // — dokładnie taki, jaki pisała każda wersja przed Z-01d (2026-09).
+        pgids: Vec::new(),
+        death_proof: false,
     }
 }
 
@@ -186,7 +190,13 @@ fn recovery_writes_one_status_table_and_the_next_start_finds_nothing_to_do() {
     );
 
     assert_eq!(
-        first.reap,
+        // Same numery grup: od Z-01d cel niesie obok nich identyfikator biegu, a to kryterium
+        // pyta wyłącznie o to, KTÓRE grupy wchodzą do planu i w jakiej kolejności (2026-09).
+        first
+            .reap
+            .iter()
+            .map(|target| target.pgid)
+            .collect::<Vec<i32>>(),
         vec![PGID_READY, PGID_RUNNING_ONE, PGID_RUNNING_TWO],
         "the three unfinished steps have orphans to clean up, in row order. The finished steps \
          carry leftover pgids too (4390, 4391, 4392) and none of them may be signalled"

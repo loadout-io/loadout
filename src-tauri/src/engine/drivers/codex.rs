@@ -221,6 +221,10 @@ pub struct CodexDriver {
     /// Komu oddać grupę, którą zostawił po sobie nieudany start — powód w całości przy
     /// [`AgentDriver::leaving_leftovers_with`] (2026-09, Z-4).
     leftovers: Option<Arc<dyn supervisor::KeepsLeftovers>>,
+    /// Znacznik biegu i kroku, wpuszczany do środowiska każdego procesu tej sesji
+    /// (2026-09, Z-01d). `None` znaczy „ten proces nie należy do żadnego kroku" — tak startuje
+    /// sonda wersji i tylko ona.
+    tag: Option<supervisor::StepTag>,
 }
 
 impl fmt::Debug for CodexDriver {
@@ -251,6 +255,7 @@ impl CodexDriver {
             evidence: None,
             configuration: DriverConfiguration::default(),
             leftovers: None,
+            tag: None,
         }
     }
 
@@ -263,6 +268,7 @@ impl CodexDriver {
             evidence: None,
             configuration: DriverConfiguration::default(),
             leftovers: None,
+            tag: None,
         }
     }
 
@@ -347,6 +353,9 @@ impl CodexDriver {
             stderr_evidence,
             evidence_target: self.evidence.clone(),
             configuration: self.configuration.clone(),
+            // Ten sam znacznik dla KAŻDEJ tury tej sesji: Codex startuje nowy proces na turę,
+            // więc znacznik podany raz przy pierwszej nie doszedłby do żadnej następnej.
+            tag: self.tag.clone(),
         };
         let started = turn.start();
         if started.is_err() {
@@ -384,6 +393,7 @@ impl CodexDriver {
             drained: Some(drained),
             stderr_task: Some(stderr_task),
             configuration: self.configuration.clone(),
+            tag: self.tag.clone(),
         })
     }
 }
@@ -421,6 +431,9 @@ struct Turn {
     /// gdy sam deskryptor pliku nadal przyjmuje bajty.
     evidence_target: Option<EvidenceTarget>,
     configuration: DriverConfiguration,
+    /// Znacznik biegu dla procesu tej tury (2026-09, Z-01d). Codex startuje **nowy proces na
+    /// turę**, więc znacznik musi przyjechać tu, a nie tylko do pierwszego spawnu.
+    tag: Option<supervisor::StepTag>,
 }
 
 type StartedTurn = (
@@ -477,10 +490,13 @@ impl Turn {
         // `Write`, nie `Keep`: po prompcie deskryptor się ZAMYKA, bo to zamknięcie jest tym
         // EOF-em, na który `codex exec` czeka. `Keep` zostawiłby proces wiszący na wejściu,
         // które nigdy się nie skończy — i wyglądałoby to jak agent, który myśli.
-        let mut process = supervisor::spawn_with_environment(
+        let mut process = supervisor::spawn_tagged(
             command,
             StdinPlan::Write(self.prompt),
             &self.configuration.environment,
+            // Znacznik biegu do środowiska tury (2026-09, Z-01d). Bez niego proces `codex exec`
+            // i wszystko, co on odpali, jest po awarii aplikacji nieodróżnialne od cudzej pracy.
+            self.tag.as_ref(),
         )?;
 
         let Some(stdout) = process.stdout() else {
@@ -1715,10 +1731,13 @@ impl CodexDriver {
         // nie dostawał ani jednego serwera — a przez `exec` dostawał. Ten sam agent odpowiadał
         // inaczej zależnie od tego, którą drogą go zawołano, i nic tego nie mówiło.
         command.args(app_server_argv(&self.configuration));
-        let mut process = match supervisor::spawn_with_environment(
+        let mut process = match supervisor::spawn_tagged(
             command,
             StdinPlan::Keep(String::new()),
             &self.configuration.environment,
+            // Most też jest procesem kroku (2026-09, Z-01d): App Server żyje przez całą rozmowę
+            // i przeżywa awarię aplikacji dokładnie tak, jak tura z `exec`.
+            self.tag.as_ref(),
         ) {
             Ok(process) => process,
             Err(error) => {
@@ -1807,6 +1826,14 @@ impl AgentHandle for CodexConversationHandle {
 
     fn group(&self) -> Option<GroupId> {
         self.process.as_ref().map(Supervised::group)
+    }
+
+    /// 2026-09 (Z-01d) — most żyje przez całą rozmowę i odpala narzędzia, więc jego grupa lidera
+    /// nie opisuje wszystkiego, co po nim zostaje.
+    fn descendant_groups(&mut self) -> Vec<i32> {
+        self.process
+            .as_mut()
+            .map_or_else(Vec::new, Supervised::descendant_groups)
     }
 
     async fn send(&mut self, text: String) -> anyhow::Result<()> {
@@ -3243,6 +3270,8 @@ pub struct CodexHandle {
     stderr_task: Option<JoinHandle<()>>,
     /// Te same Connections muszą wrócić w każdej świeżej turze `codex exec resume`.
     configuration: DriverConfiguration,
+    /// Znacznik biegu, który musi wrócić w każdej świeżej turze — powód przy [`Turn::tag`].
+    tag: Option<supervisor::StepTag>,
 }
 
 impl fmt::Debug for CodexHandle {
@@ -3348,6 +3377,14 @@ impl AgentHandle for CodexHandle {
         self.process.as_ref().map(Supervised::group)
     }
 
+    /// 2026-09 (Z-01d) — grupy **bieżącej** tury, bo tylko jej proces jeszcze mamy. Tura
+    /// poprzednia przeszła przez `stop()` z dowodem, zanim ten uchwyt przyjął następną.
+    fn descendant_groups(&mut self) -> Vec<i32> {
+        self.process
+            .as_mut()
+            .map_or_else(Vec::new, Supervised::descendant_groups)
+    }
+
     /// Kolejna tura: **nowy proces** z `codex exec resume <thread_id>` i promptem na stdin.
     ///
     /// Wznawiamy po **najnowszym** identyfikatorze, nie po tożsamości sesji: T1 §11 pytanie 5 nie
@@ -3405,6 +3442,9 @@ impl AgentHandle for CodexHandle {
             stderr_evidence,
             evidence_target: self.evidence.clone(),
             configuration: self.configuration.clone(),
+            // Ten sam znacznik dla KAŻDEJ tury tej sesji: Codex startuje nowy proces na turę,
+            // więc znacznik podany raz przy pierwszej nie doszedłby do żadnej następnej.
+            tag: self.tag.clone(),
         };
         let started = turn.start();
         if started.is_err() {
@@ -3548,7 +3588,10 @@ impl AgentDriver for CodexDriver {
         // Przez ten sam start co bieg, a nie własną komendą obok: `env_clear()` plus jawna lista
         // przepuszczanych zmiennych mieszka w jednym rdzeniu (niezmiennik 23), a `/dev/null` na
         // wejściu oszczędza czekanie na EOF, którego nikt by nie wysłał.
-        let mut process = match supervisor::spawn(command, StdinPlan::Null) {
+        //
+        // BEZ ZNACZNIKA, tak samo jak sonda Claude'a i z tego samego powodu (2026-09, Z-01d):
+        // sonda wersji nie należy do żadnego biegu, a jej `pgid` nie trafia do żadnego `run.json`.
+        let mut process = match supervisor::spawn_tagged(command, StdinPlan::Null, &[], None) {
             Ok(process) => process,
             Err(_error) => {
                 tracing::debug!(
@@ -3608,6 +3651,15 @@ impl AgentDriver for CodexDriver {
     ) -> Option<Arc<dyn AgentDriver>> {
         let mut configured = self.clone();
         configured.leftovers = Some(keeper);
+        Some(Arc::new(configured))
+    }
+
+    /// Ten sterownik startuje własne procesy — turą `exec` i mostem App Servera — więc znacznik
+    /// **bierze** (2026-09, Z-01d). Klon, nie mutacja pola: znacznik jest per krok, a sterownik
+    /// bywa jeden na całą aplikację.
+    fn for_step(&self, tag: &supervisor::StepTag) -> Option<Arc<dyn AgentDriver>> {
+        let mut configured = self.clone();
+        configured.tag = Some(tag.clone());
         Some(Arc::new(configured))
     }
 
@@ -3836,6 +3888,7 @@ mod stop_proof_tests {
             outcome: None,
             drained: None,
             stderr_task: None,
+            tag: None,
         }
     }
 
@@ -4183,6 +4236,7 @@ mod stop_proof_tests {
             stderr_evidence: None,
             evidence_target: None,
             configuration: DriverConfiguration::default(),
+            tag: None,
         };
         let turn_debug = format!("{turn:?}");
 
@@ -4200,6 +4254,7 @@ mod stop_proof_tests {
             drained: None,
             stderr_task: None,
             configuration: DriverConfiguration::default(),
+            tag: None,
         };
         let handle_debug = format!("{handle:?}");
         let driver_debug = format!("{:?}", CodexDriver::with_binary(PathBuf::from(BINARY)));

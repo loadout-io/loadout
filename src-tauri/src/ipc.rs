@@ -3141,10 +3141,16 @@ pub async fn start_process(
 
     state
         .started
-        .start(&crate::engine::drivers::command::StartSpec {
-            command: line.to_owned(),
-            cwd,
-        })
+        .start(
+            &crate::engine::drivers::command::StartSpec {
+                command: line.to_owned(),
+                cwd,
+            },
+            // BEZ ZNACZNIKA, i to jest odpowiedź, nie pominięcie (2026-09, Z-01d): `/start`
+            // z wiersza wejścia nie należy do żadnego kroku żadnego biegu, więc odzyskiwanie
+            // po awarii nie ma prawa uznać go za swoją sierotę. Człowiek ubija go kafelkiem.
+            None,
+        )
         .map(|one| one.pgid)
         .map_err(|error| {
             // Zdanie mówi, CO nie wstało, bo `os error 2` samo nie mówi nic (DESIGN §8).

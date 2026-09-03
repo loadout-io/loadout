@@ -134,8 +134,10 @@ fn a_run_left_running_by_a_closed_window_is_written_off() -> Result<(), Box<dyn 
     )?;
 
     let mut asked: Vec<i32> = Vec::new();
-    let done = with_reaper(project, &mut |pgid| {
-        asked.push(pgid);
+    // 2026-09 (Z-01d): domykacz dostaje cel, nie goły numer — produkcyjny pyta grupę, do którego
+    // biegu należy, zanim cokolwiek wyśle. To kryterium liczy pytania, więc bierze sam numer.
+    let done = with_reaper(project, &mut |target| {
+        asked.push(target.pgid);
         ReapOutcome::ProvenDead
     });
 
@@ -405,8 +407,10 @@ fn a_run_left_standing_on_a_question_is_written_off_too() -> Result<(), Box<dyn 
     )?;
 
     let mut asked: Vec<i32> = Vec::new();
-    let done = with_reaper(project, &mut |pgid| {
-        asked.push(pgid);
+    // 2026-09 (Z-01d): domykacz dostaje cel, nie goły numer — produkcyjny pyta grupę, do którego
+    // biegu należy, zanim cokolwiek wyśle. To kryterium liczy pytania, więc bierze sam numer.
+    let done = with_reaper(project, &mut |target| {
+        asked.push(target.pgid);
         ReapOutcome::ProvenDead
     });
 

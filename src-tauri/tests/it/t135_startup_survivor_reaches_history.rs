@@ -47,9 +47,12 @@ fn a_surviving_process_is_written_once_and_read_back_by_history() -> Result<(), 
     let finished_before = read_text(project, FINISHED_FOLDER)?;
 
     let mut calls = Vec::new();
-    let reconciled = with_reaper(project, &mut |pgid| {
-        calls.push(pgid);
-        if pgid == DEAD_PGID {
+    // 2026-09 (Z-01d): the closer is handed a target, not a bare number, because the production
+    // one asks the group which run it belongs to before it signals anything. This criterion is
+    // about the recorded groups being closed once each, so it keeps reading only the number.
+    let reconciled = with_reaper(project, &mut |target| {
+        calls.push(target.pgid);
+        if target.pgid == DEAD_PGID {
             ReapOutcome::ProvenDead
         } else {
             ReapOutcome::StillAlive
@@ -131,8 +134,8 @@ fn a_surviving_process_is_written_once_and_read_back_by_history() -> Result<(), 
 
     let repaired_once = read_text(project, LEFT_OVER)?;
     let mut second_calls = Vec::new();
-    let second = with_reaper(project, &mut |pgid| {
-        second_calls.push(pgid);
+    let second = with_reaper(project, &mut |target| {
+        second_calls.push(target.pgid);
         ReapOutcome::ProvenDead
     });
     assert!(

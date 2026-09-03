@@ -198,10 +198,15 @@ async fn a_started_command_is_ours_and_goes_down_with_proof() -> Result<(), Box<
     let line = app_that_forks(dir.path(), &marker)?;
 
     let processes = Processes::new();
-    let started = processes.start(&StartSpec {
-        command: line.clone(),
-        cwd: dir.path().to_path_buf(),
-    })?;
+    // 2026-09 (Z-01d) — `None`: te kryteria sądzą rzecz zamówioną z wiersza wejścia, a ta nie
+    // należy do żadnego kroku żadnego biegu, więc nie ma czym się oznaczyć.
+    let started = processes.start(
+        &StartSpec {
+            command: line.clone(),
+            cwd: dir.path().to_path_buf(),
+        },
+        None,
+    )?;
 
     // ── (a) WŁASNA GRUPA, ZNANA OD RAZU ───────────────────────────────────────────────────
     // `pgid` jest zwykłą wartością dostępną natychmiast po starcie, nie czymś wyłuskanym
@@ -336,14 +341,17 @@ async fn a_started_command_is_ours_and_goes_down_with_proof() -> Result<(), Box<
 async fn what_a_started_command_prints_reaches_the_registry() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let processes = Processes::new();
-    let started = processes.start(&StartSpec {
-        // Jedno zdanie na wyjście, jedno na skargi, a potem proces zostaje żywy do `close`.
-        // 2026-08-31 — krótki `echo` jest teraz celowo reapowany razem z ogonem, zanim pętla
-        // zdąży go otworzyć; ta asercja dotyczy wyjścia ŻYWEGO kafelka, nie archiwum po nim.
-        command: "echo it-said-this; echo it-complained-this 1>&2; while :; do sleep 0.2; done"
-            .to_owned(),
-        cwd: dir.path().to_path_buf(),
-    })?;
+    let started = processes.start(
+        &StartSpec {
+            // Jedno zdanie na wyjście, jedno na skargi, a potem proces zostaje żywy do `close`.
+            // 2026-08-31 — krótki `echo` jest teraz celowo reapowany razem z ogonem, zanim pętla
+            // zdąży go otworzyć; ta asercja dotyczy wyjścia ŻYWEGO kafelka, nie archiwum po nim.
+            command: "echo it-said-this; echo it-complained-this 1>&2; while :; do sleep 0.2; done"
+                .to_owned(),
+            cwd: dir.path().to_path_buf(),
+        },
+        None,
+    )?;
 
     let deadline = Instant::now() + PATIENCE;
     loop {
@@ -460,15 +468,18 @@ done
 "#,
     )?;
     let processes = Processes::new();
-    let started = processes.start(&StartSpec {
-        command: format!(
-            "{} {} {}",
-            controlled.display(),
-            ready.display(),
-            release.display()
-        ),
-        cwd: dir.path().to_path_buf(),
-    })?;
+    let started = processes.start(
+        &StartSpec {
+            command: format!(
+                "{} {} {}",
+                controlled.display(),
+                ready.display(),
+                release.display()
+            ),
+            cwd: dir.path().to_path_buf(),
+        },
+        None,
+    )?;
 
     let deadline = Instant::now() + PATIENCE;
     while !ready.exists() {
@@ -580,15 +591,18 @@ done
     )?;
     let processes = Arc::new(Processes::new());
     let weak = Arc::downgrade(&processes);
-    let started = processes.start(&StartSpec {
-        command: format!(
-            "{} {} {}",
-            controlled.display(),
-            ready.display(),
-            term.display()
-        ),
-        cwd: dir.path().to_path_buf(),
-    })?;
+    let started = processes.start(
+        &StartSpec {
+            command: format!(
+                "{} {} {}",
+                controlled.display(),
+                ready.display(),
+                term.display()
+            ),
+            cwd: dir.path().to_path_buf(),
+        },
+        None,
+    )?;
 
     let deadline = Instant::now() + PATIENCE;
     while !ready.exists() {
@@ -672,10 +686,13 @@ async fn the_thirty_minute_ceiling_of_a_check_step_never_reaches_it() -> Result<
     let line = app_that_forks(dir.path(), &marker)?;
 
     let processes = Processes::new();
-    let started = processes.start(&StartSpec {
-        command: line,
-        cwd: dir.path().to_path_buf(),
-    })?;
+    let started = processes.start(
+        &StartSpec {
+            command: line,
+            cwd: dir.path().to_path_buf(),
+        },
+        None,
+    )?;
 
     // Kontrola: przewijanie zegara nad rzeczą, która nigdy nie wstała, dowodzi wyłącznie tego,
     // że jej nie ma.
