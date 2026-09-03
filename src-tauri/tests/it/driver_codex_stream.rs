@@ -107,6 +107,7 @@ fn kind(event: &AgentEvent) -> &'static str {
         AgentEvent::FileEdit { .. } => "FileEdit",
         AgentEvent::RateLimit { .. } => "RateLimit",
         AgentEvent::Notice { .. } => "Notice",
+        AgentEvent::Spending { .. } => "Spending",
         AgentEvent::Finished(_) => "Finished",
     }
 }

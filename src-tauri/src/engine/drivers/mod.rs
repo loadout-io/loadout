@@ -287,6 +287,19 @@ pub enum AgentEvent {
         /// Zdanie po angielsku, gotowe na ekran.
         text: String,
     },
+    /// Ile ta tura kosztuje **do tej chwili**, wedle tabeli cen.
+    ///
+    /// 2026-09 (Z-13b) — OSOBNY WARIANT, NIE POLE W [`AgentEvent::Finished`], i to jest cała
+    /// jego treść: liczniki docierały do biegu wyłącznie na końcu tury, czyli wtedy, gdy jest
+    /// ona już opłacona. Codex nie ma po stronie CLI flagi sufitu (Claude ma
+    /// `--max-budget-usd`), więc to jedyna liczba, którą da się zatrzymać jego turę od środka.
+    ///
+    /// **Nigdy nie zostaje wierszem** (`engine::line`): kwota nie jest historią, a zdanie dla
+    /// człowieka powstaje dopiero przy przerwaniu.
+    Spending {
+        /// Szacunek dla tokenów zużytych od początku TEJ tury — nie rachunek vendora.
+        estimate_usd: f64,
+    },
     /// Koniec tury. Dokładnie **jedno** takie zdarzenie na turę.
     Finished(Outcome),
 }

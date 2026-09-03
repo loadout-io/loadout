@@ -799,7 +799,22 @@ impl AppServerState {
                 if let Some(total) = app_usage(value) {
                     self.cumulative = total;
                 }
-                Vec::new()
+                /* 2026-09 (Z-13b) — LICZNIK W POŁOWIE TURY DOSTAJE CENĘ. Do tego dnia ta gałąź
+                 * zapisywała sumę i oddawała pustą listę, więc jedyną kwotą, jaką bieg widział
+                 * od tego vendora, była cena tury JUŻ opłaconej. Ten vendor nie ma flagi sufitu
+                 * po stronie CLI, więc bez tego zdarzenia nie ma czym przerwać tury, która
+                 * przebija udział kroku w sufcie biegu.
+                 *
+                 * NIEZNANA CENA NIE WYPUSZCZA NIC, dokładnie jak w [`CodexDecoder::finish_tokens`]:
+                 * zero wyglądałoby jak tura darmowa, czyli jak zgoda na dalsze wydawanie. */
+                self.decoder
+                    .model
+                    .as_deref()
+                    .and_then(|model| {
+                        estimated_cost(model, token_delta(self.cumulative, self.baseline))
+                    })
+                    .map(|estimate_usd| vec![AgentEvent::Spending { estimate_usd }])
+                    .unwrap_or_default()
             }
             "item/started" if self.active => {
                 app_item(value).map(CodexDecoder::begun).unwrap_or_default()
