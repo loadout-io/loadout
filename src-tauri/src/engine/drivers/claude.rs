@@ -996,6 +996,12 @@ pub fn budget_argv(dollars: f64) -> Vec<String> {
     // naprawdę zostały. `format!("{:.2}")` zaokrągla do NAJBLIŻSZEGO centa, więc przy reszcie
     // 6,665 wypisałoby 6,67 — pół centa ponad sufit, który postawił człowiek.
     let cents = (dollars.max(0.0) * 100.0).floor() / 100.0;
+    // 2026-09 (Z-12): Claude Code 2.1.259 odrzuca zero przed startem zdaniem
+    // `--max-budget-usd must be a positive number greater than 0`. Pusty fragment pozwala
+    // wspólnej księdze odmówić kroku własnym, zrozumiałym zdaniem o wyczerpanym budżecie.
+    if cents == 0.0 {
+        return Vec::new();
+    }
     vec![BUDGET_FLAG.to_owned(), format!("{cents:.2}")]
 }
 
