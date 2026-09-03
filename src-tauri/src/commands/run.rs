@@ -744,8 +744,12 @@ enum ProvisionalResource {
 /// 2026-08-28 (T-152): przed pierwszym `run.json` nie istnieje lifecycle, który mógłby
 /// posprzątać odmowę po drugiej kopii, seedzie albo materializacji umiejętności. Guard zapisuje
 /// wyłącznie zasoby utworzone przez tę próbę i zdejmuje każdy z nich najwyżej raz, w LIFO.
-struct ProvisionalRun<'a> {
-    project: &'a Path,
+/// 2026-09 (Z-10) — KATALOG PROJEKTU NA WŁASNOŚĆ, nie pożyczka. Całe układanie katalogu biegu
+/// jedzie od tego dnia na pulę blokującą (`git worktree add` to pełny checkout), a domknięcie
+/// przekazane `spawn_blocking` musi być `'static`. Pożyczka `deps.project` tego nie spełnia
+/// i spełnić nie może — jedna dodatkowa kopia ścieżki jest tu ceną za wątek okna.
+struct ProvisionalRun {
+    project: PathBuf,
     faults: Arc<dyn PrestartFaultInjector>,
     bound_prestart: Option<BoundPrestart>,
     reclaimed_run_directory: Option<PathBuf>,
@@ -754,9 +758,9 @@ struct ProvisionalRun<'a> {
     armed: bool,
 }
 
-impl<'a> ProvisionalRun<'a> {
+impl ProvisionalRun {
     fn new(
-        project: &'a Path,
+        project: PathBuf,
         faults: Arc<dyn PrestartFaultInjector>,
         bound_prestart: Option<BoundPrestart>,
     ) -> Self {
@@ -892,7 +896,7 @@ impl<'a> ProvisionalRun<'a> {
     }
 }
 
-impl Drop for ProvisionalRun<'_> {
+impl Drop for ProvisionalRun {
     fn drop(&mut self) {
         if !self.armed {
             return;
@@ -931,7 +935,7 @@ impl Drop for ProvisionalRun<'_> {
                     head,
                     marker_path,
                 } => {
-                    cleanup_provisional_git_tree(self.project, &path, &branch, &head, &marker_path)
+                    cleanup_provisional_git_tree(&self.project, &path, &branch, &head, &marker_path)
                         .map_err(|error| io::Error::other(error.to_string()))
                 }
                 ProvisionalResource::RunFile {
@@ -1806,19 +1810,89 @@ async fn the_planned_run_with_prestart(
             before_stamp,
             faults,
         },
-    )?;
+    )
+    .await?;
     let cancel = deps.control.cancel_token();
     let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
     finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
 }
 
-fn prepare_planned_run(
+/// To, czego przygotowanie biegu potrzebuje z [`RunDeps`] — **na własność**.
+///
+/// 2026-09 (Z-10): całe przygotowanie biegnie na puli blokującej, a `spawn_blocking` żąda
+/// `'static`. Pożyczka `&RunDeps` tego nie spełnia; te trzy pola spełniają, bo każde jest albo
+/// ścieżką, albo uchwytem z `Arc` w środku — więc klon nie kopiuje ani jednego bajta stanu.
+struct WhatPreparingNeeds {
+    project: PathBuf,
+    control: RunControl,
+    processes: std::sync::Arc<crate::commands::processes::Processes>,
+}
+
+async fn prepare_planned_run(
     deps: &RunDeps<'_>,
+    plan: Plan,
+    lines: LineSink,
+    slots: Limiter,
+    options: PreparationOptions,
+) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    /* CAŁE PRZYGOTOWANIE JEDZIE NA PULĘ BLOKUJĄCĄ — RAZEM Z GWARDIĄ (2026-09, Z-10).
+     *
+     * `lay_out_the_run_dir` zakłada drzewo pracy każdego kroku, a to jest `git worktree add`,
+     * czyli PEŁNY CHECKOUT repozytorium — plus kopia plikowa dla projektu bez gita. Stało to
+     * dotąd w linii, więc Start trzymał wątek okna od kliknięcia do pierwszego procesu agenta:
+     * zmierzone na monorepo właściciela kilka sekund.
+     *
+     * WCHODZI TU CAŁE CIAŁO, NIE SAM LAYOUT, i to jest treść tej linii. [`ProvisionalRun`] jest
+     * uzbrojony przez cały czas przygotowania, a jego `Drop` **sprząta gitem**
+     * (`cleanup_provisional_git_tree`, `remove_dir_all`). Wersja, która oddawała uzbrojoną
+     * gwardię z powrotem na worker, przenosiła więc całą pracę tylko dla biegu UDANEGO: każde
+     * `?` po drodze — nieudany seed, odmowa pożyczki, brak umiejętności, odmowa akceptacji
+     * triggera — kasowało drzewo robocze i katalog biegu z powrotem na wątku tokio. Na worker
+     * wraca od dziś wyłącznie wynik: albo gotowy bieg (gwardia rozbrojona), albo `RunError`
+     * (gwardia zdjęta razem z całym sprzątaniem, po tamtej stronie).
+     *
+     * `JoinError` znaczy panikę zadania blokującego (`panic` jest w tym drzewie `deny`); gwardia
+     * schodzi wtedy przy odwijaniu stosu — dalej na wątku puli. */
+    let needs = WhatPreparingNeeds {
+        project: deps.project.to_path_buf(),
+        control: deps.control.clone(),
+        processes: Arc::clone(&deps.processes),
+    };
+    tokio::task::spawn_blocking(move || {
+        everything_before_the_first_process(needs, plan, lines, slots, options)
+    })
+    .await
+    .map_err(|joined| {
+        /* PANIKA WRACA PANIKĄ, a nie odmową Startu (2026-09, Z-10). Pula blokująca łapie panikę
+         * swojego zadania i oddaje ją jako `JoinError` — zamienienie jej tutaj w `RunError`
+         * schowałoby WADĘ KODU za zdaniem „nie udało się zacząć", czyli za czymś, co człowiek
+         * czyta jako swoją pomyłkę. Podnosimy ją więc z powrotem na wątku wołającego, dokładnie
+         * tam, gdzie wychodziła, zanim ta praca zeszła z workera; gwardia biegu (`Settling`)
+         * stoi nad tą ramką, więc `settle()` pada tak samo i Stop dalej odpowiada — mierzy to
+         * `a_run_always_settles::a_panic_in_the_run_body_still_settles_so_stop_answers`. */
+        if joined.is_panic() {
+            std::panic::resume_unwind(joined.into_panic());
+        }
+        RunError::Io(io::Error::other(joined))
+    })?
+}
+
+/// Ciało [`prepare_planned_run`], wykonywane w CAŁOŚCI na puli blokującej.
+///
+/// Synchroniczne od początku do końca i takie ma zostać: gwardia prowizoryczna nie ma prawa
+/// przekroczyć granicy wątku w stanie uzbrojonym — powód w całości stoi u wołającego.
+fn everything_before_the_first_process(
+    needs: WhatPreparingNeeds,
     mut plan: Plan,
     lines: LineSink,
     slots: Limiter,
     options: PreparationOptions,
 ) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    let WhatPreparingNeeds {
+        project,
+        control,
+        processes,
+    } = needs;
     let PreparationOptions {
         acceptance,
         budget_usd,
@@ -1833,27 +1907,22 @@ fn prepare_planned_run(
     let bound_prestart = acceptance
         .as_ref()
         .map(|acceptance| acceptance.bound_prestart.clone());
-    let mut provisional = ProvisionalRun::new(deps.project, Arc::clone(&faults), bound_prestart);
-    let isolated = lay_out_the_run_dir(&plan, deps.project, &mut provisional)?;
+    let mut provisional = ProvisionalRun::new(project.clone(), Arc::clone(&faults), bound_prestart);
+    let isolated = lay_out_the_run_dir(&plan, &project, &mut provisional)?;
     // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
     // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
     provisional.check(PrestartFaultPoint::AfterHandoffSeed)?;
     plan.carried = what_the_run_before_left(&plan);
     say_what_was_left_behind(&lines, &isolated);
-    say_the_folder_is_inside_a_repo(&lines, deps.project, &plan);
+    say_the_folder_is_inside_a_repo(&lines, &project, &plan);
     // Pożyczki i umiejętności piszą pod nowym katalogiem biegu; planowanie pozostaje czyste.
-    bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
+    bring_in_what_each_step_borrowed(&mut plan, &project)?;
     provisional.check(PrestartFaultPoint::AfterBorrow)?;
     hand_the_skills_to_the_steps(&mut plan)?;
     provisional.check(PrestartFaultPoint::AfterSkills)?;
     let live = Arc::new(Live::new(
-        plan,
-        lines,
-        deps.control.clone(),
-        slots,
-        Arc::clone(&deps.processes),
-        budget_usd,
+        plan, lines, control, slots, processes, budget_usd,
     ));
     // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
     provisional.check(PrestartFaultPoint::BeforeFirstRunFile)?;
@@ -1897,7 +1966,7 @@ fn prepare_planned_run(
     // Akceptacja jest ostatnią fallible operacją przed przekazaniem ownershipu. Gdyby stała
     // wcześniej, późniejsza odmowa wycofałaby `run.json`, ale ledger zostałby `Accepted` i
     // wskazywał na nieistniejący bieg z zerem startów.
-    if let Err(failure) = accept_trigger_after_durable_run(deps.project, &live, acceptance) {
+    if let Err(failure) = accept_trigger_after_durable_run(&project, &live, acceptance) {
         if failure.preserve_resources {
             provisional.disarm();
         }
@@ -2010,7 +2079,7 @@ async fn finish_planned_run(
     let mut states = outcome.states;
     live.name_what_the_budget_stopped(&mut states);
     live.close_the_book(&states, outcome.cancelled);
-    close_the_trees(deps.project, &isolated, &live);
+    close_the_trees(deps.project, &isolated, &live).await;
     deps.store.rebuild_from(&live.plan.dir).await?;
     // Auto-pamięć kroków i refleksja czytają skończony, posprzątany i już zindeksowany bieg.
     what_the_steps_wrote_down(deps, &live.plan);
@@ -5631,7 +5700,7 @@ fn some_text(text: &str) -> Option<String> {
 fn lay_out_the_run_dir(
     plan: &Plan,
     project: &Path,
-    provisional: &mut ProvisionalRun<'_>,
+    provisional: &mut ProvisionalRun,
 ) -> Result<Vec<Isolated>, RunError> {
     // Proof obejmuje kazdy bieg, takze bez `fresh-copy`. Dopiero on tworzy realny katalog biegu
     // i `logs/`; zadne `create_dir_all` nie moze po cichu przejsc przez symlink przodka.
@@ -5771,7 +5840,7 @@ fn make_or_recover_tree(
     cwd: &Path,
     branch: &str,
     from: &str,
-    provisional: &mut ProvisionalRun<'_>,
+    provisional: &mut ProvisionalRun,
 ) -> Result<isolate::Made, isolate::Trouble> {
     // Walidacja stoi przed `exists`, `make` i `remove_dir_all`: inaczej niebezpieczny klucz
     // albo symlink przodka moze wskazac ofiare poza biegiem, zanim cleanup zobaczy cel.
@@ -6096,7 +6165,7 @@ fn make_or_recover_git_tree(
     from: &str,
     marker_path: &Path,
     marker: Option<&IsolationMarker>,
-    provisional: &mut ProvisionalRun<'_>,
+    provisional: &mut ProvisionalRun,
 ) -> Result<isolate::Made, isolate::Trouble> {
     if let Some(marked) = marker
         && marked.branch() != branch
@@ -6212,7 +6281,7 @@ fn make_new_git_tree(
     branch: &str,
     from: &str,
     marker_path: &Path,
-    provisional: &mut ProvisionalRun<'_>,
+    provisional: &mut ProvisionalRun,
 ) -> Result<isolate::Made, isolate::Trouble> {
     let mut added_head = None;
     let made = isolate::make_from_after_add(project, cwd, branch, from, |head| {
@@ -7102,7 +7171,37 @@ fn stood_before<'a>(graph: &'a WorkflowFile, tile: &str, running: &BTreeSet<&str
 /// kroku w `run.json`. Bez niego bieg wygląda na udany, a jedyna kopia czyjejś pracy leży poza
 /// gitem, w katalogu, którego nikt nie szuka. Tą samą drogą jedzie zdanie o katalogu albo
 /// gałęzi, których nie dało się sprzątnąć (Z-7), i zdanie o kopii, której nie dało się zdjąć.
-fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
+///
+/// # 2026-09 (Z-10) — DLACZEGO TO JEST `async` I ODDAJE CAŁĄ ROBOTĘ PULI BLOKUJĄCEJ
+///
+/// Bo domykanie jednego drzewa to `git status`, `git add`, `git commit`, `git worktree remove`
+/// i `remove_dir_all` — a to wszystko stało w linii, na tym samym wątku, na którym leży Stop
+/// i pompa wierszy biegu. Zmierzone w `stop_answers_while_the_trees_close.rs`, na repozytorium
+/// z wolnym hakiem commita: okno nie dostawało tury przez **cały** czas domykania, więc człowiek
+/// naciskał Stop i nie działo się nic.
+///
+/// Sprzątanie po biegu, którego nikt już nie prowadzi, robi tę samą pracę tą samą
+/// `isolate::finish` (`commands::reconcile::close_what_the_runs_left`) i schodzi z wątku tą samą
+/// drogą: jego jedyny żywy wołający, `AppState::project_for`, jest od 2026-09 `async` i oddaje
+/// całe uzgodnienie folderu puli blokującej.
+async fn close_the_trees(project: &Path, made: &[Isolated], live: &Arc<Live>) {
+    // Dane na własność, bo `spawn_blocking` żąda `'static`: `Isolated` jest `Clone`, a księga
+    // biegu żyje w `Arc` od chwili powstania (`prepare_planned_run`), więc oba są tu darmowe.
+    let project = project.to_path_buf();
+    let made = made.to_vec();
+    let book = Arc::clone(live);
+    if let Err(joined) =
+        tokio::task::spawn_blocking(move || close_every_tree(&project, &made, &book)).await
+    {
+        // Zadanie blokujące nie panikuje — `panic` jest w tym drzewie `deny` — więc `Err` tutaj
+        // znaczy „bardzo nie tak". Wynik biegu tego nie psuje (nie psuł go też nieudany commit),
+        // ale dziennik jest jedynym miejscem, w którym ktokolwiek się o tym dowie.
+        tracing::error!(%joined, "the folders this run worked in could not be closed down");
+    }
+}
+
+/// Ciało [`close_the_trees`], wykonywane w całości na puli blokującej.
+fn close_every_tree(project: &Path, made: &[Isolated], live: &Live) {
     for one in made {
         let says = match &one.branch {
             Some(branch) => close_one_tree(project, one, branch, live),

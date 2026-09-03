@@ -686,7 +686,9 @@ async fn a_lead_conversation_starts_its_vendor_with_a_marker() -> Result<(), Box
 
     let folder = workspace.path().to_string_lossy().into_owned();
     let (lines, _source) = line_channel(QUEUE_CAP);
-    state.watching_the_lead("product-marker", Some(&folder), lines)?;
+    state
+        .watching_the_lead("product-marker", Some(&folder), lines)
+        .await?;
     say_to_orchestrator_from_window(
         &state,
         "product-marker",
