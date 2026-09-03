@@ -908,7 +908,12 @@ async fn crash_before_run_json_reuses_the_bound_run_and_repairs_its_partial_copy
 
     let store = Store::open(&bench.db())?;
     let starts = Arc::new(AtomicUsize::new(0));
-    let deps = bench.deps(&store, counting_drivers(Arc::clone(&starts)));
+    /* Zawartość kopii czytamy W TRAKCIE kroku — powód w całości przy [`WhileTheCopyStands`]. */
+    let inside = Arc::new(Mutex::new(None));
+    let deps = bench.deps(
+        &store,
+        watching_the_copy(counting_drivers(Arc::clone(&starts)), Arc::clone(&inside)),
+    );
     let (sink, _source) = line_channel(QUEUE_CAP);
     let report =
         run_triggered_workflow_inner(&deps, &bench.request(), &delivery.claim, sink).await?;
@@ -921,10 +926,19 @@ async fn crash_before_run_json_reuses_the_bound_run_and_repairs_its_partial_copy
         "retry changed the preallocated run UUID"
     );
     assert_eq!(starts.load(Ordering::Acquire), 1);
-    assert_eq!(fs::read_to_string(copy.join("source.txt"))?, "the project");
+    assert_eq!(
+        report.dir.join("work/s_ship"),
+        copy,
+        "the step did not work in the copy this fixture half wrote"
+    );
+    let files = seen_files(&inside)?;
     assert!(
-        !copy.join("half-written.txt").exists(),
-        "retry reused a partial file copy instead of repairing it"
+        files.contains(&("source.txt".to_owned(), "the project".to_owned())),
+        "the copy the step worked in does not carry the project: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|(name, _)| name == "half-written.txt"),
+        "retry reused a partial file copy instead of repairing it: {files:?}"
     );
     Ok(())
 }
@@ -2358,6 +2372,73 @@ impl AgentDriver for WhileItStands {
         *self.trees.lock().unwrap_or_else(PoisonError::into_inner) = Some(seen);
         self.inner.start(spec, tx).await
     }
+}
+
+/// Co leżało w katalogu kroku, kiedy agent w nim stanął.
+///
+/// # 2026-09 (Z-9) — TA SAMA PRZEPROWADZKA, CO PRZY T-95 WYŻEJ
+///
+/// I z tego samego powodu: katalog KOPII plikowej też nie przeżywa już biegu
+/// (`commands::run::close_one_copy` sprząta go tak samo, jak `isolate::finish` sprząta drzewo
+/// gita). Pytanie zostaje co do słowa — „czy ponowienie naprawiło niepełną kopię" — zmienia się
+/// wyłącznie chwila odczytu: z „po biegu" na „kiedy krok w niej stał".
+///
+/// Opakowanie, nie podmiana: `start` czyta katalog i woła sterownik, który dostał.
+struct WhileTheCopyStands {
+    inner: Arc<dyn AgentDriver>,
+    files: SeenFiles,
+}
+
+/// Nazwy i treści plików pierwszego poziomu kopii — `None`, dopóki żaden krok nie ruszył.
+///
+/// Alias, bo ten typ stoi w trzech podpisach, a `clippy::type_complexity` (przez `pedantic`
+/// w `full-clippy.sh`) słusznie odmawia trzykrotnemu rozpisaniu tego samego zagnieżdżenia.
+type SeenFiles = Arc<Mutex<Option<Vec<(String, String)>>>>;
+
+#[async_trait]
+impl AgentDriver for WhileTheCopyStands {
+    fn id(&self) -> &'static str {
+        self.inner.id()
+    }
+
+    async fn probe(&self) -> anyhow::Result<Probe> {
+        self.inner.probe().await
+    }
+
+    async fn start(
+        &self,
+        spec: RunSpec,
+        tx: mpsc::Sender<DecodedEvent>,
+    ) -> anyhow::Result<Box<dyn AgentHandle>> {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&spec.cwd) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let text = fs::read_to_string(entry.path()).unwrap_or_default();
+                seen.push((name, text));
+            }
+        }
+        seen.sort();
+        *self.files.lock().unwrap_or_else(PoisonError::into_inner) = Some(seen);
+        self.inner.start(spec, tx).await
+    }
+}
+
+/// Ten sam zestaw sterowników, tylko z notatką o zawartości kopii zdjętą w trakcie kroku.
+fn watching_the_copy(inner: Drivers, files: SeenFiles) -> Drivers {
+    Arc::new(move |vendor| {
+        let watching: Arc<dyn AgentDriver> = Arc::new(WhileTheCopyStands {
+            inner: inner(vendor),
+            files: Arc::clone(&files),
+        });
+        watching
+    })
+}
+
+/// Co leżało w kopii, kiedy krok w niej pracował.
+fn seen_files(files: &SeenFiles) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let seen = files.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    Ok(seen.ok_or("the step never reached the driver, so nothing looked inside the copy")?)
 }
 
 /// Ten sam zestaw sterowników, tylko z notatką o drzewach roboczych zdjętą w trakcie kroku.

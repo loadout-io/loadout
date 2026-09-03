@@ -28,7 +28,14 @@ import { identityToken, statusToken } from '../rail/colour';
 import { reflectionText } from '../reflection/said';
 import { PICK_UP_HERE, pickUpFrom } from './pick-up';
 import { rowsOf } from './rows';
-import { backToTheList, closeHistory, forgetTheBranches, pastNow, subscribeToPast } from './store';
+import {
+  backToTheList,
+  closeHistory,
+  forgetTheBranches,
+  forgetThisRun,
+  pastNow,
+  subscribeToPast,
+} from './store';
 
 /** Nazwa tego ekranu. Jedno słowo, to samo, którym człowiek go wywołał (`/history`). */
 export const HEADING = 'History';
@@ -47,6 +54,15 @@ export const BRANCHES_LEFT = 'Branches this run left';
 
 /** Napis na kontrolce, która je zdejmuje. */
 export const FORGET_THE_BRANCHES = 'Forget the branches';
+
+/**
+ * Napis na kontrolce, która zdejmuje CAŁY bieg — jego folder razem z gałęziami.
+ *
+ * „this run", nie „everything": człowiek stoi na opisie jednego biegu i to jego dotyczy ta
+ * kontrolka. Napis mówiący więcej, niż kontrolka robi, jest przy kasowaniu najgorszym rodzajem
+ * pomyłki.
+ */
+export const FORGET_THIS_RUN = 'Forget this run';
 
 /**
  * Co stoi tam, gdzie stała lista gałęzi.
@@ -190,6 +206,23 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
       </section>
 
       <Branches run={run} />
+
+      {/* JEDNO WYJŚCIE Z CAŁEGO BIEGU, i stoi ostatnie na ekranie — pod wszystkim, co ten bieg
+          zostawił, bo dopiero po przeczytaniu tego człowiek wie, czy chce to stracić.
+          POZA sekcją gałęzi, choć zdejmuje także je: tamta kontrolka nie istnieje, kiedy nie ma
+          czego zdejmować (niezmiennik 16), a folder biegu jest zawsze. */}
+      <div className="mt-4 px-[18px]">
+        <button
+          type="button"
+          data-forget-run
+          onClick={() => {
+            void forgetThisRun();
+          }}
+          className={QUIET}
+        >
+          {FORGET_THIS_RUN}
+        </button>
+      </div>
     </div>
   );
 }

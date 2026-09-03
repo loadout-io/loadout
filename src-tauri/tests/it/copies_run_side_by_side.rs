@@ -363,15 +363,15 @@ async fn three_copies_of_one_step_share_a_window_and_hand_on_three_answers()
          happen before the first process starts (invariant 12)",
         separate.len()
     );
-    for folder in &separate {
-        assert!(
-            folder.join("notes.txt").is_file(),
-            "the copy working in {} was handed a folder without the person's files in it. \"Its \
-             own copy of your files\" is the promise, and an empty folder keeps the letter of it \
-             while breaking the whole point: the agent cannot change what it cannot see",
-            folder.display()
-        );
-    }
+    // Pytane W CHWILI STARTU każdej kopii, nie po biegu — powód w całości przy
+    // [`Entered::had_the_files`].
+    let empty = ran.watch.folders_without_the_files("build");
+    assert!(
+        empty.is_empty(),
+        "these copies were handed a folder without the person's files in it: {empty:?}. \"Its own \
+         copy of your files\" is the promise, and an empty folder keeps the letter of it while \
+         breaking the whole point: the agent cannot change what it cannot see"
+    );
     Ok(())
 }
 
@@ -580,6 +580,13 @@ struct Entered {
     prompt: String,
     /// Katalog roboczy, w którym ta kopia naprawdę stanęła.
     folder: PathBuf,
+    /// Czy w tym katalogu leżały pliki człowieka **w chwili, gdy ta kopia ruszała**.
+    ///
+    /// 2026-09 (Z-9) — PYTANE TUTAJ, A NIE PO BIEGU. Kopia plikowa jest od tego dnia sprzątana po
+    /// biegu razem z drzewami gita (`commands::run::close_one_copy`), więc katalog, do którego
+    /// zaglądała ta asercja, po biegu nie istnieje. Chwila jest zresztą właściwsza: pytanie brzmi
+    /// „czy agent miał co zmieniać", a agent pracuje w środku biegu, nie po nim.
+    had_the_files: bool,
     from: Instant,
     to: Option<Instant>,
 }
@@ -603,6 +610,7 @@ impl Watch {
             label: label_of(prompt),
             prompt: prompt.to_owned(),
             folder: folder.to_path_buf(),
+            had_the_files: folder.join("notes.txt").is_file(),
             from: Instant::now(),
             to: None,
         });
@@ -641,6 +649,15 @@ impl Watch {
         self.lock()
             .iter()
             .filter(|one| one.label == label)
+            .map(|one| one.folder.clone())
+            .collect()
+    }
+
+    /// Katalogi, w których ta kopia stanęła **bez** plików człowieka.
+    fn folders_without_the_files(&self, label: &str) -> Vec<PathBuf> {
+        self.lock()
+            .iter()
+            .filter(|one| one.label == label && !one.had_the_files)
             .map(|one| one.folder.clone())
             .collect()
     }

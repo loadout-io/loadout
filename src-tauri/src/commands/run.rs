@@ -1841,6 +1841,7 @@ fn prepare_planned_run(
     provisional.check(PrestartFaultPoint::AfterHandoffSeed)?;
     plan.carried = what_the_run_before_left(&plan);
     say_what_was_left_behind(&lines, &isolated);
+    say_the_folder_is_inside_a_repo(&lines, deps.project, &plan);
     // Pożyczki i umiejętności piszą pod nowym katalogiem biegu; planowanie pozostaje czyste.
     bring_in_what_each_step_borrowed(&mut plan, deps.project)?;
     provisional.check(PrestartFaultPoint::AfterBorrow)?;
@@ -6772,6 +6773,63 @@ fn say_what_was_left_behind(lines: &LineSink, made: &[Isolated]) {
     }
 }
 
+/// Zdanie o folderze, który leży W ŚRODKU repozytorium, ale nie jest jego korzeniem.
+///
+/// PUBLICZNY, bo kryterium ma ten napis CZYTAĆ, nie przepisywać: ta sama zasada, co przy
+/// `sections/settings/index.tsx` (`DEFAULT_LEAD_LABEL`). Napis wpisany z palca po obu stronach
+/// granicy jest zielony także wtedy, gdy zdanie na ekranie i zdanie w teście to dwie różne rzeczy.
+///
+/// # 2026-09 (Z-9) — CO DO ZNAKU, bez ani jednego naszego słowa przed nim
+///
+/// Pierwsza wersja niosła prefiks „Loadout copied the files instead of branching:" i była
+/// pomyłką dwojaką. Zdanie mówiło o KOPII PLIKÓW także tam, gdzie żadnej kopii nie ma — workflow
+/// pracujący w samym folderze projektu nie zakłada ani jednego katalogu roboczego — a kryterium
+/// pytało o treść przez `contains`, więc nadmiar przechodził niezauważony. Wymieniona jest
+/// przyczyna i skutek, i tylko one: „nie jest korzeniem" samo w sobie nie mówi człowiekowi,
+/// co przez to traci.
+pub const INSIDE_A_REPOSITORY_BUT_NOT_ITS_ROOT: &str = "this folder is inside a git repository but is not its root, so the work will not land on \
+     a branch";
+
+/// Mówi to jedno zdanie **raz na bieg**, kiedy folder biegu leży w środku cudzego repozytorium.
+///
+/// # 2026-09 (Z-9) — po co to jest
+///
+/// `isolate::is_a_repo` odpowiada „to nie repozytorium" także o podkatalogu cudzego repozytorium,
+/// i to jest jej właściwa odpowiedź: drzewo robocze założone w podkatalogu cudzego repo leżałoby
+/// w jego indeksie. Ale skutkiem jest bieg, który wygląda **dokładnie** jak bieg w korzeniu —
+/// kafelki idą, kroki się kończą — a pracy nie ma na żadnej gałęzi i nie będzie. Do dziś nic tego
+/// nie mówiło; człowiek, który wybrał podkatalog swojego monorepo, dowiadywał się o tym przez
+/// nieobecność czegoś, czego nie umiał nazwać.
+///
+/// # Warunkiem jest FOLDER, i tylko folder
+///
+/// Pierwsza wersja pytała najpierw o to, czy jakiś krok dostał własną kopię plików — i milczała
+/// dla workflow, w którym każdy kafelek pracuje w samym folderze projektu (`folder: project`).
+/// A to jest ten sam bieg z tą samą stratą: praca stoi w cudzym drzewie roboczym, nie na żadnej
+/// naszej gałęzi, i nikt jej tam nie szuka. Warunek jest więc jeden, ten z nazwy funkcji.
+///
+/// **Jedno zdanie, nie jedno na krok.** To jest fakt o FOLDERZE, a nie o kafelku: powtórzony przy
+/// każdym kroku uczy człowieka przewijać obok (`NAMED_AT_MOST` obok istnieje z tego samego
+/// powodu). W podpisie stoi PIERWSZY kafelek planu, bo `Line::Problem` niesie nazwę tego, o kim
+/// zdanie mówi (`sections/run/feed/speakers.ts`), a ten fakt dotyczy każdego kroku po kolei.
+/// Bieg bez ani jednego kroku — kształt, którego walidator nie przepuszcza — podpisuje się
+/// tytułem, bo cisza w tym miejscu byłaby drugim warunkiem tej funkcji.
+fn say_the_folder_is_inside_a_repo(lines: &LineSink, project: &Path, plan: &Plan) {
+    if !isolate::inside_a_repo_but_not_its_root(project) {
+        return;
+    }
+    // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem (`ipc::Sent`),
+    // a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+    let _ = lines.send(Line::Problem {
+        agent: plan
+            .steps
+            .first()
+            .map_or_else(|| plan.title.clone(), |one| one.name.clone()),
+        text: INSIDE_A_REPOSITORY_BUT_NOT_ITS_ROOT.to_owned(),
+        resets_at: None,
+    });
+}
+
 /// Wnosi do tego biegu przekazania biegu, który go poprzedził.
 ///
 /// 2026-08-23 — DLA PONOWNEGO ODPALENIA KROKU. Krok powtórzony sam jeden nie ma po czym iść,
@@ -7024,39 +7082,32 @@ fn stood_before<'a>(graph: &'a WorkflowFile, tile: &str, running: &BTreeSet<&str
 /// z niej osiągalna w całości, a katalog dokładał do tego wyłącznie kopię repozytorium na dysku
 /// (T-95).
 ///
-/// **Katalog kopii plikowej nie jest sprzątany nigdy** i to jest cała treść warunku na `branch`:
-/// projekt bez repozytorium gałęzi nie ma, więc tam katalog **jest** pracą, a nie jej kopią.
+/// # 2026-09 (Z-9) — KATALOG KOPII PLIKOWEJ TEŻ SCHODZI
+///
+/// Do tego dnia warunek na `branch` przepuszczał krok bez gałęzi bez ani jednego skutku, a doc
+/// mówił wprost „katalog kopii nie jest sprzątany nigdy": projekt bez repozytorium gałęzi nie ma,
+/// więc katalog **był** jedynym miejscem, w którym praca kroku istniała.
+///
+/// Cena za to była mierzona i płacona przez człowieka: kopia niesie cały projekt bez `.git`,
+/// `node_modules` i `target` ([`isolate::NOT_COPIED`]), zostaje po KAŻDYM biegu i nic w całej
+/// aplikacji nie umiało jej zdjąć — ani po biegu, ani przy otwarciu folderu, ani przyciskiem.
+/// Zmierzone u właściciela 2026-09-02: 87 katalogów `work/` i 3,8 GB w jednym projekcie.
+///
+/// **Po tej zmianie bieg w folderze bez repozytorium nie zostawia nic**, i to jest powiedziane
+/// wprost, bo jest to strata: praca takiego kroku nie ma gdzie wrócić, dopóki folder nie jest
+/// repozytorium. Krok, który ma coś oddać dalej, oddaje to przekazaniem (`memory::handoff`) —
+/// a te leżą w katalogu biegu i zostają.
 ///
 /// Kiedy zapis na gałąź się nie uda, katalog zostaje — a zdanie o tym idzie do wiersza tego
 /// kroku w `run.json`. Bez niego bieg wygląda na udany, a jedyna kopia czyjejś pracy leży poza
 /// gitem, w katalogu, którego nikt nie szuka. Tą samą drogą jedzie zdanie o katalogu albo
-/// gałęzi, których nie dało się sprzątnąć (Z-7).
+/// gałęzi, których nie dało się sprzątnąć (Z-7), i zdanie o kopii, której nie dało się zdjąć.
 fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     for one in made {
-        let Some(branch) = &one.branch else { continue };
-        let isolate::Closed {
-            kept,
-            tidied,
-            left_behind,
-        } = isolate::finish(
-            project,
-            &one.cwd,
-            branch,
-            &format!("{}: {}", live.plan.title, one.step),
-            base_of_tree(project, &live.plan.dir, &one.cwd).as_deref(),
-        );
-        // Trzy zdania, jedno pole: krok umie zostawić pracę poza gitem, nie dać się sprzątnąć
-        // i świadomie pominąć duże nowe pliki, a człowiek ma prawo przeczytać każde z nich.
-        let mut says: Vec<String> = Vec::new();
-        match kept {
-            isolate::Kept::LeftInPlace { branch, why } => {
-                tracing::warn!(step = %one.step, branch, "this step's work is not on its branch, so its folder stays");
-                says.push(why);
-            }
-            kept => tracing::debug!(step = %one.step, ?kept, "the step's folder was closed"),
-        }
-        says.extend(tidied);
-        says.extend(left_behind);
+        let says = match &one.branch {
+            Some(branch) => close_one_tree(project, one, branch, live),
+            None => close_one_copy(one),
+        };
         if says.is_empty() {
             continue;
         }
@@ -7075,6 +7126,124 @@ fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
             });
         });
     }
+}
+
+/// Zamyka JEDNO drzewo gita i oddaje zdania, które człowiek ma o nim przeczytać.
+fn close_one_tree(project: &Path, one: &Isolated, branch: &str, live: &Live) -> Vec<String> {
+    let isolate::Closed {
+        kept,
+        tidied,
+        left_behind,
+    } = isolate::finish(
+        project,
+        &one.cwd,
+        branch,
+        &format!("{}: {}", live.plan.title, one.step),
+        base_of_tree(project, &live.plan.dir, &one.cwd).as_deref(),
+    );
+    // Trzy zdania, jedno pole: krok umie zostawić pracę poza gitem, nie dać się sprzątnąć
+    // i świadomie pominąć duże nowe pliki, a człowiek ma prawo przeczytać każde z nich.
+    let mut says: Vec<String> = Vec::new();
+    match kept {
+        isolate::Kept::LeftInPlace { branch, why } => {
+            tracing::warn!(step = %one.step, branch, "this step's work is not on its branch, so its folder stays");
+            says.push(why);
+        }
+        kept => tracing::debug!(step = %one.step, ?kept, "the step's folder was closed"),
+    }
+    says.extend(tidied);
+    says.extend(left_behind);
+    says
+}
+
+/// Zdejmuje katalog kroku, który pracował w KOPII plików — bo gałęzi tam nie ma.
+///
+/// 2026-09 (Z-9) — `remove_dir_all`, nie `worktree remove`: ten katalog nie jest w rejestrze gita
+/// i nigdy w nim nie był (marker izolacji zapisuje wyłącznie [`make_new_git_tree`]). Powód, dla
+/// którego kasujemy jedyną kopię tej pracy, stoi w całości przy [`close_the_trees`].
+///
+/// Nieudane zdjęcie **nie psuje wyniku biegu**, ale mówi o sobie zdaniem ze ścieżką — dokładnie
+/// tak, jak nieudane sprzątanie drzewa (Z-7). Do dziś taki katalog był ciszą: bieg czytał się
+/// zielono, a w projekcie stał pełny jego odpis.
+fn close_one_copy(one: &Isolated) -> Vec<String> {
+    match fs::remove_dir_all(&one.cwd) {
+        Ok(()) => Vec::new(),
+        // Kroku, który już nie ma katalogu, nie ma o czym meldować. Zdarza się to po biegu
+        // wznowionym w ten sam katalog i nie jest awarią.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            tracing::warn!(step = %one.step, %error, "the step's copy could not be removed after the run");
+            vec![format!(
+                "Loadout could not clear away the folder this step worked in ({error}), so it is \
+                 still here: {}",
+                one.cwd.display()
+            )]
+        }
+    }
+}
+
+/// Jedno drzewo, które bieg zostawił po sobie na dysku — i wszystko, czego trzeba, żeby je zamknąć.
+///
+/// 2026-09 (Z-9) — POLITYKA „GDZIE STOI DRZEWO TEGO KROKU" ZOSTAJE W TYM MODULE (niezmiennik 23).
+/// Uzgodnienie folderu potrzebuje tej odpowiedzi, ale nie ma prawa jej sobie SKŁADAĆ: druga kopia
+/// wiedzy o `work/<klucz>` i `.isolation/<klucz>` rozjechałaby się z tą przy pierwszej poprawce
+/// jednej z nich, a rozjazd w TĘ stronę kasuje cudzą pracę pod cudzą ścieżką.
+pub(super) struct LeftTree {
+    /// Klucz pracy: nazwa katalogu w `work/` i nazwa pliku markera. Równy `node_key` kroku.
+    pub(super) key: String,
+    /// Katalog, w którym ten krok pracował — istnieje w chwili, gdy ta lista powstaje.
+    pub(super) cwd: PathBuf,
+    /// Gałąź, na którą ta praca ma trafić. Z markera, nie ze sklejenia nazwy.
+    pub(super) branch: String,
+    /// Commit, z którego to drzewo powstało — punkt startu dla `isolate::finish`.
+    pub(super) head: String,
+}
+
+/// Drzewa, które ten bieg zostawił na dysku, po jednym na marker izolacji.
+///
+/// # Dlaczego z markerów, a nie z `run.json`
+///
+/// Bo marker jest jedynym miejscem, w którym stoi zapisany PUNKT STARTU drzewa, a bez niego
+/// `isolate::finish` nie odróżnia kroku, który nic nie zrobił, od kroku, który zacommitował całą
+/// swoją pracę sam (Z-7). Nazwa gałęzi też jest w markerze: zgadywanie jej z identyfikatora biegu
+/// byłoby drugą regułą na to samo pytanie, a ta droga KASUJE.
+///
+/// # Drzewo bez katalogu jest już zamknięte i nie wchodzi na tę listę
+///
+/// I to nie jest optymalizacja. Marker zostaje po zamkniętym drzewie na zawsze, więc bez tego
+/// warunku każde otwarcie folderu próbowałoby zamknąć każde drzewo każdego biegu w historii —
+/// a `worktree remove` na nieistniejącej ścieżce odmawia, czyli człowiek dostawałby zdanie
+/// o nieudanym sprzątaniu przy każdym dotknięciu projektu, przy niczym, co by się nie udało.
+///
+/// `symlink_metadata`, nie `exists()`: dowiązanie pod tą ścieżką nie jest katalogiem, który
+/// założył Loadout, a `git -C` poszedłby za nim do cudzego drzewa.
+pub(super) fn trees_left_in(run_dir: &Path) -> Vec<LeftTree> {
+    let Ok(entries) = fs::read_dir(run_dir.join(ISOLATION_MARKERS_DIR)) else {
+        return Vec::new();
+    };
+    let mut left: Vec<LeftTree> = Vec::new();
+    for entry in entries.flatten() {
+        let Some(key) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(Some(marker)) = read_isolation_marker(&entry.path()) else {
+            continue;
+        };
+        let cwd = own_copy_at(run_dir, &key);
+        if !fs::symlink_metadata(&cwd).is_ok_and(|one| one.file_type().is_dir()) {
+            continue;
+        }
+        left.push(LeftTree {
+            key,
+            cwd,
+            branch: marker.branch().to_owned(),
+            head: marker.head().to_owned(),
+        });
+    }
+    // Kolejność katalogu jest dowolna, a zdania dla człowieka składają się w jedno pole: bez
+    // sortowania ten sam folder czytałby się przy każdym otwarciu inaczej.
+    left.sort_by(|one, other| one.key.cmp(&other.key));
+    left
 }
 
 /// Commit, z którego powstało drzewo tego kroku — z markera izolacji.

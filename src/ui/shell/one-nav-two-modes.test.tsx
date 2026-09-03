@@ -328,7 +328,10 @@ describe('the side nav is one navigation with two modes, never two navigations',
        pamięć tego procesu. `vi.resetModules()` daje magazyn w stanie, w jakim ma go człowiek
        otwierający aplikację; powłokę importujemy razem z nim, żeby czytała TEN magazyn. */
     vi.resetModules();
-    answer.of = { defaultLead: '', defaultBudgetUsd: 75, navCollapsed: true };
+    /* `keepLastRuns` jedzie w tej odpowiedzi razem z resztą, choć ten punkt jej nie sądzi:
+       atrapa granicy ma oddawać wpis w kształcie, w jakim oddaje go Rust, a wpis o jeden klucz
+       krótszy uczyłby magazyn odpowiadać na coś, czego produkcja nie wysyła (2026-09, Z-9). */
+    answer.of = { defaultLead: '', defaultBudgetUsd: 75, navCollapsed: true, keepLastRuns: 0 };
     const fresh = await import('../../state/settings');
     const { App: FreshApp } = await import('../../App');
     await fresh.loadSettings();

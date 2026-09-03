@@ -97,7 +97,7 @@ fn a_folder_that_is_not_a_repo_still_gets_its_own_copy() -> Result<(), Box<dyn E
     // są te kształty") od pytania, które zadaje ten test („czy bieg je przeżywa").
     let _elsewhere = lay_out_every_shape(&project)?;
 
-    let seen = Arc::new(Mutex::new(None::<PathBuf>));
+    let seen = Arc::new(Mutex::new(None::<Saw>));
     let db = bench.db();
     let workflow = bench.workflow("every-shape", WORKFLOW)?;
 
@@ -137,35 +137,34 @@ fn a_folder_that_is_not_a_repo_still_gets_its_own_copy() -> Result<(), Box<dyn E
         "the step ended as {steps:?}"
     );
 
-    let cwd = seen
+    /* CO AGENT NAPRAWDĘ ZOBACZYŁ, zapisane w chwili, gdy stanął w swoim katalogu — powód
+     * w całości przy [`Saw`]. */
+    let saw = seen
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+        .take()
         .ok_or("the step never reached the driver")?;
 
     // (b) Zwykły plik jest, z tą samą treścią.
     assert_eq!(
-        fs::read_to_string(cwd.join(PLAIN))?,
-        PLAIN_TEXT,
+        saw.plain.as_deref(),
+        Some(PLAIN_TEXT),
         "the ordinary file did not arrive with its content"
     );
     assert!(
-        cwd.join("src").join("main.rs").exists(),
+        saw.nested,
         "the nested file did not arrive: a project is a tree, not a list"
     );
 
     // (c) Dowiązania są DOWIĄZANIAMI, nie kopiami swojego celu.
-    let link = fs::symlink_metadata(cwd.join(LINK_TO_DIR))
-        .map_err(|error| format!("{LINK_TO_DIR} is missing from the step's copy: {error}"))?;
     assert!(
-        link.file_type().is_symlink(),
-        "{LINK_TO_DIR} arrived as something other than a link. Following it copies a whole \
-         unrelated tree into every step of every run — here that is a second repository"
+        saw.link_to_dir_is_a_link,
+        "{LINK_TO_DIR} arrived as something other than a link, or did not arrive at all. \
+         Following it copies a whole unrelated tree into every step of every run — here that is \
+         a second repository"
     );
-    let broken = fs::symlink_metadata(cwd.join(BROKEN_LINK))
-        .map_err(|error| format!("{BROKEN_LINK} is missing from the step's copy: {error}"))?;
     assert!(
-        broken.file_type().is_symlink(),
+        saw.broken_link_is_a_link,
         "the broken link did not survive as a link"
     );
 
@@ -231,7 +230,7 @@ struct Setup {
     project: PathBuf,
     db: PathBuf,
     workflow: PathBuf,
-    seen: Arc<Mutex<Option<PathBuf>>>,
+    seen: Arc<Mutex<Option<Saw>>>,
 }
 
 /// Puszcza bieg w OSOBNYM wątku i oddaje odbiornik, na którym da się czekać z zegarem.
@@ -287,16 +286,54 @@ fn run_in_its_own_thread(
     waiting
 }
 
+// ── co dubler zobaczył ─────────────────────────────────────────────────────────────────────
+
+/// Co stało w katalogu kroku **w chwili, gdy agent w nim stanął**.
+///
+/// # 2026-09 (Z-9) — CZYTANE W ŚRODKU BIEGU, nie po nim
+///
+/// Kopia plikowa jest od tego dnia sprzątana po biegu razem z drzewami gita
+/// (`commands::run::close_one_copy`), więc katalog, do którego zaglądały asercje tego pliku, po
+/// biegu nie istnieje. Chwila jest zresztą właściwsza od poprzedniej: pytanie brzmi „czy agent
+/// dostał wszystkie kształty", a agent pracuje w środku biegu.
+///
+/// Zapisujemy FAKTY, nie ścieżkę do sprawdzenia później: sam `PathBuf` odłożony na po biegu jest
+/// dokładnie tym, co przestało działać.
+#[derive(Debug)]
+struct Saw {
+    /// Treść zwykłego pliku, jeśli w ogóle dojechał.
+    plain: Option<String>,
+    /// Czy dojechał plik z podkatalogu — projekt jest drzewem, nie listą.
+    nested: bool,
+    /// Czy dowiązanie do katalogu przyjechało JAKO DOWIĄZANIE, a nie jako kopia swojego celu.
+    link_to_dir_is_a_link: bool,
+    /// Czy zerwane dowiązanie przeżyło jako dowiązanie.
+    broken_link_is_a_link: bool,
+}
+
+impl Saw {
+    fn of(cwd: &Path) -> Self {
+        Self {
+            plain: fs::read_to_string(cwd.join(PLAIN)).ok(),
+            nested: cwd.join("src").join("main.rs").exists(),
+            link_to_dir_is_a_link: fs::symlink_metadata(cwd.join(LINK_TO_DIR))
+                .is_ok_and(|one| one.file_type().is_symlink()),
+            broken_link_is_a_link: fs::symlink_metadata(cwd.join(BROKEN_LINK))
+                .is_ok_and(|one| one.file_type().is_symlink()),
+        }
+    }
+}
+
 // ── dubler ─────────────────────────────────────────────────────────────────────────────────
 
-fn fake_drivers(seen: Arc<Mutex<Option<PathBuf>>>) -> Drivers {
+fn fake_drivers(seen: Arc<Mutex<Option<Saw>>>) -> Drivers {
     let driver: Arc<dyn AgentDriver> = Arc::new(Fake { seen });
     Arc::new(move |_vendor| Arc::clone(&driver))
 }
 
 #[derive(Debug)]
 struct Fake {
-    seen: Arc<Mutex<Option<PathBuf>>>,
+    seen: Arc<Mutex<Option<Saw>>>,
 }
 
 #[async_trait]
@@ -317,7 +354,7 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(spec.cwd.clone());
+        *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(Saw::of(&spec.cwd));
         let session = SessionRef {
             vendor: VENDOR,
             id: spec.run_id.to_string(),

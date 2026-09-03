@@ -1054,6 +1054,25 @@ export function forgetRunBranches(folder: string | null, run: string): Promise<r
   return invoke<readonly string[]>('forget_run_branches', { folder, run });
 }
 
+/**
+ * Zdejmuje CAŁY bieg: jego gałęzie i jego folder. Oddaje nazwy zdjętych gałęzi.
+ *
+ * 2026-09 (Z-9) — POWSTAŁO Z DRUGIEJ POŁOWY TEGO, CO ZOSTAWAŁO NA ZAWSZE. Gałęzie biegu dało się
+ * zdjąć od 2026-08-23 ([`forgetRunBranches`]); jego folder — ze wszystkim, co bieg w nim zapisał —
+ * nie schodził niczym. Zmierzone u właściciela 2026-09-02: 87 folderów biegów w jednym projekcie,
+ * 3,8 GB, a jedyną drogą był terminal.
+ *
+ * Ta sama ostrożność, co przy gałęziach, i ta sama całościowość: kiedy którakolwiek gałąź tego
+ * biegu jest w tej chwili otwarta do pracy w innym folderze, Rust nie zdejmuje ANI JEDNEJ rzeczy —
+ * ani gałęzi, ani folderu — i mówi, która to gałąź.
+ *
+ * @param folder zakres, w którym ten bieg leży — ta sama ścieżka, którą dostało [`readRun`].
+ * @param run nazwa katalogu z `PastRunRow.folder`.
+ */
+export function forgetRun(folder: string | null, run: string): Promise<readonly string[]> {
+  return invoke<readonly string[]>('forget_run', { folder, run });
+}
+
 /** Licznikowy paragon kopiowania; raport nigdy nie wraca do JavaScriptu. */
 export interface DiagnosticsReceipt {
   readonly runs: number;

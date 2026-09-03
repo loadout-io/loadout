@@ -30,6 +30,10 @@ const SMALLEST: f64 = 0.01;
 /// przechodziłaby także dla zapisu, który tego argumentu nie czyta.
 const FOLDED: bool = true;
 
+/// Ile ostatnich biegów zostaje w folderze projektu (2026-09, Z-9). NIE zero, bo zero jest tu
+/// wartością domyślną — przechodziłoby także dla zapisu, który tego argumentu nie czyta.
+const KEPT: u32 = 5;
+
 #[test]
 fn a_fresh_library_has_nobody_leading_and_says_so_without_failing() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
@@ -66,7 +70,7 @@ fn a_fresh_library_has_nobody_leading_and_says_so_without_failing() -> Result<()
 fn the_chosen_lead_is_on_disk_and_a_later_read_finds_it() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
 
-    let saved = save_settings_inner(home.path(), LEAD, CEILING, FOLDED)?;
+    let saved = save_settings_inner(home.path(), LEAD, CEILING, FOLDED, KEPT)?;
     assert_eq!(
         saved.default_lead, LEAD,
         "saving has to answer with what the file now holds, so the window has one source of \
@@ -132,10 +136,10 @@ fn the_chosen_lead_is_on_disk_and_a_later_read_finds_it() -> Result<(), Box<dyn 
 fn an_amount_that_is_not_a_ceiling_is_refused_and_leaves_the_file_alone()
 -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
-    save_settings_inner(home.path(), LEAD, CEILING, FOLDED)?;
+    save_settings_inner(home.path(), LEAD, CEILING, FOLDED, KEPT)?;
 
     for amount in [0.0, -1.0, f64::INFINITY, f64::NAN] {
-        let refused = save_settings_inner(home.path(), LEAD, amount, !FOLDED);
+        let refused = save_settings_inner(home.path(), LEAD, amount, !FOLDED, KEPT + 1);
         assert!(
             refused.is_err(),
             "{amount} was accepted as how much a run may spend. A run allowed to spend nothing \
@@ -150,6 +154,7 @@ fn an_amount_that_is_not_a_ceiling_is_refused_and_leaves_the_file_alone()
             default_lead: LEAD.to_owned(),
             default_budget_usd: CEILING,
             nav_collapsed: FOLDED,
+            keep_last_runs: KEPT,
         },
         "a refused amount overwrote what was already in the file, so one mistyped key leaves the \
          person with a default they never chose"

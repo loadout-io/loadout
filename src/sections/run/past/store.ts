@@ -20,7 +20,7 @@
  */
 import { why } from '../../../ipc/why';
 import type { PastRun, PastRunRow } from '../io';
-import { forgetRunBranches } from '../io';
+import { forgetRun, forgetRunBranches } from '../io';
 
 /** Co widać: nic, lista albo jeden otwarty bieg. */
 export interface PastState {
@@ -137,6 +137,45 @@ export async function forgetTheBranches(): Promise<void> {
   // inny, a wtedy odpowiedź o gałęziach tamtego biegu nie ma prawa przepisać tego, co widać.
   if (now.opened !== run) return;
   now = { ...now, opened: { ...run, branches: [] }, said: null };
+  publish();
+}
+
+/** Co powiedzieć, kiedy Rust nie dał rady zdjąć tego biegu. */
+export const COULD_NOT_FORGET_RUN = 'Loadout could not take this run away.';
+
+/**
+ * „Forget this run" — zdejmuje otwarty bieg razem z jego folderem i gałęziami.
+ *
+ * TUTAJ, A NIE W KOMPONENCIE, z tego samego powodu, co [`forgetTheBranches`] obok: to repo nie ma
+ * jsdom, więc `onClick` nie odpala się w żadnym kryterium, a polityka zamknięta w handlerze byłaby
+ * kodem, którego nic nie sądzi (niezmiennik 16).
+ *
+ * WRACAMY NA LISTĘ I ZDEJMUJEMY Z NIEJ WIERSZ, i to jest cała różnica wobec zapominania samych
+ * gałęzi. Tam bieg zostaje otwarty, bo dalej istnieje — zniknęły tylko jego gałęzie. Tutaj bieg
+ * PRZESTAŁ ISTNIEĆ: panel zostawiony na jego opisie pokazywałby strumienie i przekazania, których
+ * nie ma już na dysku, a „wróć" wracałoby do listy z wierszem, którego nie da się otworzyć.
+ *
+ * Odmowa zostawia WSZYSTKO tak, jak było, bo Rust odmawia w całości: ani folderu, ani gałęzi.
+ * Zdanie idzie w `said`, czyli tam, gdzie człowiek nacisnął (niezmiennik 29).
+ */
+export async function forgetThisRun(): Promise<void> {
+  const run = now.opened;
+  if (run === null) return;
+  try {
+    await forgetRun(now.folder, run.folder);
+  } catch (error: unknown) {
+    sayInHistory(why(error, COULD_NOT_FORGET_RUN));
+    return;
+  }
+  // Ten sam bieg, co przed pytaniem: człowiek mógł w międzyczasie wrócić do listy i otworzyć
+  // inny, a wtedy odpowiedź o tamtym biegu nie ma prawa przepisać tego, co widać.
+  if (now.opened !== run) return;
+  now = {
+    ...now,
+    rows: now.rows.filter((row) => row.folder !== run.folder),
+    opened: null,
+    said: null,
+  };
   publish();
 }
 

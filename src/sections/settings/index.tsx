@@ -32,11 +32,14 @@ import { why } from '../../ipc/why';
 import {
   chooseDefaultBudgetUsd,
   chooseDefaultLead,
+  chooseKeepLastRuns,
   defaultBudgetUsd,
   defaultLead,
+  keepLastRuns,
   loadSettings,
   subscribeToDefaultBudget,
   subscribeToDefaultLead,
+  subscribeToKeepLastRuns,
 } from '../../state/settings';
 import { useSectionStore } from '../../ui/shell/section-store';
 import { list as savedAgents } from '../agents/io';
@@ -61,6 +64,23 @@ export const DEFAULT_LEAD_LABEL = 'Default lead agent';
  * w nazwie „75" nie mówi, czy chodzi o dolary, minuty, czy o liczbę kroków.
  */
 export const DEFAULT_BUDGET_LABEL = 'Default spend limit $';
+
+/**
+ * Nazwa kontrolki retencji — z tego samego powodu stała, co dwie wyżej.
+ *
+ * KRÓTKA, bo tekst etykiety staje się NAZWĄ pola dla czytnika ekranu (zmierzone 2026-08-28 na
+ * siedmiu czerwonych kryteriach e2e): akapit wpisany tutaj nazywałby kontrolkę całym akapitem.
+ * Co zrobi zero, mówi opis obok, przez `aria-describedby`.
+ */
+export const KEEP_LAST_RUNS_LABEL = 'Past runs to keep per project';
+
+/** Co robi zero. Zdanie na ekranie, nie w dymku: to jest jedyne wyjście z raz wpisanej liczby. */
+export const KEEP_EVERYTHING_SAID =
+  'Zero keeps every run. Any other number clears the older ones out of the project folder the ' +
+  'next time Loadout opens it.';
+
+/* Pole retencji WSKAZUJE na swój opis po identyfikatorze — ta sama droga, co przy kwocie wyżej. */
+const WHAT_ZERO_DOES = 'keep-last-runs-what-zero-does';
 
 /** Ta sama podłoga, co po obu stronach granicy: kwota poniżej centa nie jest sufitem. */
 const SMALLEST = 0.01;
@@ -168,6 +188,12 @@ export default function SettingsScreen(): ReactElement {
    * stoi przy [`saveTheAmountOnce`].
    */
   const lastSent = useRef<string | null>(null);
+  /* Ile ostatnich biegów zostaje w folderze projektu, i jego własny szkic pisania. Osobne
+   * pudełko zapadki, nie wspólne z kwotą: jedno wspólne zamykałoby drugie pole po pierwszym
+   * zapisie, bo zapadką JEST wysłana wartość, a nie flaga „leci". */
+  const runsKept = useSyncExternalStore(subscribeToKeepLastRuns, keepLastRuns, keepLastRuns);
+  const [typingRuns, setTypingRuns] = useState<string | null>(null);
+  const lastRunsSent = useRef<string | null>(null);
 
   /* Biblioteka czytana przy wejściu na sekcję. Pliki są prawdą, a ekran jest ich widokiem —
    * lista trzymana w pamięci między wejściami pokazywałaby agenta skasowanego obok. */
@@ -220,6 +246,25 @@ export default function SettingsScreen(): ReactElement {
       said: setSaid,
       taken: () => {
         setTyping(null);
+      },
+    });
+  }
+
+  /**
+   * Oddaje dyskowi wpisaną liczbę biegów — TĄ SAMĄ jedną drogą, co kwota wyżej.
+   *
+   * 2026-09 (Z-9): drugie pole liczbowe na tym ekranie nie dostaje drugiej polityki „raz i tylko
+   * raz" (niezmiennik 23). Podwójny zapis, przed którym broni [`saveTheAmountOnce`], kosztuje tu
+   * więcej niż przy kwocie: to jest liczba, po której kasują się katalogi biegów.
+   */
+  async function keepAtMost(): Promise<void> {
+    await saveTheAmountOnce({
+      typed: typingRuns,
+      lastSent: lastRunsSent,
+      save: chooseKeepLastRuns,
+      said: setSaid,
+      taken: () => {
+        setTypingRuns(null);
       },
     });
   }
@@ -322,6 +367,59 @@ export default function SettingsScreen(): ReactElement {
               kryterium mogło go CZYTAĆ, nie przepisywać (niezmiennik 13). */}
             <p id={NOT_COUNTED} data-not-counted className="lead">
               {BUDGET_HELP}
+            </p>
+          </div>
+        </div>
+
+        {/* ILE HISTORII ZOSTAJE W FOLDERZE PROJEKTU — 2026-09 (Z-9), czwarty wybór tego ekranu
+            i pierwszy, który KASUJE. Do tego dnia folder biegu nie schodził z dysku niczym:
+            ani po biegu, ani przy otwarciu folderu, ani przyciskiem. Zmierzone u właściciela
+            2026-09-02 na jednym monorepo: 87 folderów biegów, 3,8 GB, a jedyną drogą był
+            terminal.
+            TEN SAM UKŁAD, CO PRZY KWOCIE: kontrolka po lewej, proza po prawej. Dwa wiersze tej
+            samej sekcji w dwóch różnych układach czytają się jak dwa różne ekrany. */}
+        <div className="card mb-3 grid max-w-200 gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] lg:items-center">
+          <div className="stack" data-gap="2">
+            <label className="label block" htmlFor="keep-last-runs">
+              {KEEP_LAST_RUNS_LABEL}
+            </label>
+            {/* Liczba jest wartością maszynową, więc mono z `.field` (DESIGN §4). Stopień
+              zwyczajny, nie tytułowy: bohaterem tego ekranu jest sufit wydatku wyżej, a dwie
+              rzeczy tej samej wagi obok siebie znoszą się nawzajem (DESIGN §7).
+              `min` i `step` są atrybutami kontrolki, nie zdaniem obok niej.
+              ZAPIS PO ODEJŚCIU Z POLA ALBO PO ENTERZE, tą samą jedną drogą, co kwota — cała
+              polityka „raz i tylko raz" stoi przy `saveTheAmountOnce`. */}
+            <input
+              id="keep-last-runs"
+              aria-label={KEEP_LAST_RUNS_LABEL}
+              aria-describedby={WHAT_ZERO_DOES}
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              className="field w-40 text-right"
+              value={typingRuns ?? String(runsKept)}
+              onChange={(event) => {
+                /* Nowy klawisz zdejmuje zapadkę — powód w całości przy `saveTheAmountOnce`. */
+                lastRunsSent.current = null;
+                setTypingRuns(event.target.value);
+              }}
+              onBlur={() => {
+                void keepAtMost();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void keepAtMost();
+              }}
+            />
+          </div>
+
+          <div className="stack" data-gap="2">
+            {/* JEDNO ZDANIE, i mówi obie rzeczy, których liczba sama nie mówi: co robi zero
+              i KIEDY starsze biegi znikają. „Przy następnym otwarciu folderu" jest tu treścią —
+              bez tego człowiek wpisuje 5 i patrzy na listę dwudziestu, nie wiedząc, czy wybór
+              wszedł w życie. */}
+            <p id={WHAT_ZERO_DOES} data-keep-help className="lead">
+              {KEEP_EVERYTHING_SAID}
             </p>
           </div>
         </div>
