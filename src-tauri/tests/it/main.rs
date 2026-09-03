@@ -299,6 +299,7 @@ mod skills_reach_claude;
 mod skills_reach_codex;
 mod skills_reach_the_lead;
 mod skills_reach_the_step;
+mod skills_reach_the_toolbox;
 mod skills_scope_round_trip;
 mod skills_scope_two_roots;
 mod started_process_is_ours;

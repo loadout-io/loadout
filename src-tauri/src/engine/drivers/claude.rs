@@ -332,19 +332,39 @@ const fn permission_flags(policy: Policy) -> (&'static str, Option<&'static [&'s
 /// jest w zestawie", `--allowedTools` mówi „ta jego część idzie bez pytania". Składnia zakresowa
 /// należy do drugiej z nich; w pierwszej jest tylko nazwa.
 ///
-/// # Dziesięć nazw, których tu nie ma, i ile kosztowała każda z nich [2026-08-19]
+/// # Dziewięć nazw, których tu nie ma, i ile kosztowała każda z nich [2026-08-19]
 ///
 /// `Task`, `Workflow`, `SendMessage`, `CronCreate`, `RemoteTrigger`, `ScheduleWakeup`,
 /// `EnterWorktree`, `Monitor` — każda z tych ośmiu startuje proces **poza naszą grupą**, czyli
 /// poza dowodem śmierci z niezmiennika 6: dowód zostaje prawdziwy i przestaje cokolwiek znaczyć,
-/// bo to nie ta grupa. `Agent` i `Skill` to ta sama czynność pod inną nazwą u tego samego
-/// vendora. Zmierzone: jedno takie wywołanie — projektowy podagent repo gospodarza — spaliło
+/// bo to nie ta grupa. `Agent` jest dziewiątą i robi dokładnie to samo pod inną nazwą.
+/// Zmierzone: jedno takie wywołanie — projektowy podagent repo gospodarza — spaliło
 /// **38–41 tys. tokenów** całkowicie poza widokiem i rozliczeniem Loadouta. Ani jednej
 /// czerwieni, ani jednego wiersza na ekranie pracy, ani jednego dolara w podsumowaniu kroku.
 ///
 /// Ich nieobecność jest tu **skutkiem ubocznym**, nie regułą: lista zakazów dostałaby dziurę
 /// przy najbliższym wydaniu CLI, po cichu, bo nikt nie czyta changelogu pod kątem „czy przybyło
 /// czasowników". Na tę listę nowe narzędzie po prostu nie wchodzi.
+///
+/// # `Skill` NIE JEST dziesiątą z nich [2026-09, Z-11]
+///
+/// Do tego dnia stało wyżej zdanie „`Agent` i `Skill` to ta sama czynność pod inną nazwą u tego
+/// samego vendora". Było nieprawdą, a kosztowało tyle, że umiejętności dowożone przez
+/// `--plugin-dir` rejestrowały się w `system/init` i nie odpalały ani razu. Zmierzone
+/// 2026-09-01 na `claude` 2.1.257:
+///
+/// | sonda | argv | co zrobił agent |
+/// |---|---|---|
+/// | A | `--tools Read,Grep,Glob` + proza wprost prosząca o umiejętność | 14 wywołań `Grep`, potem „I don't have it" |
+/// | C | to samo, `+ Skill` | `Skill{skill:"loadout-skills:…"}` → treść `SKILL.md` w kontekście tury |
+///
+/// `Skill` **wczytuje `SKILL.md` do kontekstu tury i procesu nie startuje**, więc powód, dla
+/// którego tamtych dziewięciu tu nie ma — dowód śmierci grupy z niezmiennika 6 — jego nie
+/// dotyczy. Na sufit polityki mimo to **nie wchodzi** i to jest rozstrzygnięcie, nie
+/// przeoczenie: sufit obowiązuje każdy krok, a narzędzie bez ani jednej umiejętności za nim
+/// jest obietnicą, której argv nie dotrzyma. Dokłada je [`ClaudeDriver::command`] **per krok**,
+/// wyłącznie tam, gdzie w odziedziczonym fragmencie stoi katalog pluginu — bo dopiero on znaczy,
+/// że ten krok naprawdę coś niesie.
 #[must_use]
 pub const fn tools_for(policy: Policy) -> &'static [&'static str] {
     match policy {
@@ -557,6 +577,25 @@ fn bare_name(entry: &str) -> &str {
 /// Czego ta furtka NIE otwiera: `Task`, `Workflow` i pozostałych sześciu ścieżek startu procesu.
 /// Powód stoi przy [`tools_for`] i kosztował 38–41 tys. tokenów poza rozliczeniem Loadouta.
 const WEB: [&str; 2] = ["WebFetch", "WebSearch"];
+
+/// Nazwa, którą ten vendor odpala umiejętność dowiezioną katalogiem pluginu.
+///
+/// Poza [`tools_for`] z rozmysłu — powód w całości stoi tam, w akapicie o `Skill`. Tu leży jako
+/// stała, bo to FAKT O VENDORZE dokładnie tej samej rangi, co [`WEB`] linię wyżej, i ma być
+/// czytelny razem z nią.
+const SKILL: &str = "Skill";
+
+/// Flaga, po której poznajemy, że odziedziczony fragment naprawdę niesie umiejętności.
+///
+/// 2026-09 (Z-11) — CZYTAMY FRAGMENT, NIE SKŁADAMY GO. `ClaudeDriver::with_inherited` mówi, że
+/// ten plik nie ma prawa wiedzieć, **kiedy wolno postawić** `--plugin-dir`, i to zostaje
+/// prawdą: rozstrzyga to `inherit::wire` i rozstrzyga raz (niezmiennik 23). To są dwa różne
+/// czasowniki — tamten decyduje, ten patrzy na to, co przyszło.
+///
+/// Predykatem jest ta flaga, a nie „fragment niepusty": `with_inherited` bywa nośnikiem innych
+/// flag, a narzędzie do umiejętności wpisane za fragmentem bez ani jednej umiejętności jest
+/// kłamstwem w argv tego samego rodzaju, co lista dozwolonych przy `bypassPermissions`.
+const PLUGIN_DIR: &str = "--plugin-dir";
 
 /// Zdanie o narzędziach, których ten agent nie dostanie — i o tym, co z tym zrobić.
 ///
@@ -1265,9 +1304,33 @@ impl ClaudeDriver {
         } else {
             Vec::new()
         };
+        /* NARZĘDZIE UMIEJĘTNOŚCI WCHODZI RAZEM Z KATALOGIEM PLUGINU, PER KROK (2026-09, Z-11).
+         *
+         * Ta sama para kolumn, co przy sieci wyżej, i z tego samego powodu: przy
+         * `--permission-mode dontAsk` dostępność bez zatwierdzenia znaczy „agent pyta, nikt nie
+         * odpowiada". Zmierzone 2026-09-01 na 2.1.257 (sondy A i C): bez `Skill` na liście
+         * dostępności ta sama prośba prozą dała 14 wywołań `Grep` i zdanie „I don't have it",
+         * a z nią — `Skill{skill:"loadout-skills:…"}` i treść `SKILL.md` w kontekście tury.
+         *
+         * Warunkiem jest `--plugin-dir` we fragmencie, a nie polityka: to jest jedyny sygnał
+         * mówiący, że ten krok NAPRAWDĘ coś niesie (`plugin_argv` oddaje fragment wyłącznie przy
+         * niepustej liście nazw). Wpisane na sufit [`tools_for`] narzędzie stałoby w argv także
+         * przy krokach bez ani jednej umiejętności — czyli obiecywałoby czasownik, za którym nic
+         * nie ma.
+         *
+         * Nazwa tylko wtedy, kiedy jej jeszcze nie ma — dokładnie jak przy sieci: duplikat w argv
+         * jest szumem, przez który nie widać, skąd ta zgoda przyszła. */
+        let skill: Vec<String> = if self.inherited.iter().any(|argument| argument == PLUGIN_DIR)
+            && !surface.available.iter().any(|have| have == SKILL)
+        {
+            vec![SKILL.to_owned()]
+        } else {
+            Vec::new()
+        };
         let approved = surface.approved.as_ref().map(|approved| {
             let mut all = approved.clone();
             all.extend(web.iter().cloned());
+            all.extend(skill.iter().cloned());
             all.extend(
                 self.configuration
                     .servers
@@ -1296,6 +1359,7 @@ impl ClaudeDriver {
             .iter()
             .cloned()
             .chain(web.iter().cloned())
+            .chain(skill.iter().cloned())
             .collect();
         command.arg("--tools").arg(available.join(","));
 
