@@ -700,6 +700,18 @@ impl Run {
         self.steps.iter().map(|step| step.attempt).collect()
     }
 
+    /// Ile ma biec naraz — ta sama liczba, którą pokazuje suwak.
+    ///
+    /// 2026-09 (Z-13b) — DELEGACJA, NIE DRUGIE POLE. Sufit wydatku dzieli resztę przez szerokość
+    /// równoległości (`commands::run`), a szerokością jest właśnie ta liczba, już przycięta do
+    /// `1..=8` przez [`Limiter::with_heavy`]. Kopia trzymana po stronie biegu rozjechałaby się
+    /// z suwakiem przesuniętym w trakcie ([`Limiter::set_at_once`]), więc sufit dzieliłby przez
+    /// liczbę, której już nie ma.
+    #[must_use]
+    pub fn at_once(&self) -> usize {
+        self.limiter.at_once()
+    }
+
     /// Wchodzi surowe `rate_limit_info` i chwila, w której je zobaczyliśmy.
     ///
     /// `now_unix` jest argumentem, bo `resetsAt` przychodzi z drutu jako czas ścienny, a ten

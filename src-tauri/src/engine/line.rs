@@ -991,7 +991,13 @@ impl Curator {
             //
             // - `Started` (`system/init`) to 9 929 bajtów i 42% strumienia [T7 §4.3]. Widać po
             //   nim dokładnie jedno: kropka agenta robi się aktywna (`ARCHITECTURE` §6).
-            AgentEvent::Started { .. } => Vec::new(),
+            //
+            // - `Spending` niesie SZACUNEK w połowie tury, a nie fakt (2026-09, Z-13b). Wiersz
+            //   z kwotą, która za chwilę będzie inna, jest ceną migającą w historii; kwota,
+            //   która się nie zmieni, stoi już w wierszu końca tury. Zdanie dla człowieka
+            //   powstaje z tego zdarzenia tylko wtedy, gdy sufit naprawdę przerwie turę —
+            //   i wtedy pisze je `commands::run`, jednym `Line::Problem`.
+            AgentEvent::Started { .. } | AgentEvent::Spending { .. } => Vec::new(),
             // `FileEdit` przychodzi od sterownika Claude **razem** z `ToolEnd` tego samego
             // wywołania, a wiersz `edit` powstał już na `ToolStart` (to on niesie pełną ścieżkę).
             // Drugi wiersz z tego samego faktu podwajałby KAŻDĄ zmianę pliku w widoku.

@@ -275,6 +275,18 @@ const RUN_FILE: &str = "run.json";
 /// ścieżki albo wartości. Są dowodem do porównania w pamięci, nie tekstem interfejsu.
 pub const REPEATED_TOOL_FAILURE_SENTENCE: &str = "The same tool failed with the same error three times, so Loadout stopped this step. Fix the tool or its setup, then run the step again.";
 
+/// Zdanie dla człowieka o turze, którą sufit wydatku przerwał w połowie.
+///
+/// 2026-09 (Z-13b) — KWOTA JEST W NIM Z ROZMYSŁEM. Bez niej to zdanie jest nie do odróżnienia
+/// od każdej innej porażki kroku, a człowiek ma się dowiedzieć, ILE temu krokowi wolno było
+/// wydać: to ta liczba mówi mu, czy podnieść sufit, czy podzielić pracę na mniej kroków naraz.
+fn over_its_share_sentence(allowed: f64) -> String {
+    format!(
+        "Stopped: this step reached the ${allowed:.2} it was allowed to spend, so Loadout ended \
+         it before it cost more."
+    )
+}
+
 const REPEATED_TOOL_FAILURE_LIMIT: u8 = 3;
 
 /// Nazwa, pod którą `run.json` powstaje przed przemianowaniem.
@@ -3248,6 +3260,36 @@ enum Ended {
     Overdue,
     /// Żywa tura trzeci raz dostała ten sam typowany błąd jednego narzędzia.
     RepeatedToolFailure,
+    /// Żywa tura przebiła udział tego kroku w sufcie wydatku biegu.
+    OverItsShare {
+        /// Ile temu krokowi wolno było wydać — to jest liczba, którą przeczyta człowiek.
+        allowed: f64,
+    },
+}
+
+/// Dlaczego pompa zdarzeń każe zejść turze, która jeszcze trwa.
+///
+/// 2026-09 (Z-13b) — MAŁY ENUM ZAMIAST `()`. Do tego dnia kanał niósł sam fakt „przerwij",
+/// bo powód był dokładnie jeden. Drugi powód potrzebuje własnego zdania dla człowieka **i**
+/// własnej liczby, a kanał bez powodu zamieniłby oba w to samo — czyli krok zatrzymany przez
+/// sufit tłumaczyłby się awarią narzędzia.
+enum WhyTheTurnMustEnd {
+    /// Ten sam typowany błąd jednego celu, trzeci raz z rzędu.
+    RepeatedToolFailure,
+    /// Vendor bez własnej flagi sufitu doniósł, że wydał już więcej, niż mu przyznano.
+    OverItsShare {
+        /// Udział, który ta tura przebiła.
+        allowed: f64,
+    },
+}
+
+impl From<WhyTheTurnMustEnd> for Ended {
+    fn from(why: WhyTheTurnMustEnd) -> Self {
+        match why {
+            WhyTheTurnMustEnd::RepeatedToolFailure => Self::RepeatedToolFailure,
+            WhyTheTurnMustEnd::OverItsShare { allowed } => Self::OverItsShare { allowed },
+        }
+    }
 }
 
 /// Wszystkie pożyczone wejścia jednej żywej tury, zebrane pod jednym właścicielem wywołania.
@@ -3258,7 +3300,7 @@ enum Ended {
 struct LiveAgentTurn<'a> {
     id: StepId,
     cancel: &'a CancellationToken,
-    runtime_fault: &'a mut mpsc::Receiver<()>,
+    runtime_fault: &'a mut mpsc::Receiver<WhyTheTurnMustEnd>,
     finished_event: &'a mut mpsc::Receiver<()>,
     finish_forward: &'a CancellationToken,
     reads: &'a [String],
@@ -7596,6 +7638,23 @@ struct Live {
     /// ([`Live::close_the_book`]) i przykryłby to, co zapisał tu bieg. `std::sync::Mutex`
     /// i nigdy trzymany przez `await` (niezmiennik 8).
     stopped_by_the_budget: Mutex<Vec<Option<String>>>,
+    /// Ile z sufitu jest ODŁOŻONE dla kroku, który właśnie pracuje — po jednej pozycji na krok.
+    ///
+    /// 2026-09 (Z-13b) — BEZ TEGO POLA SUFIT JEST MIĘKKI. Reszta liczyła się z tur, które już
+    /// wróciły, więc przy `at_once = 3` każdy z trzech startujących obok siebie kroków dostawał
+    /// tę samą, pełną resztę i bieg mógł wydać około trzykrotności kwoty, którą postawił
+    /// człowiek — dowiadując się o tym z rachunku. Odłożona kwota liczy się jako rozdysponowana
+    /// od chwili, w której krok dostał miejsce z puli, aż do jego zejścia.
+    ///
+    /// `None` na pozycji znaczy „ten krok nie trzyma w tej chwili niczego": tak zaczyna każdy,
+    /// tak kończy każdy ([`Live::give_back_the_share`]), i tak zostaje krok, którego bieg nie ma
+    /// sufitu. Kwota MALEJE o prawdziwą cenę wróconej tury ([`Live::settle_the_share`]) i znika
+    /// dopiero przy zejściu kroku, bo dopiero wtedy wiadomo, że ten krok już nic nie wyda.
+    ///
+    /// Osobny zamek, jak [`Live::stopped_by_the_budget`] obok: to nie jest stan, który jedzie
+    /// do `run.json` — trwałym śladem wydatku jest cena tury. `std::sync::Mutex` i nigdy
+    /// trzymany przez `await` (niezmiennik 8).
+    share_of_the_budget: Mutex<Vec<Option<f64>>>,
     /// Chwila startu biegu. Kurator dostaje czas **argumentem**, bo kurator z własnym zegarem
     /// nie da się przetestować bez `sleep`.
     began: Instant,
@@ -7952,6 +8011,7 @@ impl Live {
             })
             .collect();
         let stopped_by_the_budget = Mutex::new(vec![None; plan.steps.len()]);
+        let share_of_the_budget = Mutex::new(vec![None; plan.steps.len()]);
         let handoffs = Mutex::new(vec![None; plan.steps.len()]);
         let did_not_pass = Mutex::new(vec![None; plan.steps.len()]);
         let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
@@ -7976,6 +8036,7 @@ impl Live {
             gate,
             budget_usd,
             stopped_by_the_budget,
+            share_of_the_budget,
             began: Instant::now(),
             handoffs,
             did_not_pass,
@@ -8942,7 +9003,15 @@ impl Live {
                     // chwili startu, bo startu nie było, a stan końcowy dopisze planista.
                     return StepReport::Cancelled;
                 };
-                if let Some(said) = self.the_budget_is_spent(id) {
+                /* UDZIAŁ PRZYZNAJEMY I ODKŁADAMY TUTAJ, w tej samej chwili, w której ten krok
+                 * dostał miejsce z puli (2026-09, Z-13b). To jest jedyne miejsce, w którym
+                 * wiadomo, że krok NAPRAWDĘ rusza — a dwa kroki, które dostają miejsce w tej
+                 * samej chwili, przyznałyby sobie tę samą resztę, gdyby kwota liczyła się
+                 * gdziekolwiek indziej niż pod jednym zamkiem. */
+                if let Some(said) = self
+                    .a_share_for(id)
+                    .and_then(|share| self.not_a_cent_to_run_on(share))
+                {
                     // Miejsce oddajemy OD RAZU, nie na końcu kroku: krok, który nie ruszy,
                     // nie ma prawa trzymać miejsca potrzebnego komuś, kto jeszcze może biec.
                     drop(slot);
@@ -9121,6 +9190,14 @@ impl Live {
                 step.ended_at = Some(now_ms());
             }
         });
+        /* NIEWYKORZYSTANA RESZTA UDZIAŁU WRACA DO SUFITU (2026-09, Z-13b). Tędy schodzi każdy
+         * krok, więc to jest jedyne miejsce, w którym wystarczy to napisać raz — a bez tego
+         * pierwszy krok, który wydał mniej, niż mu przyznano, zamraża różnicę do końca biegu
+         * i kolejne kroki dzielą sufit, którego część nie należy już do nikogo.
+         *
+         * POZA `update`, nie w środku: udział przyznaje się pod zamkiem rezerwacji, który bierze
+         * potem zamek księgi, i ta kolejność ma w tym pliku pozostać jedyna (niezmiennik 8). */
+        self.give_back_the_share(id);
         if report == StepReport::FailedAndCarriedOn {
             // JEDNA LINIA NIESIE CAŁE ROZSTRZYGNIĘCIE: krok padł ORAZ polityka puściła bieg dalej.
             // `LineSink` jest celowo stratny, więc para `StepState::Failed` + `StepCarriedOn`
@@ -9181,37 +9258,198 @@ impl Live {
         step_spend_in(&self.book.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
-    /// Ile jeszcze wolno wydać — `None`, kiedy nikt nie postawił sufitu.
+    /// Ile z sufitu jest już ROZDYSPONOWANE: każda zaksięgowana cena plus udziały odłożone dla
+    /// kroków, które pracują w tej chwili.
+    ///
+    /// 2026-09 (Z-13b) — INNE PYTANIE NIŻ [`Live::spent_so_far`] i dlatego inna funkcja. Tamto
+    /// odpowiada człowiekowi „ile ten bieg wydał" i stoi w `run.json.spent_usd` oraz w zdaniu
+    /// o pominiętym kroku, więc liczy wyłącznie tury, które SIĘ SKOŃCZYŁY. To odpowiada bramce
+    /// „ile z sufitu jest już zajęte", a zajęte jest jedno i drugie: tura opłacona przed zejściem
+    /// kroku i udział odłożony dla tury, która właśnie trwa.
+    ///
+    /// Wektor rezerwacji przychodzi ARGUMENTEM, bo jedyne miejsce, które potrzebuje tej sumy pod
+    /// własnym zamkiem, to przyznawanie udziału — a `std::sync::Mutex` nie jest wejściowalny
+    /// ponownie. Kolejność zamków jest tam ustalona i jest tylko jedna: rezerwacje, potem księga.
+    fn what_this_run_has_committed(&self, shares: &[Option<f64>]) -> f64 {
+        let priced: f64 = self
+            .book()
+            .steps
+            .iter()
+            .filter_map(|step| step.cost_usd)
+            .sum();
+        priced + shares.iter().flatten().sum::<f64>()
+    }
+
+    /// Przez ile ten sufit dzieli się w tej chwili — **szerokość równoległości**, nigdy mniej
+    /// niż jeden.
+    ///
+    /// 2026-09 (Z-13b) — DLACZEGO NIE „ILE BIEGNIE TERAZ + 1". Bo przy PIERWSZYM starcie ta
+    /// liczba wynosi jeden: pierwszy krok rezerwuje wtedy całą resztę, a kroki obok niego kończą
+    /// jako pominięte. Sufit robi się twardy kosztem równoległości, czyli kosztem jedynej rzeczy,
+    /// dla której ten produkt istnieje (niezmiennik 11). Dzielnikiem jest więc liczba, którą
+    /// człowiek ustawił suwakiem, przycięta do tego, ile kroków w ogóle ma teraz prawo ruszyć —
+    /// inaczej bieg liniowy przy suwaku na ośmiu marnowałby siedem ósmych sufitu.
+    ///
+    /// LICZONE Z KSIĘGI I Z GRAFU, nie z licznika wejść do tury: licznik jest wyścigiem, a wyścig
+    /// wygrany przez pierwszy krok to dokładnie ta wada, którą to zamyka. „Ma teraz prawo ruszyć"
+    /// znaczy: sam jeszcze nie osiadł, a każdy jego rodzic już osiadł.
+    ///
+    /// PRZESZACOWANIE JEST BEZPIECZNE, NIEDOSZACOWANIE NIE. Dzielnik policzony za szeroko —
+    /// bo w rachunku stoi krok, którego stożek i tak zaraz padnie — daje udziały mniejsze od
+    /// potrzebnych i najwyżej zostawia niewydane pieniądze. Za wąski pozwala wydać ponad sufit.
+    fn how_many_share_the_rest(&self) -> usize {
+        let settled: Vec<bool> = self
+            .book()
+            .steps
+            .iter()
+            .map(|step| has_settled(step.status))
+            .collect();
+        let ready = settled
+            .iter()
+            .enumerate()
+            .filter(|&(child, &is_over)| {
+                !is_over
+                    && self
+                        .plan
+                        .arrows
+                        .iter()
+                        .all(|&(parent, to)| to != child || settled[parent])
+            })
+            .count();
+        self.gate.at_once().min(ready).max(1)
+    }
+
+    /// Udział tego kroku w tym, co z sufitu zostało — `None`, kiedy nikt sufitu nie postawił
+    /// albo kiedy ten krok jedzie mimo niego.
+    ///
+    /// `keep_it` znaczy „odłóż tę kwotę do zejścia kroku i policz ją innym jako zajętą". Pytanie
+    /// sprzed kolejki odkłada NIC, i to jest treść: krok, który dopiero stanie po miejsce z puli,
+    /// trzymałby pieniądze potrzebne komuś, kto właśnie pracuje, a do swojej tury wszedłby potem
+    /// z kwotą policzoną przed czekaniem.
     ///
     /// Nigdy poniżej zera: kwota ujemna oddana vendorowi jest albo błędem składni przy starcie,
     /// albo — gorzej — argumentem, który znaczy wtedy co innego.
-    fn what_is_left_of_the_budget(&self, id: StepId) -> Option<f64> {
-        if self.carries_on_past_the_budget(id) {
-            return None;
-        }
-        self.budget_usd
-            .map(|budget| (budget - self.spent_so_far()).max(0.0))
-    }
-
-    /// Zdanie o przekroczonym sufcie, albo `None`, kiedy pieniądze jeszcze są.
-    ///
-    /// Zdanie powstaje TUTAJ, razem z decyzją, i niesie obie liczby: bez nich pominięty krok jest
-    /// nie do odróżnienia od kroku pominiętego przez cudzą porażkę, a bieg kończący się rzędem
-    /// pustych wierszy jest tym ślepym punktem, dla którego to repo powstało.
-    fn the_budget_is_spent(&self, id: StepId) -> Option<String> {
+    fn a_share_of_what_is_left(&self, id: StepId, keep_it: bool) -> Option<f64> {
         if self.carries_on_past_the_budget(id) {
             return None;
         }
         let budget = self.budget_usd?;
+        // Obie te odpowiedzi biorą zamek księgi, więc padają PRZED zamkiem rezerwacji: kolejność
+        // rezerwacje → księga jest w tym pliku jedyna i ma taka zostać (niezmiennik 8).
+        //
+        // `u32`, nie `usize`, bo `f64::from(u32)` jest bezstratne i dzielenie niżej nie potrzebuje
+        // wtedy ani jednej linii wyciszającej lint. Szerokość mieści się w `1..=8`
+        // (`limits::clamp_at_once`), więc wartość zapasowa nie pada nigdy — a gdyby padła, myli
+        // się w stronę bezpieczną: im większy dzielnik, tym mniejszy udział.
+        let width = u32::try_from(self.how_many_share_the_rest()).unwrap_or(u32::MAX);
+        let can_spend = matches!(self.plan.steps[id].job, Job::Agent(_));
+        let mut shares = self
+            .share_of_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let left = (budget - self.what_this_run_has_committed(&shares)).max(0.0);
+        /* DZIELNIKIEM JEST SZEROKOŚĆ RÓWNOLEGŁOŚCI, nie liczba kroków biegnących w tej chwili
+         * (2026-09, Z-13b). Powód w całości stoi przy [`Live::how_many_share_the_rest`] i jest
+         * jednym zdaniem: tamta liczba przy pierwszym starcie wynosi jeden. */
+        let share = left / f64::from(width);
+        /* ODKŁADAMY WYŁĄCZNIE DLA KROKU, KTÓRY MA CZYM WYDAĆ. Kafelek „sprawdź" bierze miejsce
+         * z puli i pyta o sufit tą samą drogą, ale nie woła żadnego agenta i nie ma ceny —
+         * pieniądze odłożone dla niego zabrałyby udział krokom, które naprawdę płacą, i wróciłyby
+         * dopiero po jego komendzie. */
+        if keep_it
+            && can_spend
+            && let Some(row) = shares.get_mut(id)
+        {
+            *row = Some(share);
+        }
+        Some(share)
+    }
+
+    /// Ile ten krok dostałby, gdyby ruszył teraz — bez odkładania czegokolwiek.
+    fn what_a_share_would_be(&self, id: StepId) -> Option<f64> {
+        self.a_share_of_what_is_left(id, false)
+    }
+
+    /// Udział tego kroku, policzony i **odłożony w jednym wyrażeniu**.
+    ///
+    /// Jedno wyrażenie, bo dwa kroki, które dostają miejsce z puli w tej samej chwili, inaczej
+    /// przyznałyby sobie tę samą resztę — czyli dokładnie tę wadę, którą Z-13b zamyka.
+    fn a_share_for(&self, id: StepId) -> Option<f64> {
+        self.a_share_of_what_is_left(id, true)
+    }
+
+    /// Ile ten krok trzyma w tej chwili — tyle, ile mu wolno wydać do końca jego tury.
+    fn the_share_held_by(&self, id: StepId) -> Option<f64> {
+        self.share_of_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .copied()
+            .flatten()
+    }
+
+    /// Tura wróciła z prawdziwą ceną: udział maleje o to, ile naprawdę kosztowała.
+    ///
+    /// MALEJE, A NIE ZNIKA (2026-09, Z-13b), i to jest różnica między rozliczeniem a odjęciem
+    /// drugi raz. Po tej linii suma „zaksięgowana cena + reszta udziału" jest dalej równa temu,
+    /// co temu krokowi przyznano, więc nie ma ani jednej chwili, w której zapłacone pieniądze
+    /// są dla kroków obok niewidzialne. Reszta zostaje odłożona do zejścia kroku, bo do tej
+    /// chwili krok trzyma jeszcze miejsce z puli i formalnie może wydać dalej — zwolnić ją
+    /// wcześniej znaczyłoby obiecać komuś obok pieniądze, które wciąż mają właściciela.
+    fn settle_the_share(&self, id: StepId, spent: f64) {
+        let mut shares = self
+            .share_of_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(Some(share)) = shares.get_mut(id) {
+            *share = (*share - spent).max(0.0);
+        }
+    }
+
+    /// Oddaje resztę udziału, której ten krok już nie wyda.
+    ///
+    /// Woła to każde zejście kroku ([`Live::finish_this_step`]) oraz odmowa startu z powodu
+    /// sufitu — bez tego pierwsza porażka zamraża pieniądze do końca biegu i kolejne kroki
+    /// dostają udziały z sufitu, którego część nie należy już do nikogo.
+    fn give_back_the_share(&self, id: StepId) {
+        if let Some(row) = self
+            .share_of_the_budget
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(id)
+        {
+            *row = None;
+        }
+    }
+
+    /// Zdanie o sufcie, albo `None`, kiedy z tego udziału da się jeszcze zapłacić za turę.
+    ///
+    /// PYTA O UDZIAŁ, NIE O CAŁĄ RESZTĘ (2026-09, Z-13b), i to jest jedna droga odmowy dla obu
+    /// powodów: sufit wyczerpany daje udział zerowy, a sufit tak niski, że nie starcza na kroki
+    /// stojące obok siebie, daje udział poniżej centa. Oba są tym samym „nie ma za co ruszyć"
+    /// i człowiek ma o obu przeczytać to samo.
+    ///
+    /// Zdanie powstaje TUTAJ, razem z decyzją, i niesie obie liczby: bez nich pominięty krok jest
+    /// nie do odróżnienia od kroku pominiętego przez cudzą porażkę, a bieg kończący się rzędem
+    /// pustych wierszy jest tym ślepym punktem, dla którego to repo powstało. Liczone z kwoty
+    /// ZAKSIĘGOWANEJ, nie z rozdysponowanej: zdanie o pieniądzach, których nikt jeszcze nie
+    /// wydał, mówiłoby człowiekowi coś, czego nie ma na rachunku.
+    fn not_a_cent_to_run_on(&self, share: f64) -> Option<String> {
+        let budget = self.budget_usd?;
         let spent = self.spent_so_far();
-        // 2026-09 (Z-12): księga, zdanie i flaga vendora rozliczają centy. Reszta mniejsza niż
-        // cent nie daje dodatniej kwoty, którą wolno przekazać CLI, więc jest już wydana.
-        (budget - spent < 0.01).then(|| {
+        // 2026-09 (Z-12): księga, zdanie i flaga vendora rozliczają centy. Udział mniejszy niż
+        // cent nie daje dodatniej kwoty, którą wolno przekazać CLI, więc jest już wydany.
+        (share < 0.01).then(|| {
             format!(
                 "Skipped: this run had spent ${spent:.2} of the ${budget:.2} it was allowed, so \
                  nothing new was started. Steps already working were left to finish."
             )
         })
+    }
+
+    /// To samo pytanie sprzed kolejki: czy jest po co stawać po miejsce z puli.
+    fn the_budget_is_spent(&self, id: StepId) -> Option<String> {
+        self.not_a_cent_to_run_on(self.what_a_share_would_be(id)?)
     }
 
     /// Czy ten krok stoi w stożku, któremu człowiek jawnie kazał jechać mimo sufitu.
@@ -9269,6 +9507,10 @@ impl Live {
     /// `skipped` [`Live::name_what_the_budget_stopped`]. Dzięki temu `carry-on` naprawdę puszcza
     /// pracę dalej, `ask-me` naprawdę pyta, a raport nie nazywa sufitu anulowaniem.
     async fn the_budget_stops_this_one(&self, id: StepId, said: String) -> StepReport {
+        // Odłożony udział wraca do sufitu TUTAJ, bo ta droga nie przechodzi przez
+        // [`Live::finish_this_step`]: krok odmówiony po przyznaniu miejsca zdążył swój udział
+        // odłożyć i bez tej linii trzymałby te pieniądze do końca biegu (2026-09, Z-13b).
+        self.give_back_the_share(id);
         if let Some(row) = self
             .stopped_by_the_budget
             .lock()
@@ -9386,13 +9628,19 @@ impl Live {
          *
          * 2026-08-24 — CZYSTSZY SZEW WYMAGAŁBY METODY W `engine/drivers/mod.rs` (obok
          * `effort_argv`), a tamten plik nie należy do T-94 (`AGENTS.md` §7). Zgłoszone,
-         * nie rozstrzygnięte tutaj. */
-        if let Some(left) = self.what_is_left_of_the_budget(id)
+         * nie rozstrzygnięte tutaj.
+         *
+         * 2026-09 (Z-13b) — JEDZIE TU UDZIAŁ TEGO KROKU, NIE CAŁA RESZTA SUFITU. Reszta oddana
+         * w całości każdemu startującemu krokowi znaczy, że bieg z suwakiem na trzech może wydać
+         * trzy sufity — i że drugi oraz trzeci krok dostają liczbę, która była prawdziwa tylko
+         * dla pierwszego. Kwota jest już odłożona ([`Live::a_share_for`] przy miejscu z puli),
+         * więc tutaj się ją wyłącznie czyta. */
+        if let Some(share) = self.the_share_held_by(id)
             && job.driver.id() == crate::engine::drivers::claude::VENDOR
         {
             configuration
                 .arguments
-                .extend(crate::engine::drivers::claude::budget_argv(left));
+                .extend(crate::engine::drivers::claude::budget_argv(share));
         }
 
         /* PRZELOTKA NA KOŃCU, i to jest wybór o wsteczności: krok, którego agent nie prosi
@@ -10237,6 +10485,49 @@ impl Live {
         (report, proof)
     }
 
+    /// Schodzi po turze, która przebiła udział kroku w sufcie — **przez sterownik**, jak każde
+    /// inne zejście (niezmienniki 6 i 10).
+    ///
+    /// 2026-09 (Z-13b) — TA DROGA ISTNIEJE DLA VENDORA BEZ WŁASNEJ FLAGI SUFITU. Claude dostaje
+    /// `--max-budget-usd` i zatrzyma turę sam, od środka; Codex takiej flagi nie ma i jego turę
+    /// musi przerwać Loadout, na własnej estymacie z tabeli cen. Anulowanie samego zadania Rusta
+    /// zostawiłoby proces systemowy żywy, więc idzie to tą samą eskalacją, co limit czasu.
+    ///
+    /// Zdanie wychodzi na ekran PRZED zabijaniem: eskalacja trwa sekundy, a człowiek ma się
+    /// dowiedzieć, dlaczego jego krok właśnie znika, w chwili, w której to się dzieje.
+    /// Osobna metoda, a nie ramię `match`, bo `finish_agent_turn` stoi pod sufitem stu linii.
+    async fn stop_agent_over_its_share(
+        &self,
+        id: StepId,
+        handle: &mut dyn AgentHandle,
+        said: &str,
+    ) -> GroupProof {
+        // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem (`ipc::Sent`),
+        // a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+        let _ = self.lines.send(Line::Problem {
+            agent: self.plan.steps[id].name.clone(),
+            text: said.to_owned(),
+            resets_at: None,
+        });
+        let proof = self.prove_agent_dead(handle).await;
+        // PRZED ZAPISEM DOWODU, tak samo jak na każdej innej drodze zejścia agenta (2026-09,
+        // Z-01d): uchwyt jeszcze żyje, więc jeszcze jest kogo zapytać, co ten krok zostawił.
+        self.note_pgids(id, &handle.descendant_groups());
+        let proven_dead = matches!(proof, GroupProof::Dead { .. });
+        self.update(|book| {
+            let step = &mut book.steps[id];
+            step.death_proof = proven_dead;
+            if !proven_dead {
+                /* ZDANIE O OCALAŁYM WYGRYWA ZE ZDANIEM O SUFICIE, tym samym idiomem, co po
+                 * limicie czasu: oba są prawdą, ale tylko to drugie każe komuś sprawdzić
+                 * maszynę, bo agent, którego nie dało się dowieść jako martwego, dalej pali
+                 * limit u dostawcy — i dalej wydaje. */
+                step.error = Some(LIVE_STOP_SURVIVOR_ERROR.to_owned());
+            }
+        });
+        proof
+    }
+
     /// Kończy krok po Stopie i oddaje dowód właścicielowi uchwytu oraz ciężkiego slotu.
     async fn stop_cancelled_agent(
         &self,
@@ -10527,15 +10818,14 @@ impl Live {
                     // App Server oddaje wynik przed zdarzeniem. Bariera dowodzi, że pompa policzyła
                     // każdy wcześniejszy `ToolEnd`, zanim wynik zostanie przyjęty.
                     let _ = finished_event.recv().await;
-                    if runtime_fault.try_recv().is_ok() {
-                        Ended::RepeatedToolFailure
-                    } else {
-                        Ended::Turn(Ok(outcome))
+                    match runtime_fault.try_recv() {
+                        Ok(why) => why.into(),
+                        Err(_) => Ended::Turn(Ok(outcome)),
                     }
                 }
             },
             () = cancel.cancelled() => Ended::Stopped,
-            Some(()) = runtime_fault.recv() => Ended::RepeatedToolFailure,
+            Some(why) = runtime_fault.recv() => why.into(),
             () = &mut overdue => Ended::Overdue,
         }
     }
@@ -10591,6 +10881,15 @@ impl Live {
                 step.error = Some(short);
             }
         });
+        /* ODŁOŻONY UDZIAŁ MALEJE O TO, ILE TA TURA NAPRAWDĘ KOSZTOWAŁA (2026-09, Z-13b) — nie
+         * znika, bo krok trzyma jeszcze miejsce z puli i schodzi dopiero kilka kroków niżej.
+         * Powód w całości stoi przy [`Live::settle_the_share`].
+         *
+         * Za zamkiem księgi, nie w środku: kolejność zamków rezerwacje → księga jest w tym pliku
+         * jedyna (niezmiennik 8). */
+        if let Some(spent) = outcome.cost_usd {
+            self.settle_the_share(id, spent);
+        }
         if matches!(how, ClosedHow::StoppedByAPerson) {
             // 2026-09 — Stop całego biegu pozostaje anulowaniem, lecz krok z grupą nadal żywą
             // nie może dostać tej nazwy. To ta sama granica, co w `stop_cancelled_agent`.
@@ -10679,6 +10978,18 @@ impl Live {
                     turn.finish_forward.cancel();
                 }
                 Turned::Broke(REPEATED_TOOL_FAILURE_SENTENCE.to_owned())
+            }
+            Ended::OverItsShare { allowed } => {
+                let said = over_its_share_sentence(allowed);
+                let proof = self
+                    .stop_agent_over_its_share(id, handle.as_mut(), &said)
+                    .await;
+                let proven_dead = matches!(proof, GroupProof::Dead { .. });
+                self.released_by(handle, &mut *turn.slot, proof);
+                if !proven_dead {
+                    turn.finish_forward.cancel();
+                }
+                Turned::Broke(said)
             }
             Ended::Turn(Err(error)) => {
                 let proof = self.prove_agent_dead(handle.as_mut()).await;
@@ -11779,7 +12090,7 @@ async fn forward(
     mut inbox: mpsc::Receiver<DecodedEvent>,
     agent: String,
     id: StepId,
-    runtime_fault: mpsc::Sender<()>,
+    runtime_fault: mpsc::Sender<WhyTheTurnMustEnd>,
     finished_event: mpsc::Sender<()>,
     finish: CancellationToken,
 ) {
@@ -11828,7 +12139,29 @@ async fn forward(
         // anuluje proces i zamyka ten kanał po dowodzie zejścia.
         if !tripped && repeated_failures.observe(&event, tool.as_ref()) {
             tripped = true;
-            let _ = runtime_fault.try_send(());
+            let _ = runtime_fault.try_send(WhyTheTurnMustEnd::RepeatedToolFailure);
+        }
+        /* SUFIT WYDATKU DZIAŁA W ŚRODKU TURY, i to jest jedyna droga dla vendora, który flagi
+         * sufitu nie ma (2026-09, Z-13b).
+         *
+         * Claude dostaje `--max-budget-usd` i zatrzyma turę sam; Codex takiej flagi nie ma,
+         * a jego tura jest wyceniana dopiero po zakończeniu — czyli wtedy, kiedy jest już
+         * opłacona. `AgentEvent::Spending` niesie estymatę z tabeli cen w trakcie, więc dopiero
+         * tutaj da się powiedzieć „dość".
+         *
+         * POLITYKA JEST TU, W RDZENIU, a nie w adapterze (niezmiennik 23): ta linia nie zna ani
+         * jednego vendora — pyta o udział tego kroku i o to, co krok o sobie donosi. Adapter
+         * odpowiada wyłącznie za to, czy w ogóle umie donieść.
+         *
+         * JEDEN SYGNAŁ NA TURĘ, wspólny z bezpiecznikiem narzędzi: kanał ma pojemność jeden,
+         * a właściciel uchwytu i tak schodzi po pierwszym powodzie. */
+        if !tripped
+            && let AgentEvent::Spending { estimate_usd } = &event
+            && let Some(allowed) = live.the_share_held_by(id)
+            && *estimate_usd >= allowed
+        {
+            tripped = true;
+            let _ = runtime_fault.try_send(WhyTheTurnMustEnd::OverItsShare { allowed });
         }
         // PRZED kuracją, nie po niej: wiersz jest zdaniem dla człowieka, a to niżej jest
         // decyzją dla biegu. Kolejność odwrotna dokłada okno, w którym ekran już wie, a bieg
@@ -11996,6 +12329,22 @@ fn step_spend_in(book: &Book) -> f64 {
         .filter(|step| step.ended_at.is_some())
         .filter_map(|step| step.cost_usd)
         .sum()
+}
+
+/// Czy ten krok już OSIADŁ: stan końcowy, z którego nic nowego nie wyjdzie.
+///
+/// 2026-09 (Z-13b) — wolna funkcja przy [`step_spend_in`], a nie metoda na `StepState`:
+/// `engine::step` nie należy do tego zadania (`AGENTS.md` §7), a jedynym pytającym jest podział
+/// sufitu ([`Live::how_many_share_the_rest`]). Pełny `match` zamiast `matches!` z rozmysłem:
+/// ósmy stan maszyny przewróci wtedy kompilację, zamiast po cichu policzyć się jako „jeszcze
+/// może ruszyć" i zawęzić dzielnik.
+fn has_settled(state: StepState) -> bool {
+    match state {
+        StepState::Succeeded | StepState::Failed | StepState::Cancelled | StepState::Skipped => {
+            true
+        }
+        StepState::Pending | StepState::Ready | StepState::Running => false,
+    }
 }
 
 /// Końcowy rachunek obejmuje również udaną prywatną refleksję. Scheduler celowo nie używa
