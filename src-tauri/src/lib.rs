@@ -653,7 +653,11 @@ pub fn run() {
              * Kolejność jest wiążąca: przed `manage`, czyli zanim okno zdąży cokolwiek zamówić.
              * Powód stoi przy `settle_everything_left_behind` — to jedyny moment, w którym
              * „biegnie" na pewno znaczy „po kimś innym". */
-            state.settle_everything_left_behind(&home);
+            /* Drugi most przez `block_on`, z tego samego powodu co ten wyżej: `setup` Tauri jest
+             * synchroniczne, a od 2026-09 (Z-10) uzgodnienie folderu oddaje pracę gita puli
+             * blokującej, więc jest `async`. Blokujemy tu świadomie i bez kosztu dla człowieka:
+             * okno jeszcze nie istnieje, a `manage` niżej i tak musi na to poczekać. */
+            tauri::async_runtime::block_on(state.settle_everything_left_behind(&home));
             app.manage(state);
             Ok(())
         })

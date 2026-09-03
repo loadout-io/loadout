@@ -51,10 +51,10 @@ use std::fmt;
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Context, Waker};
+use std::task::{Context, Poll, Waker};
 
 use base64::Engine as _;
 use tauri::State;
@@ -68,6 +68,7 @@ use crate::commands::{self, Drivers, RunControl, RunDeps, RunRequest};
 use crate::engine::drivers::{ImageInput, ValidatedImages};
 use crate::engine::limits::Limiter;
 use crate::engine::line::Line;
+use crate::inherit::Lendable;
 use crate::library::agents::Agent;
 use crate::library::definition::Definition;
 use crate::store::Store;
@@ -857,7 +858,7 @@ impl AppState {
     /// `--add-dir` wchodzi w argv przy STARCIE wątku, więc rozmowa, która zaczęła się przed tym
     /// zdaniem, dostałaby zasięg dopiero przy następnej ([`commands::chat::Threads::library_is`]).
     /// Ta droga stoi przed pierwszym zdaniem z konstrukcji: okno woła ją przy montażu ekranu.
-    pub fn watching_the_lead(
+    pub async fn watching_the_lead(
         &self,
         terminal: &str,
         folder: Option<&str>,
@@ -866,7 +867,10 @@ impl AppState {
         // Ten sam sąd nad folderem, co przy biegu i przy instalacji umiejętności
         // ([`project_folder`]): rozmowa w katalogu, którego nie ma, jest programem, który nie
         // wstaje, a nie ostrzeżeniem. Brak wyboru znaczy „tam, gdzie aplikacja wstała".
-        let cwd = self.project_for(folder).inspect_err(refused)?;
+        //
+        // 2026-09 (Z-10) — `async` wyłącznie dlatego, że [`AppState::project_for`] uzgadnia folder
+        // przy pierwszym dotknięciu, a to jest praca gita. Sama ta metoda dalej nie czeka na nic.
+        let cwd = self.project_for(folder).await.inspect_err(refused)?;
         self.leads.library_is(self.home.clone());
         self.leads.terminal_lines_go_to(
             &commands::chat::Terminal {
@@ -911,7 +915,7 @@ impl AppState {
         text: &str,
         images: ValidatedImages,
     ) -> Result<(), String> {
-        let cwd = self.project_for(folder).inspect_err(refused)?;
+        let cwd = self.project_for(folder).await.inspect_err(refused)?;
         /* WSKAZANIE SĄDZIMY PRZED WZIĘCIEM ZAMKA, bo odmowa „nie wskazałeś lidera" nie ma nic
          * wspólnego z rejestrem wątków: czytanie biblioteki pod zamkiem trzymałoby go przez
          * odczyt katalogu, w którym nic się nie zmienia. */
@@ -1206,19 +1210,33 @@ impl AppState {
     /// czeka na dowód śmierci grupy, więc zamek trzymany przez ten czas zawieszałby każdy inny
     /// folder dokładnie wtedy, kiedy schodzi ten pierwszy.
     ///
-    /// Porażka jednego folderu NIE zabiera drogi pozostałym — pętla idzie do końca, a zdanie
-    /// wraca dopiero potem. Pierwsze `?` w środku zostawiałoby żywego agenta za każdym razem, gdy
-    /// zatrzymanie któregoś z wcześniejszych folderów się nie udało.
+    /// Porażka jednego folderu NIE zabiera drogi pozostałym — zdanie wraca dopiero po wszystkich.
+    /// Pierwsze `?` w środku zostawiałoby żywego agenta za każdym razem, gdy zatrzymanie któregoś
+    /// z wcześniejszych folderów się nie udało.
+    ///
+    /// # 2026-09 (Z-10) — WSZYSTKIE FOLDERY NARAZ, nie jeden po drugim
+    ///
+    /// Zatrzymanie czeka na dowód śmierci grupy, czyli na eskalację `TERM` → łaska → `KILL`
+    /// (`engine::supervisor`). Pętla sekwencyjna kazała człowiekowi czekać na sumę tych okien:
+    /// przy dwóch żywych folderach dwa razy tyle, choć zejścia nie mają ze sobą nic wspólnego.
+    /// `stop()` w środku każdej z tych przyszłości pada przy PIERWSZYM odpytaniu, więc wszystkie
+    /// foldery dostają sygnał w tej samej chwili, a czekanie zaczyna się dla nich razem.
     pub async fn stop_every_live_run(&self) -> Result<bool, commands::RunError> {
-        let mut stopped = false;
-        let mut trouble = None;
-        for folder in self.live_folders() {
-            match commands::run::stop_if_anything_is_going(&self.deps_in(&folder)).await {
-                Ok(was_going) => stopped |= was_going,
-                Err(error) => trouble = trouble.or(Some(error)),
-            }
-        }
-        trouble.map_or(Ok(stopped), Err)
+        let folders = self.live_folders();
+        let deps: Vec<RunDeps<'_>> = folders.iter().map(|folder| self.deps_in(folder)).collect();
+        let outcomes = all_at_once(
+            deps.iter()
+                .map(commands::run::stop_if_anything_is_going)
+                .collect(),
+        )
+        .await;
+        let stopped = outcomes.iter().any(|one| matches!(one, Ok(true)));
+        // Pierwsza porażka W KOLEJNOŚCI FOLDERÓW, nie pierwsza w czasie: zdanie o zamknięciu ma
+        // być tym samym zdaniem przy tym samym stanie aplikacji, a nie tym, które wróciło szybciej.
+        outcomes
+            .into_iter()
+            .find_map(Result::err)
+            .map_or(Ok(stopped), Err)
     }
 
     /// To samo przy zamykaniu okna: każdy żywy folder, ale z sufitem czasu na folder.
@@ -1228,14 +1246,25 @@ impl AppState {
     /// `stop_before_closing` odróżnia schodzenie od zacięcia — bo przy zamykaniu podniesione jest
     /// już `prevent_close` i człowiek zostaje z oknem, którego nie da się zamknąć. Tutaj zostaje
     /// wyłącznie „po każdym żywym folderze"; sufit i jego uzasadnienie są tam, gdzie były.
+    ///
+    /// 2026-09 (Z-10) — RAZEM, nie po kolei, i tu boli to najbardziej: sufit jest **na folder**,
+    /// więc dwa zacięte biegi trzymały okno przez dwa razy trzydzieści sekund. Zmierzone
+    /// w `stop_answers_while_the_trees_close.rs` na dwóch folderach schodzących po sekundzie:
+    /// zamknięcie trwało dwie, a nie jedną.
     pub async fn stop_every_live_run_before_closing(&self) -> Result<(), commands::RunError> {
-        let mut trouble = None;
-        for folder in self.live_folders() {
-            if let Err(error) = commands::run::stop_before_closing(&self.deps_in(&folder)).await {
-                trouble = trouble.or(Some(error));
-            }
-        }
-        trouble.map_or(Ok(()), Err)
+        let folders = self.live_folders();
+        let deps: Vec<RunDeps<'_>> = folders.iter().map(|folder| self.deps_in(folder)).collect();
+        let outcomes = all_at_once(
+            deps.iter()
+                .map(commands::run::stop_before_closing)
+                .collect(),
+        )
+        .await;
+        // Pierwsza porażka w kolejności folderów — powód przy [`AppState::stop_every_live_run`].
+        outcomes
+            .into_iter()
+            .find_map(Result::err)
+            .map_or(Ok(()), Err)
     }
 
     /// Foldery, które mają w zapadce swój uchwyt — kopia zdjęta pod zamkiem i oddana bez niego.
@@ -1334,12 +1363,16 @@ impl AppState {
     /// [`Self::settle_what_the_last_window_left`]: naprawa raz już wylądowała w kodzie bez
     /// wołających i wyglądała na zrobioną. Kryterium wołające tę metodę pilnuje, że nie
     /// wyląduje tam drugi raz.
-    pub fn project_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
+    /// 2026-09 (Z-10) — `async`, BO UZGODNIENIE CHODZI PO REPOZYTORIUM. Pierwsze dotknięcie
+    /// folderu domyka drzewa, których nikt już nie prowadzi (`isolate::finish`: `git status`,
+    /// `commit`, `worktree remove`), i robiło to na wątku wołającego. Zmierzone u właściciela
+    /// 2026-09-02: 87 katalogów `work/` do zamknięcia przy jednym otwarciu folderu.
+    pub async fn project_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
         // Brak wyboru jest wartością, nie błędem: dopóki nikt nie otworzył karty, biegniemy
         // tam, gdzie aplikacja wstała. Sam FOLDER sprawdza [`project_folder`] i to jest jedyne
         // miejsce, w którym te trzy zdania odmowy mieszkają.
         let project = project_folder(folder)?.unwrap_or_else(|| self.project.clone());
-        self.settle_what_the_last_window_left(&project);
+        self.settle_what_the_last_window_left(&project).await;
         Ok(project)
     }
 
@@ -1360,7 +1393,7 @@ impl AppState {
     ///
     /// Nieczytelna lista workspace'ów **nie zabiera okna** (niezmiennik 5): zdanie idzie do
     /// dziennika, a folder, pod którym to okno stoi, jest uzgadniany tak czy owak.
-    pub fn settle_everything_left_behind(&self, home: &std::path::Path) {
+    pub async fn settle_everything_left_behind(&self, home: &std::path::Path) {
         let mut folders = vec![self.project.clone()];
         match crate::commands::workspaces::list_workspaces_inner(home) {
             Ok(known) => folders.extend(known.into_iter().map(|one| PathBuf::from(one.folder))),
@@ -1370,7 +1403,7 @@ impl AppState {
             ),
         }
         for folder in folders {
-            self.settle_what_the_last_window_left(&folder);
+            self.settle_what_the_last_window_left(&folder).await;
         }
     }
 
@@ -1389,7 +1422,16 @@ impl AppState {
     ///
     /// Folder, ktorego nie da sie uzgodnic, dalej jest folderem, z ktorym mozna pracowac: wynik
     /// idzie do dziennika, nigdy w odmowe komendy (niezmiennik 5).
-    fn settle_what_the_last_window_left(&self, project: &std::path::Path) {
+    /// 2026-09 (Z-10) — CAŁE UZGODNIENIE JEDZIE NA PULĘ BLOKUJĄCĄ. `reconcile_runs_keeping`
+    /// czyta plik wyborów, obchodzi `runs/`, domyka pozostawione drzewa TĄ SAMĄ `isolate::finish`,
+    /// co koniec biegu (`commands::reconcile::close_what_the_runs_left`), i kasuje katalogi
+    /// zapomnianych biegów. To jest sekundy pracy gita na folderze, którego nikt nie sprzątał —
+    /// a stało w linii na wątku wołającego, czyli na tym, na którym okno czeka na odpowiedź.
+    ///
+    /// Zamek zapadki zostaje PRZED `await` i nie przeżywa go (niezmiennik 8): sprawdzenie „czy
+    /// ten folder już był" jest jedną instrukcją nad `BTreeSet`, a trzymanie go przez całe
+    /// uzgodnienie zatrzymywałoby każdą inną komendę dotykającą projektu.
+    async fn settle_what_the_last_window_left(&self, project: &std::path::Path) {
         {
             let mut seen = self
                 .reconciled
@@ -1399,27 +1441,44 @@ impl AppState {
                 return;
             }
         }
-        /* ILE BIEGÓW ZOSTAJE, CZYTAMY Z PLIKU, NIE ZE STANU OKNA (2026-09, Z-9).
-         *
-         * To jest jedyna droga, którą retencja w ogóle dochodzi do dysku, i jedyna chwila,
-         * w której wolno kasować katalogi biegów: sprzątanie biegnie, zanim to okno cokolwiek
-         * uruchomi, więc każdy bieg zastany tutaj należy do kogoś, kogo już nie ma.
-         *
-         * Nieczytelny plik wyborów znaczy „nie kasuj nic" (`Keep::everything`), a nie „kasuj
-         * domyślnie": pomyłka w tę stronę kosztuje miejsce na dysku, w drugą — całą historię
-         * projektu. */
-        let keep = match crate::commands::settings::read_settings_inner(&self.home) {
-            Ok(settings) => crate::commands::reconcile::Keep::last_runs(settings.keep_last_runs),
-            Err(error) => {
-                tracing::error!(
-                    "what Loadout does by default could not be read, so no run was forgotten \
-                     in {}: {error}",
-                    project.display()
-                );
-                crate::commands::reconcile::Keep::everything()
-            }
+        let home = self.home.clone();
+        let at = project.to_path_buf();
+        let done = tokio::task::spawn_blocking(move || {
+            /* ILE BIEGÓW ZOSTAJE, CZYTAMY Z PLIKU, NIE ZE STANU OKNA (2026-09, Z-9).
+             *
+             * To jest jedyna droga, którą retencja w ogóle dochodzi do dysku, i jedyna chwila,
+             * w której wolno kasować katalogi biegów: sprzątanie biegnie, zanim to okno cokolwiek
+             * uruchomi, więc każdy bieg zastany tutaj należy do kogoś, kogo już nie ma.
+             *
+             * Nieczytelny plik wyborów znaczy „nie kasuj nic" (`Keep::everything`), a nie „kasuj
+             * domyślnie": pomyłka w tę stronę kosztuje miejsce na dysku, w drugą — całą historię
+             * projektu. */
+            let keep = match crate::commands::settings::read_settings_inner(&home) {
+                Ok(settings) => {
+                    crate::commands::reconcile::Keep::last_runs(settings.keep_last_runs)
+                }
+                Err(error) => {
+                    tracing::error!(
+                        "what Loadout does by default could not be read, so no run was forgotten \
+                         in {}: {error}",
+                        at.display()
+                    );
+                    crate::commands::reconcile::Keep::everything()
+                }
+            };
+            crate::commands::reconcile::reconcile_runs_keeping(&at, &keep)
+        })
+        .await;
+        // Folder, którego nie da się uzgodnić, dalej jest folderem, z którym można pracować
+        // (niezmiennik 5) — także wtedy, gdy pracy nie dokończyła pula blokująca.
+        let Ok(done) = done else {
+            tracing::error!(
+                "the runs left in {} could not be settled, so Loadout is leaving them for the \
+                 next time this folder is opened",
+                project.display()
+            );
+            return;
         };
-        let done = crate::commands::reconcile::reconcile_runs_keeping(project, &keep);
         if done.runs > 0 || done.still_alive > 0 || done.closed > 0 || done.forgotten > 0 {
             tracing::info!(
                 "{}: {} run(s) and {} step(s) were left over by a closed window, \
@@ -1488,6 +1547,54 @@ fn proved_down(control: &RunControl) -> bool {
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
         .is_ready()
+}
+
+/// Czeka na WSZYSTKIE te przyszłości naraz i oddaje ich wyniki w kolejności, w jakiej weszły.
+///
+/// # Dlaczego to jest napisane tutaj, a nie wzięte ze skrzyni [2026-09, Z-10]
+///
+/// `join_all` mieszka w `futures-util`, a `tokio` nie ma kombinatora nad **dynamiczną** listą:
+/// `join!` zna arność w czasie kompilacji, a `JoinSet` żąda `'static`, czego
+/// `stop_before_closing(&self.deps_in(&folder))` nie spełnia i spełnić nie może — [`RunDeps`]
+/// pożycza [`AppState`]. Dług był tu zapisany od dawna i w dwóch miejscach: identyczny akapit stoi
+/// przy `commands::processes::Processes::close` („wersja równoległa wymaga `FuturesUnordered`,
+/// czyli skrzyni `futures`"). Nowa skrzynia w drzewie, które ma 527 z nich i mierzy czas
+/// kompilacji w minutach, jest droższa niż te dwadzieścia linii.
+///
+/// Kolejność wyników jest zachowana, bo o niej mówi wołający: pierwsza porażka w kolejności
+/// folderów jest tym, co człowiek czyta po nieudanym zamknięciu okna.
+///
+/// Odpytuje każdą nierozstrzygniętą przyszłość w każdym obiegu i nie zakłada, która się obudziła.
+/// Przy dwóch, trzech folderach jest to tańsze niż rejestr budzeń, a przy stu ich nie ma.
+async fn all_at_once<F: Future>(work: Vec<F>) -> Vec<F::Output> {
+    let mut pending: Vec<(usize, Pin<Box<F>>)> =
+        work.into_iter().map(Box::pin).enumerate().collect();
+    let mut done: Vec<(usize, F::Output)> = Vec::with_capacity(pending.len());
+    std::future::poll_fn(move |cx| {
+        // Wynik odbieramy W TEJ SAMEJ chwili, w której przyszłość go oddała. `poll` wywołany po
+        // `Ready` drugi raz jest złamaniem kontraktu, więc nie ma sposobu, żeby wrócić po niego
+        // później — przyszłość rozstrzygnięta i porzucona bez odebrania wartości jest wynikiem,
+        // którego nikt już nie zobaczy.
+        pending.retain_mut(|(at, one)| match one.as_mut().poll(cx) {
+            Poll::Ready(value) => {
+                done.push((*at, value));
+                false
+            }
+            Poll::Pending => true,
+        });
+        if pending.is_empty() {
+            done.sort_by_key(|(at, _)| *at);
+            Poll::Ready(
+                std::mem::take(&mut done)
+                    .into_iter()
+                    .map(|(_, value)| value)
+                    .collect(),
+            )
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 /// Folder przysłany z okna → korzeń projektu, albo zdanie o tym, czego z nim nie da się zrobić.
@@ -1611,18 +1718,42 @@ fn pump_into(channel: Channel<Vec<Line>>) -> LineSink {
 // czytają OBA testy rejestracji: `ipc_commands_registered.rs` po tej stronie granicy
 // i `src/sections/commands-wired.test.ts` po stronie okna.
 //
-// 2026-08-16 — WSZYSTKIE SĄ SYNCHRONICZNE i to jest wybór, nie przeoczenie. Tauri wykonuje
-// komendę bez `async` na wątku głównym, więc `review_skill` zamraża okno na czas pobrania
-// (do 20 s, `ingest::FETCH_TIMEOUT_SECONDS`). Lekarstwem jest `async fn` + `spawn_blocking`,
-// czyli cztery wiersze logiki w skorupie — a mandat tego pliku brzmi „skorupy dwuliniowe",
-// i jest to mandat, który broni jedynej rzeczy, jakiej to zadanie dowodzi. Zgłoszone
-// człowiekowi zamiast rozstrzygnięte tutaj (AGENTS.md §7).
+// 2026-08-16 — WSZYSTKIE BYŁY SYNCHRONICZNE i było to wyborem: Tauri wykonuje komendę bez
+// `async` na wątku głównym, więc `review_skill` zamrażało okno na czas pobrania (do 20 s,
+// `ingest::FETCH_TIMEOUT_SECONDS`), a `suggest_branch_name` na czas `git for-each-ref` przy
+// każdym znaku wpisanym w pole Startu. Lekarstwo — `async fn` plus `spawn_blocking` — kosztuje
+// cztery wiersze w skorupie, a mandat tego pliku brzmiał „skorupy dwuliniowe". Dług został więc
+// zapisany tutaj i zgłoszony człowiekowi (AGENTS.md §7).
+//
+// 2026-09 (Z-10) — CZŁOWIEK ODPOWIEDZIAŁ: żadna komenda dotykająca dysku, gita albo sieci nie
+// jest już synchroniczna. Skorupa ma teraz trzy czynności zamiast dwóch — rozpakuj, oddaj pracę
+// puli blokującej, zwiń odpowiedź — i to jest cała zmiana mandatu. Pilnuje jej
+// `tests/it/no_command_freezes_the_window.rs`: nowa komenda bez `async` pali ten test domyślnie,
+// bez dopisywania jej gdziekolwiek.
+//
+// Synchroniczna zostaje dokładnie jedna, `new_id`, i wolno jej to, bo nie czeka na nic poza
+// procesorem. Ta sama jedna nazwa stoi w stałej `PURE` w tamtym teście, z tym samym powodem.
+
+/// Zdanie dla człowieka, kiedy praca oddana puli blokującej nie wróciła.
+///
+/// `JoinError` znaczy tu panikę zadania blokującego (`panic` jest w tym drzewie `deny`) albo
+/// runtime w rozbiórce — czyli „bardzo nie tak", a nie zwykłą odmowę, która jedzie własną drogą
+/// i własnym zdaniem z rdzenia. Jedno zdanie na wszystkie skorupy, bo jest to jeden fakt:
+/// „ta praca się nie dokończyła" (niezmiennik 13). Co się nie dokończyło, mówi `what` — i jest to
+/// gotowe angielskie dopełnienie, nie nazwa funkcji.
+fn did_not_finish(what: &str, error: &tokio::task::JoinError) -> String {
+    format!("Loadout could not finish {what}: {error}")
+}
 
 /// Wszyscy zapisani agenci.
 #[tauri::command]
-pub fn list_agents() -> Result<Vec<Definition<Agent>>, String> {
-    commands::agents::list_agent_definitions_inner(&crate::loadout_dir())
-        .map_err(|error| error.to_string())
+pub async fn list_agents() -> Result<Vec<Definition<Agent>>, String> {
+    tokio::task::spawn_blocking(|| {
+        commands::agents::list_agent_definitions_inner(&crate::loadout_dir())
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the agents you have saved", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Świeży uuid v7 — jedna mennica dla wszystkich sekcji.
@@ -1634,21 +1765,30 @@ pub fn new_id() -> String {
 
 /// Odczytuje konfigurację wskazanego repo bez uruchamiania znalezionych rozszerzeń.
 #[tauri::command]
-pub fn scan_setup(workspace: std::path::PathBuf) -> Result<crate::import::ImportPreview, String> {
-    let result = commands::import::scan_setup_inner(&crate::your_home(), &workspace);
-    drop(workspace);
-    result.map_err(|error| error.to_string())
+pub async fn scan_setup(
+    workspace: std::path::PathBuf,
+) -> Result<crate::import::ImportPreview, String> {
+    // Ścieżka wchodzi do domknięcia NA WŁASNOŚĆ, więc `drop`, który stał tu wcześniej po to,
+    // żeby argument był naprawdę zużyty (`clippy::needless_pass_by_value`), jest już zbędny.
+    tokio::task::spawn_blocking(move || {
+        commands::import::scan_setup_inner(&crate::your_home(), &workspace)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading that folder", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Zapisuje ponownie zweryfikowaną migawkę do biblioteki Loadouta.
 #[tauri::command]
-pub fn apply_setup(
+pub async fn apply_setup(
     request: commands::import::ApplySetup,
 ) -> Result<crate::import::apply::ImportReceipt, String> {
-    let result =
-        commands::import::apply_setup_inner(&crate::loadout_dir(), &crate::your_home(), &request);
-    drop(request);
-    result.map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || {
+        commands::import::apply_setup_inner(&crate::loadout_dir(), &crate::your_home(), &request)
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that setup", &error))?
+    .map_err(|error| error.to_string())
 }
 
 // ── DWIE KOMENDY PORÓWNANIA KOPII ──────────────────────────────────────────────────────────
@@ -1740,8 +1880,13 @@ pub async fn list_eval_sets(
     state: State<'_, AppState>,
     folder: Option<String>,
 ) -> Result<Vec<crate::lab::EvalSet>, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    Ok(commands::lab::list_sets_inner(&project))
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::lab::list_sets_inner(&project))
+        .await
+        .map_err(|error| did_not_finish("reading this project's sets", &error))
 }
 
 /// Wszystko, co ekran rysuje dla jednego zestawu: on sam, jego przebiegi i różnica.
@@ -1752,12 +1897,19 @@ pub async fn read_eval_board(
     set: &str,
     how_many: usize,
 ) -> Result<commands::lab::BoardWire, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::read_board_inner(&project, set, how_many).map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    tokio::task::spawn_blocking(move || commands::lab::read_board_inner(&project, &set, how_many))
+        .await
+        .map_err(|error| did_not_finish("reading that set", &error))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// Zakłada zestaw dla agenta albo umiejętności — to jest cały czasownik „Evaluate".
@@ -1769,8 +1921,18 @@ pub async fn create_eval_set(
     subject: crate::lab::Subject,
     agent: &str,
 ) -> Result<commands::lab::OpenSet, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::create_set_inner(&project, name, &subject, agent).map_err(|error| {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let name = name.to_owned();
+    let agent = agent.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::lab::create_set_inner(&project, &name, &subject, &agent)
+    })
+    .await
+    .map_err(|error| did_not_finish("making that set", &error))?
+    .map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -1784,12 +1946,19 @@ pub async fn delete_eval_set(
     folder: Option<String>,
     set: &str,
 ) -> Result<(), String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::delete_set_inner(&project, set).map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    tokio::task::spawn_blocking(move || commands::lab::delete_set_inner(&project, &set))
+        .await
+        .map_err(|error| did_not_finish("removing that set", &error))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// Agent czyta ten projekt i pisze kandydatki, które czekają na człowieka.
@@ -1800,7 +1969,10 @@ pub async fn propose_eval_cases(
     set: &str,
     agent: &str,
 ) -> Result<commands::lab::ProposedWire, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
     commands::lab::propose_cases_inner(
         &crate::loadout_dir(),
         &state.drivers,
@@ -1823,7 +1995,10 @@ pub async fn propose_eval_fix(
     set: &str,
     agent: &str,
 ) -> Result<commands::lab::FixWire, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
     commands::lab::propose_fix_inner(
         &crate::loadout_dir(),
         &state.drivers,
@@ -1848,12 +2023,18 @@ pub async fn apply_eval_fix(
     instructions: String,
     expected_revision: Option<&str>,
 ) -> Result<String, String> {
-    commands::lab::apply_fix_inner(
-        &crate::loadout_dir(),
-        agent,
-        instructions,
-        expected_revision,
-    )
+    let agent = agent.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::lab::apply_fix_inner(
+            &crate::loadout_dir(),
+            &agent,
+            instructions,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("applying that fix", &error))?
     .map_err(|error| {
         let said = error.to_string();
         refused(&said);
@@ -1881,14 +2062,23 @@ pub async fn decide_eval_case(
     keep: bool,
     expected_revision: Option<&str>,
 ) -> Result<commands::lab::OpenSet, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::decide_case_inner(&project, set, case, keep, expected_revision).map_err(
-        |error| {
-            let said = error.to_string();
-            refused(&said);
-            said
-        },
-    )
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    let case = case.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::lab::decide_case_inner(&project, &set, &case, keep, expected_revision.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("writing that decision down", &error))?
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
 }
 
 /// Dopisuje albo poprawia jeden przypadek.
@@ -1900,8 +2090,18 @@ pub async fn put_eval_case(
     case: crate::lab::Case,
     expected_revision: Option<&str>,
 ) -> Result<commands::lab::OpenSet, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::put_case_inner(&project, set, case, expected_revision).map_err(|error| {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::lab::put_case_inner(&project, &set, case, expected_revision.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that case", &error))?
+    .map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -1917,8 +2117,18 @@ pub async fn put_eval_variant(
     variant: crate::lab::Variant,
     expected_revision: Option<&str>,
 ) -> Result<commands::lab::OpenSet, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::put_variant_inner(&project, set, variant, expected_revision).map_err(|error| {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::lab::put_variant_inner(&project, &set, variant, expected_revision.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that column", &error))?
+    .map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -1934,8 +2144,19 @@ pub async fn drop_eval_variant(
     variant: &str,
     expected_revision: Option<&str>,
 ) -> Result<commands::lab::OpenSet, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::lab::drop_variant_inner(&project, set, variant, expected_revision).map_err(|error| {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    let variant = variant.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::lab::drop_variant_inner(&project, &set, &variant, expected_revision.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("removing that column", &error))?
+    .map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -1957,13 +2178,24 @@ pub async fn run_eval_set(
     budget_usd: Option<f64>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    let planned =
-        commands::lab::plan_a_run_inner(&project, set, how_many_at_once).map_err(|error| {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let planned = {
+        let at = project.clone();
+        let set = set.to_owned();
+        tokio::task::spawn_blocking(move || {
+            commands::lab::plan_a_run_inner(&at, &set, how_many_at_once)
+        })
+        .await
+        .map_err(|error| did_not_finish("planning that set's run", &error))?
+        .map_err(|error| {
             let said = error.to_string();
             refused(&said);
             said
-        })?;
+        })?
+    };
     run_workflow_in_project(
         &state,
         &project,
@@ -1983,17 +2215,31 @@ pub async fn run_eval_set(
 /// `expected_revision` jest tym, co okno przeczytało; `null` znaczy „tego pliku ma jeszcze nie
 /// być". Zapis, który nie niesie rewizji, kasowałby cudzą, nowszą pracę bez jednego zdania.
 #[tauri::command]
-pub fn save_agent(agent: Agent, expected_revision: Option<&str>) -> Result<String, String> {
-    commands::agents::save_agent_inner(&crate::loadout_dir(), agent, expected_revision)
-        .map(|written| written.revision)
-        .map_err(|error| error.to_string())
+pub async fn save_agent(agent: Agent, expected_revision: Option<&str>) -> Result<String, String> {
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::agents::save_agent_inner(
+            &crate::loadout_dir(),
+            agent,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that agent", &error))?
+    .map(|written| written.revision)
+    .map_err(|error| error.to_string())
 }
 
 /// Usuwa agenta po identyfikatorze, razem z jego plikiem.
 #[tauri::command]
-pub fn delete_agent(id: &str) -> Result<(), String> {
-    commands::agents::delete_agent_inner(&crate::loadout_dir(), id)
-        .map_err(|error| error.to_string())
+pub async fn delete_agent(id: &str) -> Result<(), String> {
+    let id = id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::agents::delete_agent_inner(&crate::loadout_dir(), &id)
+    })
+    .await
+    .map_err(|error| did_not_finish("removing that agent", &error))?
+    .map_err(|error| error.to_string())
 }
 
 // ── CZTERY KOMENDY BIBLIOTEKI WORKFLOW ─────────────────────────────────────────────────────
@@ -2015,9 +2261,13 @@ pub async fn list_workflows(
     state: State<'_, AppState>,
     folder: Option<String>,
 ) -> Result<Vec<Definition<commands::workflows::WorkflowEntry>>, String> {
-    let project = state.project_for(folder.as_deref())?;
-    commands::workflows::list_workflow_definitions_inner(&crate::loadout_dir(), Some(&project))
-        .map_err(|error| error.to_string())
+    let project = state.project_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || {
+        commands::workflows::list_workflow_definitions_inner(&crate::loadout_dir(), Some(&project))
+    })
+    .await
+    .map_err(|error| did_not_finish("reading your workflows", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Wczytuje jeden plik workflow po jego nazwie w katalogu, razem z rewizją tych bajtów.
@@ -2027,9 +2277,14 @@ pub async fn load_workflow(
     file_name: &str,
     folder: Option<String>,
 ) -> Result<commands::workflows::OpenWorkflow, String> {
-    let project = state.project_for(folder.as_deref())?;
-    commands::workflows::load_workflow_inner(&crate::loadout_dir(), Some(&project), file_name)
-        .map_err(|error| error.to_string())
+    let project = state.project_for(folder.as_deref()).await?;
+    let file_name = file_name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::workflows::load_workflow_inner(&crate::loadout_dir(), Some(&project), &file_name)
+    })
+    .await
+    .map_err(|error| did_not_finish("opening that workflow", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Zapisuje plik workflow i oddaje rewizję, którą ma teraz. Odmowa przyjeżdża własnym zdaniem.
@@ -2044,14 +2299,20 @@ pub async fn save_workflow(
     expected_revision: Option<&str>,
     folder: Option<String>,
 ) -> Result<String, String> {
-    let project = state.project_for(folder.as_deref())?;
-    commands::workflows::save_workflow_inner(
-        &crate::loadout_dir(),
-        Some(&project),
-        file_name,
-        workflow,
-        expected_revision,
-    )
+    let project = state.project_for(folder.as_deref()).await?;
+    let file_name = file_name.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::workflows::save_workflow_inner(
+            &crate::loadout_dir(),
+            Some(&project),
+            &file_name,
+            workflow,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that workflow", &error))?
     .map(|saved| saved.revision)
     .map_err(|error| error.to_string())
 }
@@ -2063,37 +2324,73 @@ pub async fn delete_workflow(
     file_name: &str,
     folder: Option<String>,
 ) -> Result<(), String> {
-    let project = state.project_for(folder.as_deref())?;
-    commands::workflows::delete_workflow_inner(&crate::loadout_dir(), Some(&project), file_name)
-        .map_err(|error| error.to_string())
+    let project = state.project_for(folder.as_deref()).await?;
+    let file_name = file_name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::workflows::delete_workflow_inner(
+            &crate::loadout_dir(),
+            Some(&project),
+            &file_name,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("removing that workflow", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Uwagi walidatora o tym workflow — te same, które padają przy zapisie i przed Startem.
-#[must_use]
 #[tauri::command]
-pub fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
-    commands::workflows::check_workflow_inner(&crate::loadout_dir(), workflow)
+pub async fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
+    match tokio::task::spawn_blocking(move || {
+        commands::workflows::check_workflow_inner(&crate::loadout_dir(), workflow)
+    })
+    .await
+    {
+        Ok(notes) => notes,
+        /* PUSTA LISTA ZNACZY „NIC NIE JEST NIE TAK", więc oddanie jej tutaj byłoby zgodą na
+         * Start wydaną przez sprawdzenie, które się nie odbyło. Ta komenda nie zwraca `Result`
+         * (uwagi są wartością, nie odmową), więc jedyne uczciwe wyjście to uwaga o tym, że
+         * uwag nie policzono — o poziomie `Problem`, bo tak samo brzmi każda inna rzecz, po
+         * której nie wolno uruchomić workflow (2026-09, Z-10). */
+        Err(error) => vec![Note {
+            level: crate::workflow::check::Level::Problem,
+            step_id: None,
+            message: did_not_finish("checking this workflow", &error),
+            fix: None,
+        }],
+    }
 }
 
 /// Adres → pobrana i przejrzana umiejętność.
 #[tauri::command]
-pub fn review_skill(url: &str) -> Result<commands::skills::ImportWire, String> {
-    commands::skills::review_skill_inner(&crate::loadout_dir(), url)
-        .map_err(|error| error.to_string())
+pub async fn review_skill(url: &str) -> Result<commands::skills::ImportWire, String> {
+    // Ta jedna komenda czeka na SIEĆ, do dwudziestu sekund (`ingest::FETCH_TIMEOUT_SECONDS`),
+    // i jest powodem, dla którego akapit nad `list_agents` w ogóle powstał.
+    let url = url.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::skills::review_skill_inner(&crate::loadout_dir(), &url)
+    })
+    .await
+    .map_err(|error| did_not_finish("fetching that skill", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Trzy pytania z formularza → umiejętność przejrzana tym samym rdzeniem, co wklejony link.
 #[tauri::command]
-pub fn author_skill(
+pub async fn author_skill(
     authored: commands::skills::Authored,
 ) -> Result<commands::skills::ImportWire, String> {
-    commands::skills::author_skill_inner(&crate::loadout_dir(), authored)
-        .map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || {
+        commands::skills::author_skill_inner(&crate::loadout_dir(), authored)
+    })
+    .await
+    .map_err(|error| did_not_finish("looking over that skill", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Zapisuje przejrzaną umiejętność w katalogach vendorów wybranego zakresu.
 #[tauri::command]
-pub fn install_skill(
+pub async fn install_skill(
     item: commands::skills::ImportWire,
     landing: commands::skills::Landing,
     folder: Option<&str>,
@@ -2102,7 +2399,13 @@ pub fn install_skill(
     // zapisania czyta z kopii kanonicznej — z tych samych, które przeskanował i pokazał
     // człowiekowi. Ten jeden wiersz mówi to wprost i nie da się go przeczytać inaczej.
     let commands::skills::ImportWire { name, .. } = item;
-    install_reviewed_skill(&crate::loadout_dir(), &name, landing, folder).map(|_| ())
+    let folder = folder.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        install_reviewed_skill(&crate::loadout_dir(), &name, landing, folder.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("adding that skill", &error))?
+    .map(|_| ())
 }
 
 /// Ciało [`install_skill`] z biblioteką podaną **argumentem**.
@@ -2149,13 +2452,19 @@ pub fn install_reviewed_skill(
 /// umiejętność zapisana „w tym projekcie" nie pojawiłaby się na ekranie, więc człowiek nie miałby
 /// jak jej zabrać — droga zapisu bez drogi odczytu jest gorsza niż brak funkcji.
 #[tauri::command]
-pub fn list_skills(folder: Option<&str>) -> Result<Vec<commands::skills::InstalledWire>, String> {
+pub async fn list_skills(
+    folder: Option<&str>,
+) -> Result<Vec<commands::skills::InstalledWire>, String> {
     // Ten sam sąd nad folderem, co przy zapisie i przy Starcie biegu (`project_folder`).
     // Lista czytana z folderu, którego nie ma, jest pustą listą — czyli zdaniem „nic tam nie
     // leży" o katalogu, o który nikt nie umiał zapytać.
     let project = project_folder(folder)?;
-    commands::skills::list_skills_in(&crate::loadout_dir(), project.as_deref())
-        .map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || {
+        commands::skills::list_skills_in(&crate::loadout_dir(), project.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the skills you have added", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Co folder, w którym pracuje ten workspace, ma do pożyczenia krokom.
@@ -2172,11 +2481,15 @@ pub fn list_skills(folder: Option<&str>) -> Result<Vec<commands::skills::Install
 /// Brak wskazanego folderu to pusta odpowiedź, nie odmowa: człowiek, który nie otworzył jeszcze
 /// żadnego projektu, ma zobaczyć wiersz, którego nie ma, a nie zdanie o błędzie.
 #[tauri::command]
-pub fn list_host_material(folder: Option<&str>) -> Result<crate::inherit::Lendable, String> {
+pub async fn list_host_material(folder: Option<&str>) -> Result<Lendable, String> {
     let Some(project) = project_folder(folder)? else {
-        return Ok(crate::inherit::Lendable::default());
+        return Ok(Lendable::default());
     };
-    crate::inherit::scan::what_this_project_can_lend(&project).map_err(|error| error.to_string())
+    // Obchód CUDZEGO repozytorium: tyle katalogów, ile ich tam jest, i ani jednego mniej.
+    tokio::task::spawn_blocking(move || crate::inherit::scan::what_this_project_can_lend(&project))
+        .await
+        .map_err(|error| did_not_finish("looking through that folder", &error))?
+        .map_err(|error| error.to_string())
 }
 
 /// Zdejmuje umiejętność z katalogów agentów.
@@ -2188,7 +2501,7 @@ pub fn list_host_material(folder: Option<&str>) -> Result<crate::inherit::Lendab
 /// 2026-08-19 — ZAKRES I FOLDER, bo ta sama nazwa w dwóch zakresach to dwie rzeczy: zdjęcie
 /// „z tego projektu" ma zostawić kopię globalną tam, gdzie jest.
 #[tauri::command]
-pub fn delete_skill(
+pub async fn delete_skill(
     name: &str,
     landing: commands::skills::Landing,
     folder: Option<&str>,
@@ -2197,8 +2510,18 @@ pub fn delete_skill(
     // nie ma, jest odmową o folderze, a nie o umiejętności — i to jest zdanie, po którym
     // człowiek wie, co zrobić.
     let project = project_folder(folder)?;
-    commands::skills::delete_skill_from(&crate::loadout_dir(), name, landing, project.as_deref())
-        .map_err(|error| error.to_string())
+    let name = name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::skills::delete_skill_from(
+            &crate::loadout_dir(),
+            &name,
+            landing,
+            project.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("taking that skill away", &error))?
+    .map_err(|error| error.to_string())
 }
 
 // ── DWIE KOMENDY DRAFTU ────────────────────────────────────────────────────────────────────
@@ -2308,8 +2631,14 @@ pub async fn list_handoffs(
     state: State<'_, AppState>,
     folder: Option<String>,
 ) -> Result<Vec<commands::handoffs::HandoffWire>, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::handoffs::list_handoffs_inner(&project).map_err(|error| error.to_string())
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::handoffs::list_handoffs_inner(&project))
+        .await
+        .map_err(|error| did_not_finish("reading what the steps handed on", &error))?
+        .map_err(|error| error.to_string())
 }
 
 /// Co ten projekt do tej pory uruchomił — biegi leżące w JEGO katalogu, od najnowszego.
@@ -2330,8 +2659,13 @@ pub async fn list_runs(
     state: State<'_, AppState>,
     folder: Option<String>,
 ) -> Result<Vec<commands::history::RunWire>, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    Ok(commands::history::list_runs_inner(&project))
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::history::list_runs_inner(&project))
+        .await
+        .map_err(|error| did_not_finish("reading this project's runs", &error))
 }
 
 /// Jeden bieg z historii, otwarty DO ODCZYTU: jego kroki, ich strumienie i jego przekazania.
@@ -2348,12 +2682,18 @@ pub async fn read_run(
     folder: Option<String>,
     run: String,
 ) -> Result<commands::history::PastRunWire, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::history::read_run_inner(&project, &run).map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::history::read_run_inner(&project, &run))
+        .await
+        .map_err(|error| did_not_finish("opening that run", &error))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// Zdejmuje gałęzie, które ten bieg zostawił — i **tylko** jego.
@@ -2375,8 +2715,16 @@ pub async fn forget_run_branches(
     folder: Option<String>,
     run: String,
 ) -> Result<Vec<String>, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::history::forget_run_branches_inner(&project, &run).map_err(|error| {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || {
+        commands::history::forget_run_branches_inner(&project, &run)
+    })
+    .await
+    .map_err(|error| did_not_finish("taking that run's branches away", &error))?
+    .map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -2399,12 +2747,18 @@ pub async fn forget_run(
     folder: Option<String>,
     run: String,
 ) -> Result<Vec<String>, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::history::forget_run_inner(&project, &run).map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::history::forget_run_inner(&project, &run))
+        .await
+        .map_err(|error| did_not_finish("taking that run away", &error))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
@@ -2419,10 +2773,16 @@ pub async fn list_notes(
 ) -> Result<Vec<commands::memory::NoteWire>, String> {
     let project = state
         .project_for(catalog_folder.as_deref())
+        .await
         .inspect_err(refused)?;
-    let library_root = commands::memory::notes_root(&state.home);
-    commands::memory::list_notes_for_project_inner(&library_root, &project)
-        .map_err(|error| error.to_string())
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let library_root = commands::memory::notes_root(&home);
+        commands::memory::list_notes_for_project_inner(&library_root, &project)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading your notes", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// „Use this": od tej chwili notatka wchodzi do promptu.
@@ -2435,15 +2795,23 @@ pub async fn put_note_to_use(
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
+        .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let library_root = commands::memory::notes_root(&state.home);
+    let home = state.home.clone();
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::put_addressed_note_to_use_inner(
-        &library_root,
-        &project,
-        &address,
-        &commands::now_utc(),
-    )
+    tokio::task::spawn_blocking(move || {
+        let library_root = commands::memory::notes_root(&home);
+        commands::memory::put_addressed_note_to_use_inner(
+            &library_root,
+            &project,
+            &address,
+            &commands::now_utc(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        commands::memory::NoteRefusal::Said(did_not_finish("putting that note to use", &error))
+    })?
 }
 
 /// „Stop using": notatka zostaje na liście i przestaje wchodzić do promptu.
@@ -2456,15 +2824,23 @@ pub async fn stop_using_note(
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
+        .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let library_root = commands::memory::notes_root(&state.home);
+    let home = state.home.clone();
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::stop_using_addressed_note_inner(
-        &library_root,
-        &project,
-        &address,
-        &commands::now_utc(),
-    )
+    tokio::task::spawn_blocking(move || {
+        let library_root = commands::memory::notes_root(&home);
+        commands::memory::stop_using_addressed_note_inner(
+            &library_root,
+            &project,
+            &address,
+            &commands::now_utc(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        commands::memory::NoteRefusal::Said(did_not_finish("setting that note aside", &error))
+    })?
 }
 
 /// „Discard": kandydatka odchodzi do `discarded/` i schodzi z listy.
@@ -2481,15 +2857,23 @@ pub async fn discard_note(
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
+        .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let library_root = commands::memory::notes_root(&state.home);
+    let home = state.home.clone();
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::discard_addressed_note_inner(
-        &library_root,
-        &project,
-        &address,
-        &commands::now_utc(),
-    )
+    tokio::task::spawn_blocking(move || {
+        let library_root = commands::memory::notes_root(&home);
+        commands::memory::discard_addressed_note_inner(
+            &library_root,
+            &project,
+            &address,
+            &commands::now_utc(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        commands::memory::NoteRefusal::Said(did_not_finish("discarding that note", &error))
+    })?
 }
 
 /// Przenosi wcześniejszą notatkę projektową z biblioteki do wybranego projektu.
@@ -2502,10 +2886,18 @@ pub async fn move_note_to_project(
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
     let project = state
         .project_for(catalog_folder.as_deref())
+        .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let library_root = commands::memory::notes_root(&state.home);
+    let home = state.home.clone();
     let address = commands::memory::NoteAddress { place, id };
-    commands::memory::move_note_to_project_inner(&library_root, &project, &address)
+    tokio::task::spawn_blocking(move || {
+        let library_root = commands::memory::notes_root(&home);
+        commands::memory::move_note_to_project_inner(&library_root, &project, &address)
+    })
+    .await
+    .map_err(|error| {
+        commands::memory::NoteRefusal::Said(did_not_finish("moving that note", &error))
+    })?
 }
 
 /// Workspace'y: nazwane zakresy pracy. Lista, dokładanie, zdejmowanie.
@@ -2520,9 +2912,13 @@ pub async fn move_note_to_project(
 /// użytkownika, a nie stanem żywego biegu — czyli dokładnie tak samo jak agenci, workflow
 /// i notatki, i z tego samego powodu ta komenda nie ma `State`.
 #[tauri::command]
-pub fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
-    commands::workspaces::list_workspaces_inner(&crate::loadout_dir())
-        .map_err(|error| error.to_string())
+pub async fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
+    tokio::task::spawn_blocking(|| {
+        commands::workspaces::list_workspaces_inner(&crate::loadout_dir())
+    })
+    .await
+    .map_err(|error| did_not_finish("reading your list of folders", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Składa pracę biegu w jedną gałąź pod podaną nazwą.
@@ -2531,12 +2927,21 @@ pub fn list_workspaces() -> Result<Vec<commands::workspaces::WorkspaceWire>, Str
 /// na tym samym pliku) wraca zdaniem, bo to są rzeczy, które człowiek ma przeczytać i
 /// rozstrzygnąć, a nie awarie aplikacji.
 #[tauri::command]
-pub fn fold_run_into_branch(
+pub async fn fold_run_into_branch(
     folder: &str,
     run: &str,
     name: &str,
 ) -> Result<commands::finalize::Landing, String> {
-    commands::finalize::fold_run(std::path::Path::new(folder), run, name)
+    // Pełny checkout i tyle merge'ów, ile bieg zostawił gałęzi — najdłuższa pojedyncza praca,
+    // jaką okno umie zlecić poza samym biegiem.
+    let folder = folder.to_owned();
+    let run = run.to_owned();
+    let name = name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::finalize::fold_run(std::path::Path::new(&folder), &run, &name)
+    })
+    .await
+    .map_err(|error| did_not_finish("putting that run's work together", &error))?
 }
 
 /// Jak nazwie się gałąź wyniku dla podanego identyfikatora zadania.
@@ -2545,9 +2950,29 @@ pub fn fold_run_into_branch(
 /// naciśnięciem, jest zgadywaniem, którego skutek poznaje po godzinie. Odpowiedź niesie też
 /// zmierzoną konwencję i to, czy nazwa jest już zajęta.
 #[tauri::command]
-#[must_use]
-pub fn suggest_branch_name(folder: &str, id: &str) -> commands::branch_name::Proposed {
-    commands::branch_name::proposed(std::path::Path::new(folder), id)
+pub async fn suggest_branch_name(folder: String, id: String) -> commands::branch_name::Proposed {
+    // `git for-each-ref` PRZY KAŻDYM ZNAKU wpisanym w pole Startu — na monorepo z tysiącem
+    // gałęzi to była pauza na każdą literę (2026-09, Z-10).
+    //
+    // ARGUMENTY WARTOŚCIĄ, NIE POŻYCZKĄ, i to jest wymóg Tauri, nie wybór: komenda `async`
+    // z pożyczonym argumentem MUSI zwracać `Result` (`AsyncCommandMustReturnResult`), a ta nie
+    // zwraca i nie ma zwracać — propozycja nazwy nie jest rzeczą, którą wolno odmówić. Nazwy
+    // parametrów zostają te same, więc klucze na drucie i `checks/invoke-args.sh` widzą dokładnie
+    // to, co widziały (`src/sections/run/branch/io.ts` wysyła `{ folder, id }`).
+    tokio::task::spawn_blocking(move || {
+        commands::branch_name::proposed(std::path::Path::new(&folder), &id)
+    })
+    .await
+    /* PUSTA NAZWA, NIE PANIKA I NIE ZGADYWANIE. Ta komenda nie zwraca `Result`, bo propozycja
+     * nazwy nie jest rzeczą, którą wolno odmówić — a `unwrap` w kodzie produkcyjnym jest
+     * zakazany (AGENTS.md §4). Puste pole `name` ma po drugiej stronie granicy jedno,
+     * istniejące znaczenie: „człowiek nie wpisał jeszcze ID", czyli ekran nie pokazuje
+     * propozycji. Zmyślona nazwa byłaby gałęzią, na której ktoś zostawiłby pracę. */
+    .unwrap_or_else(|_| commands::branch_name::Proposed {
+        name: String::new(),
+        convention: None,
+        taken: false,
+    })
 }
 
 /// Podpowiedzi ścieżek dla `@` — wyłącznie spod wskazanego folderu.
@@ -2559,29 +2984,48 @@ pub fn suggest_branch_name(folder: &str, id: &str) -> commands::branch_name::Pro
 /// Odmowa jest zwykłym `Err`, bo `..` w polu jest omyłką człowieka, a nie awarią aplikacji —
 /// ekran ma powiedzieć „tędy nie", a nie zniknąć.
 #[tauri::command]
-pub fn suggest_paths(
+pub async fn suggest_paths(
     folder: &str,
     typed: &str,
 ) -> Result<Vec<commands::paths::Suggestion>, String> {
-    commands::paths::suggest(std::path::Path::new(folder), typed, commands::paths::MOST)
-        .map_err(|error| error.to_string())
+    let folder = folder.to_owned();
+    let typed = typed.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::paths::suggest(std::path::Path::new(&folder), &typed, commands::paths::MOST)
+    })
+    .await
+    .map_err(|error| did_not_finish("looking for files under that folder", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Dokłada workspace albo zmienia nazwę istniejącego. Oddaje CAŁĄ listę po zapisie.
 #[tauri::command]
-pub fn save_workspace(
+pub async fn save_workspace(
     name: &str,
     folder: &str,
 ) -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
-    commands::workspaces::save_workspace_inner(&crate::loadout_dir(), name, folder)
-        .map_err(|error| error.to_string())
+    let name = name.to_owned();
+    let folder = folder.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::workspaces::save_workspace_inner(&crate::loadout_dir(), &name, &folder)
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that folder", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Zdejmuje workspace z listy. **Folderu nie dotyka** — powód przy `delete_workspace_inner`.
 #[tauri::command]
-pub fn delete_workspace(id: &str) -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
-    commands::workspaces::delete_workspace_inner(&crate::loadout_dir(), id)
-        .map_err(|error| error.to_string())
+pub async fn delete_workspace(
+    id: &str,
+) -> Result<Vec<commands::workspaces::WorkspaceWire>, String> {
+    let id = id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::workspaces::delete_workspace_inner(&crate::loadout_dir(), &id)
+    })
+    .await
+    .map_err(|error| did_not_finish("taking that folder off the list", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Co Loadout robi domyślnie: kto prowadzi rozmowę i ile wolno wydać na jeden bieg.
@@ -2590,8 +3034,10 @@ pub fn delete_workspace(id: &str) -> Result<Vec<commands::workspaces::WorkspaceW
 /// workspace'ach: te wybory są biblioteką użytkownika, a nie stanem żywego biegu. Powód
 /// i zakres w całości stoją w `commands::settings`.
 #[tauri::command]
-pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
-    commands::settings::read_settings_inner(&crate::loadout_dir())
+pub async fn read_settings() -> Result<commands::settings::SettingsWire, String> {
+    tokio::task::spawn_blocking(|| commands::settings::read_settings_inner(&crate::loadout_dir()))
+        .await
+        .map_err(|error| did_not_finish("reading your settings", &error))?
         .map_err(|error| error.to_string())
 }
 
@@ -2607,19 +3053,24 @@ pub fn read_settings() -> Result<commands::settings::SettingsWire, String> {
 ///
 /// 2026-09 (Z-9) — CZWARTY ARGUMENT: ile ostatnich biegów zostaje w folderze projektu.
 #[tauri::command]
-pub fn save_settings(
+pub async fn save_settings(
     default_lead: &str,
     default_budget_usd: f64,
     nav_collapsed: bool,
     keep_last_runs: u32,
 ) -> Result<commands::settings::SettingsWire, String> {
-    commands::settings::save_settings_inner(
-        &crate::loadout_dir(),
-        default_lead,
-        default_budget_usd,
-        nav_collapsed,
-        keep_last_runs,
-    )
+    let default_lead = default_lead.to_owned();
+    tokio::task::spawn_blocking(move || {
+        commands::settings::save_settings_inner(
+            &crate::loadout_dir(),
+            &default_lead,
+            default_budget_usd,
+            nav_collapsed,
+            keep_last_runs,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("saving your settings", &error))?
     .map_err(|error| error.to_string())
 }
 
@@ -2732,7 +3183,7 @@ async fn from_the_window(
             .triggered_project(folder, claim)
             .inspect_err(refused)?
     } else {
-        state.project_for(folder).inspect_err(refused)?
+        state.project_for(folder).await.inspect_err(refused)?
     };
     let request = state
         .request(&project, file_name, how_many_at_once, task)
@@ -2766,19 +3217,33 @@ pub async fn rerun_step(
 ) -> Result<Option<String>, String> {
     // Projekt PRZED żądaniem: bieg, którego krok powtarzamy, leży w katalogu tego workspace'a,
     // więc bez niego nie ma gdzie go szukać.
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    let again = commands::rerun::again(
-        &crate::loadout_dir(),
-        &project,
-        file_name,
-        step,
-        how_many_at_once,
-    )
-    .map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })?;
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    // Powtórzenie kroku czyta plik workflow i opis biegu z dysku, więc jedzie na pulę blokującą
+    // (2026-09, Z-10). Sam bieg rusza dopiero po tym, zwykłą drogą.
+    let again = {
+        let at = project.clone();
+        let file_name = file_name.to_owned();
+        let step = step.to_owned();
+        tokio::task::spawn_blocking(move || {
+            commands::rerun::again(
+                &crate::loadout_dir(),
+                &at,
+                &file_name,
+                &step,
+                how_many_at_once,
+            )
+        })
+        .await
+        .map_err(|error| did_not_finish("getting that step ready to run again", &error))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })?
+    };
     run_workflow_in_project(
         &state,
         &project,
@@ -2815,14 +3280,26 @@ pub async fn resume_run(
     folder: Option<String>,
     lines: Channel<Vec<Line>>,
 ) -> Result<Option<String>, String> {
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    let again =
-        commands::rerun::onward(&crate::loadout_dir(), &project, run, step, how_many_at_once)
-            .map_err(|error| {
-                let said = error.to_string();
-                refused(&said);
-                said
-            })?;
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    // Ten sam odczyt z dysku, co przy [`rerun_step`], i z tego samego powodu na puli blokującej.
+    let again = {
+        let at = project.clone();
+        let run = run.to_owned();
+        let step = step.to_owned();
+        tokio::task::spawn_blocking(move || {
+            commands::rerun::onward(&crate::loadout_dir(), &at, &run, &step, how_many_at_once)
+        })
+        .await
+        .map_err(|error| did_not_finish("getting that run ready to carry on", &error))?
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })?
+    };
     run_workflow_in_project(
         &state,
         &project,
@@ -2907,7 +3384,10 @@ pub async fn run_agent(
         task: task.to_owned(),
         how_many_at_once,
     };
-    let project = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
     // `begin_a_run`, nie `begin_run`: uchwyt żywego biegu nie ma prawa zniknąć pod Stopem
     // (powód w całości stoi przy tamtej metodzie).
     let deps = state.begin_a_run(project.as_path()).inspect_err(refused)?;
@@ -2999,7 +3479,9 @@ pub async fn open_chat(
     folder: Option<String>,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    state.watching_the_lead(terminal, folder.as_deref(), pump_into(lines))
+    state
+        .watching_the_lead(terminal, folder.as_deref(), pump_into(lines))
+        .await
 }
 
 /// Człowiek odpowiedział na pytanie, które lider zadał w tym terminalu.
@@ -3123,10 +3605,19 @@ pub async fn copy_diagnostics(
     state: State<'_, AppState>,
     folder: Option<String>,
 ) -> Result<commands::diagnostics::DiagnosticsReceipt, String> {
-    let workspace = state.project_for(folder.as_deref()).inspect_err(refused)?;
-    commands::diagnostics::copy_diagnostics_with(&workspace, |report| {
-        app.clipboard().write_text(report.to_owned())
+    let workspace = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    // Raport składa się z odczytów dysku (`runs/`, `run.json`, dzienniki) — stąd pula blokująca.
+    // Schowek dopisuje się w tym samym domknięciu, bo `AppHandle` wolno używać z każdego wątku.
+    tokio::task::spawn_blocking(move || {
+        commands::diagnostics::copy_diagnostics_with(&workspace, |report| {
+            app.clipboard().write_text(report.to_owned())
+        })
     })
+    .await
+    .map_err(|error| did_not_finish("putting that report together", &error))?
     .map_err(|error| {
         let said = error.to_string();
         refused(&said);
@@ -3234,7 +3725,10 @@ pub async fn start_process(
     // Folder tą samą drogą, co przy biegu i przy instalacji umiejętności: `project_for` jest
     // jedynym miejscem, w którym mieszkają te trzy zdania odmowy (niezmiennik 13). Brak wyboru
     // znaczy „tam, gdzie aplikacja wstała", a nie „nigdzie".
-    let cwd = state.project_for(folder.as_deref()).inspect_err(refused)?;
+    let cwd = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
 
     let line = command.trim();
     if line.is_empty() {
@@ -3248,25 +3742,32 @@ pub async fn start_process(
         return Err(said);
     }
 
-    state
-        .started
-        .start(
-            &crate::engine::drivers::command::StartSpec {
-                command: line.to_owned(),
-                cwd,
-            },
+    let spec = crate::engine::drivers::command::StartSpec {
+        command: line.to_owned(),
+        cwd,
+    };
+    // Podniesienie programu to `fork`/`exec` z całym środowiskiem i grupą procesów — praca
+    // systemowa, nie oczekiwanie (2026-09, Z-10). Rejestr jest `Arc`, więc klon jest darmowy.
+    let started = Arc::clone(&state.started);
+    let what = spec.command.clone();
+    tokio::task::spawn_blocking(move || {
+        started.start(
+            &spec,
             // BEZ ZNACZNIKA, i to jest odpowiedź, nie pominięcie (2026-09, Z-01d): `/start`
             // z wiersza wejścia nie należy do żadnego kroku żadnego biegu, więc odzyskiwanie
             // po awarii nie ma prawa uznać go za swoją sierotę. Człowiek ubija go kafelkiem.
             None,
         )
-        .map(|one| one.pgid)
-        .map_err(|error| {
-            // Zdanie mówi, CO nie wstało, bo `os error 2` samo nie mówi nic (DESIGN §8).
-            let said = format!("Loadout could not start \"{line}\": {error}");
-            refused(&said);
-            said
-        })
+    })
+    .await
+    .map_err(|error| did_not_finish("starting that command", &error))?
+    .map(|one| one.pgid)
+    .map_err(|error| {
+        // Zdanie mówi, CO nie wstało, bo `os error 2` samo nie mówi nic (DESIGN §8).
+        let said = format!("Loadout could not start \"{what}\": {error}");
+        refused(&said);
+        said
+    })
 }
 
 /// „Stop" na kafelku: kończy **tę** grupę i wraca dopiero z dowodem.
@@ -3312,7 +3813,11 @@ pub async fn create_trigger(
     state: State<'_, AppState>,
     draft: commands::triggers::TriggerDraft,
 ) -> Result<commands::triggers::TriggerEntry, String> {
-    commands::triggers::create(&state.home, draft).map_err(|error| error.to_string())
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::triggers::create(&home, draft))
+        .await
+        .map_err(|error| did_not_finish("saving that trigger", &error))?
+        .map_err(|error| error.to_string())
 }
 
 /// Zapisuje edycje tylko wtedy, gdy zredagowana migawka nadal opisuje ten sam plik.
@@ -3323,7 +3828,10 @@ pub async fn update_trigger(
     expected: commands::triggers::TriggerSnapshot,
     draft: commands::triggers::TriggerDraft,
 ) -> Result<commands::triggers::TriggerEntry, String> {
-    commands::triggers::update(&state.home, &slug, &expected, draft)
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::triggers::update(&home, &slug, &expected, draft))
+        .await
+        .map_err(|error| did_not_finish("saving those edits", &error))?
         .map_err(|error| error.to_string())
 }
 
@@ -3365,7 +3873,11 @@ pub async fn set_trigger_enabled(
     slug: String,
     enabled: bool,
 ) -> Result<commands::triggers::TriggerEntry, String> {
-    commands::triggers::set_enabled(&state.home, &slug, enabled).map_err(|error| error.to_string())
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::triggers::set_enabled(&home, &slug, enabled))
+        .await
+        .map_err(|error| did_not_finish("writing that switch down", &error))?
+        .map_err(|error| error.to_string())
 }
 
 /// Pyta jedno źródło o następną sprawę. Sekret i adres zostają w konfiguracji `curl` na stdin;

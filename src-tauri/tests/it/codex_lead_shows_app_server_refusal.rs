@@ -108,7 +108,9 @@ impl Bench {
     async fn say(&self, state: &AppState) -> Result<(), String> {
         let folder = self.workspace.path().to_string_lossy().into_owned();
         let (sink, _source) = line_channel(LINES);
-        state.watching_the_lead(TERMINAL, Some(&folder), sink)?;
+        state
+            .watching_the_lead(TERMINAL, Some(&folder), sink)
+            .await?;
         say_to_orchestrator_from_window(
             state,
             TERMINAL,

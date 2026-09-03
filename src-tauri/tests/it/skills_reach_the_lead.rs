@@ -559,6 +559,7 @@ impl Bench {
             let (sink, source) = line_channel(LINES);
             state
                 .watching_the_lead(TERMINAL, Some(&folder), sink)
+                .await
                 .expect("the window has to be able to watch this folder");
             source
         };

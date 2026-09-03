@@ -449,7 +449,9 @@ impl Bench {
         );
         let _watching: LineSource = {
             let (sink, source) = line_channel(LINES);
-            state.watching_the_lead(TERMINAL, Some(&folder), sink)?;
+            state
+                .watching_the_lead(TERMINAL, Some(&folder), sink)
+                .await?;
             source
         };
 

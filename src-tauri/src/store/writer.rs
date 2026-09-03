@@ -250,30 +250,95 @@ const INSERT_EVENT: &str = "INSERT INTO events (run_id, step_id, ts, kind, level
      VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 /// Pętla zadania pisarza. Kończy się na [`Job::Close`] albo kiedy zginie ostatni [`Writer`].
+///
+/// # 2026-09 (Z-10) — ANI JEDNO WYWOŁANIE `rusqlite` NIE BIEGNIE NA WORKERZE
+///
+/// `rusqlite` jest synchroniczne, więc każde zlecenie trzymało wątek tokio przez cały czas
+/// transakcji — a zapis czekający na zamek stoi tyle, ile stoi [`super::BUSY_TIMEOUT_MS`], czyli
+/// do pięciu sekund. Domknięcie dziennika (`wal_checkpoint(TRUNCATE)`) czeka tak samo długo na
+/// czytelników. Zmierzone na jednym wątku runtime'u
+/// (`tests/it/stop_answers_while_the_trees_close.rs`): dopisanie **jednego** wiersza zabierało
+/// aplikacji 2,1 s bez ani jednej tury dla czegokolwiek innego — nie szła w tym czasie ani jedna
+/// linia biegu na ekran, ani Stop.
+///
+/// PĘTLA PRACUJE NA PULI BLOKUJĄCEJ i wraca na runtime dopiero wtedy, gdy nie ma co pisać.
+/// Dopóki w kanale stoi choć jedno zlecenie, kolejne biorą się przez `try_recv` **bez opuszczania
+/// wątku puli** — czyli wsad stu zdarzeń to jedno przejście, a nie sto przekazań.
+///
+/// Czego tu świadomie NIE MA, choć plan tego zadania o to prosił: `spawn_blocking` na CAŁĄ pętlę,
+/// z `blocking_recv` jako czekaniem. Wątek puli zaparkowany na zawsze wyłącza automatyczne
+/// przesuwanie zegara tokio, więc **każdy** test na `start_paused` z otwartym magazynem przestaje
+/// się kończyć. Zmierzone 2026-09 sondą bez naszego kodu: zadanie `spawn_blocking` stojące na
+/// `blocking_recv` plus `sleep(30 s)` na zatrzymanym zegarze nie kończy się nigdy; w tym drzewie
+/// wisiał na tym `close_stops_the_run::a_run_that_will_never_come_down_still_lets_the_window_close`,
+/// choć nie zapisuje ani jednego wiersza. Czekanie musi więc zostać asynchroniczne — i tylko ono.
+///
+/// Połączenie i skrzynka wchodzą do domknięcia i wracają z niego, bo `spawn_blocking` żąda
+/// `'static`. `JoinError` znaczy panikę zadania blokującego (`panic` jest w tym drzewie `deny`) —
+/// wtedy połączenia nie ma już z czego odzyskać, więc pisarz kończy pracę i mówi o tym
+/// w dzienniku. Każdy następny zapis dostanie `WriterGone`, czyli odmowę, a nie ciszę.
 async fn serve(mut conn: Connection, mut inbox: mpsc::Receiver<Job>) {
+    // Jedyne czekanie tej pętli, i jedyna jej instrukcja wykonywana na wątku runtime'u.
     while let Some(job) = inbox.recv().await {
+        let handed = tokio::task::spawn_blocking(move || {
+            let carry_on = write_until_the_queue_is_empty(&mut conn, &mut inbox, job);
+            (conn, inbox, carry_on)
+        })
+        .await;
+        match handed {
+            Ok((returned, back, carry_on)) => {
+                conn = returned;
+                inbox = back;
+                if !carry_on {
+                    return;
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, "the index writer could not finish a job, so it is stopping");
+                return;
+            }
+        }
+    }
+}
+
+/// Zapisuje podane zlecenie i wszystkie, które już stoją w kanale. `false` znaczy „to koniec".
+///
+/// `try_recv`, nie `blocking_recv`: kolejne zlecenie bierzemy tylko wtedy, gdy JUŻ tam jest.
+/// Czekanie na następne trzymałoby wątek puli w nieskończoność — powód w całości stoi przy
+/// [`serve`] (2026-09, Z-10).
+fn write_until_the_queue_is_empty(
+    conn: &mut Connection,
+    inbox: &mut mpsc::Receiver<Job>,
+    first: Job,
+) -> bool {
+    let mut job = first;
+    loop {
         match job {
             Job::Rows(rows, reply) => {
                 // Wynik idzie do wołającego i **nie** zatrzymuje pętli. To jest cała druga
                 // połowa AC-6: implementacja, która ratuje atomowość, kończąc zadanie, zostawia
                 // użytkownika z biegiem, w którym nic więcej się nie zapisze, i z aplikacją do
                 // restartu po jednym złym zdarzeniu.
-                let outcome = write(&mut conn, &rows);
+                let outcome = write(conn, &rows);
                 // Odbiorca mógł już zniknąć — wołający ma prawo się rozmyślić. To nie jest
                 // błąd zapisu i nie ma prawa zatrzymać pętli.
                 let _ = reply.send(outcome);
             }
             Job::Pragmas(reply) => {
-                let _ = reply.send(read_pragmas(&conn));
+                let _ = reply.send(read_pragmas(conn));
             }
             // Kanał jest FIFO, więc w tym miejscu wszystko, co ktokolwiek wysłał przed
             // zamknięciem, jest już zapisane. Dlatego wolno domknąć dziennik i wyjść bez
             // dopytywania.
             Job::Close => {
-                truncate_the_journal(&conn);
-                break;
+                truncate_the_journal(conn);
+                return false;
             }
         }
+        let Ok(next) = inbox.try_recv() else {
+            return true;
+        };
+        job = next;
     }
 }
 

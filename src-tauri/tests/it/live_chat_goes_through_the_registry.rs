@@ -236,9 +236,11 @@ fn one_vendor() -> (Drivers, Arc<Watch>) {
 }
 
 /// Okno otwiera strumień tego terminalu — dokładnie ta droga, którą woła montaż ekranu pracy.
-fn watching(state: &AppState, terminal: &str, folder: &str) -> Result<LineSource, String> {
+async fn watching(state: &AppState, terminal: &str, folder: &str) -> Result<LineSource, String> {
     let (sink, source) = line_channel(LINES);
-    state.watching_the_lead(terminal, Some(folder), sink)?;
+    state
+        .watching_the_lead(terminal, Some(folder), sink)
+        .await?;
     Ok(source)
 }
 
@@ -258,8 +260,8 @@ async fn two_terminals_of_one_folder_open_two_threads_through_the_live_road()
          one card measured twice"
     );
 
-    let _left = watching(&state, LEFT, &folder)?;
-    let _right = watching(&state, RIGHT, &folder)?;
+    let _left = watching(&state, LEFT, &folder).await?;
+    let _right = watching(&state, RIGHT, &folder).await?;
 
     state
         .say_to_the_lead(
@@ -319,7 +321,7 @@ async fn without_a_pointed_at_lead_the_road_refuses_and_names_the_next_move()
     let folder = bench.folder();
     let (drivers, watch) = one_vendor();
     let state = bench.app(drivers)?;
-    let _left = watching(&state, LEFT, &folder)?;
+    let _left = watching(&state, LEFT, &folder).await?;
 
     let refusal = state
         .say_to_the_lead(LEFT, Some(&folder), None, "who is there?")

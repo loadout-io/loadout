@@ -252,6 +252,7 @@ async fn opening_a_folder_settles_what_the_last_window_left() -> Result<(), Box<
 
     let asked = state
         .project_for(None)
+        .await
         .map_err(|said| format!("the window could not even name its own folder: {said}"))?;
     assert_eq!(asked, project, "project_for handed back the wrong folder");
 
@@ -278,8 +279,10 @@ async fn opening_a_folder_settles_what_the_last_window_left() -> Result<(), Box<
             .join("run.json"),
     )?;
 
-    let _ = state.project_for(None);
-    let _ = state.project_for(Some(project.to_string_lossy().as_ref()));
+    let _ = state.project_for(None).await;
+    let _ = state
+        .project_for(Some(project.to_string_lossy().as_ref()))
+        .await;
 
     let after = fs::read_to_string(
         project
@@ -336,7 +339,7 @@ async fn a_folder_this_window_never_opened_is_settled_too() -> Result<(), Box<dy
         Store::open(&home.path().join("index.db"))?,
         no_drivers(),
     );
-    state.settle_everything_left_behind(home.path());
+    state.settle_everything_left_behind(home.path()).await;
 
     assert_eq!(
         read(elsewhere.path(), LEFT_OVER)?["status"].as_str(),
@@ -353,7 +356,9 @@ async fn a_folder_this_window_never_opened_is_settled_too() -> Result<(), Box<dy
         &a_run("running", "running", "a-boot-that-is-over"),
     )?;
     let before = read(elsewhere.path(), OURS)?;
-    let _ = state.project_for(Some(elsewhere.path().to_string_lossy().as_ref()));
+    let _ = state
+        .project_for(Some(elsewhere.path().to_string_lossy().as_ref()))
+        .await;
 
     assert_eq!(
         read(elsewhere.path(), OURS)?,

@@ -434,7 +434,9 @@ async fn window_wire_reaches_app_state_and_the_same_thread_on_first_and_follow_u
     save_agent_inner(library.path(), &lead, None)?;
     let folder = workspace.path().to_string_lossy().into_owned();
     let (lines, _source) = line_channel(QUEUE_CAP);
-    state.watching_the_lead("product-image", Some(&folder), lines)?;
+    state
+        .watching_the_lead("product-image", Some(&folder), lines)
+        .await?;
     let wire_image = || PastedImage {
         mime: "image/png".to_owned(),
         base64: "iVBORw0KGgoAAAANSUhEUg==".to_owned(),

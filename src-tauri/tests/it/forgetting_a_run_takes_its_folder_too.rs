@@ -208,6 +208,7 @@ async fn opening_a_folder_keeps_only_the_last_runs_a_person_asked_for() -> Resul
     // wołających wyglądałoby dokładnie tak samo z zewnątrz — i raz już tak w tym repo wylądowało.
     state
         .project_for(None)
+        .await
         .map_err(|said| format!("the window could not even name its own folder: {said}"))?;
 
     let left: Vec<String> = list_runs_inner(bench.project())
