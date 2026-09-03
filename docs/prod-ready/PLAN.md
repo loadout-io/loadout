@@ -350,13 +350,23 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 
 - **po Z-28:** allowlista plików `tests/*.rs` w `checks/tests-listed.sh` (python3, atomowo);
   `checks.json` `rust-test.budget_s` z 3600 na 1500 (60 linków mniej).
-- **po Z-06 — DO ZROBIENIA, gdy kolejka będzie cicha.** Połowa indeksowa jest już dowiedziona
+- **po Z-06 — PRÓBOWANE 2026-09-03, WYMAGA CIEBIE.** Połowa indeksowa jest dowiedziona
   automatycznie i dobrze: `quitting_leaves_the_index_small` buduje sytuację (czytelnik trzyma
   migawkę, dziennik rośnie), ma **kontrolę negatywną** na to, że sytuacja naprawdę powstała,
-  i cytuje zmierzone 42 MB. Zostaje połowa procesowa: prawdziwe okno, żywy bieg, wyjście
-  z menu, potem `ps`. Wymaga zbudowanej aplikacji, czyli ciężkiego `cargo` — nie wolno tego
-  robić, gdy biegnie zadanie (niezmiennik 26). Zdarzenie ⌘Q wysyła
-  `osascript -e 'quit app "Loadout"'`, więc test da się zrobić bez dotykania klawiatury.
+  i cytuje zmierzone 42 MB.
+
+  Połowy procesowej **nie da się sprawdzić z powłoki** i to jest ograniczenie systemu, nie
+  produktu. Zbudowałem pakiet (`npm run app:build`), uruchomiłem go i posadziłem obok proces
+  w osobnej grupie — ale ⌘Q jest zdarzeniem Apple'a, a wysłanie go wymaga zgody na
+  automatyzację, której nie da się przyznać bez okna dialogowego. Do tego
+  `tell application "Loadout" to quit` trafia w **kopię z `/Applications`**, nie w świeżo
+  zbudowaną: obie mają ten sam identyfikator pakietu, a system wybiera zarejestrowaną.
+  Test wyglądał więc na czerwony, choć mierzył czyjeś inne okno.
+
+  **Co zrobić, gdy będziesz przy maszynie** (dwie minuty): otwórz
+  `target/release/bundle/macos/Loadout.app`, wystartuj dowolny bieg, w innym oknie odpal
+  `sleep 600 &` z terminala agenta, naciśnij ⌘Q i sprawdź `ps ax | grep -c claude` oraz
+  rozmiar `~/.loadout/loadout.db-wal`. Agenci mają zejść, a dziennik zejść poniżej 8 MB.
 - **po Z-11:** `cargo test --test it -- --ignored skills_reach_claude` raz (płatne ~0,05 USD).
 - **po Z-15:** zamknij aplikację, `rm ~/.loadout/loadout.db ~/.loadout/loadout.db-wal ~/.loadout/loadout.db-shm`,
   uruchom, sprawdź, że historia biegów jest kompletna (niezmiennik 4), zapisz rozmiar nowej bazy.
@@ -382,6 +392,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-03 14:40 · próba testu ⌘Q · wykorzystałem przerwę na limit, żeby zrobić ręczną połowę Z-06: zbudowałem wydanie i pakiet, uruchomiłem, posadziłem obok proces w osobnej grupie. Nie da się: ⌘Q to zdarzenie Apple'a, a jego wysłanie wymaga zgody na automatyzację, której powłoka nie dostanie; do tego `tell application "Loadout"` trafia w kopię z `/Applications`, bo obie mają ten sam identyfikator pakietu. Pierwszy przebieg wyglądał na czerwony i BYŁ WADLIWYM TESTEM, nie wadą produktu — goła binarka spod `target/release` nie jest dla systemu aplikacją, więc zdarzenie nie miało adresata. Instrukcja dla człowieka zapisana wyżej; nic nie zostało po teście (sprawdzone `ps`) · ręka
 - 2026-09-03 14:20 · LIMIT SESJI (reset 15:10) · Z-10 zginęło w implementacji z pracą w worktree; przy okazji trafiło dokładnie w moment podmiany binarki vendora (14:20), więc sonda też odmówiła — dwie przyczyny maszynowe naraz, obie już opisane w protokole odbioru. Wznowienie po resecie, bez zmian w zleceniu · ręka
 - 2026-09-03 12:40 · Z-09 · LANDED, trzy rundy, CI 318 s. Najgrubsze zadanie kolejki: uderzyło w sufit 250 tur z 21 plikami pracy w środku, wznowione z sufitem 400 — podział na dwa, który plan przewidywał, okazał się niepotrzebny. Kopie robocze starych biegów, osierocone worktree i gałęzie `loadout/*` mają teraz zamiatacz; kopia plikowa znika po biegu, a podfolder repo jako workspace mówi wprost, że praca nie wyląduje na gałęzi (3,8 GB i 89 worktree w urc-monorepo to była ta wada) · C→X
 - 2026-09-03 08:20 · Z-08 · LANDED, dwie rundy, CI 295 s. Katalog umiejętności nie wchodzi już do commita kroku ani do gałęzi wynikowej — do dziś każdy bieg z umiejętnościami wnosił skille Loadouta w PR człowieka · X→C
