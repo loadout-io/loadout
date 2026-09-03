@@ -6259,6 +6259,18 @@ impl IsolationMarker {
         }
     }
 
+    /// Dokładny commit, z którego to drzewo powstało.
+    ///
+    /// 2026-09-03 (Z-7) — CZYTA GO ZAMKNIĘCIE BIEGU. „Czy krok sam zacommitował swoją pracę" to
+    /// pytanie o commity ponad punktem startu, a punkt startu wznowionego kroku jest gałęzią
+    /// poprzedniego biegu, nie `HEAD` projektu. Marker jest jedynym miejscem, w którym ten OID
+    /// stoi zapisany — i tym samym, którego pilnuje odzyskiwanie po przerwanej próbie.
+    fn head(&self) -> &str {
+        match self {
+            Self::Complete { head, .. } | Self::Recovering { head, .. } => head,
+        }
+    }
+
     fn matches(&self, branch: &str, head: &str) -> bool {
         match self {
             Self::Complete {
@@ -7007,45 +7019,73 @@ fn stood_before<'a>(graph: &'a WorkflowFile, tile: &str, running: &BTreeSet<&str
 
 /// Zamyka drzewa po biegu: praca ląduje na gałęzi, a katalog, w którym powstała, znika.
 ///
-/// Po kroku, który nic nie zmienił, nie zostaje ani gałąź, ani katalog — jak dotąd. Po kroku,
-/// który zmienił cokolwiek, zostaje sama gałąź: praca jest z niej osiągalna w całości, a katalog
-/// dokładał do tego wyłącznie kopię repozytorium na dysku (T-95).
+/// Po kroku, który nic nie zmienił — ani w drzewie, ani commitem na swojej gałęzi — nie zostaje
+/// ani gałąź, ani katalog. Po kroku, który zmienił cokolwiek, zostaje sama gałąź: praca jest
+/// z niej osiągalna w całości, a katalog dokładał do tego wyłącznie kopię repozytorium na dysku
+/// (T-95).
 ///
 /// **Katalog kopii plikowej nie jest sprzątany nigdy** i to jest cała treść warunku na `branch`:
 /// projekt bez repozytorium gałęzi nie ma, więc tam katalog **jest** pracą, a nie jej kopią.
 ///
 /// Kiedy zapis na gałąź się nie uda, katalog zostaje — a zdanie o tym idzie do wiersza tego
 /// kroku w `run.json`. Bez niego bieg wygląda na udany, a jedyna kopia czyjejś pracy leży poza
-/// gitem, w katalogu, którego nikt nie szuka.
+/// gitem, w katalogu, którego nikt nie szuka. Tą samą drogą jedzie zdanie o katalogu albo
+/// gałęzi, których nie dało się sprzątnąć (Z-7).
 fn close_the_trees(project: &Path, made: &[Isolated], live: &Live) {
     for one in made {
         let Some(branch) = &one.branch else { continue };
-        let kept = isolate::finish(
+        let isolate::Closed { kept, tidied } = isolate::finish(
             project,
             &one.cwd,
             branch,
             &format!("{}: {}", live.plan.title, one.step),
+            base_of_tree(project, &live.plan.dir, &one.cwd).as_deref(),
         );
+        // Dwa zdania, jedno pole: krok umie i zostawić pracę poza gitem, i nie dać się
+        // sprzątnąć, a człowiek ma prawo przeczytać oba.
+        let mut says: Vec<String> = Vec::new();
         match kept {
             isolate::Kept::LeftInPlace { branch, why } => {
                 tracing::warn!(step = %one.step, branch, "this step's work is not on its branch, so its folder stays");
-                let at = one.at;
-                live.update(move |book| {
-                    let Some(row) = book.steps.get_mut(at) else {
-                        return;
-                    };
-                    // DOPISUJEMY, nie nadpisujemy. Krok mógł paść z własnego powodu i tamten
-                    // powód jest tym, którego człowiek szuka pierwszy; ten drugi mówi mu, gdzie
-                    // w takim razie leży to, co agent zdążył zrobić.
-                    row.error = Some(match row.error.take() {
-                        Some(said) => format!("{said} {why}"),
-                        None => why,
-                    });
-                });
+                says.push(why);
             }
             kept => tracing::debug!(step = %one.step, ?kept, "the step's folder was closed"),
         }
+        says.extend(tidied);
+        if says.is_empty() {
+            continue;
+        }
+        let at = one.at;
+        let said_now = says.join(" ");
+        live.update(move |book| {
+            let Some(row) = book.steps.get_mut(at) else {
+                return;
+            };
+            // DOPISUJEMY, nie nadpisujemy. Krok mógł paść z własnego powodu i tamten powód jest
+            // tym, którego człowiek szuka pierwszy; ten drugi mówi mu, gdzie w takim razie leży
+            // to, co agent zdążył zrobić.
+            row.error = Some(match row.error.take() {
+                Some(said) => format!("{said} {said_now}"),
+                None => said_now,
+            });
+        });
     }
+}
+
+/// Commit, z którego powstało drzewo tego kroku — z markera izolacji.
+///
+/// 2026-09-03 (Z-7) — CZYTAMY GO PRZED ZAMKNIĘCIEM DRZEWA, bo bez niego `isolate::finish` nie
+/// odróżnia kroku, który nic nie zrobił, od kroku, który zacommitował całą swoją pracę sam.
+/// Ścieżkę markera składa ta sama funkcja, która ją dowodzi przy zakładaniu drzewa
+/// ([`prove_generated_work_path`]), więc „gdzie stoi marker tego kroku" ma jedną odpowiedź
+/// (niezmiennik 13).
+///
+/// `None`, kiedy markera nie ma albo nie da się go przeczytać. Znaczy to „nie wiem", a nie „zero
+/// commitów" — i tak to czyta `isolate::finish`: bez punktu startu gałąź zostaje.
+fn base_of_tree(project: &Path, run_dir: &Path, cwd: &Path) -> Option<String> {
+    let marker_path = prove_generated_work_path(project, run_dir, cwd).ok()?;
+    let marker = read_isolation_marker(&marker_path).ok()??;
+    Some(marker.head().to_owned())
 }
 
 /// Co ten kafelek pożycza z repozytorium gospodarza — przełożone z kształtu pliku na pytanie.
