@@ -17,10 +17,15 @@
 //! (niezmiennik 5). Rozróżniają dwie rzeczy naraz i obie są potrzebne: **równość bajtowa**
 //! całego strumienia i obecność linii o nieznanym `type`.
 //!
-//! Cztery pułapki siedzą w fiksturze i każda pada inaczej:
+//! Pięć pułapek siedzi w fiksturze i każda pada inaczej:
 //!
 //! - **nieznany `type`** — implementacja tee'ująca po parsowaniu gubi dokładnie tę linię,
 //!   której potrzebuje zgłoszenie błędu;
+//! - **linia `type:"user"` z `tool_result`** (2026-09, Z-14) — bez `--replay-user-messages`
+//!   ten typ linii nie jest echem naszego wejścia, tylko **wynikiem czynności**: to z niego
+//!   powstaje `ToolEnd`, a z niego `FileEdit`. Filtr prywatności odrzucający ją po samym
+//!   `type` zostawia odbudowie historię bez ani jednego wiersza `Edited` i `Ran`, a paczce
+//!   diagnostycznej wyjście padłej komendy;
 //! - **linia kończąca się `CRLF`** — `BufReader::lines()` zjada `\r`, a po takim przejściu
 //!   bajtowej identyczności nie da się już osiągnąć; jest to zarazem jedyny z tych czterech
 //!   błędów, którego porównanie napisów po `trim()` nie widzi w ogóle;
@@ -62,13 +67,21 @@ const RUN_DIR: &str = "2026-08-16T09-00-00Z__01996500";
 /// Agent, którego strumień to jest.
 const AGENT: &str = "builder";
 
-/// Ile linii ma fikstura. Kryterium mówi **pięć**, więc pięć stoi w stałej, a nie w komentarzu:
-/// przycięta fikstura przechodziłaby na krótszej sekwencji i nikt by tego nie zauważył.
-const LINES: usize = 5;
+/// Prompt pierwszej tury. Dłuższy niż dolna granica igły prywatności, więc **jest** skanowany
+/// jako podciąg — a mimo to żadna linia fikstury go nie niesie.
+const TURN: &str = "say what this folder is for";
+
+/// Ile linii ma fikstura. Kryterium mówi **sześć**, więc sześć stoi w stałej, a nie
+/// w komentarzu: przycięta fikstura przechodziłaby na krótszej sekwencji i nikt by tego nie
+/// zauważył.
+const LINES: usize = 6;
 
 /// Typ zdarzenia, którego nikt nigdy nie wysłał. Poprawny JSON, nieznany `type` — dokładnie to,
 /// co vendor dokłada co tydzień.
 const UNKNOWN_TYPE: &str = r#""type":"quantum_flux""#;
+
+/// Blok, którym CLI oddaje wynik czynności. Jedzie linią `type:"user"` i **niczym innym**.
+const TOOL_RESULT: &str = r#""type":"tool_result""#;
 
 /// Escape `JSON`-owy znaku mniejszości: ukośnik i `u003c`. Zapisany z podwójnym ukośnikiem, bo
 /// pojedynczy byłby escape'em **Rusta**, a na drucie ma stać ten z `JSON`-a.
@@ -77,11 +90,11 @@ const ESCAPED: &str = "\\u003c";
 /// Liczba, która nie przeżywa rundy przez `f64` w drugą stronę.
 const LONG_NUMBER: &str = "0.14836290000000002";
 
-/// Pięć linii, które atrapa wypisuje na stdout — i dokładnie to, co ma znaleźć się w tee.
+/// Sześć linii, które atrapa wypisuje na stdout — i dokładnie to, co ma znaleźć się w tee.
 ///
 /// Sklejone z `concat!`, a nie napisane jednym literałem, bo escape `JSON`-owy musiałby wtedy
 /// stać dosłownie — a jedno „posprzątanie" pliku przez edytor skasowałoby całą pułapkę bez
-/// śladu w diffie. Czwarta linia kończy się `CRLF`; plik ma więc pięć zakończeń `\n` i jeden
+/// śladu w diffie. Czwarta linia kończy się `CRLF`; plik ma więc sześć zakończeń `\n` i jeden
 /// `\r`, który przeżywa albo nie przeżywa czytnika.
 const STREAM: &str = concat!(
     r#"{"session_id":"01996500-0000-7000-8000-0000000000aa","type":"system","subtype":"init","model":"opus","tools":["Read","Bash"],"capabilities":["interrupt_receipt_v1"]}"#,
@@ -94,7 +107,32 @@ const STREAM: &str = concat!(
     "\n",
     r#"{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}"#,
     "\r\n",
+    r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"1 file checked"}]}}"#,
+    "\n",
     r#"{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":2,"duration_ms":6220,"total_cost_usd":0.14836290000000002,"result":"done"}"#,
+    "\n",
+);
+
+/// Krok drugiej tury tego pliku. Osobny, bo osobny jest jego plik dowodowy.
+const SHORT_STEP: &str = "01996500-0000-7000-8000-00000000000b";
+
+/// Katalog biegu drugiej tury.
+const SHORT_RUN_DIR: &str = "2026-08-16T09-05-00Z__01996501";
+
+/// Tura krótsza niż dolna granica igły prywatności — i **cała** przyczyna kryterium 3.
+///
+/// Dwie litery. Jako igła skanowana w każdej linii trafiają w `"input_tokens"`, więc linia
+/// kończąca turę znikała z pliku dowodowego po tym, jak człowiek napisał agentowi „ok".
+const SHORT_TURN: &str = "ok";
+
+/// Nazwa pola, które ta tura wycinała ze strumienia. Podciąg `ok` stoi w nim na drugiej pozycji.
+const COUNTED_LENGTH: &str = r#""input_tokens":1420"#;
+
+/// Dwie linie po turze `ok`: początek i wynik. Ani jedna nie niesie treści tej tury.
+const SHORT_STREAM: &str = concat!(
+    r#"{"session_id":"01996500-0000-7000-8000-0000000000ab","type":"system","subtype":"init","model":"opus","tools":["Read"]}"#,
+    "\n",
+    r#"{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":1,"duration_ms":1200,"total_cost_usd":0.002,"usage":{"input_tokens":1420,"output_tokens":37},"result":"done"}"#,
     "\n",
 );
 
@@ -130,11 +168,11 @@ fn write_script(dir: &Path, name: &str, body: &str) -> Result<PathBuf, Box<dyn E
 }
 
 /// `RunSpec` jednej tury.
-fn spec(run_id: Uuid, cwd: &Path) -> RunSpec {
+fn spec(run_id: Uuid, cwd: &Path, said: &str) -> RunSpec {
     RunSpec {
         run_id,
         cwd: cwd.to_path_buf(),
-        prompt: "say what this folder is for".to_owned(),
+        prompt: said.to_owned(),
         model: None,
         system_append: None,
         reaches_the_web: false,
@@ -207,9 +245,15 @@ fn assert_same_bytes(written: &[u8], expected: &[u8], why: &str) {
 /// oba nadajniki, kiedy strumień się skończył, więc dopiero po nim wolno pytać dysk o plik.
 /// Czekanie na `wait()` nie wystarcza — wynik tury przychodzi z linii `result`, a po niej może
 /// jeszcze coś dojechać.
-async fn run_one_step(home: &Path, run_dir: &Path) -> Result<(), Box<dyn Error>> {
+async fn run_one_step(
+    home: &Path,
+    run_dir: &Path,
+    stream: &str,
+    said: &str,
+    step: &str,
+) -> Result<(), Box<dyn Error>> {
     let binary = write_script(home, "claude", DUMMY)?;
-    fs::write(home.join("stream.jsonl"), STREAM)?;
+    fs::write(home.join("stream.jsonl"), stream)?;
 
     // `logs/` powstaje razem z katalogiem biegu, tak jak w `commands::run` — sterownik ma tam
     // dopisać plik, a nie wymyślać układ katalogów.
@@ -222,13 +266,16 @@ async fn run_one_step(home: &Path, run_dir: &Path) -> Result<(), Box<dyn Error>>
 
     let driver = ClaudeDriver::with_binary(binary).with_transcript(Transcript {
         run_dir: run_dir.to_path_buf(),
-        step: STEP.to_owned(),
+        step: step.to_owned(),
         agent: AGENT.to_owned(),
         lines: lines_tx,
     });
 
-    let mut handle: Box<dyn AgentHandle> =
-        timeout(LIMIT, driver.start(spec(Uuid::now_v7(), home), events_tx)).await??;
+    let mut handle: Box<dyn AgentHandle> = timeout(
+        LIMIT,
+        driver.start(spec(Uuid::now_v7(), home, said), events_tx),
+    )
+    .await??;
 
     timeout(LIMIT, async { while events.recv().await.is_some() {} }).await?;
 
@@ -241,17 +288,23 @@ async fn run_one_step(home: &Path, run_dir: &Path) -> Result<(), Box<dyn Error>>
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_raw_line_is_in_the_file_including_the_one_nobody_understands()
 -> Result<(), Box<dyn Error>> {
-    // ── Fikstura naprawdę niesie cztery pułapki, o których jest to kryterium ───────────────
+    // ── Fikstura naprawdę niesie pięć pułapek, o których jest to kryterium ─────────────────
     let expected = STREAM.as_bytes();
     assert_eq!(
         newlines(expected),
         LINES,
-        "the criterion says five lines, so a shorter fixture would prove less than it claims"
+        "the criterion says six lines, so a shorter fixture would prove less than it claims"
     );
     assert!(
         contains(expected, UNKNOWN_TYPE.as_bytes()),
         "without a line of an unknown type this test cannot see a tee that writes only what it \
          parsed - and that is the failure it exists to catch"
+    );
+    assert!(
+        contains(expected, TOOL_RESULT.as_bytes()),
+        "without a line carrying the outcome of an action this test cannot see a filter that \
+         judges a line by its type alone, and that filter is the whole reason this fixture grew \
+         a sixth line"
     );
     assert!(
         contains(expected, b"\r\n"),
@@ -269,7 +322,7 @@ async fn every_raw_line_is_in_the_file_including_the_one_nobody_understands()
 
     let home = tempfile::tempdir()?;
     let run_dir = home.path().join(".loadout").join("runs").join(RUN_DIR);
-    run_one_step(home.path(), &run_dir).await?;
+    run_one_step(home.path(), &run_dir, STREAM, TURN, STEP).await?;
 
     // ── Plik stoi tam, gdzie szuka go odbudowa ────────────────────────────────────────────
     let logs = run_dir.join("logs");
@@ -294,8 +347,8 @@ async fn every_raw_line_is_in_the_file_including_the_one_nobody_understands()
     assert_eq!(
         newlines(&teed),
         LINES,
-        "the process wrote {LINES} lines and the file holds {}. Four means the line nobody \
-         could parse was dropped on the way in",
+        "the process wrote {LINES} lines and the file holds {}. One short means either the line \
+         nobody could parse or the line carrying what an action returned was dropped on the way in",
         newlines(&teed),
     );
     assert!(
@@ -303,6 +356,13 @@ async fn every_raw_line_is_in_the_file_including_the_one_nobody_understands()
         "the line with a type nobody has ever sent is missing from the file. The tee happens \
          BEFORE decoding precisely so that this line survives: it is the one a bug report needs, \
          and vendors add event types every week, quietly (invariant 5)"
+    );
+    assert!(
+        contains(&teed, TOOL_RESULT.as_bytes()),
+        "the line carrying what an action returned is missing from the file. Without \
+         --replay-user-messages this shape is never an echo of what we typed - it is how the \
+         agent app reports that a file was written or a command finished, and rebuilding from a \
+         file without it leaves a person with a history that shows neither"
     );
     assert_same_bytes(
         &teed,
@@ -312,6 +372,57 @@ async fn every_raw_line_is_in_the_file_including_the_one_nobody_understands()
          being byte for byte the stream, the index stops being a rebuildable cache. A \
          difference in the middle is a round trip through serde_json (key order, the escape, \
          the long number); a difference in length is a reader that ate the CR.",
+    );
+
+    Ok(())
+}
+
+/// Kryterium 3 z Z-14: dwuliterowa tura przestaje wycinać cudze linie.
+///
+/// Skan podciągów jest drugim, niezależnym strażnikiem prywatności i jego pomyłka jest cicha:
+/// dopasowuje się do **dowolnego** miejsca w linii, więc im krótsza tura, tym więcej cudzego
+/// tekstu wygląda jak nasz. „ok" trafia w `input_tokens`, więc po tej jednej odpowiedzi
+/// człowieka wynik tury znikał z pliku dowodowego — a plik krótszy o wynik czyta się dokładnie
+/// jak bieg, który się nie skończył.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_two_letter_turn_does_not_cut_the_line_that_ends_it() -> Result<(), Box<dyn Error>> {
+    // ── Pułapka naprawdę siedzi w fiksturze ───────────────────────────────────────────────
+    let expected = SHORT_STREAM.as_bytes();
+    assert!(
+        contains(expected, COUNTED_LENGTH.as_bytes()),
+        "without a field whose own name contains the turn this test measures nothing: the whole \
+         defect is a needle so short that it matches somebody else's word"
+    );
+    assert!(
+        contains(COUNTED_LENGTH.as_bytes(), SHORT_TURN.as_bytes()),
+        "the turn has to be a substring of that field, or the fixture is not the trap it claims \
+         to be"
+    );
+
+    let home = tempfile::tempdir()?;
+    let run_dir = home
+        .path()
+        .join(".loadout")
+        .join("runs")
+        .join(SHORT_RUN_DIR);
+    run_one_step(home.path(), &run_dir, SHORT_STREAM, SHORT_TURN, SHORT_STEP).await?;
+
+    let tee = run_dir
+        .join("logs")
+        .join(format!("agent-{SHORT_STEP}.jsonl"));
+    let teed = fs::read(&tee).unwrap_or_default();
+    assert!(
+        contains(&teed, COUNTED_LENGTH.as_bytes()),
+        "the line that ends the turn is missing from the file, and the only thing it had in \
+         common with what the person typed was two letters inside a field name. The file a user \
+         attaches to a bug report has to keep the answer, and rebuilding a run without it is \
+         rebuilding a run that never finished"
+    );
+    assert_same_bytes(
+        &teed,
+        expected,
+        "the transcript is not what the child wrote. A short answer from a person is still an \
+         answer, and it may not cost the run its own output.",
     );
 
     Ok(())
