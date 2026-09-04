@@ -2216,11 +2216,25 @@ impl Supervised {
     /// błędem.
     ///
     /// 2026-09 (Z-30) — od tego dnia wchodzi tędy także uchwyt, którego dowód wziął `wait()` po
-    /// naturalnym wyjściu. To nie gubi kodu wyjścia: status odbiera się **raz** i odbiera go ten,
-    /// kto czekał (`stopping_a_group_twice_still_answers_dead_without_a_status`).
+    /// naturalnym wyjściu.
+    ///
+    /// 2026-09 (Z-30b) — i dlatego status oddaje **pierwsze** zatrzymanie, a nie „ten, kto
+    /// czekał": tak brzmiało to zdanie do tego dnia i było nieprawdą, bo `ClaudeDriver::cancel`
+    /// czeka na wyjście w `timeout(…)` i wynik PORZUCA. Obie ścieżki oddające pierwszy dowód
+    /// biorą go dziś przez `take()`, więc status wychodzi stąd dokładnie raz — niezależnie od
+    /// tego, która z nich go zebrała — a drugie zatrzymanie zastaje puste pole
+    /// (`stopping_a_group_twice_still_answers_dead_without_a_status`).
     pub async fn stop(&mut self, grace: Duration) -> GroupProof {
         if self.proved_dead {
-            return GroupProof::Dead { status: None };
+            // 2026-09 (Z-30b) — `take()`, nie stałe `None`. Tędy wychodzi uchwyt, któremu dowód
+            // z niezmiennika 6 dał już `wait()`, a jego statusu nikt jeszcze nie odebrał: pierwsze
+            // podejście Z-30 zwracało tu `None` i kasowało jedyny obserwowalny ślad różnicy między
+            // sesją, która wyszła SAMA po grzecznym przerwaniu (dopisany transkrypt, haki
+            // `SessionEnd`, sesja do wznowienia), a zabitą dziewiątką. Pole zostaje puste, więc
+            // powtórzone zatrzymanie nadal nie ma czego oddać — status odbiera się raz.
+            return GroupProof::Dead {
+                status: self.status.take(),
+            };
         }
 
         let began = Instant::now();
@@ -2274,8 +2288,11 @@ impl Supervised {
             //    z adresem, pod którym da się go pytać.
             let Some(alive) = self.first_survivor() else {
                 self.proved_dead = true;
+                // 2026-09 (Z-30b) — `take()` także tutaj, i to nie jest symetria dla symetrii:
+                // odkąd wyjście wyżej oddaje status, kopia zostawiona w polu wyszłaby stąd
+                // DRUGI raz przy kolejnym zatrzymaniu tej samej martwej grupy.
                 return GroupProof::Dead {
-                    status: self.status,
+                    status: self.status.take(),
                 };
             };
             if Instant::now() >= ceiling {
