@@ -52,6 +52,7 @@ export type TriggerVisibleStatus =
   | { readonly kind: 'unchecked' }
   | { readonly kind: 'armed' }
   | { readonly kind: 'busy'; readonly delivery: TriggerDelivery }
+  | { readonly kind: 'waiting'; readonly sentence: string }
   | { readonly kind: 'refused'; readonly sentence: string; readonly retryable?: true }
   /* 2026-08-28: wstrzymanie żyje w pliku triggera, nie tutaj. Ten stan jest tylko odbiciem
    * odpowiedzi Rusta, więc przeładowane okno wraca do niego przy pierwszym tiku. */
@@ -489,7 +490,13 @@ export function createTriggersStore(
         setStatus(slug, { kind: 'armed' }, epoch);
       } else if (result.status === 'busy') {
         const held = pending.get(slug);
-        if (held !== undefined) setStatus(slug, { kind: 'busy', delivery: held }, epoch);
+        if (held !== undefined) {
+          setStatus(slug, { kind: 'busy', delivery: held }, epoch);
+        } else {
+          /* 2026-09: bez dostawy w pamięci Busy opisuje tylko chwilowo zajęty folder. Rust
+           * układa zdanie, a ten stan gwarantuje, że przeładowane okno naprawdę je pokaże. */
+          setStatus(slug, { kind: 'waiting', sentence: result.sentence }, epoch);
+        }
       } else if (result.status === 'refused') {
         /* 2026-08-28: to nie jest przechwycony błąd, tylko trwały stan przeczytany z pliku
          * triggera. Zdanie jest tym, które ułożył Rust — okno nie dokłada własnego. */

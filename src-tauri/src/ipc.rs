@@ -380,12 +380,42 @@ const ALREADY_GOING: &str = "A run is already going in \"{name}\", and Loadout l
                              a time in each folder so that Stop always reaches the one that is \
                              working. Press Stop first, then ask again.";
 
+/// Zdanie chwilowego czekania dla folderu triggera.
+///
+/// 2026-09: to nie jest stan ledgera — zapis przeżyłby awarię jako kłamstwo. Szablon stoi
+/// w Rustowym autorytecie, żeby poll i ekran nie miały dwóch wersji tego samego faktu
+/// (niezmienniki 13 i 23).
+const WAITING_IN_THE_FOLDER: &str = "Waiting — a run is going in \"{name}\". Loadout will check \
+                                     again after that run finishes.";
+
 /// Zdanie odmowy dla konkretnego folderu.
 ///
 /// Wolna funkcja, nie metoda: liczy się z szablonu i jednej nazwy, a nazwę wybiera wołający —
 /// który jako jedyny wie, czy folder stoi jeszcze na liście przełącznika.
 fn already_going_in(name: &str) -> String {
     ALREADY_GOING.replace("{name}", name)
+}
+
+fn waiting_in(name: &str) -> String {
+    WAITING_IN_THE_FOLDER.replace("{name}", name)
+}
+
+/// Nazwa folderu dokładnie z tej samej biblioteki, którą czyta przełącznik kart.
+fn workspace_name(home: &Path, project: &Path) -> String {
+    let at = crate::workspace::WorkspaceId::for_folder(project);
+    commands::workspaces::list_workspaces_inner(home)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|one| crate::workspace::WorkspaceId::for_folder(Path::new(&one.folder)) == at)
+        .map_or_else(
+            || {
+                at.as_path().file_name().map_or_else(
+                    || at.to_string(),
+                    |last| last.to_string_lossy().into_owned(),
+                )
+            },
+            |one| one.name,
+        )
 }
 
 /// Uchwyt do biegu, który idzie **teraz w tym jednym workspace**.
@@ -568,25 +598,51 @@ pub struct AppState {
 
 /// Jednorazowe pozwolenie Rusta na odpytanie triggera.
 ///
-/// Typ niesie katalog i rustowy fakt `busy`; okno nie ma pola, którym mogłoby podrobić tę
-/// decyzję. Zajęty tick czyta najwyżej gotowy receipt i nigdy nie fetchuje ani nie zapisuje.
+/// Typ niesie katalog i zdjętą pod zamkiem listę zajętych workspace'ów; okno nie ma pola,
+/// którym mogłoby podrobić tę decyzję. Zajęty tick czyta najwyżej gotowy receipt i nigdy nie
+/// fetchuje ani nie zapisuje.
 #[derive(Debug)]
 pub struct TriggerPollPermit {
     home: PathBuf,
-    busy: bool,
+    busy_workspaces: Vec<crate::workspace::WorkspaceId>,
 }
 
 impl TriggerPollPermit {
+    /// Folder triggera jest zajęty tylko wtedy, gdy TEN kanoniczny klucz był żywy w migawce.
+    fn held_folder(&self, slug: &str) -> Result<Option<PathBuf>, String> {
+        if self.busy_workspaces.is_empty() {
+            return Ok(None);
+        }
+        let trigger =
+            commands::triggers::load(&self.home, slug).map_err(|error| error.to_string())?;
+        let Some(folder) = trigger.workspace.map(PathBuf::from) else {
+            return Ok(None);
+        };
+        let at = crate::workspace::WorkspaceId::for_folder(&folder);
+        Ok(self.busy_workspaces.contains(&at).then_some(folder))
+    }
+
+    /// Wspólna odpowiedź trzech dróg odczytu: trwały receipt ma pierwszeństwo przed czekaniem.
+    fn busy_poll(&self, slug: &str) -> Result<Option<commands::triggers::TriggerPoll>, String> {
+        let Some(folder) = self.held_folder(slug)? else {
+            return Ok(None);
+        };
+        let sentence = waiting_in(&workspace_name(&self.home, &folder));
+        commands::triggers::accepted_while_busy(&self.home, slug)
+            .map(|receipt| {
+                Some(receipt.unwrap_or(commands::triggers::TriggerPoll::Busy { sentence }))
+            })
+            .map_err(|error| error.to_string())
+    }
+
     /// Produkcyjny odczyt przez `curl`, wykonywany dopiero po decyzji o zajętości.
     pub fn poll(
         self,
         slug: &str,
         created_at: i64,
     ) -> Result<commands::triggers::TriggerPoll, String> {
-        if self.busy {
-            return commands::triggers::accepted_while_busy(&self.home, slug)
-                .map(|receipt| receipt.unwrap_or(commands::triggers::TriggerPoll::Busy))
-                .map_err(|error| error.to_string());
+        if let Some(busy) = self.busy_poll(slug)? {
+            return Ok(busy);
         }
         commands::triggers::poll(&self.home, slug, created_at).map_err(|error| error.to_string())
     }
@@ -603,10 +659,8 @@ impl TriggerPollPermit {
             &commands::triggers::Trigger,
         ) -> Result<Vec<u8>, commands::triggers::TriggerError>,
     {
-        if self.busy {
-            return commands::triggers::accepted_while_busy(&self.home, slug)
-                .map(|receipt| receipt.unwrap_or(commands::triggers::TriggerPoll::Busy))
-                .map_err(|error| error.to_string());
+        if let Some(busy) = self.busy_poll(slug)? {
+            return Ok(busy);
         }
         commands::triggers::poll_with(&self.home, slug, created_at, fetch)
             .map_err(|error| error.to_string())
@@ -621,10 +675,8 @@ impl TriggerPollPermit {
         slug: &str,
         created_at: i64,
     ) -> Result<commands::triggers::TriggerPoll, String> {
-        if self.busy {
-            return commands::triggers::accepted_while_busy(&self.home, slug)
-                .map(|receipt| receipt.unwrap_or(commands::triggers::TriggerPoll::Busy))
-                .map_err(|error| error.to_string());
+        if let Some(busy) = self.busy_poll(slug)? {
+            return Ok(busy);
         }
         commands::triggers::resume(&self.home, slug, created_at).map_err(|error| error.to_string())
     }
@@ -639,11 +691,8 @@ impl TriggerPollPermit {
         slug: &str,
         created_at: i64,
     ) -> Result<commands::triggers::TriggerDelivery, String> {
-        if self.busy {
-            return Err(
-                "A run is already going. Wait for it to finish or press Stop before starting this issue again."
-                    .to_owned(),
-            );
+        if let Some(folder) = self.held_folder(slug)? {
+            return Err(already_going_in(&workspace_name(&self.home, &folder)));
         }
         commands::triggers::retry(&self.home, slug, created_at).map_err(|error| error.to_string())
     }
@@ -1194,18 +1243,7 @@ impl AppState {
     /// bez nazwy jest gorsza niż odmowa z nazwą zgadniętą ze ścieżki, a odmowa, która się nie
     /// odbyła, jest drugim biegiem w tym samym folderze.
     fn already_going_where(&self, project: &Path) -> String {
-        let at = crate::workspace::WorkspaceId::for_folder(project);
-        let named = commands::workspaces::list_workspaces_inner(&self.home)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|one| crate::workspace::WorkspaceId::for_folder(Path::new(&one.folder)) == at)
-            .map(|one| one.name);
-        already_going_in(&named.unwrap_or_else(|| {
-            at.as_path().file_name().map_or_else(
-                || at.to_string(),
-                |last| last.to_string_lossy().into_owned(),
-            )
-        }))
+        already_going_in(&workspace_name(&self.home, project))
     }
 
     /* ── TRZY DROGI Z OKNA, WSZYSTKIE ADRESOWANE FOLDEREM (2026-09, Z-35) ───────────────────
@@ -1373,16 +1411,19 @@ impl AppState {
 
     /// Pyta jedyny rustowy autorytet o zajętość przed siecią i przed jakimkolwiek zapisem.
     ///
-    /// **Pytanie zostaje O CAŁĄ APLIKACJĘ**, choć zapadka jest od 2026-08-28 kluczowana folderem:
-    /// jakikolwiek żywy wpis znaczy „zajęte". Kluczowanie triggerów jest osobną robotą i nie
-    /// wchodzi tu bokiem — trigger, który zacząłby pytać źródło dlatego, że bieg idzie w innym
-    /// folderze, zmieniłby zachowanie, którego to zadanie nie sądzi ani jednym kryterium.
+    /// 2026-09: pytanie jest o workspace zapisany w pliku triggera. Migawka zachowuje wszystkie
+    /// kanoniczne klucze bez dowodu zejścia, więc bieg w A nie blokuje źródła triggera w B,
+    /// a dwa zajęte foldery nadal odpowiadają niezależnie (niezmienniki 11 i 13).
     #[must_use]
     pub fn trigger_poll_permit(&self) -> TriggerPollPermit {
         let live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         TriggerPollPermit {
             home: self.home.clone(),
-            busy: live.iter().any(|one| !proved_down(&one.control)),
+            busy_workspaces: live
+                .iter()
+                .filter(|one| !proved_down(&one.control))
+                .map(|one| one.at.clone())
+                .collect(),
         }
     }
 
