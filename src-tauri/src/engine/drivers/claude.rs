@@ -3367,15 +3367,15 @@ impl AgentDriver for ClaudeDriver {
         vec![EFFORT.to_owned(), level.to_owned()]
     }
 
-    /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
-    /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
+    /// Pięć znaków adaptera nad wspólnym rdzeniem (niezmiennik 23). To on odróżnia prawdziwy
+    /// brak pliku od binarki, która jest i nie odpowiada, i to on pilnuje limitu, obu
+    /// strumieni oraz dowodu śmierci grupy (niezmiennik 6).
     ///
-    /// Nieudany start jest tu odpowiedzią w **każdej** postaci, nie tylko przy braku pliku:
-    /// binarka bez prawa wykonania i binarka, której nie ma, znaczą dla użytkownika dokładnie
-    /// to samo zdanie („zainstaluj to"), a `Err` z tego miejsca wywala Loadouta, zanim
-    /// ktokolwiek zobaczy, co jest do naprawienia.
+    /// 2026-09 (Z-34) — do tego dnia stała tu **kopia** tych trzydziestu linii, druga obok
+    /// bliźniaczej w `codex.rs`. Obie mówiły `found: true` o binarce, która wyszła kodem
+    /// niezerowym, bo tak było napisane w każdej z osobna.
     async fn probe(&self) -> anyhow::Result<Probe> {
-        super::probe_binary(&self.binary).await
+        super::probe::run(&self.binary, &self.configuration).await
     }
 
     /// Startuje sesję i zaczyna sypać zdarzeniami na `tx`.

@@ -3601,10 +3601,10 @@ impl AgentDriver for CodexDriver {
     ///
     /// Nieudany start jest odpowiedzią w **każdej** postaci, nie tylko przy braku pliku:
     /// binarka bez prawa wykonania i binarka, której nie ma, znaczą dla użytkownika dokładnie
-    /// to samo zdanie. Sufit i drenaż obu potoków są wspólne z Claude'em w `probe_binary`, żeby
-    /// dwa adaptery nie rozjechały polityki procesu (2026-09, Z-33; niezmiennik 23).
+    /// to samo zdanie. Sufit i drenaż obu potoków są wspólne z Claude'em w `probe::run`, żeby
+    /// dwa adaptery nie rozjechały polityki procesu (2026-09, Z-33 i Z-34; niezmiennik 23).
     async fn probe(&self) -> anyhow::Result<Probe> {
-        super::probe_binary(&self.binary).await
+        super::probe::run(&self.binary, &self.configuration).await
     }
 
     async fn start(

@@ -73,6 +73,7 @@ mod a_suggestion_can_be_discarded;
 mod a_suggestion_needs_a_because;
 mod a_vendor_failure_names_the_next_move;
 mod again_carries_what_the_step_had;
+mod agent_app_readiness;
 mod agent_tools_keep_the_ceiling;
 mod agent_tools_open_the_web;
 mod agent_tools_reach_the_argv;
