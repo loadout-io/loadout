@@ -67,6 +67,15 @@ const EDITED: &str = "Edited csv.rs";
 /// Zdanie o komendzie, dosłownie tak, jak stoi na ekranie po udanym przebiegu.
 const RAN: &str = "Ran ./run-tests — ok";
 
+/// Zdanie o tej samej komendzie, kiedy ona jeszcze szła.
+///
+/// 2026-09 (Z-36) — odbudowana historia niesie OBA wpisy, bo kurator wypuszcza wiersz w chwili,
+/// w której komenda rusza, i przepisuje go wynikiem; oba mają ten sam `call_id`, więc okno
+/// pokazuje z nich jeden. Czasu nie ma w tym zdaniu żadnego prawdziwego: surowy strumień nie
+/// niesie znaczników czasu, więc odbudowa podaje kuratorowi zero (`recorded_lines`), a
+/// heartbeatu w tej fiksturze nie ma.
+const WORKING: &str = "Working: ./run-tests · 0s";
+
 /// Fragment wyjścia komendy. Jedzie WYŁĄCZNIE blokiem `tool_result`, więc jego obecność
 /// w podglądzie jest dowodem, że tamta linia dojechała na dysk w całości.
 const SAID_BY_THE_COMMAND: &str = "test csv::quoted_commas ... ok";
@@ -237,7 +246,7 @@ async fn a_history_built_from_files_alone_says_what_the_step_changed_and_ran()
     let ran = texts(lines, LineKind::Ran);
     assert_eq!(
         ran,
-        vec![RAN],
+        vec![WORKING, RAN],
         "the command finished and said so, and the only place that answer travels is the line \
          the filter used to throw away. A row reading \"didn't work\" here is a rebuild that \
          never saw the end of the command - and it tells a person the opposite of what happened. \

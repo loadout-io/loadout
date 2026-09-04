@@ -395,6 +395,20 @@ export function Feed({
         </div>
       )}
 
+      {/* NA CO CZEKA TWOJA WIADOMOŚĆ — jedno zdanie, jedno miejsce (niezmiennik 13).
+          Stoi pod strumieniem, tuż nad wierszem wejścia, czyli tam, gdzie oko wraca po
+          naciśnięciu Entera; zdanie schowane w historii przewijałoby się razem z nią i za
+          siedem minut byłoby dwadzieścia wierszy wyżej.
+
+          `null` NIE RYSUJE NICZEGO, i to jest cały warunek: model odpowiada „czy coś czeka",
+          ten plik odpowiada „gdzie to stoi". Pusty pasek nad wierszem wejścia przez cały bieg
+          byłby miejscem, w które oko patrzy i nic nie znajduje. */}
+      {view.queued === null ? null : (
+        <p data-queued className="value shrink-0 px-[18px] pt-1 text-meta text-live">
+          {view.queued}
+        </p>
+      )}
+
       {/* Karta stoi tu wtedy i tylko wtedy, gdy nie stoi PRZY SWOIM KROKU — powód w całości
           przy `FeedProps.askedAtItsStep`. Warunek jest o MIEJSCU, nigdy o tym, czy bieg żyje:
           tamto gasi model i tylko model (`./model.ts`, `runEnded`). */}

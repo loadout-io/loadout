@@ -117,7 +117,17 @@ pub enum Decoded {
 
 /// Typy linii, dla których mamy jakąkolwiek regułę. Wszystko inne jest nierozpoznane —
 /// i ma zostać **policzone**, a nie po cichu połknięte.
-const KNOWN_TYPES: [&str; 5] = ["system", "assistant", "user", "rate_limit_event", "result"];
+/// 2026-09 (Z-36) — `tool_progress` dołożony szósty. Bez tego wiersza bicie serca długiej
+/// komendy ginęło **warstwę przed sterownikiem**: linia była liczona jako nierozpoznana i cała
+/// reszta drogi (wariant zdarzenia, ramię kuratora, wiersz na ekranie) była martwa.
+const KNOWN_TYPES: [&str; 6] = [
+    "system",
+    "assistant",
+    "user",
+    "rate_limit_event",
+    "result",
+    "tool_progress",
+];
 
 /// Sufit JEDNEJ linii NDJSON, w bajtach.
 ///

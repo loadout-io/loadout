@@ -14,6 +14,9 @@
  * w prawdziwym biegu pisze mapper po stronie Rusta i które czyta użytkownik.
  */
 import type { FeedLine, ForeignLine } from '../../../../state/run';
+/* Zegar komendy bierzemy stąd, gdzie stoi jego jedyna kopia po tej stronie granicy: wiersz
+ * w scenie ma czytać się dokładnie tak, jak czyta się w produkcie (2026-09, Z-36). */
+import { forHowLong } from '../model';
 
 export const line = {
   /** Nagłówek całego biegu. */
@@ -94,7 +97,13 @@ export const line = {
     };
   },
 
-  /** `output` to PEŁNE wyjście; ile z niego widać, rozstrzyga model, nie ten plik. */
+  /**
+   * `output` to PEŁNE wyjście; ile z niego widać, rozstrzyga model, nie ten plik.
+   *
+   * `call` jest opcjonalne i domyślnie bierze się z numeru linii, bo większość scen pyta o JEDEN
+   * wiersz i nie ma zdania na temat tożsamości wywołania. Sceny o komendzie, która trwa, podają
+   * je wprost — to ten sam klucz, którym `./running` otwiera jej wiersz.
+   */
   ran(
     id: number,
     at: number,
@@ -102,14 +111,43 @@ export const line = {
     text: string,
     ok: boolean,
     output: readonly string[],
+    call = 'call-' + String(id),
   ): FeedLine {
     return {
       kind: 'ran',
       agent,
       text,
+      callId: call,
+      subject: text,
+      elapsed: 0,
       ok,
       preview: output[0] ?? '',
       detail: [...output],
+      detailId: null,
+      id,
+      at,
+    };
+  },
+
+  /**
+   * Komenda, która WŁAŚNIE IDZIE: `ok: null`, bo jeszcze nie wiadomo (2026-09, Z-36).
+   *
+   * Osobny budowniczy, nie flaga w `ran`: te dwa wiersze mówią co innego i mają inne zdanie —
+   * ten otwiera komendę (`Working: … · 4m`), tamten ją zamyka. Scena, która musiałaby podać
+   * `null` w miejsce `ok` i wymyślić sobie tekst, byłaby sceną o kształcie pola zamiast o tym,
+   * co człowiek czyta.
+   */
+  running(id: number, at: number, agent: string, subject: string, elapsed: number): FeedLine {
+    return {
+      kind: 'ran',
+      agent,
+      text: 'Working: ' + subject + ' · ' + forHowLong(elapsed),
+      callId: 'call-' + String(id),
+      subject,
+      elapsed,
+      ok: null,
+      preview: '',
+      detail: [],
       detailId: null,
       id,
       at,
@@ -128,6 +166,11 @@ export const line = {
     body: readonly string[] = [],
   ): FeedLine {
     return { kind: 'note', agent, text, body: [...body], id, at };
+  },
+
+  /** Zdanie CZŁOWIEKA, wpisane w wiersz wejścia. `agent` jest tym, DO KOGO poszło. */
+  told(id: number, at: number, agent: string, text: string): FeedLine {
+    return { kind: 'told', agent, text, id, at };
   },
 
   /** Pytanie do człowieka. Przyklejone, dopóki nie ma odpowiedzi. */

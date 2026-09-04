@@ -125,7 +125,10 @@ fn mechanic_samples() -> Vec<Line> {
         Line::Ran {
             agent: AGENT.to_owned(),
             text: "Ran the tests — ok".to_owned(),
-            ok: true,
+            call_id: "toolu_tests_01".to_owned(),
+            subject: "the tests".to_owned(),
+            elapsed: 0,
+            ok: Some(true),
             preview: "line 01 of the build output".to_owned(),
             detail: Vec::new(),
             detail_id: Some(4),

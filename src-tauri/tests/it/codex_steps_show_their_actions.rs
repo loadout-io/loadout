@@ -199,11 +199,18 @@ fn the_row_for_a_command_knows_whether_it_worked() -> Result<(), Box<dyn Error>>
         )
     })?;
 
+    /* WIERSZ, KTÓRY KOMENDĘ ZAMYKA, nie ten, który ją otwiera (2026-09, Z-36). Od tego dnia
+     * kurator wypuszcza wiersz w chwili startu komendy — z `ok: None`, bo wtedy jeszcze nie
+     * wiadomo — i przepisuje go wynikiem. Pytanie tego kryterium dotyczy wyniku. */
+    let row = lines
+        .iter()
+        .rfind(|line| matches!(line, Line::Ran { ok: Some(_), .. }))
+        .unwrap_or(row);
     let Line::Ran { text, ok, .. } = row else {
         return Err(format!("the row for a command is not a command row: {row:?}").into());
     };
     assert!(
-        *ok,
+        *ok == Some(true),
         "this command came back with exit_code 0, so it worked. A row that reads as failed here \
          tells somebody their build broke when it did not - and `ok` has to come from exit_code \
          and nowhere else. It came out as {row:?}"

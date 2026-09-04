@@ -58,7 +58,10 @@
   {
     "kind": "ran",
     "agent": "builder",
-    "text": "Ran npm test — didn't work",
+    "text": "Ran npm test — didn't work · 2m 4s",
+    "callId": "toolu_test_01",
+    "subject": "npm test",
+    "elapsed": 124000,
     "ok": false,
     "preview": "FAIL src/auth.test.ts",
     "detail": ["FAIL src/auth.test.ts", "1 failed, 41 passed"],

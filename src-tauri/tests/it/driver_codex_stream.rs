@@ -107,6 +107,11 @@ fn kind(event: &AgentEvent) -> &'static str {
         AgentEvent::Thinking => "Thinking",
         AgentEvent::Said { .. } => "Said",
         AgentEvent::ToolStart { .. } => "ToolStart",
+        // Dwa zdarzenia Claude'a, które ten vendor ma prawo kiedyś zacząć wysyłać, i z tego
+        // samego powodu, co `LoadedFromTheFolder` wyżej: sekwencja ma dać się porównać w całości
+        // (2026-09, Z-36).
+        AgentEvent::ToolProgress { .. } => "ToolProgress",
+        AgentEvent::ToolBackgrounded { .. } => "ToolBackgrounded",
         AgentEvent::ToolEnd { .. } => "ToolEnd",
         AgentEvent::FileEdit { .. } => "FileEdit",
         AgentEvent::RateLimit { .. } => "RateLimit",
