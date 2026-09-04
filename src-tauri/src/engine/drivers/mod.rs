@@ -236,6 +236,24 @@ pub enum AgentEvent {
         /// Zdolności protokołu ogłoszone przez CLI, np. `interrupt_receipt_v1`.
         capabilities: Vec<String>,
     },
+    /// Co aplikacja agenta dobrała sobie z folderu, w którym ją postawiono.
+    ///
+    /// 2026-09 (Z-16) — OSOBNY WARIANT, NIE POLA W [`AgentEvent::Started`], i powód jest
+    /// mierzalny: tamten wariant konstruuje 96 miejsc w 95 plikach, a to jest fakt, którego
+    /// żaden dubler nie ma i mieć nie musi. Wariant obok kosztuje dwa ramiona i ani jednej
+    /// fikstury.
+    ///
+    /// **To NIE JEST to samo pytanie, co [`AgentEvent::Started::tools`].** Tamto pole mierzy
+    /// narzędzia; to zdarzenie mierzy TEKST i pozostałą powierzchnię folderu — umiejętności,
+    /// polecenia z ukośnikiem, pluginy, podagentów, katalog pamięci.
+    ///
+    /// **Powodem jest to, że odpowiedź na to pytanie zmieniła się po cichu.** Na `claude` 2.1.251
+    /// `CLAUDE.md` gospodarza docierał do kroku mimo `--setting-sources ""` i sześć kroków biegu
+    /// `20260823-145648` zapisało przez to pliki wyników wbrew temu, co kazał im Loadout. Na
+    /// 2.1.260 (zmierzone 2026-09-04) już nie dociera. Changelog o tej zmianie milczał, więc
+    /// jedynym zapisem, po którym da się zauważyć następną, jest to, co CLI **samo o sobie
+    /// ogłosiło** w `system/init` — i to niesie ten wariant, dosłownie, bez wniosków.
+    LoadedFromTheFolder(LoadedFromTheFolder),
     /// Agent myśli. **Nigdy nie niesie tekstu** i nigdy nie wchodzi do historii — jest stałym
     /// slotem na dole ekranu [`docs/ARCHITECTURE.md` §6, reguła 5].
     Thinking,
@@ -302,6 +320,53 @@ pub enum AgentEvent {
     },
     /// Koniec tury. Dokładnie **jedno** takie zdarzenie na turę.
     Finished(Outcome),
+}
+
+/// Ładunek [`AgentEvent::LoadedFromTheFolder`]: skąd, i co stamtąd weszło.
+///
+/// Wszystkie listy są **nazwami**, nigdy ścieżkami: drut podaje pluginy i serwery narzędzi jako
+/// obiekty ze ścieżką w katalogu domowym człowieka, a `memory_paths` jako obiekt, którego
+/// wartością jest taka ścieżka. Nazwa mówi tyle samo o tym, co weszło do kroku, i przeżywa
+/// zapis do pliku, który zostaje po biegu — ta sama reguła, którą `evidence::validate_manifest`
+/// stawia przed manifestem wejścia (2026-09, Z-16).
+#[derive(Debug, Clone, Default)]
+pub struct LoadedFromTheFolder {
+    /// Katalog, który CLI podało jako swój. **Pełna ścieżka**, bo wołający pyta jeszcze dysk
+    /// o to, co w niej leży; do pliku biegu idzie z niej sama nazwa katalogu.
+    pub folder: PathBuf,
+    /// Katalogi pluginów, po nazwie.
+    pub plugins: Vec<String>,
+    /// Polecenia z ukośnikiem, które ta sesja zna.
+    pub slash_commands: Vec<String>,
+    /// Umiejętności, które ta sesja zna.
+    pub skills: Vec<String>,
+    /// Serwery narzędzi, po nazwie.
+    pub mcp_servers: Vec<String>,
+    /// Rodzaje pamięci, po kluczu (`auto`) — nigdy po ścieżce, którą ten klucz wskazuje.
+    pub memory_paths: Vec<String>,
+    /// Podagenci, których ta sesja może zawołać.
+    pub agents: Vec<String>,
+}
+
+impl LoadedFromTheFolder {
+    /// Czy ta linia powiedziała cokolwiek o folderze.
+    ///
+    /// Zdarzenie bez ani jednego faktu jest ciszą, a nie odpowiedzią — i wypuszczone mimo to
+    /// dokładałoby klucz „nic nie wczytano" do każdego kroku każdego biegu w historii.
+    #[must_use]
+    pub fn says_anything(&self) -> bool {
+        !self.folder.as_os_str().is_empty()
+            || [
+                &self.plugins,
+                &self.slash_commands,
+                &self.skills,
+                &self.mcp_servers,
+                &self.memory_paths,
+                &self.agents,
+            ]
+            .iter()
+            .any(|list| !list.is_empty())
+    }
 }
 
 const UNKNOWN_PRICE_OPENS: &str = "The price for ";

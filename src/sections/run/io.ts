@@ -892,8 +892,40 @@ export interface PastStep {
    * `read_run` wysyła zawsze listę, także pustą.
    */
   readonly memory?: readonly PastMemory[];
+  /**
+   * Co aplikacja agenta wczytała z folderu, zanim ten krok powiedział pierwsze słowo.
+   *
+   * KLUCZ OPCJONALNY, i to jest niezmiennik 5 postawiony na granicy: każdy `run.json` zapisany
+   * przed 2026-09 go nie ma, tak samo jak krok bez agenta i krok, który nie zdążył się
+   * przedstawić. Brak znaczy „nie wiemy", nigdy „nic nie wczytał" — i wtedy ekran nie mówi o tym
+   * ani słowa (niezmiennik 16).
+   */
+  readonly loadedByTheApp?: LoadedByTheApp | null;
   /** Zapisany strumień tego kroku — te same wiersze, które widać było na żywo. */
   readonly lines: readonly Line[];
+}
+
+/**
+ * Co aplikacja agenta wczytała z folderu kroku sama z siebie. Lustro
+ * `commands::history::LoadedByTheAppWire`.
+ *
+ * NIE MYLIĆ Z `PastMemory`: tamto jest tym, co Loadout do kroku WŁOŻYŁ, a to jest tym, co
+ * aplikacja agenta dobrała z folderu, w którym akurat stanęła. Dwa różne pytania i dwie różne
+ * odpowiedzi — mieszanie ich znaczyłoby ekran, który mówi „Loadout dał", pokazując cudze pliki.
+ *
+ * KAŻDE POLE TUTAJ TO CYTAT Z APLIKACJI AGENTA, nigdy odczyt dysku po naszej stronie. Pliku
+ * instrukcji projektu nie ma na tej liście i nie ma go tam z rozmysłu: granica nie niesie ani
+ * jednego pola, po którym dałoby się poznać, że został wczytany (2026-09-04, Z-16).
+ */
+export interface LoadedByTheApp {
+  /** Nazwa folderu, z którego to przyszło. Sama nazwa, nigdy cała ścieżka na dysku człowieka. */
+  readonly folder: string;
+  readonly plugins: readonly string[];
+  readonly slashCommands: readonly string[];
+  readonly skills: readonly string[];
+  readonly mcpServers: readonly string[];
+  readonly memoryPaths: readonly string[];
+  readonly agents: readonly string[];
 }
 
 /** Jedna pozycja zamrożonego rachunku pamięci kroku. */

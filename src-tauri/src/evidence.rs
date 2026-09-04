@@ -82,6 +82,15 @@ pub enum ContextKind {
     InheritedSkill,
     InheritedLearning,
     Handoff,
+    /// Materiał, ktorego Loadout krokowi NIE dawal — wzięła go aplikacja agenta z folderu,
+    /// w ktorym krok stanal: umiejetnosci, polecenia z ukosnikiem, pluginy i podagenci tamtego
+    /// repozytorium, dokladnie tak, jak wymienila je sama w `system/init`.
+    ///
+    /// 2026-09 (Z-16) — DOPISANY NA KONCU, nigdy w srodku (niezmiennik 25). Pozostale szesc
+    /// nazywa material, ktory ten bieg wybral; ten jeden nazywa material, ktory bieg tylko
+    /// zastal — i bez tego rozroznienia jedna lista mowilaby „Loadout dal", pokazujac cudze
+    /// pliki.
+    LoadedByTheApp,
 }
 
 /// Bezpieczny fakt o obrazie. Bajty obrazu nie implementuja tego typu.
