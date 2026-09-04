@@ -91,8 +91,8 @@ use uuid::Uuid;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
-    DriverSetupError, FinishReason, LoadedFromTheFolder, Outcome, Policy, Probe, RunSpec,
-    SessionRef, StepSettings, ToAgent, Tokens, ValidatedImages, Voice,
+    DriverSetupError, FinishReason, Interrupted, LoadedFromTheFolder, Outcome, Policy, Probe,
+    RunSpec, SessionRef, StepSettings, ToAgent, Tokens, TurnBreak, ValidatedImages, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -3070,40 +3070,20 @@ impl std::fmt::Debug for ClaudeHandle {
 }
 
 impl ClaudeHandle {
-    /// Czy to CLI samo powiedziało, że rozumie przerwanie w paśmie.
+    /// Wysyła jedno przerwanie w paśmie — TĄ SAMĄ klamką, którą naciska okno.
     ///
-    /// Po **liście z `init`**, nigdy po numerze wersji [T1 §4.1]. `false`, dopóki `init` nie
-    /// przyszedł: anulowanie wcześniej nie ma czego pytać, a pytanie wysłane w ciemno kosztuje
-    /// pełne okno czekania na odpowiedź, której nie będzie.
-    fn announces_interrupt(&self) -> bool {
-        self.capabilities
-            .get()
-            .is_some_and(|announced| announced.iter().any(|name| name == INTERRUPT_CAPABILITY))
-    }
-
-    /// Wysyła jedno przerwanie w paśmie. `false`, kiedy nie było czym albo zapis się nie udał —
-    /// wołający schodzi wtedy na sygnały, zamiast czekać na odpowiedź, która nie wyjechała.
-    ///
-    /// Dokładnie **jedna** prośba na anulowanie: powtórzone pytanie, kiedy odpowiedź jest już
-    /// w drodze, jest nieodróżnialne od dwóch anulowań i tak samo wygląda w dzienniku CLI.
-    async fn ask_to_stop(&mut self) -> bool {
-        let Some(voice) = self.voice.as_ref() else {
-            return false;
-        };
-        // Prośba idzie TYM SAMYM kanałem, co koperty tur (powód przy polu `voice`): inaczej
-        // dwa pisarze nad jednym potokiem przeplotłyby linie i CLI dostałoby połowę każdej.
-        if voice
-            .send(ToAgent::Interrupt(format!(
-                "req_{}",
-                Uuid::now_v7().simple()
-            )))
-            .await
-            .is_err()
-        {
-            tracing::debug!("the interrupt could not be written; falling through to signals");
-            return false;
+    /// 2026-09 (Z-40) — do tego dnia stały tu dwie prywatne metody (`announces_interrupt`
+    /// i `ask_to_stop`), a `cancel()` był ich jedynym wołającym. Przerwanie z okna napisane obok
+    /// nich byłoby drugą implementacją tej samej polityki („tylko pod ogłoszoną zdolnością,
+    /// dokładnie jedna linia") — czyli tym, czego zabrania niezmiennik 23. Zostaje jedno miejsce
+    /// ([`TurnBreak::ask`]) i dwóch wołających.
+    async fn ask_to_stop(&self) -> Interrupted {
+        match self.turn_break() {
+            Some(turn_break) => turn_break.ask().await,
+            // Głosu nie ma dopiero po `close()`: sesja, która już nie przyjmuje niczego, nie ma
+            // czego przerywać, a wołający schodzi wtedy wprost na sygnały.
+            None => Interrupted::NoLongerListening,
         }
-        true
     }
 
     async fn finish_evidence(&mut self) {
@@ -3193,6 +3173,19 @@ impl AgentHandle for ClaudeHandle {
         self.voice.clone()
     }
 
+    /// Ten sterownik klamkę przerwania **ma**, bo `control_request` jest jego linią protokołu.
+    ///
+    /// Zdolności jadą tu `Arc`-iem, a nie kopią listy: wpisuje je pętla czytająca po `system/init`,
+    /// czyli często PÓŹNIEJ, niż okno poprosi o klamkę (powód przy polu [`ClaudeHandle::capabilities`]).
+    fn turn_break(&self) -> Option<TurnBreak> {
+        Some(TurnBreak::new(
+            self.voice.clone()?,
+            Arc::clone(&self.capabilities),
+            INTERRUPT_CAPABILITY,
+            VENDOR,
+        ))
+    }
+
     async fn wait(&mut self) -> anyhow::Result<Outcome> {
         self.outcomes.recv().await.ok_or_else(|| {
             anyhow!(
@@ -3224,8 +3217,9 @@ impl AgentHandle for ClaudeHandle {
     /// więc nie pytamy" byłby dokładnie tym `Ok(())`, przed którym stoi `GroupProof`.
     async fn cancel(&mut self) -> GroupProof {
         // Stopień pierwszy — TYLKO pod ogłoszoną zdolnością. Bez tego warunku ta sama linia
-        // wisi pięć sekund tam, gdzie CLI o `control_request` nigdy nie słyszało.
-        if self.announces_interrupt() && self.ask_to_stop().await {
+        // wisi pięć sekund tam, gdzie CLI o `control_request` nigdy nie słyszało. Rozstrzyga to
+        // klamka, więc warunek stoi w JEDNYM miejscu (2026-09, Z-40).
+        if matches!(self.ask_to_stop().await, Interrupted::Sent) {
             // Odpowiedzią jest wyjście sesji: `control_response` przychodzi tuż przed `result`,
             // a proces wychodzi sam. Upłynięcie okna nie jest błędem, tylko zejściem na
             // stopień drugi.

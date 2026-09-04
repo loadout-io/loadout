@@ -39,6 +39,7 @@ fold_run_into_branch
 forget_run
 forget_run_branches
 install_skill
+interrupt_the_lead
 list_agents
 list_eval_sets
 list_handoffs

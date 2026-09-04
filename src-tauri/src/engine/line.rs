@@ -1166,7 +1166,20 @@ impl Curator {
             AgentEvent::Finished(outcome) => {
                 let unknown_price = self.unknown_prices.remove(unknown_price_key);
                 let line = done_line(seen.agent, outcome, unknown_price.as_deref());
-                self.close_then(line)
+                let mut out = self.close_group();
+                /* PRZERWANIE DOMYKA KOMENDĘ, KTÓRA JESZCZE STAŁA (2026-09, Z-40).
+                 *
+                 * Do tego dnia ta gałąź wołała wyłącznie `close_then(done_line)`, więc `pending`
+                 * zostawało otwarte aż do końca strumienia: człowiek naciskał „Interrupt", tura
+                 * kończyła się `Cancelled`, a wiersz komendy dalej mówił `Running: … · 7m` —
+                 * czyli dokładnie to, co ta kontrolka miała skończyć. Wiersz niesie ten sam
+                 * `call_id`, więc okno PODMIENIA tamten zamiast dokładać drugi (Z-36). */
+                out.extend(self.interrupted_lines(&outcome.reason, seen.at_ms));
+                out.push(line);
+                /* Prawdziwy wiersz wylądował, więc slot na dole gaśnie — ten sam powód, co
+                 * w [`Curator::close_then`], którego ta gałąź już nie może zawołać. */
+                self.status = None;
+                out
             }
         }
     }
@@ -1211,6 +1224,43 @@ impl Curator {
     #[must_use]
     pub fn status(&self) -> Option<Status> {
         self.status
+    }
+
+    /// Wiersze o komendach, które **przerwał człowiek** — po jednej na każdą, która jeszcze stała.
+    ///
+    /// 2026-09 (Z-40). Osobno od [`Curator::flush`], choć obie domykają to samo `pending`, i to
+    /// jest cała treść: tamta mówi `Ran … — didn't work`, bo strumień urwał się i nikt nie wie,
+    /// co się stało. Tutaj wiadomo dokładnie: komenda stanęła, bo ktoś ją zatrzymał, a zdanie
+    /// „nie zadziałało" o komendzie przerwanej celowo jest tym samym rozjazdem, przed którym stoi
+    /// niezmiennik 7 — anulowanie jest wartością, nie porażką.
+    ///
+    /// Pusto dla każdego innego powodu zakończenia: tura, która skończyła się sama, domyka swoje
+    /// komendy wynikami, a te przyszły już własną drogą ([`Curator::tool_end`]).
+    fn interrupted_lines(&mut self, reason: &FinishReason, at_ms: u64) -> Vec<Line> {
+        if !matches!(reason, FinishReason::Cancelled) {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(|pending| {
+                let elapsed = pending.how_long(at_ms);
+                Line::Ran {
+                    agent: pending.agent,
+                    text: interrupted_text(&pending.subject, elapsed),
+                    call_id: pending.id,
+                    subject: pending.subject,
+                    elapsed,
+                    // `Some(false)`, dokładnie jak w `flush`: komenda, która nie doszła do końca,
+                    // nie ma prawa czytać się jak komenda, która się udała. Czym RÓŻNI się od
+                    // porażki, mówi zdanie wiersza.
+                    ok: Some(false),
+                    // Wyjścia nie ma i nie będzie — nikt go nie wypisał, bo komenda nie wróciła.
+                    preview: String::new(),
+                    detail: Vec::new(),
+                    detail_id: None,
+                }
+            })
+            .collect()
     }
 
     /// Czynność ruszyła: albo dokłada się do grupy, albo otwiera własny wiersz.
@@ -1764,6 +1814,23 @@ fn ran_text(subject: &str, ok: bool, elapsed_ms: u64) -> String {
         let _ = write!(text, " · {}", for_how_long(elapsed_ms));
     }
     text
+}
+
+/// `Interrupted — npm test stopped after 7m` — komenda, którą zatrzymał człowiek.
+///
+/// 2026-09 (Z-40) — NAZYWA KOMENDĘ I CZAS, bo to są dwie rzeczy, których człowiek po naciśnięciu
+/// „Interrupt" nie wie: czy trafił w tę, o którą mu chodziło, i ile jej dał. Samo „Interrupted"
+/// nad strumieniem sześciu agentów nie mówi ani jednej z nich.
+///
+/// Czas dochodzi ZAWSZE, także zerowy, i to jest różnica wobec [`ran_text`] obok: tam `· 0s`
+/// byłoby liczbą bez treści doklejaną do każdego wiersza każdego transkryptu, tutaj zdanie
+/// mówi wprost, po jakim czasie ta komenda stanęła — a „stopped after" bez odpowiedzi czyta się
+/// jak zdanie ucięte w połowie.
+fn interrupted_text(subject: &str, elapsed_ms: u64) -> String {
+    format!(
+        "Interrupted — {subject} stopped after {}",
+        for_how_long(elapsed_ms)
+    )
 }
 
 /// `0s`, `42s`, `4m`, `7m 30s` — zegar KOMENDY.

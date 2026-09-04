@@ -21,6 +21,10 @@
  */
 import type { Answer, FeedLine, Incoming } from '../../../state/run';
 import { LINE_LIMIT, stepIsOver } from '../../../state/run';
+/* WYŁĄCZNIE TYP, i to jest warunek, pod którym ten import w ogóle wolno tu postawić: `../io`
+ * niesie transport Tauri, a ten plik jest czystym modułem, który montują kryteria bez atrapy
+ * granicy. `verbatimModuleSyntax` gwarantuje, że `import type` znika przy budowaniu. */
+import type { Interrupted } from '../io';
 import type { Kind } from './kinds';
 import { kinds } from './kinds';
 
@@ -222,8 +226,45 @@ export interface FeedView {
    * i razem z całą strefą żywą, kiedy bieg schodzi.
    */
   readonly queued: string | null;
+  /**
+   * Kontrolka „Interrupt" nad turą, która ciągnie się za długo — albo `null`.
+   *
+   * 2026-09 (Z-40) — PO CO TO POLE. Po Z-36 człowiek WIDZI, że lider siedzi siódmą minutę
+   * w jednym wywołaniu Basha, i nadal może tylko czekać albo zamknąć rozmowę razem z całym jej
+   * kontekstem. Droga przerwania po stronie Rusta istniała od pierwszego dnia i nie miała
+   * wołającego z okna.
+   *
+   * PO PROGACH, NIE ZAWSZE, i to jest cała treść typu `null`: przycisk stojący nad każdą turą
+   * proponuje zatrzymanie pracy, która idzie normalnie — a kontrolka bez roboty nie zostaje na
+   * ekranie (niezmiennik 16). Progi są dwa, bo długo czekać da się na dwa różne sposoby:
+   * [`AFTER_TOOL`] nad jedną komendą i [`AFTER_TURN`] nad turą, która nie zapowiedziała żadnej.
+   *
+   * Gaśnie razem z całą strefą żywą, kiedy bieg schodzi (`runEnded`).
+   */
+  readonly interrupt: InterruptOffer | null;
   readonly attention: Attention;
   readonly answers: readonly Answer[];
+}
+
+/** Co ekran ma postawić nad wierszem wejścia, kiedy tura ciągnie się za długo. */
+export interface InterruptOffer {
+  /**
+   * Komenda, w której lider stoi — albo `null`, kiedy tura idzie bez ani jednej.
+   *
+   * Nie jest tekstem przycisku: nazwa kontrolki brzmi „Interrupt" i tyle. Jest tym, co ta
+   * kontrolka mówi o sobie czytnikowi ekranu, żeby „Interrupt" nad strumieniem sześciu agentów
+   * nie było pytaniem „co dokładnie".
+   */
+  readonly subject: string | null;
+  /**
+   * Zdanie, które stoi ZAMIAST przycisku, kiedy przerwać się nie da — albo `null`.
+   *
+   * Powstaje z odpowiedzi Rusta ([`Feed.interruptAnswered`]), nigdy z sondowania granicy przed
+   * naciśnięciem: zdolności `interrupt_receipt_v1` nie da się poznać przed startem sesji, bo
+   * lista przychodzi dopiero w `system/init`. Odpowiedź staje więc w miejscu przycisku i gasi
+   * go na tę rozmowę — to jest „mówi wprost", a nie kolejne pytanie o granicę.
+   */
+  readonly refusal: string | null;
 }
 
 export interface Feed {
@@ -275,6 +316,31 @@ export interface Feed {
    * po którą człowiek na ten ekran wraca.
    */
   runEnded(): void;
+  /**
+   * Bije zegar okna: przelicza `view.interrupt` bez ani jednego zdarzenia z drutu.
+   *
+   * 2026-09 (Z-40) — PO CO MODEL POTRZEBUJE ZEGARA Z ZEWNĄTRZ. Próg [`AFTER_TOOL`] liczy się
+   * z czasu, który przysyła Rust w wierszu komendy, więc rośnie sam przy każdym biciu serca.
+   * Próg [`AFTER_TURN`] mierzy ciszę — a cisza z definicji nie przysyła zdarzeń. Bez tego
+   * wywołania tura, która myśli czwartą minutę i nie zapowiedziała ani jednej komendy, nie
+   * dostałaby kontrolki nigdy.
+   *
+   * ZEGAR JEST ARGUMENTEM, nie ścianą: model z własnym `Date.now()` nie da się sprawdzić bez
+   * czekania, a test ze `sleep` mierzy planistę przeglądarki. Ta sama reguła stoi po drugiej
+   * stronie granicy, w `engine::line::Seen`.
+   *
+   * BUDZI EKRAN TYLKO PRZY ZMIANIE. Wołane raz na sekundę, a publikacja przy każdym tyknięciu
+   * kazałaby Reactowi przerysować strumień co sekundę przez cały bieg.
+   */
+  tick(now: number): void;
+  /**
+   * Rust odpowiedział na naciśnięty „Interrupt".
+   *
+   * Odpowiedź staje w miejscu przycisku i zostaje tam do końca rozmowy: „to CLI tego nie umie"
+   * jest faktem o sesji, a nie o tej jednej komendzie, więc przycisk odrastający przy następnej
+   * obiecywałby to samo drugi raz.
+   */
+  interruptAnswered(said: Interrupted): void;
   /**
    * Przełącza rozwinięcie JEDNEGO wiersza — to, co robi `+` przy zwiniętej linii.
    *
@@ -489,6 +555,71 @@ function queuedSays(one: InFlight): string {
 }
 
 /**
+ * Ile JEDNA komenda ma iść, zanim „Interrupt" stanie nad wierszem wejścia.
+ *
+ * Minuta, i to jest wybór z zapisaną ceną. W dół: kontrolka nad każdym `npm test` proponuje
+ * zatrzymanie pracy, która idzie normalnie, a przycisk, który zwykle jest pomyłką, przestaje być
+ * czytany. W górę: zgłoszenie, z którego wzięło się to zadanie, mówi o siedmiu minutach — a każda
+ * minuta czekania nad komendą, o której już wiadomo, że wisi, jest minutą płaconą u dostawcy.
+ */
+const AFTER_TOOL = 60_000;
+
+/**
+ * Ile ma iść CAŁA tura bez ani jednej komendy, zanim stanie ta sama kontrolka.
+ *
+ * Dwa razy tyle, bo cisza mówi mniej: nad komendą widać, na co się czeka, a nad myśleniem widać
+ * wyłącznie to, że nic nie widać. Przy tym progu tura, która po prostu jest długa, zdąży odpisać.
+ */
+const AFTER_TURN = 120_000;
+
+/**
+ * Podpis, którym LIDER stoi w strumieniu — `commands::chat::LEAD` po tamtej stronie granicy.
+ *
+ * 2026-09 (Z-40) — DRUGA KOPIA TEGO NAPISU I JEST TO ZAPISANY DŁUG, nie przeoczenie. Kontrolka
+ * „Interrupt" prowadzi do rozmowy z liderem (`interrupt_the_lead`), a `Line::Told` wystawiają
+ * DWIE strony: rozmowa (`commands/chat.rs`, podpis `Lead`) i zdanie zaadresowane do pracującego
+ * kroku (`commands/run.rs`, podpis nazwą kroku). Bez tego warunku ta sama kontrolka stanęłaby nad
+ * krokiem i przerwałaby cudzą turę — czyli robiłaby coś innego, niż mówi (niezmiennik 17).
+ *
+ * Napisu nie da się dziś przywieźć drutem: wiersz niesie podpis, a nie odpowiedź na pytanie „czy
+ * to lider". Ten sam dług nazywa `../entry/echo.ts` przy `LOADOUT` i z tego samego powodu.
+ */
+const LEAD = 'Lead';
+
+/**
+ * Jak nazywa się aplikacja agenta, o której mówi odmowa.
+ *
+ * Tabela, a nie napis z drutu, bo po tamtej stronie stoi klucz vendora (`claude`, `codex`), a na
+ * ekranie ma stać nazwa produktu (decyzja D5: zdanie mieszka w oknie). Klucz, którego ta tabela
+ * nie zna, idzie na ekran taki, jaki przyjechał — zgadnięta nazwa byłaby gorsza od surowej.
+ */
+const AGENT_APPS: Readonly<Record<string, string>> = {
+  claude: 'Claude',
+  codex: 'Codex',
+};
+
+/**
+ * Zdanie, które staje ZAMIAST przycisku — albo `null`, kiedy prośba pojechała.
+ *
+ * `sent` nie dostaje zdania z rozmysłem: o tym, co się stało, powie strumień, wierszem
+ * `Interrupted — … stopped after 7m`, który składa Rust w miejscu, gdzie mieszka kuracja
+ * (niezmiennik 15). Drugie zdanie o tym samym nad wierszem wejścia byłoby drugim żywym regionem
+ * na jeden fakt (niezmiennik 13).
+ */
+function interruptRefusal(said: Interrupted): string | null {
+  if (said.answer === 'sent') return null;
+  if (said.answer === 'noLongerListening') {
+    return 'Nothing to interrupt — this conversation has already ended';
+  }
+  const app = AGENT_APPS[said.agentApp] ?? said.agentApp;
+  return (
+    'This ' +
+    (app === '' ? 'agent app' : app) +
+    " can't be interrupted — stop the conversation instead"
+  );
+}
+
+/**
  * Prawa kolumna wiersza — liczba, którą ta czynność zostawiła po sobie, albo nic.
  *
  * Zamknięta tabela dwóch rodzajów, nie gałąź `default`: piętnasty rodzaj dopisany po stronie
@@ -654,6 +785,21 @@ export function createFeed(scroller: Scroller): Feed {
   let queuedBehind: string | null = null;
 
   /**
+   * Kiedy ruszyła tura lidera, na którą ktoś czeka — albo `null`, kiedy żadna nie idzie.
+   *
+   * Stawia ją wiersz `told` podpisany liderem (to jest chwila, w której człowiek nacisnął Enter),
+   * gasi ją wiersz `done` tego samego podpisu. Bez tej pary próg [`AFTER_TURN`] nie miałby od
+   * czego liczyć, a kontrolka stałaby nad turą, która skończyła się minutę temu.
+   */
+  let turnStartedAt: number | null = null;
+
+  /** Ostatnia chwila podana przez okno (`Feed.tick`). Zero, dopóki nikt nie zapytał. */
+  let clock = 0;
+
+  /** Zdanie odmowy przerwania — patrz `InterruptOffer.refusal`. */
+  let refusal: string | null = null;
+
+  /**
    * Pytania bez odpowiedzi, najstarsze pierwsze. Przypięte jest zawsze to spod zera.
    *
    * Opisuje ŻYWY bieg, więc schodzi CAŁA razem z nim (`runEnded`) — dokładnie jak `doing`.
@@ -683,6 +829,31 @@ export function createFeed(scroller: Scroller): Feed {
    * Świeży obiekt, ale `history` wchodzi do niego PRZEZ REFERENCJĘ — paczka samych `thinking`
    * ma zmienić strefę TERAZ i zostawić historię tą samą tablicą, co przed nią.
    */
+  /**
+   * Czy „Interrupt" ma teraz stać nad wierszem wejścia — i co ta kontrolka o sobie mówi.
+   *
+   * DWA PROGI, JEDNA ODPOWIEDŹ. Komenda w toku ma własny zegar, przysyłany przez Rusta co
+   * trzydzieści sekund, więc nad nią próg mija bez pytania okna o czas. Tura bez ani jednej
+   * komendy nie przysyła niczego — i to jest jedyna rzecz, do której model potrzebuje `clock`
+   * (patrz `Feed.tick`).
+   */
+  function interruptOffer(): InterruptOffer | null {
+    if (turnStartedAt === null) return null;
+    for (const one of inFlight.values()) {
+      /* TYLKO KOMENDA LIDERA: kontrolka prowadzi do jego rozmowy, a strumień wiezie obok
+       * komendy kroków biegu (powód w całości przy [`LEAD`]). */
+      if (one.agent === LEAD && one.elapsed >= AFTER_TOOL) {
+        return { subject: one.subject, refusal };
+      }
+    }
+    if (clock - turnStartedAt >= AFTER_TURN) {
+      /* Bez podmiotu, bo go nie ma: tura, która nie zapowiedziała ani jednej komendy, nie daje
+       * się nazwać niczym, czego ktoś by nie wymyślił (niezmiennik 17). */
+      return { subject: null, refusal };
+    }
+    return null;
+  }
+
   function snapshot(): FeedView {
     const rows: NowRow[] = [];
     for (const [agent, text] of doing) rows.push({ agent, text });
@@ -697,6 +868,7 @@ export function createFeed(scroller: Scroller): Feed {
       parked,
       toCarry,
       queued: holding === undefined ? null : queuedSays(holding),
+      interrupt: interruptOffer(),
       /* Jeden fakt, jedno miejsce: „czyja kolej" wynika z przypięcia, więc nie da się ustawić
        * go osobno i rozjechać z nim (niezmiennik 13). */
       attention: pinned === null ? 'agents' : 'you',
@@ -799,6 +971,15 @@ export function createFeed(scroller: Scroller): Feed {
         for (const [call, one] of inFlight) {
           if (one.agent === line.agent) queuedBehind = call;
         }
+        /* TURA LIDERA ZACZYNA SIĘ TUTAJ (2026-09, Z-40). Ten wiersz powstaje w chwili, w której
+         * zdanie człowieka naprawdę doszło do agenta (`commands::chat`, `say_to_stream`), więc
+         * jest jedynym stemplem początku tury, jaki okno dostaje. */
+        if (line.agent === LEAD) turnStartedAt = line.at;
+      }
+      if (line.kind === 'done' && line.agent === LEAD) {
+        /* …i kończy się tutaj, na wierszu zamykającym turę. Kontrolka „Interrupt" nad turą,
+         * która właśnie odpisała, jest kontrolką bez roboty (niezmiennik 16). */
+        turnStartedAt = null;
       }
 
       const rows = (next ??= [...history]);
@@ -968,6 +1149,11 @@ export function createFeed(scroller: Scroller): Feed {
     carriers.clear();
     inFlight.clear();
     queuedBehind = null;
+    /* 2026-09 (Z-40) — TA SAMA RODZINA, dwa pola dalej. Kontrolka „Interrupt" nad biegiem, który
+     * zszedł, prowadzi do tury, której nie ma, a zdanie odmowy opisuje rozmowę, która się
+     * skończyła. Oba są kontrolką bez roboty (niezmiennik 16). */
+    turnStartedAt = null;
+    refusal = null;
     /* Slot gaśnie razem z mapą: „Thinking…" po biegu jest zdaniem o procesie, który nie istnieje,
      * i jest ostatnią rzeczą na tym ekranie, którą człowiek by podważył. */
     thinking = null;
@@ -991,6 +1177,29 @@ export function createFeed(scroller: Scroller): Feed {
      * strefy TERAZ nie ma prawa ich kosztować. */
     parked = false;
     toCarry = '';
+    publish();
+  }
+
+  function tick(now: number): void {
+    clock = now;
+    const fresh = interruptOffer();
+    const before = current.interrupt;
+    /* BUDZIMY EKRAN TYLKO PRZY ZMIANIE. Ta funkcja biegnie raz na sekundę przez cały czas, w
+     * którym cokolwiek idzie; publikacja przy każdym tyknięciu kazałaby Reactowi przerysować
+     * strumień sześćdziesiąt razy na minutę za odpowiedź, która się nie zmieniła. Porównanie
+     * jest po WARTOŚCIACH, bo `interruptOffer` składa świeży obiekt przy każdym pytaniu — a
+     * pierwszy człon jest tu treścią: `{ subject: null }` i „nie ma czego przerywać" mają te same
+     * pola i są dwoma różnymi ekranami. */
+    const same =
+      (fresh === null) === (before === null) &&
+      fresh?.subject === before?.subject &&
+      fresh?.refusal === before?.refusal;
+    if (same) return;
+    publish();
+  }
+
+  function interruptAnswered(said: Interrupted): void {
+    refusal = interruptRefusal(said);
     publish();
   }
 
@@ -1020,6 +1229,8 @@ export function createFeed(scroller: Scroller): Feed {
     answer,
     carriedOn,
     runEnded,
+    tick,
+    interruptAnswered,
     toggle,
     subscribe,
   };

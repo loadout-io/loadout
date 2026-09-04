@@ -78,6 +78,7 @@ import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
 import { openOneRun, planOfPastRun, theOneThatIsGoing } from './history-command';
 import {
   answerTheLead,
+  interruptTheLead,
   listRuns,
   openChat,
   readRun,
@@ -235,6 +236,9 @@ const FEED_ROWS = 'minmax(0,1fr) auto auto';
  * wszystko, co ktoś kiedyś uczyni skupialnym bez pytania tego pliku o zgodę.
  */
 const KEEPS_THE_CARET = 'a, button, input, select, textarea, [contenteditable], [tabindex]';
+
+/** Jak często okno pyta model, czy tura ciągnie się już za długo — w milisekundach. */
+const INTERRUPT_TICK = 1_000;
 
 /* Ta sama migawka dla okna i dla renderu serwerowego. Model nie ma stanu „po stronie serwera":
  * `renderToStaticMarkup` widzi po prostu bieg, którego jeszcze nie ma. */
@@ -708,6 +712,32 @@ export default function Run(): ReactElement {
       alive = false;
     };
   }, []);
+  /* ZEGAR DLA KONTROLKI „Interrupt" (2026-09, Z-40).
+   *
+   * Ten sam odstęp i ten sam powód, co przy `ASK_AGAIN` w `./rail/rail.tsx`: sekunda jest dolną
+   * granicą tego, co oko odróżnia przy kontrolce, która pojawia się raz na minutę, a górną —
+   * czasem, przez który ta kontrolka spóźnia się nad turą, która właśnie przekroczyła próg.
+   *
+   * ODSTĘP ŻYJE TYLKO NAD PRACĄ, KTÓRA IDZIE, i to jest ta sama naprawa, którą audyt (F-2)
+   * wymusił na pasku: efekt założony raz przy montażu tykałby przez cały czas życia okna. Tu jest
+   * taniej niż tam — pytanie nie przechodzi granicy — ale `tick` budzi ekran, a przerysowanie
+   * strumienia raz na sekundę nad niczym jest tą samą stratą.
+   *
+   * MODEL PUBLIKUJE TYLKO PRZY ZMIANIE (`./feed/model.ts`, `tick`), więc te tyknięcia nie są
+   * sześćdziesięcioma renderami na minutę. */
+  const somethingIsGoing = view.now.rows.length > 0 || view.now.thinking !== null;
+  useEffect(() => {
+    /* `undefined`, nie gołe `return`: obie gałęzie oddają wartość, więc `noImplicitReturns`
+       nie ma o co pytać — dokładnie jak w `./rail/rail.tsx`. */
+    if (!somethingIsGoing) return undefined;
+    const ticking = setInterval(() => {
+      runFeed.tick(Date.now());
+    }, INTERRUPT_TICK);
+    return () => {
+      clearInterval(ticking);
+    };
+  }, [somethingIsGoing]);
+
   /* CO TEN EKRAN WIE Z DYSKU — jedna migawka, tą samą drogą, co pozostałe magazyny. Powód, dla
    * którego te trzy fakty mieszkają poza komponentem, stoi w całości w `./whats-ready.ts`. */
   const ready = useSyncExternalStore(subscribeToWhatIsReady, whatIsReady, whatIsReady);
@@ -1302,6 +1332,27 @@ export default function Run(): ReactElement {
     void answerTheLead(onTop, folder, asked.agent, option).catch(() => undefined);
   }
 
+  /**
+   * Człowiek nacisnął „Interrupt": tura lidera tej karty ma stanąć, a rozmowa ma zostać.
+   *
+   * 2026-09 (Z-40) — ODPOWIEDŹ WRACA DO MODELU, i to jest cała druga połowa tej kontrolki. CLI,
+   * które nie ogłosiło `interrupt_receipt_v1`, nie dostaje ani jednej linii — więc bez tego
+   * wywołania przycisk milczałby dokładnie tak samo, jak milczy agent, który przerwania nie
+   * usłuchał (niezmiennik 29). Zdolności nie da się poznać wcześniej: lista przychodzi dopiero
+   * w `system/init`, czyli po starcie sesji.
+   *
+   * Odmowa granicy jest tu porzucana z rozmysłem — inaczej niż odpowiedź: `interrupt_the_lead`
+   * nie ma jak zawieść po drodze, a zdanie o zerwanym transporcie mówiłoby człowiekowi
+   * o mechanice, na którą nie ma wpływu.
+   */
+  function interruptTurn(): void {
+    void interruptTheLead(onTop, folder)
+      .then((said) => {
+        runFeed.interruptAnswered(said);
+      })
+      .catch(() => undefined);
+  }
+
   async function sayIt(
     text: string,
     images: readonly ConversationImage[] = [],
@@ -1737,6 +1788,9 @@ export default function Run(): ReactElement {
               onToggle={runFeed.toggle}
               onAnswer={answerQuestion}
               onJumpToNewest={runFeed.jumpToNewest}
+              /* WYJŚCIE Z DŁUGIEJ TURY. Kontrolkę pokazuje strumień (progi liczy model), a drogę
+                 do Rusta zna ten ekran — bo to on wie, w której karcie stoi ta rozmowa. */
+              onInterrupt={interruptTurn}
               /* PYTANIE MA JEDNO ŻYWE MIEJSCE. Kiedy da się powiedzieć, KTÓRY krok pyta, karta
                  stoi pod nim, na obrazie; kiedy się nie da — pyta lider albo pod-agent
                  rozpuszczony w biegu — zostaje tutaj, gdzie stała od zawsze. Rozstrzyga to

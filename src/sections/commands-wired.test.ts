@@ -669,6 +669,20 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER, 'Lead', 'the left one'],
     call: () => run.answerTheLead(FOLDER, FOLDER, 'Lead', 'the left one'),
   },
+  /* 2026-09 (Z-40) — PRZERWANIE TURY LIDERA. Krawędź bez wiersza jest krawędzią, której nikt nie
+   * zobaczył docierającej do Rusta — a po tamtej stronie stoi jedyna droga, którą da się
+   * zatrzymać siedmiominutową komendę bez zamykania rozmowy razem z jej kontekstem.
+   *
+   * `given` niesie identyfikator terminalu, bo on JEST tu całym wywołaniem: to nim rejestr
+   * rozmów wybiera, którą turę zatrzymuje. Wiersz wołany bez niego przechodziłby także dla
+   * krawędzi, która przerywa rozmowę pierwszą z listy — czyli cudzą. */
+  {
+    where: 'run',
+    what: 'interruptTheLead',
+    command: 'interrupt_the_lead',
+    given: [FOLDER],
+    call: () => run.interruptTheLead(FOLDER, FOLDER),
+  },
   /* 2026-08-23 — DWIE KRAWĘDZIE HISTORII BIEGÓW, dopisane, nic nie usunięte i żaden istniejący
    * wiersz nie przepisany. Bez nich pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
    * `listRuns` i `readRun`, a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył
