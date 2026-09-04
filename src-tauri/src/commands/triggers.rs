@@ -247,8 +247,11 @@ pub struct TriggerDelivery {
     rename_all_fields = "camelCase"
 )]
 pub enum TriggerPoll {
-    /// Rust odmowil przed zapytaniem zewnetrznego serwisu, bo jeden bieg juz ma uchwyt.
-    Busy,
+    /// Rust odmowil przed zapytaniem zewnetrznego serwisu, bo bieg w folderze triggera ma uchwyt.
+    Busy {
+        /// Zdanie ułożone przez Rust: który folder trzeba zwolnić, zanim trigger znów zapyta.
+        sentence: String,
+    },
     /// Pierwszy odczyt zapisal zastany backlog jako widziany i niczego nie uruchomil.
     Armed,
     /// Jedna dostawa czeka na przejscie istniejaca droga Startu.

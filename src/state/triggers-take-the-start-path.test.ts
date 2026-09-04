@@ -374,7 +374,7 @@ describe('a trigger takes the same launch path as Start', () => {
     await Promise.resolve();
     expect(polls, 'the completion must not overlap the check already holding this slug').toBe(2);
 
-    overlappingCheck.resolve({ status: 'busy' });
+    overlappingCheck.resolve({ status: 'busy', sentence: 'Waiting.' });
     await overlapping;
     await vi.waitFor(() => {
       expect(polls).toBe(3);
@@ -432,7 +432,7 @@ describe('a trigger takes the same launch path as Start', () => {
     await Promise.resolve();
     await store.getState().toggle(CLAIM.slug, false);
 
-    overlappingCheck.resolve({ status: 'busy' });
+    overlappingCheck.resolve({ status: 'busy', sentence: 'Waiting.' });
     await overlapping;
     await vi.waitFor(() => {
       expect(store.getState().triggers[0]?.enabled).toBe(false);

@@ -72,10 +72,12 @@ async fn both_run_doors_return_busy_before_fetch_or_any_trigger_write() -> Resul
             Ok(answer())
         })?;
 
-        assert_eq!(
-            polled,
-            TriggerPoll::Busy,
-            "a live {} did not make the Rust-owned poll return busy",
+        assert!(
+            matches!(
+                &polled,
+                TriggerPoll::Busy { sentence } if sentence.contains("Trigger tests")
+            ),
+            "a live {} did not make the Rust-owned poll name its busy folder: {polled:?}",
             road.name()
         );
         assert_eq!(
@@ -129,11 +131,13 @@ async fn a_reserved_run_is_busy_before_its_first_line() -> Result<(), Box<dyn Er
             calls.set(calls.get() + 1);
             Ok(answer())
         })?;
-        assert_eq!(
-            polled,
-            TriggerPoll::Busy,
+        assert!(
+            matches!(
+                &polled,
+                TriggerPoll::Busy { sentence } if sentence.contains("Trigger tests")
+            ),
             "{} had already reserved AppState.live but the trigger slipped through before the \
-             run's first line",
+             run's first line: {polled:?}",
             road.name()
         );
         assert_eq!(calls.get(), 0, "the race-window poll reached the fetcher");
@@ -252,10 +256,12 @@ fn assert_pending_is_busy(state: &AppState, bench: &Bench) -> Result<(), Box<dyn
             calls.set(calls.get() + 1);
             Ok(answer_at("must-not-fetch", "LOAD-5", 12))
         })?;
-    assert_eq!(
-        busy,
-        TriggerPoll::Busy,
-        "an old acceptance was shown while a newer delivery was still pending"
+    assert!(
+        matches!(
+            &busy,
+            TriggerPoll::Busy { sentence } if sentence.contains("Trigger tests")
+        ),
+        "an old acceptance was shown while a newer delivery was still pending: {busy:?}"
     );
     assert_eq!(calls.get(), 0, "busy with pending work reached the fetcher");
     assert_eq!(

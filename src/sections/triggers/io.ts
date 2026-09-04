@@ -90,7 +90,7 @@ export interface TriggerSnapshot {
 
 /** Rust, rather than window state, is authoritative for every polling decision. */
 export type TriggerPoll =
-  | { readonly status: 'busy' }
+  | { readonly status: 'busy'; readonly sentence: string }
   | { readonly status: 'armed' }
   | { readonly status: 'pending'; readonly delivery: TriggerDelivery }
   | {

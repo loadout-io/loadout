@@ -50,6 +50,7 @@ function says(
       sentence: `${status.delivery.issue.identifier} is saved for ${workspaceName(workspace, workspaces)} while Loadout handles the run.`,
     };
   }
+  if (status.kind === 'waiting') return { sentence: status.sentence };
   if (status.kind === 'refused') return { sentence: status.sentence };
   /* Zdanie o wstrzymaniu ułożył Rust i to ono ma dotrzeć na ekran: mówi, że trigger przestał
    * pytać, dlaczego przestał i co z tym zrobić. Kontrolka obok jest tą jedną drogą powrotu. */

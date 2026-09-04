@@ -424,6 +424,7 @@ mod trigger_library_is_safe_to_edit;
 mod trigger_never_fires_twice;
 mod trigger_reads_the_answer;
 mod trigger_run_is_accepted_once;
+mod trigger_waits_only_for_its_own_folder;
 mod trigger_workspace_is_authority;
 mod two_folders_share_one_pool;
 mod typable_names_match_the_window;
