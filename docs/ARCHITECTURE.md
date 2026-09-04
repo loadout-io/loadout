@@ -114,7 +114,7 @@ supervisor: spawn w grupie procesów, zapisz pid+pgid do bazy
      │         --max-budget-usd <reszta budżetu biegu>             (T-94)
      │         --plugin-dir <skille>  --mcp-config <połączenia>
      │         --tools <powierzchnia>  --model <jawny model>
-     │         --append-system-prompt <konfiguracja agenta>
+     │         --append-system-prompt-file <plik w katalogu biegu>
      │         --add-dir <handoffs/>  --add-dir <attachments/>
      ▼
 stdout: NDJSON, linia po linii

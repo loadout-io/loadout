@@ -135,6 +135,12 @@ const LOGS_DIR: &str = "logs";
 /// (`docs/ARCHITECTURE.md` §8), a nie w `$TMPDIR`.
 const RUN_SETTINGS_FILE: &str = "claude-settings.json";
 
+/// Instrukcje ogólnego wywołania obok jego pliku ustawień.
+const RUN_INSTRUCTIONS_FILE: &str = "claude-instructions.txt";
+
+/// Instrukcje wywołania bez pliku ustawień nadal należą do katalogu Loadouta w tym projekcie.
+const LOADOUT_DIR: &str = ".loadout";
+
 /// Prywatny stan procesów Claude'a należy do biegu, nie do `HOME` człowieka.
 const PRIVATE_STATE_DIR: &str = "claude";
 
@@ -797,6 +803,8 @@ impl Transcript {
 pub struct RunSettings {
     /// Gdzie ten plik leży. Ta sama ścieżka, która ma stanąć obok `--settings` w argv.
     path: PathBuf,
+    /// Gdzie leżą instrukcje tego samego fizycznego wywołania.
+    instructions: PathBuf,
     /// Prywatny katalog stanu tego procesu. `None` zachowuje stary, ogólny plik ustawień.
     private_state: Option<PathBuf>,
 }
@@ -863,6 +871,44 @@ struct StepDocument<'a> {
     permissions: DenyOnly<'a>,
 }
 
+/// Zapisuje instrukcje pod gotową ścieżką i zawęża je do właściciela.
+///
+/// 2026-09 (Z-17) — zwykły plik, nie `$TMPDIR`: CLI musi dostać ścieżkę w argv, a jego treść
+/// jest konfiguracją importowanej roli mającą 30–73 KB. Bez `owner_only` przeniesienie jej
+/// z argumentu tylko zamieniłoby wyciek przez `ps` na plik czytelny dla innych użytkowników.
+fn write_instructions(path: &Path, text: &str) -> anyhow::Result<()> {
+    std::fs::write(path, text).with_context(|| {
+        format!(
+            "the agent instructions file could not be written at {}",
+            path.display()
+        )
+    })?;
+    supervisor::owner_only(path).with_context(|| {
+        format!(
+            "the agent instructions file could not be made private at {}",
+            path.display()
+        )
+    })
+}
+
+/// Zapisuje instrukcje wywołania, które nie ma własnego pliku ustawień.
+///
+/// 2026-09 (Z-17) — bez `work_key` identyfikatorem fizycznego startu jest `run_id`; jedna
+/// stała nazwa pozwoliłaby dwóm równoległym wywołaniom nadpisać role przed ich odczytaniem
+/// (niezmienniki 11 i 12).
+fn instructions_beside_the_project(spec: &RunSpec, text: &str) -> anyhow::Result<PathBuf> {
+    let dir = spec.cwd.join(LOADOUT_DIR);
+    std::fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "the folder for this agent's instructions could not be created at {}",
+            dir.display()
+        )
+    })?;
+    let path = dir.join(format!("claude-instructions-{}.txt", spec.run_id));
+    write_instructions(&path, text)?;
+    Ok(path)
+}
+
 impl RunSettings {
     /// Zapisuje plik ustawień biegu w **podanym** katalogu i oddaje uchwyt do niego.
     ///
@@ -892,6 +938,7 @@ impl RunSettings {
 
         Ok(Self {
             path,
+            instructions: dir.join(RUN_INSTRUCTIONS_FILE),
             private_state: None,
         })
     }
@@ -947,6 +994,9 @@ impl RunSettings {
 
         Ok(Self {
             path,
+            instructions: settings
+                .dir
+                .join(format!("claude-instructions-{}.txt", settings.work_key)),
             private_state: Some(private_state),
         })
     }
@@ -955,6 +1005,12 @@ impl RunSettings {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Zapisuje rolę obok ustawień i oddaje dokładnie tę ścieżkę, którą ma dostać CLI.
+    fn write_instructions(&self, text: &str) -> anyhow::Result<PathBuf> {
+        write_instructions(&self.instructions, text)?;
+        Ok(self.instructions.clone())
     }
 
     fn private_state(&self) -> Option<&Path> {
@@ -984,6 +1040,8 @@ pub struct ClaudeDriver {
     /// `None` znaczy „ten bieg go nie ma": sonda wersji nie ma katalogu biegu, więc nie ma
     /// gdzie go położyć, a `--settings` bez pliku pod podaną ścieżką zabiłoby CLI.
     settings: Option<RunSettings>,
+    /// Plik instrukcji przygotowany dla tego jednego startu. Treść nigdy nie jest polem sterownika.
+    instructions: Option<PathBuf>,
     /// Gotowy fragment argv przyniesiony przez warstwę wyżej — nic więcej.
     ///
     /// `Vec<String>`, nie `Option<PathBuf>` i nie żaden typ mówiący „umiejętność": ten plik nie
@@ -1007,6 +1065,7 @@ impl std::fmt::Debug for ClaudeDriver {
             .field("evidence", &self.evidence.is_some())
             .field("images", &self.images.as_slice().len())
             .field("settings", &self.settings.is_some())
+            .field("instructions", &self.instructions.is_some())
             .field("inherited_arguments", &self.inherited.len())
             .finish_non_exhaustive()
     }
@@ -1081,6 +1140,7 @@ impl ClaudeDriver {
             evidence: None,
             images: ValidatedImages::default(),
             settings: None,
+            instructions: None,
             inherited: Vec::new(),
             configuration: DriverConfiguration::default(),
             tag: None,
@@ -1097,6 +1157,7 @@ impl ClaudeDriver {
             evidence: None,
             images: ValidatedImages::default(),
             settings: None,
+            instructions: None,
             inherited: Vec::new(),
             configuration: DriverConfiguration::default(),
             tag: None,
@@ -1153,6 +1214,13 @@ impl ClaudeDriver {
     #[must_use]
     pub fn with_settings(mut self, settings: RunSettings) -> Self {
         self.settings = Some(settings);
+        self
+    }
+
+    /// Klon jednego startu wskazujący gotowy plik, nigdy niosący jego treść.
+    #[must_use]
+    fn with_instructions(mut self, instructions: PathBuf) -> Self {
+        self.instructions = Some(instructions);
         self
     }
 
@@ -1416,11 +1484,12 @@ impl ClaudeDriver {
             command.arg("--model").arg(model);
         }
 
-        // KONFIGURACJA agenta, nie treść zadania. Treść zadania w tym polu byłaby
-        // niezmiennikiem 9 złamanym po cichu: stąd wchodzi do argv, a argv widzi `ps` każdego
-        // użytkownika maszyny.
-        if let Some(append) = &spec.system_append {
-            command.arg("--append-system-prompt").arg(append);
+        // 2026-09 (Z-17) — KONFIGURACJA agenta też nie może jechać treścią w argv. Importowane
+        // role mają 30–73 KB, widzi je `ps`, a macOS ma wspólny sufit około 256 KB na argumenty.
+        // Ścieżka jest bezpiecznym nośnikiem dopiero dlatego, że zapis przed startem domyka plik
+        // do 0600; `command` czyta wyłącznie pole sterownika i nie ma drogi do treści z `spec`.
+        if let Some(instructions) = &self.instructions {
+            command.arg("--append-system-prompt-file").arg(instructions);
         }
 
         for dir in &spec.extra_dirs {
@@ -3408,6 +3477,29 @@ impl AgentDriver for ClaudeDriver {
 }
 
 impl ClaudeDriver {
+    fn note_incomplete(&self) {
+        if let Some(target) = &self.evidence {
+            target.mark_incomplete();
+        }
+    }
+
+    /// Przygotowuje prywatny nośnik roli dla dokładnie tego startu.
+    ///
+    /// 2026-09 (Z-17) — sześciu producentów `system_append` woła sterownik różnymi drogami;
+    /// część nie ma `RunSettings`. Decyzja w adapterze zamyka je wszystkie: ustawiony plik
+    /// trafia obok `--settings`, a bez niego do jedynego katalogu Loadouta w cudzym folderze.
+    fn carrying_instructions_for(&self, spec: &RunSpec) -> anyhow::Result<Self> {
+        let Some(text) = spec.system_append.as_deref() else {
+            return Ok(self.clone());
+        };
+        let instructions = if let Some(settings) = &self.settings {
+            settings.write_instructions(text)?
+        } else {
+            instructions_beside_the_project(spec, text)?
+        };
+        Ok(self.clone().with_instructions(instructions))
+    }
+
     async fn start_after_evidence(
         &self,
         spec: RunSpec,
@@ -3427,14 +3519,14 @@ impl ClaudeDriver {
         };
 
         let private = private_turns(&spec.prompt, &self.images);
-        let envelope = user_envelope(&spec.prompt, &self.images).inspect_err(|_error| {
-            if let Some(target) = &self.evidence {
-                target.mark_incomplete();
-            }
-        })?;
-        let environment = self.environment_for_spawn();
+        let envelope = user_envelope(&spec.prompt, &self.images)
+            .inspect_err(|_error| self.note_incomplete())?;
+        let driver = self
+            .carrying_instructions_for(&spec)
+            .inspect_err(|_error| self.note_incomplete())?;
+        let environment = driver.environment_for_spawn();
         let mut process = supervisor::spawn_tagged(
-            self.command(&spec),
+            driver.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
             // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
             // bo po tej kopercie przyjdą następne — i przerwanie w paśmie.
@@ -3442,22 +3534,14 @@ impl ClaudeDriver {
             &environment,
             // Znacznik biegu do środowiska tury (2026-09, Z-01d). `claude` jest tu skryptem
             // powłoki, więc to jego wnuki przeżywają awarię — a środowisko dziedziczą wszystkie.
-            self.tag.as_ref(),
+            driver.tag.as_ref(),
         )
-        .inspect_err(|_error| {
-            if let Some(target) = &self.evidence {
-                target.mark_incomplete();
-            }
-        })?;
+        .inspect_err(|_error| self.note_incomplete())?;
 
         let stdout = process
             .stdout()
             .ok_or_else(|| anyhow!("the agent started without an output stream to read"))
-            .inspect_err(|_error| {
-                if let Some(target) = &self.evidence {
-                    target.mark_incomplete();
-                }
-            })?;
+            .inspect_err(|_error| self.note_incomplete())?;
 
         // SKARGI ODBIERAMY I OPRÓŻNIAMY, i to jest jedna z dwóch rzeczy, bez których krok pada
         // zdaniem bez przyczyny (druga to `end_of_stream`, które to zdanie składa). Potok był
@@ -3480,9 +3564,7 @@ impl ClaudeDriver {
                 Arc::clone(&private),
             )))
         } else {
-            if let Some(target) = &self.evidence {
-                target.mark_incomplete();
-            }
+            self.note_incomplete();
             None
         };
 
@@ -3516,11 +3598,7 @@ impl ClaudeDriver {
             .ok_or_else(|| {
                 anyhow!("the agent started without an input channel for the turns that follow")
             })
-            .inspect_err(|_error| {
-                if let Some(target) = &self.evidence {
-                    target.mark_incomplete();
-                }
-            })?;
+            .inspect_err(|_error| self.note_incomplete())?;
 
         /* POTOK PRZECHODZI NA WŁASNOŚĆ ZADANIA, a uchwyt dostaje nadajnik. To jest cała zmiana,
          * po której da się napisać do agenta, który właśnie pracuje — powód w całości przy polu

@@ -57,11 +57,16 @@ use crate::engine::dag::{Dag, DagError};
 /// sam dopiero potencjalnie — stoją tu dlatego, że przelotka może ich użyć **już teraz**,
 /// a każda z nich odpowiada na pytanie, na które w tym produkcie odpowiada formularz albo dial.
 ///
+/// 2026-09 (Z-17) — `--append-system-prompt-file` jest dwudziestą czwartą pozycją. Loadout
+/// zapisuje rolę do prywatnego pliku, bo jej treść w argv widzi `ps` i może przebić sufit macOS;
+/// przelotka wskazująca cudzy plik podmienia ten nośnik dokładnie tak, jak `--settings` podmienia
+/// nośnik `deny`. Stara tekstowa flaga zostaje obok, bo omija plik i przywraca ten sam wyciek.
+///
 /// Dopasowanie idzie po KLUCZU, nie po podciągu (`is_reserved` niżej): `--verbose` jest nasze,
 /// a `--verbose-tool-output` jest inną flagą tej samej aplikacji i ma przechodzić. Filtr
 /// pytający `starts_with` zabijałby flagę ogłoszoną dziś rano, czyli dokładnie to, po co
 /// przelotka istnieje (D6).
-pub const RESERVED_CLAUDE: [&str; 23] = [
+pub const RESERVED_CLAUDE: [&str; 24] = [
     // ── czym JEST to wywołanie: transport i sesja ────────────────────────────────────────
     "-p",
     "--output-format",
@@ -88,6 +93,7 @@ pub const RESERVED_CLAUDE: [&str; 23] = [
     "--model",
     "--effort",
     "--append-system-prompt",
+    "--append-system-prompt-file",
     // ── pieniądze: kwotę zna wyłącznie księga biegu ─────────────────────────────────────
     "--max-budget-usd",
 ];

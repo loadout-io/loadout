@@ -182,6 +182,7 @@ mod inherit_reaches_the_prompt;
 mod inherit_recurring_patterns;
 mod inherit_scan_skills;
 mod inherit_subagent_is_text_only;
+mod instructions_travel_in_a_file;
 mod ipc_commands_registered;
 mod ipc_library_roundtrip;
 mod ipc_line_wire_golden;

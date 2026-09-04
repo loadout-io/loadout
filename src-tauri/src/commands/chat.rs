@@ -36,14 +36,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use super::Drivers;
+use super::{Drivers, settings};
 use crate::bridge::Role as BridgeRole;
 use crate::bridge::host::Bridge;
 use crate::bridge::library::{Desk as BridgeLibrary, Waiting as AskWaiting};
 use crate::engine::drivers::claude::{no_such_tools, tool_surface};
 use crate::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
-    RunSpec, ToAgent, ValidatedImages, Voice,
+    RunSpec, StepSettings, ToAgent, ValidatedImages, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::{self, GroupProof};
@@ -2345,6 +2345,15 @@ impl Threads {
             .flat_map(|library| [AGENTS_DIR, WORKFLOWS_DIR].map(|name| library.join(name)))
             .filter(|folder| folder.is_dir())
             .collect();
+        // 2026-09 (Z-17) — rozmowa nie ma osobnego pola kwoty: ten sam wybór, który ogranicza
+        // bieg w Settings, ogranicza pierwszą płatną turę lidera. Brak biblioteki zachowuje
+        // stare duble; uszkodzony plik odmawia zamiast uruchomić proces bez sufitu.
+        let ceiling = library
+            .as_deref()
+            .map(settings::read_settings_inner)
+            .transpose()
+            .map_err(|error| ChatError::CouldNotStart(error.to_string()))?
+            .map(|settings| settings.default_budget_usd);
         let thread = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             /* Stop podczas pierwszego handshake uczciwie oddaje `Alive`, zanim istnieje uchwyt,
@@ -2390,6 +2399,7 @@ impl Threads {
             library.as_deref(),
             &terminal.folder,
             bridge.as_deref(),
+            ceiling,
             /* CZY TA TURA ZAKŁADA ROZMOWĘ. Umiejętności jadą wyłącznie wtedy — powód w całości
              * stoi przy `as_the_step_is_configured`. Actor odpowiada tym samym pytaniem po swojej
              * stronie (`session.is_none()`), więc druga tura i tak nie ogląda tego sterownika. */
@@ -2674,6 +2684,7 @@ fn as_the_step_is_configured(
     library: Option<&Path>,
     folder: &Path,
     bridge: Option<&Bridge>,
+    ceiling: Option<f64>,
     beginning: bool,
 ) -> Result<Configured, ChatError> {
     let mut configuration = connections_of(lead, library, folder, driver.id(), bridge)?;
@@ -2698,6 +2709,13 @@ fn as_the_step_is_configured(
             }
             None => driver,
         }
+    };
+    // 2026-09 (Z-17) — kwotę zna Settings, a nazwę flagi wyłącznie adapter (niezmiennik 23).
+    // `None` jest poprawną odpowiedzią Codeksa i atrap: zachowuje już skonfigurowany klon,
+    // dokładnie jak brak vendorowego szwu dla samego szczebla wysiłku.
+    let carrying = match ceiling.and_then(|dollars| carrying.with_budget(dollars)) {
+        Some(budgeted) => budgeted,
+        None => carrying,
     };
 
     /* DZIEDZICZENIE STOI TU, MIĘDZY CONNECTIONS A DOWODAMI, i to jest ta sama kolejność, którą
@@ -3021,6 +3039,37 @@ async fn begin(driver: &dyn AgentDriver, spec: RunSpec) -> Result<ReadySession, 
     })
 }
 
+/// Nakłada prywatne ustawienia lidera przed opakowaniem sterownika dowodami rozmowy.
+///
+/// 2026-09 (Z-17) — każde opakowanie oddaje klon, więc odwrotna kolejność zgubiłaby
+/// `--settings` bez błędu kompilacji. Ten sam dokument kieruje auto-pamięć pod rozmowę
+/// i przepisuje odmowy gospodarza, dlatego Claude nie może ruszyć po błędzie zapisu.
+fn lead_with_private_settings(
+    driver: Arc<dyn AgentDriver>,
+    evidence: &EvidenceTarget,
+    cwd: &Path,
+) -> Result<Arc<dyn AgentDriver>, String> {
+    let wanted = StepSettings {
+        dir: evidence.root().to_path_buf(),
+        work_key: "_lead".to_owned(),
+        memory: evidence.root().join("mem").join("_lead"),
+        deny: crate::engine::drivers::host::deny_rules(cwd),
+    };
+    match driver.with_settings(&wanted) {
+        Some(Ok(carrying)) => fs::create_dir_all(&wanted.memory)
+            .map(|()| carrying)
+            .map_err(|error| {
+                format!(
+                    "the lead's private memory folder could not be created at {}: {error}",
+                    wanted.memory.display()
+                )
+            }),
+        Some(Err(error)) => Err(error.to_string()),
+        // Codeks i duble bez vendorowego pliku zachowują dotychczasową drogę.
+        None => Ok(driver),
+    }
+}
+
 /// Produkcyjny start wątku Lead: prywatny receipt powstaje przed procesem, a sterownik dostaje
 /// ten sam target niezależnie od vendora. Codex wybiera tu app-server przez `start_conversation`;
 /// workflow dalej woła zwykłe `start` w `commands::run`.
@@ -3048,6 +3097,24 @@ async fn begin_thread(
         .await
         .map_err(|_error| ChatError::CouldNotRecord)?;
 
+    let driver = match lead_with_private_settings(driver, &evidence, &spec.cwd) {
+        Ok(driver) => driver,
+        Err(error) => {
+            if evidence
+                .fail_turn(1, EvidenceFailureKind::StartFailed)
+                .await
+                .is_err()
+            {
+                evidence.mark_incomplete();
+            }
+            return Err(ChatError::CouldNotStart(format!(
+                "Loadout could not prepare the lead agent's private files, so it did not start \
+                 the conversation. Starting without them could mix what this lead remembers \
+                 with your own Claude Code conversations and skip rules from this project. \
+                 {error}"
+            )));
+        }
+    };
     let driver = match driver.with_evidence(evidence.clone()) {
         Some(driver) => driver,
         None if vendor != ConversationVendor::Unknown => {
