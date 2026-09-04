@@ -2698,7 +2698,7 @@ pub async fn stop_draft(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Co jeden krok oddał następnemu — wszystkie przekazania biegów tego projektu.
+/// Co jeden krok oddał następnemu — jedna paczka biegów tego projektu.
 ///
 /// 2026-08-18 — przekazania są JEDYNĄ drogą, którą wynik kroku dochodzi do promptu następnego
 /// (`docs/ARCHITECTURE.md` §8), a do tego dnia okno nie miało jak o nie zapytać: pliki
@@ -2722,19 +2722,27 @@ pub async fn stop_draft(state: State<'_, AppState>) -> Result<(), String> {
 ///
 /// Sam komentarz w `src/sections/memory/io.ts` zgłaszał to jako lukę czekającą na człowieka:
 /// „`list_handoffs` nie przyjmuje w tej fali zakresu… Zgłoszone człowiekowi".
+///
+/// 2026-09 (Z-49) — zakres liczy KATALOGI BIEGÓW, nie udane odczyty. Nieczytelny katalog
+/// (Z-42) zużywa swoje miejsce w paczce, dzięki czemu jedno wejście nigdy nie sięga po
+/// jedenasty bieg tylko dlatego, że w jednym z pierwszych dziesięciu nie ma czego pokazać.
 #[tauri::command]
 pub async fn list_handoffs(
     state: State<'_, AppState>,
     folder: Option<String>,
-) -> Result<Vec<commands::handoffs::HandoffWire>, String> {
+    after_runs: usize,
+    how_many_runs: usize,
+) -> Result<commands::handoffs::HandoffPageWire, String> {
     let project = state
         .project_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    tokio::task::spawn_blocking(move || commands::handoffs::list_handoffs_inner(&project))
-        .await
-        .map_err(|error| did_not_finish("reading what the steps handed on", &error))?
-        .map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || {
+        commands::handoffs::list_handoffs_inner(&project, after_runs, how_many_runs)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading what the steps handed on", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Co ten projekt do tej pory uruchomił — biegi leżące w JEGO katalogu, od najnowszego.

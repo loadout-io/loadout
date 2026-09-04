@@ -119,6 +119,13 @@ export interface Handoff {
   bytes: number;
 }
 
+/** Jedna paczka przekazań. Liczniki dotyczą biegów, nie liczby plików w środku. */
+export interface HandoffPage {
+  handoffs: Handoff[];
+  runsRead: number;
+  moreRuns: number;
+}
+
 /**
  * Odmowa „zakres jest pełny", tak jak przyjeżdża z Rusta [T6 §5.3].
  *
@@ -153,6 +160,10 @@ export interface MemoryState {
    * przez nic.
    */
   passed: Handoff[];
+  /** Ile katalogów biegów składa się na widoczne przekazania. */
+  passedRunsRead: number;
+  /** Ile starszych katalogów biegów czeka na wyraźne doczytanie. */
+  passedMoreRuns: number;
   /** Zdanie po angielsku mówiące, co się stało. `null`, kiedy nie ma nic do powiedzenia. */
   message: string | null;
   /**
@@ -197,6 +208,8 @@ export interface MemoryState {
    * Do 2026-08-18 tej ścieżki nie było wcale i to jest cały powód, dla którego pole istnieje.
    */
   load: (catalogFolder?: string | null) => Promise<void>;
+  /** Dokłada jedną paczkę starszych przekazań do już widocznych. */
+  loadMorePassed: () => Promise<void>;
   /** „Use this" — od tej chwili notatka wchodzi do promptu. Decyduje odpowiedź z Rusta. */
   use: (address: NoteAddress) => Promise<void>;
   /** „Stop using" — notatka zostaje na liście i przestaje wchodzić do promptu. */
@@ -228,6 +241,9 @@ const COULD_NOT_MOVE = 'Loadout could not move that note into this project.';
 const COULD_NOT_READ = 'Loadout could not read the notes on this machine.';
 const COULD_NOT_READ_PASSED = 'Loadout could not read what agents passed to each other.';
 
+/** Z-49: wejście i każde kliknięcie biorą najwyżej dziesięć biegów. */
+const RUNS_PER_BATCH = 10;
+
 /**
  * Czy ta odmowa jest „zakres jest pełny".
  *
@@ -253,6 +269,8 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   notesFolder: null,
   generation: 0,
   passed: [],
+  passedRunsRead: 0,
+  passedMoreRuns: 0,
   message: null,
   passedProblem: null,
   choice: null,
@@ -263,7 +281,12 @@ export const useMemory = create<MemoryState>()((set, get) => ({
     const frozenFolder =
       catalogFolder === undefined ? (activeWorkspace()?.folder ?? null) : catalogFolder;
     const generation = get().generation + 1;
-    set({ catalogFolder: frozenFolder, generation });
+    set({
+      catalogFolder: frozenFolder,
+      generation,
+      passedRunsRead: 0,
+      passedMoreRuns: 0,
+    });
 
     /* DWA ODCZYTY, DWIE OSOBNE ODMOWY, i to nie jest ostrożność na zapas: notatki leżą
      * w `~/.loadout/memory/notes/`, a przekazania w katalogach biegów
@@ -288,11 +311,23 @@ export const useMemory = create<MemoryState>()((set, get) => ({
 
     const passedRead = (async () => {
       try {
-        const passed = await listHandoffs(frozenFolder);
-        if (get().generation === generation) set({ passed, passedProblem: null });
+        const page = await listHandoffs(frozenFolder, 0, RUNS_PER_BATCH);
+        if (get().generation === generation) {
+          set({
+            passed: page.handoffs,
+            passedRunsRead: page.runsRead,
+            passedMoreRuns: page.moreRuns,
+            passedProblem: null,
+          });
+        }
       } catch (refusal) {
         if (get().generation === generation) {
-          set({ passed: [], passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
+          set({
+            passed: [],
+            passedRunsRead: 0,
+            passedMoreRuns: 0,
+            passedProblem: why(refusal, COULD_NOT_READ_PASSED),
+          });
         }
       }
     })();
@@ -304,6 +339,38 @@ export const useMemory = create<MemoryState>()((set, get) => ({
      * nie wiem" przestało być prawdą. Numer odczytu pilnuje, żeby spóźniona odpowiedź
      * poprzedniego zakresu nie zdejmowała zdania o czytaniu z odczytu, który wciąż trwa. */
     if (get().generation === generation) set({ read: true });
+  },
+
+  loadMorePassed: async () => {
+    const { catalogFolder, generation, passedRunsRead, passedMoreRuns } = get();
+    if (passedMoreRuns === 0) return;
+    try {
+      const page = await listHandoffs(catalogFolder, passedRunsRead, RUNS_PER_BATCH);
+      /* 2026-09 (Z-49): oprócz generacji pilnujemy kursora. Dwa szybkie kliknięcia mogą
+       * zapytać o tę samą stronę; tylko pierwsza odpowiedź ma prawo ją dołożyć, inaczej każdy
+       * plik pojawia się dwa razy mimo jednego miejsca na dysku (niezmiennik 13). */
+      if (
+        get().generation === generation &&
+        get().passedRunsRead === passedRunsRead &&
+        get().catalogFolder === catalogFolder
+      ) {
+        set((state) => ({
+          passed: [...state.passed, ...page.handoffs],
+          passedRunsRead: state.passedRunsRead + page.runsRead,
+          passedMoreRuns: page.moreRuns,
+          passedProblem: null,
+        }));
+      }
+    } catch (refusal) {
+      if (
+        get().generation === generation &&
+        get().passedRunsRead === passedRunsRead &&
+        get().catalogFolder === catalogFolder
+      ) {
+        /* Już przeczytane pliki zostają: odmowa następnej strony nie cofa prawdy o poprzedniej. */
+        set({ passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
+      }
+    }
   },
 
   use: async (address) => {

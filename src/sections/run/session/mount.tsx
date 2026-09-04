@@ -106,7 +106,10 @@ export async function readWhatWasGiven(folder: string | null): Promise<void> {
   let known = given.known;
 
   try {
-    passed = await listHandoffs(folder);
+    /* 2026-09 (Z-49): ta współdzielona krawędź jest teraz stronicowana. Ekran agenta nie ma
+     * kontrolki historii, więc bierze tę samą pierwszą, ograniczoną paczkę co sekcja wiedzy,
+     * zamiast ponownie otwierać całe wielogigabajtowe archiwum przy wejściu. */
+    passed = (await listHandoffs(folder, 0, 10)).handoffs;
   } catch {
     /* Lista pustoszeje z rozmysłem: przekazania sprzed odmowy są tym, co okno PAMIĘTA, a nie
      * tym, co leży w plikach (niezmiennik 4). */
