@@ -17,6 +17,7 @@ answer_the_lead
 apply_eval_fix
 apply_setup
 author_skill
+check_agent_apps
 check_trigger
 check_workflow
 close_terminal
