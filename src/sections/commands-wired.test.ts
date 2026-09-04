@@ -706,6 +706,35 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'],
     call: () => run.forgetRun(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
   },
+  /* 2026-09 (Z-46) — TRZY KRAWĘDZIE ZAMIATACZA, dopisane, nic nie usunięte i żaden istniejący
+   * wiersz nie przepisany. Bez nich pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
+   * te trzy funkcje, a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył docierającej
+   * do Rusta. Dwie z nich KASUJĄ, więc ważą tyle, co `forgetRun` obok.
+   *
+   * `given` niesie liczbę dni w obu miejscach, gdzie ona jedzie, i ta liczba NIE jest domyślną
+   * kontrolki: wiersz wołany wartością domyślną przechodziłby także dla krawędzi, która wybór
+   * człowieka gubi i pyta zawsze o to samo. */
+  {
+    where: 'run',
+    what: 'whatThisFolderCouldForget',
+    command: 'what_this_folder_could_forget',
+    given: [FOLDER, 45],
+    call: () => run.whatThisFolderCouldForget(FOLDER, 45),
+  },
+  {
+    where: 'run',
+    what: 'forgetWhatTheOldRunsLeft',
+    command: 'forget_what_the_old_runs_left',
+    given: [FOLDER],
+    call: () => run.forgetWhatTheOldRunsLeft(FOLDER),
+  },
+  {
+    where: 'run',
+    what: 'forgetRunsOlderThan',
+    command: 'forget_runs_older_than',
+    given: [FOLDER, 45],
+    call: () => run.forgetRunsOlderThan(FOLDER, 45),
+  },
   {
     where: 'workspaces',
     what: 'listWorkspaces',

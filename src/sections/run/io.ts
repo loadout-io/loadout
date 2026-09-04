@@ -1116,6 +1116,79 @@ export function forgetRun(folder: string | null, run: string): Promise<readonly 
   return invoke<readonly string[]>('forget_run', { folder, run });
 }
 
+/** Co zejdzie razem z biegami starszymi niż tyle dni, ile człowiek podał. */
+export interface OlderRuns {
+  readonly runs: number;
+  readonly branches: number;
+  readonly workFolders: number;
+  /** Jedno zdanie o tym, co zejdzie. Nigdy puste: „nic" też jest odpowiedzią na to pytanie. */
+  readonly said: string;
+}
+
+/** Co ten folder mógłby zapomnieć. Lustro `commands::sweep::CouldForgetWire`. */
+export interface CouldForget {
+  /** Ile katalogów roboczych stoi po biegach, których Loadout nie zamknął. */
+  readonly workFolders: number;
+  /** Ile gałęzi zostało po biegach, których katalogu już nie ma. */
+  readonly branches: number;
+  /** Zdanie o obu liczbach. **Pusty napis znaczy „nie ma o czym mówić"** — i wtedy nie ma
+   * kontrolki (niezmiennik 16). */
+  readonly said: string;
+  readonly older: OlderRuns;
+}
+
+/** Co naprawdę zeszło — i co nie. Lustro `commands::sweep::ForgottenWire`. */
+export interface Forgotten {
+  readonly workFolders: number;
+  readonly branches: number;
+  readonly runs: number;
+  /** Co się stało i co ZOSTAŁO — po imieniu i ze ścieżką. To jedyne, co człowiek przeczyta. */
+  readonly said: string;
+}
+
+/**
+ * Co ten folder mógłby zapomnieć: leżaki po starych biegach i biegi starsze niż tyle dni.
+ *
+ * 2026-09 (Z-46) — POWSTAŁO, BO ZAMIATACZ MILCZAŁ. Sprzątanie przy otwarciu folderu domyka
+ * wyłącznie katalogi, o których bieg zostawił notatkę; bieg sprzed tej notatki nie ma jej wcale,
+ * więc jego katalog stoi dalej i nic o nim nie mówi. Zmierzone u właściciela 2026-09-03 na jednym
+ * monorepo: dziennik zameldował 75 zamkniętych folderów, a dwanaście dalej stało, po 264 MB.
+ *
+ * **Nic nie kasuje.** To jest wyłącznie liczenie — kasują dwie krawędzie niżej, każda po
+ * kliknięciu i każda po zdaniu, które człowiek przeczytał.
+ *
+ * @param folder zakres, o który pytamy — ta sama ścieżka, którą dostało [`listRuns`].
+ * @param olderThanDays ile dni ma mieć bieg, żeby wejść do drugiej liczby.
+ */
+export function whatThisFolderCouldForget(
+  folder: string | null,
+  olderThanDays: number,
+): Promise<CouldForget> {
+  return invoke<CouldForget>('what_this_folder_could_forget', { folder, olderThanDays });
+}
+
+/**
+ * Zdejmuje to, co zostawiły biegi, których Loadout nie zamknął — i **tylko** to.
+ *
+ * Katalog z niezapisaną zmianą zostaje, bo jest jedyną kopią tego, co ktoś w nim napisał; gałąź
+ * z commitem, którego nie ma reszta projektu, zostaje z tego samego powodu. Odpowiedź nazywa oba
+ * po imieniu i ze ścieżką, więc jest jedyną rzeczą, jaką trzeba pokazać po naciśnięciu.
+ */
+export function forgetWhatTheOldRunsLeft(folder: string | null): Promise<Forgotten> {
+  return invoke<Forgotten>('forget_what_the_old_runs_left', { folder });
+}
+
+/**
+ * Zapomina biegi starsze niż tyle dni — razem z ich gałęziami i katalogami roboczymi.
+ *
+ * TA SAMA DROGA, CO [`forgetRun`] przy jednym biegu, tylko zamówiona datą: folder, który biega raz
+ * w tygodniu, i folder, który biega dziesięć razy dziennie, mają po tygodniu zupełnie inną
+ * historię przy tej samej liczbie „zostaw N ostatnich".
+ */
+export function forgetRunsOlderThan(folder: string | null, days: number): Promise<Forgotten> {
+  return invoke<Forgotten>('forget_runs_older_than', { folder, days });
+}
+
 /** Licznikowy paragon kopiowania; raport nigdy nie wraca do JavaScriptu. */
 export interface DiagnosticsReceipt {
   readonly runs: number;

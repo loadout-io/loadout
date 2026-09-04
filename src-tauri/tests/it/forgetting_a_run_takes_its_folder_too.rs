@@ -193,6 +193,10 @@ async fn opening_a_folder_keeps_only_the_last_runs_a_person_asked_for() -> Resul
     let bench = Bench::new()?;
     for (folder, id) in FOUR_RUNS {
         bench.put_a_run(folder, id)?;
+        // 2026-09 (Z-46) — KAŻDY BIEG ZOSTAWIA TU GAŁĄŹ, bo bez niej to kryterium mierzy połowę
+        // retencji. Zmierzone u właściciela na `urc-monorepo`: 99 gałęzi `loadout/*` przy
+        // czternastu biegach — katalogi schodziły, a gałęzie zostawały na zawsze.
+        bench.leave_a_branch(&format!("loadout/{id}/{KEY}"))?;
     }
     // WYBÓR CZŁOWIEKA CZYTAMY Z PLIKU, tą samą drogą, którą go czyta aplikacja: `read_settings`
     // patrzy w bibliotekę, nie w stan okna.
@@ -231,6 +235,80 @@ async fn opening_a_folder_keeps_only_the_last_runs_a_person_asked_for() -> Resul
             !bench.run_dir(folder).exists(),
             "{folder} is off the list and still on disk, so the history says one thing and the \
              disk another — and nothing will ever come back for it"
+        );
+    }
+
+    /* GAŁĘZIE SCHODZĄ RAZEM Z KATALOGIEM, i to jest druga połowa tego, o co człowiek prosi
+     * suwakiem (2026-09, Z-46). Katalog zdjęty bez gałęzi jest stanem, o którym człowiek
+     * dowiaduje się dopiero z `git branch`: historia mówi „zostały dwa biegi", a repozytorium
+     * niesie gałęzie wszystkich czterech i nic już nie umie ich nazwać — bo przedrostek liczy
+     * się z `run.json`, którego właśnie nie ma. */
+    let branches = bench.branches()?;
+    for (folder, id) in FOUR_RUNS.iter().take(FOUR_RUNS.len() - KEEP) {
+        let branch = format!("loadout/{id}/{KEY}");
+        assert!(
+            !branches.contains(&branch),
+            "{folder} was forgotten and its branch {branch} is still in this repository. Nothing \
+             names it any more: the prefix that identifies a run's branches is read out of the \
+             run's own record, and that record is gone. Branches left: {branches:?}"
+        );
+    }
+    for (_, id) in FOUR_RUNS.iter().skip(FOUR_RUNS.len() - KEEP) {
+        let branch = format!("loadout/{id}/{KEY}");
+        assert!(
+            branches.contains(&branch),
+            "the branch {branch} of a run the person asked to KEEP was taken away as well, so \
+             retention reaches past what it was asked for. Branches left: {branches:?}"
+        );
+    }
+
+    Ok(())
+}
+
+// ── (4) zero znaczy „wszystkie", więc nie schodzi ani katalog, ani gałąź ───────────────────
+
+/// Wartość, którą `serde` wstawia KAŻDEMU dzisiejszemu plikowi wyborów, czyli stan zastany
+/// u każdego, kto tego suwaka nigdy nie dotknął.
+const KEEP_EVERYTHING: usize = 0;
+
+#[tokio::test]
+async fn keeping_everything_takes_neither_a_folder_nor_a_branch() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    for (folder, id) in FOUR_RUNS {
+        bench.put_a_run(folder, id)?;
+        bench.leave_a_branch(&format!("loadout/{id}/{KEY}"))?;
+    }
+    bench.ask_to_keep(KEEP_EVERYTHING)?;
+
+    let state = AppState::new(
+        bench.home.path().to_path_buf(),
+        bench.project().to_path_buf(),
+        Store::open(&bench.home.path().join("index.db"))?,
+        no_drivers(),
+    );
+    state
+        .project_for(None)
+        .await
+        .map_err(|said| format!("the window could not even name its own folder: {said}"))?;
+
+    let left: Vec<String> = list_runs_inner(bench.project())
+        .into_iter()
+        .map(|one| one.folder)
+        .collect();
+    assert_eq!(
+        left.len(),
+        FOUR_RUNS.len(),
+        "opening the folder forgot runs nobody asked it to forget. Zero in that setting is the \
+         value serde writes into every file today, so reading it as \"keep none\" would take the \
+         whole history of every project on this machine on the next start. It left: {left:?}"
+    );
+    let branches = bench.branches()?;
+    for (_, id) in FOUR_RUNS {
+        let branch = format!("loadout/{id}/{KEY}");
+        assert!(
+            branches.contains(&branch),
+            "and the branch {branch} was taken away even though no run was. Branches left: \
+             {branches:?}"
         );
     }
 

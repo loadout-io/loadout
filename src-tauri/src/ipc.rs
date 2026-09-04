@@ -1575,10 +1575,19 @@ impl AppState {
             );
             return;
         };
-        if done.runs > 0 || done.still_alive > 0 || done.closed > 0 || done.forgotten > 0 {
+        if done.runs > 0
+            || done.still_alive > 0
+            || done.closed > 0
+            || done.forgotten > 0
+            // 2026-09 (Z-46) — folder, w którym stoją WYŁĄCZNIE katalogi sprzed markera izolacji,
+            // ma tu do tego dnia zero we wszystkich czterech licznikach. Dziennik milczał więc
+            // dokładnie o tym stanie, dla którego cała ta poprawka powstała.
+            || done.left_over > 0
+        {
             tracing::info!(
                 "{}: {} run(s) and {} step(s) were left over by a closed window, \
-                 {} group(s) proven dead, {} still alive, {} folder(s) closed, {} run(s) forgotten",
+                 {} group(s) proven dead, {} still alive, {} folder(s) closed, {} run(s) \
+                 forgotten, {} folder(s) named but not closed",
                 project.display(),
                 done.runs,
                 done.steps,
@@ -1586,6 +1595,7 @@ impl AppState {
                 done.still_alive,
                 done.closed,
                 done.forgotten,
+                done.left_over,
             );
         }
     }
@@ -2863,6 +2873,83 @@ pub async fn forget_run(
             refused(&said);
             said
         })
+}
+
+/// Co ten folder mógłby zapomnieć: leżaki po starych biegach i biegi starsze niż tyle dni.
+///
+/// 2026-09 (Z-46) — POWSTAŁO, BO ZAMIATACZ MILCZAŁ. Domykanie drzew przy otwarciu folderu chodzi
+/// po notatce, którą bieg pisze o każdym katalogu, jaki sobie otworzył — a bieg sprzed tej notatki
+/// nie ma jej wcale. Zmierzone u właściciela 2026-09-03 na `urc-monorepo`: dziennik zameldował
+/// „75 folder(s) closed", a `git worktree list` dalej wymieniał dwanaście katalogów po 264 MB
+/// i 99 gałęzi `loadout/*` przy czternastu biegach. Do tego dnia jedyną drogą był terminal.
+///
+/// **Nic nie kasuje.** To jest wyłącznie liczenie — kasują dwie komendy niżej, każda po
+/// kliknięciu i każda po zdaniu, które człowiek przeczytał.
+///
+/// Zakres jedzie argumentem, jak w [`list_runs`] i [`read_run`]: „gdzie pracujemy" ma w całej
+/// aplikacji jedną odpowiedź (niezmiennik 13).
+#[tauri::command]
+pub async fn what_this_folder_could_forget(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    older_than_days: u32,
+) -> Result<commands::sweep::CouldForgetWire, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || {
+        commands::sweep::what_this_folder_could_forget(&project, older_than_days)
+    })
+    .await
+    .map_err(|error| did_not_finish("looking at what this folder could forget", &error))
+}
+
+/// Zdejmuje to, co zostawiły biegi, których Loadout nie zamknął — i **tylko** to.
+///
+/// 2026-09 (Z-46) — dwa strażniki, oba w stronę „zostaw", i oba są tu całą treścią: katalog
+/// z niezapisaną zmianą zostaje, bo jest jedyną kopią tego, co ktoś w nim napisał; gałąź
+/// z commitem, którego nie ma `HEAD`, zostaje, bo po `branch -D` nie sięga do niej nic poza
+/// `git fsck`. Odpowiedź nazywa oba po imieniu i ze ścieżką — powód i kolejność w całości stoją
+/// przy `sweep::forget_what_the_old_runs_left`.
+///
+/// **Nie oddaje odmowy.** Git, który nie dał rady zdjąć jednego katalogu, jest jednym zdaniem
+/// w odpowiedzi, a nie kontrolką, która nie zrobiła nic (niezmiennik 5).
+#[tauri::command]
+pub async fn forget_what_the_old_runs_left(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<commands::sweep::ForgottenWire, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::sweep::forget_what_the_old_runs_left(&project))
+        .await
+        .map_err(|error| did_not_finish("forgetting what the old runs left", &error))
+}
+
+/// Zapomina biegi starsze niż tyle dni — razem z ich gałęziami i katalogami roboczymi.
+///
+/// 2026-09 (Z-46) — TA SAMA DROGA, CO PRZYCISK PRZY JEDNYM BIEGU (niezmiennik 23):
+/// `history::forget_run_inner` zdejmuje najpierw gałęzie, a katalog dopiero po nich, i odmawia
+/// w całości, kiedy którakolwiek gałąź jest w tej chwili wyjęta do pracy. Retencja z ustawień
+/// („zostaw N ostatnich") chodzi tamtędy od Z-9; tutaj to samo zamawia się datą, bo folder, który
+/// biega raz w tygodniu, i folder, który biega dziesięć razy dziennie, mają po tygodniu zupełnie
+/// inną historię przy tej samej liczbie.
+#[tauri::command]
+pub async fn forget_runs_older_than(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    days: u32,
+) -> Result<commands::sweep::ForgottenWire, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || commands::sweep::forget_runs_older_than(&project, days))
+        .await
+        .map_err(|error| did_not_finish("forgetting the runs older than that", &error))
 }
 
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
@@ -4160,6 +4247,8 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         drop_eval_variant,
         forget_run_branches,
         forget_run,
+        forget_runs_older_than,
+        forget_what_the_old_runs_left,
         install_skill,
         list_agents,
         list_eval_sets,
@@ -4212,6 +4301,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         stop_using_note,
         test_linear_connection,
         update_trigger,
+        what_this_folder_could_forget,
     ]
 }
 

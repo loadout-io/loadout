@@ -73,6 +73,10 @@ import { attachPort, feedFor, runFeed } from './feed/live';
 import type { FeedView, NowZone, Question } from './feed/model';
 import { Entry } from './entry/entry';
 import { PastRuns } from './past/panel';
+/* ILE DNI ZNACZY „STARY" — ta sama liczba, którą pokazuje kontrolka w historii. Ten ekran pyta
+ * wyłącznie o zdanie o leżakach, ale komenda jest jedna i bierze obie odpowiedzi naraz; druga
+ * liczba tutaj znaczyłaby, że ekran pracy i historia sądzą inne biegi (niezmiennik 13). */
+import { FORGET_AFTER_DAYS } from './past/store';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
 import { openOneRun, planOfPastRun, theOneThatIsGoing } from './history-command';
@@ -84,6 +88,7 @@ import {
   sayToAgent,
   sayToOrchestrator,
   stop,
+  whatThisFolderCouldForget,
 } from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
@@ -1104,6 +1109,45 @@ export default function Run(): ReactElement {
         /* Świadomie bez zdania na ekranie: nieczytelna historia mówi o sobie sama, kiedy
          * człowiek o nią poprosi (`/history`), a dwa zdania o jednym fakcie to dwa miejsca
          * prawdy. Okno bez tej odpowiedzi zachowuje się jak dotąd. */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [folder]);
+
+  /**
+   * CO ZOSTAWIŁY BIEGI, KTÓRYCH LOADOUT NIE ZAMKNĄŁ — jedno zdanie, przy dotknięciu folderu.
+   *
+   * # 2026-09 (Z-46) — po co to zdanie istnieje
+   *
+   * Sprzątanie przy otwarciu folderu domyka wyłącznie te katalogi robocze, o których bieg
+   * zostawił notatkę; bieg sprzed tej notatki nie ma jej wcale, więc jego katalog stoi dalej —
+   * i nic o nim nie mówiło. Zmierzone u właściciela 2026-09-03 na jednym monorepo: dziennik
+   * zameldował 75 zamkniętych folderów, a dwanaście dalej stało, po 264 MB każdy. Jedyną drogą
+   * do tej wiedzy był terminal.
+   *
+   * # Dlaczego to zdanie wkłada OKNO, a nie Rust
+   *
+   * Bo strumień jest kanałem BIEGU: Rust dostaje uchwyt do niego, dopiero kiedy bieg rusza
+   * (`RunControl::lines_go_to`), a tu nie ma żadnego biegu. Tą samą drogą wchodzą tu odmowy
+   * startu i zdanie o biegu, który szedł, zanim to okno się otworzyło.
+   *
+   * # Cisza, kiedy nie ma o czym mówić — i cisza, kiedy nie ma odpowiedzi
+   *
+   * Rust oddaje pusty napis, kiedy nie zostało nic, a zdanie „0 folders and 0 branches" byłoby
+   * wierszem, który nic nie mówi, przy każdym wejściu w każdy folder (niezmiennik 16). Odmowa
+   * jest cicha z tego samego powodu, co przy historii wyżej: to jest liczenie, o które nikt nie
+   * prosił, a czerwony pasek nad pustym ekranem uczy ignorować czerwone paski.
+   */
+  useEffect(() => {
+    let alive = true;
+    whatThisFolderCouldForget(folder, FORGET_AFTER_DAYS)
+      .then((could) => {
+        if (!alive || typeof could?.said !== 'string' || could.said === '') return;
+        showInStream(saidOf(could.said));
+      })
+      .catch(() => {
+        /* Patrz akapit wyżej. */
       });
     return () => {
       alive = false;
