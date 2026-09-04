@@ -19,9 +19,15 @@
 //! [`ingest::review`]**, i dotyczy to obu wyjść tego pliku: sekcji z learnings i ciała podagenta.
 //! Nie robimy tego tutaj, bo obie te funkcje zwracają **wycinek tego, co przyszło**, a `review`
 //! zwraca tekst zmieniony razem ze znaleziskami; znaleziska są faktem o imporcie, który ma
-//! dojechać do człowieka, a nie zostać po drodze porzucony (niezmiennik 5). Miejsce, w którym
-//! prompt się składa, nie należy do tego zadania — patrz `tasks/T-54.md`, „Świadomie poza
-//! zakresem".
+//! dojechać do człowieka, a nie zostać po drodze porzucony (niezmiennik 5). Woła to
+//! [`super::wire`] — jedno miejsce, w którym prompt się składa, i jedyne, które ma co zrobić
+//! ze znaleziskiem.
+//!
+//! 2026-09 (Z-21) — DLATEGO OBA WYJŚCIA NIOSĄ NUMER WIERSZA. `review` liczy linie od początku
+//! tego, co dostało, więc bez tej liczby odmowa mówi o wierszu wycinka, a człowiek otwiera plik
+//! i widzi tam co innego. Cięcie i liczenie stoją w jednym przebiegu i w jednym miejscu
+//! (niezmiennik 23): przeliczanie tego u wołającego byłoby drugą wiedzą o tym, ile pustych
+//! wierszy zdjęto z przodu.
 
 use std::fs;
 use std::io::{self, BufRead as _, BufReader, Read as _};
@@ -41,6 +47,44 @@ const PATTERNS_HEADING: &str = "## Recurring patterns";
 
 /// Początek każdego wiersza, który kończy sekcję: nagłówek tego samego poziomu.
 const HEADING_MARK: &str = "## ";
+
+/// Wycinek cudzego pliku razem z miejscem, w którym ten wycinek się w nim zaczyna.
+///
+/// # 2026-09 (Z-21) — po co jest tu druga liczba
+///
+/// Wycinek jedzie do [`ingest::review`], a `review` liczy wiersze od początku tego, co dostało.
+/// Bez [`Excerpt::first_line`] odmowa i znalezisko mówiłyby o wierszu **bloku**, a człowiek ma
+/// w ręku **plik**: przy pliku podagenta te dwie liczby różnią się o cały front-matter, więc
+/// wskazany wiersz zawiera tam coś zupełnie innego. Adres, pod którym nic nie ma, jest gorszy
+/// niż brak adresu — wygląda na sprawdzony.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Excerpt<'a> {
+    /// Sam tekst wycinka, dokładnie taki, jaki oddała funkcja tnąca.
+    pub text: &'a str,
+    /// Wiersz PLIKU, na którym stoi pierwszy wiersz [`Excerpt::text`], liczony od 1.
+    ///
+    /// Pusty wycinek niesie tu `1` i nie ma to znaczenia: nie ma czego przeglądać, więc nie ma
+    /// o czym mówić człowiekowi.
+    pub first_line: usize,
+}
+
+/// Wycinek `text[from..to]` przycięty z obu stron, z numerem wiersza swojego pierwszego znaku.
+///
+/// Przycięcie i liczenie w JEDNYM miejscu (niezmiennik 23): puste wiersze zdjęte z przodu
+/// przesuwają numer, a wołający, który przycina u siebie, nie ma jak się o tym dowiedzieć.
+fn trimmed_excerpt(text: &str, from: usize, to: usize) -> Excerpt<'_> {
+    let block = &text[from..to];
+    let starts_at = from + (block.len() - block.trim_start().len());
+    Excerpt {
+        text: block.trim(),
+        first_line: line_of(text, starts_at),
+    }
+}
+
+/// Numer wiersza, na którym w `text` stoi bajt `at` — liczony od 1, jak w każdym edytorze.
+fn line_of(text: &str, at: usize) -> usize {
+    1 + text[..at].matches('\n').count()
+}
 
 /// Katalog, w którym cudze repozytorium trzyma to, co da się z niego pożyczyć.
 ///
@@ -189,7 +233,10 @@ pub fn skills(project: &Path) -> Result<Vec<HostSkill>> {
 /// Plik **bez** tej sekcji daje pusty wynik i `Ok`. Typ `Result` stoi tu po to, żeby ta
 /// obietnica była zapisana w sygnaturze, a nie tylko w prozie: brak sekcji jest normalnym
 /// stanem cudzego repozytorium (niezmiennik 5).
-pub fn recurring_patterns(text: &str) -> Result<String> {
+///
+/// Wynikiem jest [`Excerpt`], bo ta sekcja jedzie do przeglądu, a przegląd mówi o wierszach —
+/// powód w całości stoi przy tamtym typie.
+pub fn recurring_patterns(text: &str) -> Result<Excerpt<'_>> {
     let mut offset = 0usize;
     let mut section: Option<usize> = None;
     let mut end = text.len();
@@ -222,7 +269,13 @@ pub fn recurring_patterns(text: &str) -> Result<String> {
     // Sekcja obecna i pusta ma być nieodróżnialna od nieobecnej, dlatego końce obcinamy: pole
     // „lekcje", które jest niepuste i nie niesie ani jednej reguły, to dokładnie ta cicha
     // porażka, przed którą stoi ta funkcja.
-    Ok(section.map_or_else(String::new, |from| text[from..end].trim().to_owned()))
+    Ok(section.map_or(
+        Excerpt {
+            text: "",
+            first_line: 1,
+        },
+        |from| trimmed_excerpt(text, from, end),
+    ))
 }
 
 /// Ciało podagenta gospodarza — wszystko za drugim `---`. **Cały** front-matter zostaje po
@@ -245,15 +298,24 @@ pub fn recurring_patterns(text: &str) -> Result<String> {
 /// Plik **bez** front-mattera zwraca całe swoje ciało nietknięte, a `---` w pierwszej linii
 /// pliku, który nigdy się nie domyka, zostaje w wyniku razem z tą kreską — to jest lustro
 /// reguły `skills::ingest::parse_doc`.
+///
+/// CIAŁO WRACA NIEPRZYCIĘTE, w odróżnieniu od [`recurring_patterns`]: „plik bez front-mattera
+/// jest samym ciałem" znaczy co do bajtu, razem z jego pustymi wierszami. Przycięcie należy do
+/// tego, kto składa prompt — a [`Excerpt::first_line`] wskazuje pierwszy wiersz tego, co tu
+/// naprawdę stoi, więc numer z przeglądu zgadza się z plikiem także wtedy, gdy ciało zaczyna
+/// się od pustej linii (2026-09, Z-21).
 #[must_use]
-pub fn agent_body(text: &str) -> &str {
+pub fn agent_body(text: &str) -> Excerpt<'_> {
     let Some(rest) = text
         .strip_prefix("---\n")
         .or_else(|| text.strip_prefix("---\r\n"))
     else {
         // Plik bez nagłówka jest samym ciałem. Nie ma tu nic do zdejmowania i nie jest to stan
         // wyjątkowy: podagent bez front-mattera to normalny plik cudzego repozytorium.
-        return text;
+        return Excerpt {
+            text,
+            first_line: 1,
+        };
     };
 
     let mut consumed = 0usize;
@@ -265,14 +327,21 @@ pub fn agent_body(text: &str) -> &str {
             // który zdejmuje sam wiersz `mcpServers:`, zostawia jego wcięte dzieci
             // (`command: npx`, `args: ["-y", "@playwright/mcp@0.0.75"]`), czyli dokładnie te
             // dwie wartości, które startują proces poza naszą grupą procesów.
-            return &rest[consumed..];
+            let body_at = text.len() - rest.len() + consumed;
+            return Excerpt {
+                text: &text[body_at..],
+                first_line: line_of(text, body_at),
+            };
         }
     }
 
     // Front-matter bez domknięcia NIE JEST front-matterem: `---` w pierwszej linii pliku, który
     // nigdy się nie domyka, to pozioma kreska. Cięcie na niej zjadłoby pierwszy akapit
     // podagenta bez jednego słowa. Lustro reguły `skills::ingest::parse_doc`.
-    text
+    Excerpt {
+        text,
+        first_line: 1,
+    }
 }
 
 /// Co ten folder ma do pożyczenia — trzy półki naraz, same nazwy, zero zapisu.

@@ -140,6 +140,43 @@ pub enum Error {
         /// Korzeń repozytorium, w którym szukaliśmy.
         folder: PathBuf,
     },
+    /// Pożyczony tekst niesie linię, którą przegląd importu odrzuca.
+    ///
+    /// # 2026-09 (Z-21) — dlaczego to jest odmowa, a nie ostrzeżenie
+    ///
+    /// Ten sam plik wciągnięty linkiem jako umiejętność był blokowany od T-19, a pożyczony
+    /// z projektu wchodził wprost do promptu kroku bez jednego pytania — choć to jest ten sam
+    /// nieaudytowany tekst z cudzego repozytorium, tylko wzięty inną drogą. Komentarz HTML jest
+    /// przy tym gorszym nośnikiem niż link: człowiek, który OTWORZYŁ plik i go przeczytał, tej
+    /// linii nie widzi, więc jego zgoda dotyczy czegoś innego niż to, co dostanie model.
+    ///
+    /// Zdanie wymienia **plik, wiersz i cytat**, i wszystkie trzy są potrzebne: bez pliku
+    /// człowiek szuka po cudzym repozytorium, bez wiersza szuka po pliku, a bez cytatu nie ma
+    /// jak ocenić, czy to atak, czy zdanie o ataku. Wiersz jest liczony **w pliku**
+    /// ([`scan::Excerpt::first_line`]) — numer z przeglądanego wycinka wskazywałby w pliku
+    /// zupełnie inne miejsce, czyli adres, który wygląda na sprawdzony i nie jest.
+    ///
+    /// Dopisany na KOŃCU enuma (niezmiennik 25).
+    #[error(
+        "Loadout was told to bring in the {what} from \"{reference}\" in {}, and line {line} of \
+         that file reads: {quoted}. Loadout turns that line down in anything it brings in from \
+         a link, and text borrowed out of a project is no safer for having been on somebody's \
+         disk — it reaches the agent the same way. Nothing was copied and nothing was started.",
+        .folder.display()
+    )]
+    Blocked {
+        /// Czego dotyczy pożyczka, po ludzku: `learnings file`, `subagent`.
+        what: &'static str,
+        /// Ścieżka pliku u gospodarza, **względna** — `.claude/agents/x.md`. Ścieżka bezwzględna
+        /// niosłaby drugi raz folder, który stoi w tym samym zdaniu.
+        reference: String,
+        /// Wiersz w TYM pliku, liczony od 1.
+        line: usize,
+        /// Linia zacytowana dosłownie: człowiek ma przeczytać, co tam stoi, a nie jego opis.
+        quoted: String,
+        /// Korzeń repozytorium, z którego pożyczaliśmy.
+        folder: PathBuf,
+    },
 }
 
 /// Skrót modułu, tak samo jak w `skills`.

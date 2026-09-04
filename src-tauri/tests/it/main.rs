@@ -82,6 +82,7 @@ mod an_outcome_field_settles_the_rounds;
 mod ask_one_agent;
 mod ask_respects_the_pool;
 mod at_suggests_paths_inside_the_project;
+mod borrowed_text_goes_through_the_same_review;
 mod borrowing_what_is_not_there_refuses;
 mod bridge_speaks_mcp;
 mod bridge_verbs;

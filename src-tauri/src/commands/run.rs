@@ -223,7 +223,7 @@ use crate::engine::supervisor::{
 };
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
 use crate::inherit::rewrite;
-use crate::inherit::wire::{self, Chosen, Inherited, InheritedSourceKind};
+use crate::inherit::wire::{self, BorrowedConcern, Chosen, Inherited, InheritedSourceKind};
 use crate::ipc::LineSink;
 use crate::library::agents::{
     Agent, Overrides, Thinking, Tools, effort_level, read_agent_directory, resolve,
@@ -1946,6 +1946,9 @@ fn everything_before_the_first_process(
     say_the_folder_is_inside_a_repo(&lines, &project, &plan);
     // Pożyczki i umiejętności piszą pod nowym katalogiem biegu; planowanie pozostaje czyste.
     bring_in_what_each_step_borrowed(&mut plan, &project)?;
+    // ZARAZ PO PRZEPISANIU, bo dopiero teraz jest o czym mówić: przegląd cudzego tekstu biegnie
+    // w tamtej funkcji, a jego ciężkie znalezisko zabrało bieg jeszcze przy planowaniu.
+    say_what_the_borrowed_text_carries(&lines, &plan);
     provisional.check(PrestartFaultPoint::AfterBorrow)?;
     hand_the_skills_to_the_steps(&mut plan)?;
     provisional.check(PrestartFaultPoint::AfterSkills)?;
@@ -6963,6 +6966,56 @@ fn say_the_folder_is_inside_a_repo(lines: &LineSink, project: &Path, plan: &Plan
     });
 }
 
+/// Początek zdania o pożyczonym tekście, w którym przegląd coś zauważył.
+///
+/// PRYWATNY, w odróżnieniu od [`INSIDE_A_REPOSITORY_BUT_NOT_ITS_ROOT`] wyżej, i to jest wybór:
+/// tamten napis jest treścią kryterium co do słowa, a o tym wierszu kryterium pyta ZACHOWANIEM —
+/// czy strumień nazywa pożyczony plik i wiersz w nim (niezmiennik 20). Napis wystawiony na
+/// zewnątrz „na wszelki wypadek" jest szwem, którego nikt nie woła.
+const BORROWED_TEXT_WAS_KEPT_WITH_A_NOTE: &str = "Loadout kept the text this step borrowed from the project, and wrote down what it noticed \
+     in it:";
+
+/// Mówi **raz na kafelek**, że pożyczony przez niego tekst przeszedł przegląd nie całkiem czysto.
+///
+/// # 2026-09 (Z-21) — po co to jest
+///
+/// Bez tej linii znalezisko istnieje wyłącznie w `run.json`, czyli w pliku, którego nikt nie
+/// otwiera w trakcie biegu — a fakt o cudzym tekście, który właśnie wszedł do promptu, jest
+/// faktem na teraz, nie na potem (niezmiennik 29). Ciężkie znalezisko zabiera cały bieg
+/// (`inherit::Error::Blocked`) i tutaj nie dochodzi; to jest zdanie o tym, co PRZEPUSZCZONO.
+///
+/// **Jedna linia na kafelek, nie na znalezisko**: to jest fakt o tym, co ten krok dostał, a nie
+/// o każdej linii z osobna. Powtórzony trzy razy pod jednym kafelkiem uczy przewijać obok
+/// (`NAMED_AT_MOST` i `say_the_folder_is_inside_a_repo` istnieją z tego samego powodu).
+///
+/// **Cytatu tu nie ma i to jest wybór.** Cytowana linia jest tekstem, który ktoś napisał po to,
+/// żeby model ją wykonał; jej miejsce jest w `run.json`, obok reguły, która ją złapała, a nie
+/// na ekranie, gdzie stoi między zdaniami Loadouta. Wiersz i plik wystarczą, żeby ją otworzyć.
+fn say_what_the_borrowed_text_carries(lines: &LineSink, plan: &Plan) {
+    for step in &plan.steps {
+        let Job::Agent(job) = &step.job else {
+            continue;
+        };
+        let noticed = job.borrowed.concerns();
+        if noticed.is_empty() {
+            continue;
+        }
+        let places = noticed
+            .iter()
+            .map(|one| format!("{} line {}", one.reference, one.line))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem (`ipc::Sent`),
+        // a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+        let _ = lines.send(Line::Note {
+            agent: step.name.clone(),
+            text: format!("{BORROWED_TEXT_WAS_KEPT_WITH_A_NOTE} {places}"),
+            // Wiersz niesie całe zdanie, więc proza za nim byłaby tym samym zdaniem drugi raz.
+            body: Vec::new(),
+        });
+    }
+}
+
 /// Wnosi do tego biegu przekazania biegu, który go poprzedził.
 ///
 /// 2026-08-23 — DLA PONOWNEGO ODPALENIA KROKU. Krok powtórzony sam jeden nie ma po czym iść,
@@ -7862,6 +7915,13 @@ struct StepRun {
     /// Pusty rekord wpisany na siłę mówiłby to samo jednym kluczem więcej w każdym kroku każdego
     /// biegu w historii — ta sama decyzja, co przy [`StepRun::repaired`].
     loaded_by_the_app: Option<LoadedByTheApp>,
+    /// Co przegląd zauważył w tekście, który ten krok pożyczył z projektu — i przepuścił.
+    ///
+    /// 2026-09 (Z-21) — ZNANE PRZED PIERWSZYM ZDARZENIEM, nie po nim: pożyczki przepisuje
+    /// `bring_in_what_each_step_borrowed`, zanim powstanie ta księga, więc jako jedyne pole
+    /// [`StepRun`] wchodzi wypełnione (`Live::new`). Ciężkie znalezisko nie ma jak tu dojechać —
+    /// zabrało cały bieg przy planowaniu.
+    borrowed_concerns: Vec<BorrowedConcern>,
 }
 
 /// Co aplikacja agenta dobrała sobie z folderu kroku — zapisywane do `run.json`.
@@ -8057,7 +8117,7 @@ impl Live {
         let steps = plan
             .steps
             .iter()
-            .map(|_| StepRun {
+            .map(|planned| StepRun {
                 status: StepState::Pending,
                 execution: ExecutionFacts::default(),
                 round_outcome: None,
@@ -8079,6 +8139,14 @@ impl Live {
                 repaired: Vec::new(),
                 truncated: false,
                 loaded_by_the_app: None,
+                // Fakt o pożyczonym tekście jest znany PRZED biegiem, a nie w jego trakcie:
+                // przepisała go `bring_in_what_each_step_borrowed`, więc księga zaczyna z nim
+                // w ręku. Krok, który nie pożyczał niczego, ma tu pustą listę i żadnego klucza
+                // w `run.json`.
+                borrowed_concerns: match &planned.job {
+                    Job::Agent(job) => job.borrowed.concerns().to_vec(),
+                    Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
+                },
             })
             .collect();
         let stopped_by_the_budget = Mutex::new(vec![None; plan.steps.len()]);
@@ -8967,6 +9035,7 @@ impl Live {
                 repaired: &run.repaired,
                 truncated: run.truncated,
                 loaded_by_the_app: run.loaded_by_the_app.as_ref(),
+                borrowed_concerns: &run.borrowed_concerns,
             })
             .collect();
 
@@ -12684,6 +12753,25 @@ struct StepEntry<'a> {
     /// niż zwykle, bo czyta się jak odpowiedź. Ta sama decyzja, co przy `repaired` obok.
     #[serde(skip_serializing_if = "Option::is_none")]
     loaded_by_the_app: Option<&'a LoadedByTheApp>,
+    /// Co przegląd zauważył w tekście, który ten krok pożyczył z projektu — reguła, plik,
+    /// wiersz i cytat, po jednym wpisie na linię.
+    ///
+    /// # 2026-09 (Z-21) — po co to jest w pliku, skoro bieg poszedł dalej
+    ///
+    /// Bo to jest jedyne miejsce, w którym ten fakt przeżywa bieg. Linia w strumieniu mówi
+    /// o tym człowiekowi, kiedy patrzy; `run.json` odpowiada na to samo pytanie tydzień
+    /// później, kiedy odpowiedź kroku okazała się dziwna i trzeba wiedzieć, co dokładnie
+    /// dostał w prompcie z cudzego repozytorium. Ten plik przeżywa skasowanie `loadout.db`
+    /// (niezmiennik 4).
+    ///
+    /// CIĘŻKIE ZNALEZISKO NIE MA JAK TU TRAFIĆ: zabrało cały bieg przed katalogiem biegu, więc
+    /// ta lista mówi wyłącznie o tym, co przepuszczono.
+    ///
+    /// BRAK KLUCZA, KIEDY NIE BYŁO NICZEGO — ta sama decyzja, co przy `repaired` i `pgids`
+    /// obok: klucz mówiący „nic nie zauważono" przy każdym kroku każdego biegu w historii jest
+    /// długością zapłaconą za milczenie, a większość kroków nie pożycza niczego.
+    #[serde(skip_serializing_if = "<[BorrowedConcern]>::is_empty")]
+    borrowed_concerns: &'a [BorrowedConcern],
 }
 
 #[derive(Debug, Serialize)]
