@@ -622,6 +622,18 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER],
     call: () => run.copyDiagnostics(FOLDER),
   },
+  /* 2026-09 (Z-50) — CO WSKAZANY LIDER MOŻE. Krawędź bez wiersza jest krawędzią, której nikt nie
+   * zobaczył docierającej do Rusta — a z tej odpowiedzi powstaje zdanie stojące pod polem
+   * rozmowy. Zgubione wskazanie oddawałoby moce KOGOŚ INNEGO niż ten wybrany w pasku, więc
+   * `given` niesie identyfikator: wiersz wołany bez niego przechodziłby także dla krawędzi,
+   * która pyta o pierwszego z brzegu. */
+  {
+    where: 'run',
+    what: 'whatTheLeadCanDo',
+    command: 'what_the_lead_can_do',
+    given: [AGENT_ID],
+    call: () => run.whatTheLeadCanDo(AGENT_ID),
+  },
   /* 2026-08-20 (T-71) — JEDNA NOWA KRAWĘDŹ BIEGU: koniec rozmowy zamykanej karty. Dopisana,
    * nic nie usunięte i żaden istniejący wiersz nie przepisany — bez niej pierwszy test wyżej
    * jest czerwony, bo `run/io.ts` eksportuje `closeTerminal`, a krawędź bez wiersza jest

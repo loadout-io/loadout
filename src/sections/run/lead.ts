@@ -29,6 +29,8 @@
  * z plikiem przy pierwszym zapisie z Settings i nikt by tego nie zobaczył.
  */
 import { defaultLead, subscribeToDefaultLead } from '../../state/settings';
+import { whatTheLeadCanDo as askRustWhatItCanDo } from './io';
+import type { WhatTheLeadCanDo } from './io';
 
 /**
  * Etykieta dostępnościowa kontrolki lidera w pasku loadoutu.
@@ -90,4 +92,74 @@ export function subscribeToLead(listener: () => void): () => void {
     listeners.delete(listener);
     stopWatchingTheDefault();
   };
+}
+
+/* ── CO TEN LIDER MOŻE ─────────────────────────────────────────────────────────────────────
+ *
+ * 2026-09 (Z-50) — ODPOWIEDŹ RUSTA, NIE DRUGA DEFINICJA. Okno nie liczy tu niczego z dialu ani
+ * z listy narzędzi: obie te wartości stają się `--tools` po tamtej stronie granicy, więc kopia
+ * reguły trzymana tutaj rozjechałaby się w dniu, w którym zmieni się sufit polityki — a rozjazd
+ * wyglądałby jak zdanie, które po prostu jest nieaktualne, i nikt by go nie zauważył
+ * (niezmiennik 13).
+ *
+ * MODUŁ, A NIE `useState` W EKRANIE, z tego samego powodu, co wskazanie wyżej: kształt, którego
+ * chce `useSyncExternalStore`, i stan, który przeżywa odmontowanie sekcji. */
+
+/** Ostatnia odpowiedź Rusta. `null` znaczy „jeszcze nie przeczytano", nie „nic nie może". */
+let powers: WhatTheLeadCanDo | null = null;
+const watchingThePowers = new Set<() => void>();
+
+/**
+ * Co lider może, o ile ktoś już o to zapytał.
+ *
+ * `null` jest stanem, nie brakiem: zanim odpowiedź przyjdzie, wiersz wejścia mówi to samo, co
+ * mówił zawsze. Zdanie zgadnięte na czas odczytu byłoby zdaniem, które zmienia się pod ręką.
+ */
+export function whatTheLeadCanDo(): WhatTheLeadCanDo | null {
+  return powers;
+}
+
+/** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
+export function subscribeToLeadPowers(listener: () => void): () => void {
+  watchingThePowers.add(listener);
+  return () => {
+    watchingThePowers.delete(listener);
+  };
+}
+
+/**
+ * Zapamiętuje odpowiedź granicy.
+ *
+ * Osobno od [`readWhatTheLeadCanDo`], bo to jest jedyne miejsce, w którym ta wartość się zmienia
+ * — a kryterium, które chce osądzić ZDANIE, musi mieć jak postawić odpowiedź bez żywego Tauri.
+ */
+export function rememberWhatTheLeadCanDo(can: WhatTheLeadCanDo | null): void {
+  powers = can;
+  for (const listener of watchingThePowers) listener();
+}
+
+/**
+ * Pyta Rusta o moce lidera wskazanego w tej chwili i zapamiętuje odpowiedź.
+ *
+ * ODMOWA ZOSTAWIA `null`, a nie zdanie na ekranie: „nie wskazałeś lidera" mówi już wiersz
+ * wejścia w chwili Entera i mówi to głośniej, bo dotyczy tekstu, który człowiek właśnie napisał.
+ * Druga kopia tej odmowy pod polem byłaby czerwienią przy każdym wejściu w sekcję — także
+ * u kogoś, kto jeszcze niczego nie wybrał, czyli w chwili, w której nic złego się nie stało.
+ */
+export async function readWhatTheLeadCanDo(): Promise<void> {
+  /* O KOGO PYTAMY, ZAPAMIĘTANE PRZED ODCZYTEM. Dwa szybkie przełączenia w pasku to dwa odczyty,
+   * a odpowiedzi wracają w dowolnej kolejności: bez tego porównania wolniejsza odpowiedź o
+   * POPRZEDNIM liderze nadpisałaby świeższą i zdanie pod polem opisywałoby kogoś, kogo już nie
+   * ma na pasku — czyli dokładnie tę nieprawdę, którą to zadanie zdejmuje. */
+  const asked = lead();
+  try {
+    const can = await askRustWhatItCanDo(asked);
+    if (asked !== lead()) return;
+    /* `null` z granicy znaczy „nie ma odpowiedzi" i nie ma prawa udawać zera mocy: taka jest
+     * atrapa w testach przeglądarkowych (`e2e/harness.ts`), a zdanie o liderze, który nic nie
+     * może, jest tam równie nieprawdziwe jak w produkcie. */
+    rememberWhatTheLeadCanDo((can as WhatTheLeadCanDo | null) ?? null);
+  } catch {
+    if (asked === lead()) rememberWhatTheLeadCanDo(null);
+  }
 }

@@ -884,6 +884,39 @@ export function sayToOrchestrator(
 }
 
 /**
+ * Co wskazany lider naprawdę może — lustro `commands::chat::WhatTheLeadCanDo`.
+ *
+ * TRZY FAKTY, NIE GOTOWE ZDANIE. Zdanie jest po angielsku i mieszka w oknie razem z resztą
+ * tekstu (decyzja D5); to, co lider może, jest faktem o argv i mieszka tam, gdzie to argv
+ * powstaje. Napis złożony po tamtej stronie granicy byłby drugim domem języka interfejsu.
+ */
+export interface WhatTheLeadCanDo {
+  /** Czy pod ręką ma cokolwiek, czym zmienia się plik (`Edit`, `Write`). */
+  readonly changesFiles: boolean;
+  /** Czy może uruchomić komendę (`Bash`, a u Codeksa sama piaskownica). */
+  readonly runsCommands: boolean;
+  /** Czy to, co zmienia, kończy się na folderze, w którym człowiek pracuje. */
+  readonly heldToTheFolder: boolean;
+}
+
+/**
+ * Czego wolno się spodziewać po liderze wskazanym w pasku — zanim padnie pierwsze zdanie.
+ *
+ * # Po co osobna krawędź, a nie pole w odpowiedzi na pierwsze zdanie (2026-09, Z-50)
+ *
+ * Bo zdanie pod polem stoi na ekranie ZANIM ktokolwiek naciśnie Enter, a odpowiedź lidera
+ * kosztuje turę. Ostrzeżenie przychodzące razem z pierwszą płatną odpowiedzią jest ostrzeżeniem
+ * po fakcie: człowiek zdążył już napisać zdanie, nie wiedząc, komu je oddaje.
+ *
+ * @param lead identyfikator zapisanego agenta, na którego człowiek wskazał, albo `null`. `null`
+ *   jest po tamtej stronie odmową nazywającą następny ruch — tą samą, którą dostanie przy
+ *   pierwszym Enterze ([`sayToOrchestrator`]) — a nie cichym „nic nie może".
+ */
+export function whatTheLeadCanDo(lead: string | null = null): Promise<WhatTheLeadCanDo> {
+  return invoke<WhatTheLeadCanDo>('what_the_lead_can_do', { lead });
+}
+
+/**
  * Jeden bieg z historii TEGO folderu, tak jak przyjeżdża z Rusta.
  *
  * Lustro `commands::history::RunWire`. Ręcznie, jak `src/ipc/types.ts` — powód i cena stoją

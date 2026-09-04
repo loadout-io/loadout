@@ -40,7 +40,7 @@ use super::{Drivers, settings};
 use crate::bridge::Role as BridgeRole;
 use crate::bridge::host::Bridge;
 use crate::bridge::library::{Desk as BridgeLibrary, Waiting as AskWaiting};
-use crate::engine::drivers::claude::{no_such_tools, tool_surface};
+use crate::engine::drivers::claude::{no_such_tools, tool_surface, tools_for};
 use crate::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
     RunSpec, StepSettings, ToAgent, ValidatedImages, Voice,
@@ -191,6 +191,22 @@ const MAY_WRITE_DRAFTS_HERE: &str = "You may read files and write draft files wh
 /// To samo zdanie przy [`Policy::Unrestricted`].
 const MAY_WRITE_DRAFTS_ANYWHERE: &str = "You may read files and write draft files when asked, and \
      you are not held to the folder this person is working in.";
+
+/// Zdanie doklejane liderowi, którego lista narzędzi niesie powłokę (2026-09, Z-50).
+///
+/// # Dlaczego to nie stoi w [`BRIEF`]
+///
+/// Bo nie jest prawdą o każdym liderze. `Bash` wchodzi do `--tools` dopiero od drugiego szczebla
+/// dialu, a człowiek może go zdjąć listą w formularzu agenta na każdym z nich — i robi to, kiedy
+/// chce lidera do samego czytania. Obietnica powłoki wpisana w stałą trafiłaby wtedy dokładnie
+/// w tego lidera, któremu ją odebrano.
+///
+/// **To samo zdanie mówi ekran** (`src/sections/run/entry/entry.tsx`, `whereItGoes`), bo oba
+/// czytają jedną odpowiedź — [`WhatTheLeadCanDo`]. Napis jest tam po angielsku i tam jest jego
+/// dom (decyzja D5); tutaj stoi wersja dla modelu, w tym samym języku i o tym samym fakcie.
+const MAY_RUN_COMMANDS: &str = "You can also run commands. What you run happens on this person's \
+     machine, in the folder they are working in, so say what you are about to run before you run \
+     it, and read the answer before you say what it means.";
 
 /// Co poszło nie tak w rozmowie.
 ///
@@ -538,6 +554,37 @@ impl Chat {
 // bramki. Podkreślenia przy nazwach parametrów są częścią tej samej tymczasowości: ciało, które
 // ich nie czyta, dawałoby `unused_variables` — implementacja zdejmuje je razem z `todo!()`.
 
+/// Co ten lider naprawdę może — trzy fakty złożone z tego samego argv, które dostaje jego proces.
+///
+/// # Po co to istnieje (2026-09, Z-50)
+///
+/// Bo do tego dnia okno mówiło pod polem rozmowy „it can talk things through and prepare, but
+/// only /run starts work", a lider z dialem „work freely" jechał z ośmioma narzędziami — `Bash`,
+/// `Edit` i `Write` włącznie. Zmierzone w rozmowie z 2026-09-01: ten sam lider zrobił sobie kopię
+/// repozytorium, zmienił kod, uruchomił testy i zatrzymał dwa kroki. Zdanie na ekranie obiecywało
+/// coś, czego program nie trzyma (niezmiennik 4), i nie było w nim ani jednego słowa, po którym
+/// dałoby się to poznać.
+///
+/// # Dlaczego okno dostaje TRZY POLA, a nie gotowe zdanie
+///
+/// Bo zdanie jest po angielsku i mieszka w oknie razem z resztą tekstu (decyzja D5,
+/// `docs/design/DESIGN.md` §8), a to, co lider może, jest faktem o argv i mieszka tam, gdzie to
+/// argv powstaje. Napis złożony po tej stronie granicy byłby drugim domem języka interfejsu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatTheLeadCanDo {
+    /// Czy pod ręką ma cokolwiek, czym zmienia się plik.
+    pub changes_files: bool,
+    /// Czy może uruchomić komendę.
+    pub runs_commands: bool,
+    /// Czy to, co zmienia, kończy się na folderze, w którym człowiek pracuje.
+    ///
+    /// Fakt o dialu, nie o liście: `--tools` mówi CZYM lider zmienia pliki, a `--permission-mode`
+    /// (u Codeksa `--sandbox`) — GDZIE. Zdanie na ekranie potrzebuje obu, bo „zmienia pliki"
+    /// bez granicy czyta się przy `work freely` jako obietnica węższa niż prawda.
+    pub held_to_the_folder: bool,
+}
+
 /// Kim jest lider tej rozmowy — jego zapisana definicja i nic obok niej.
 ///
 /// # Dlaczego to jest typ, a nie sam [`Agent`]
@@ -632,6 +679,17 @@ impl Lead {
         effort_level(self.agent.thinking)
     }
 
+    /// Co ten lider naprawdę może — z tej samej listy, która staje się jego `--tools`.
+    ///
+    /// `narrows_its_tools` jest faktem o STEROWNIKU i dlatego przychodzi argumentem: Codex nie ma
+    /// odpowiednika `--tools`, więc jego moce wynikają wyłącznie z piaskownicy, a ta wynika
+    /// z dialu. Wersja czytająca vendora z definicji byłaby drugim zestawem reguł po stronie
+    /// rdzenia (niezmiennik 23).
+    #[must_use]
+    pub fn what_it_can_do(&self, narrows_its_tools: bool) -> WhatTheLeadCanDo {
+        what_it_gets(self, narrows_its_tools).can
+    }
+
     /// Prompt systemowy tego lidera: brief dopasowany do jego polityki **plus** jego instrukcje.
     ///
     /// Razem, nie zamiast: [`BRIEF`] mówi, czego lider nie umie zrobić (zaczynać biegów) i czym
@@ -642,14 +700,36 @@ impl Lead {
     /// bo dokładnie ono jedno zależy od dialu. Trzy osobne kopie całego promptu byłyby trzema
     /// miejscami, w których mieszka zdanie „biegów nie zaczynasz", i pierwszym, które by się
     /// rozjechało (niezmiennik 13).
+    ///
+    /// # 2026-09 (Z-50) — MOCE PRZYCHODZĄ ARGUMENTEM, I TO JEST CAŁA TREŚĆ TEJ ZMIANY
+    ///
+    /// Do tego dnia to zdanie składał sam dial, więc lider zawężony w formularzu do `Read`,
+    /// `Grep` i `Glob` dostawał prompt obiecujący zapis szkicu — a `--tools` żadnego zapisu nie
+    /// niosło. Model, który obieca plik i go nie zapisze, zostawia człowieka czekającego na coś,
+    /// co nie powstanie; ten sam rozjazd w drugą stronę pokazywał ekran (L-5).
+    ///
+    /// Ta sama wartość idzie stąd na ekran ([`WhatTheLeadCanDo`]), więc prompt i zdanie pod polem
+    /// nie mają jak powiedzieć czegoś innego — nie dlatego, że ktoś pilnuje dwóch napisów, tylko
+    /// dlatego, że oba czytają jedną odpowiedź (niezmiennik 13).
     #[must_use]
-    pub fn brief(&self) -> String {
-        let about_files = match self.policy() {
-            Policy::ReadOnly => LOOK_ONLY,
-            Policy::EditInFolder => MAY_WRITE_DRAFTS_HERE,
-            Policy::Unrestricted => MAY_WRITE_DRAFTS_ANYWHERE,
+    pub fn brief(&self, can: WhatTheLeadCanDo) -> String {
+        let about_files = if !can.changes_files {
+            LOOK_ONLY
+        } else if can.held_to_the_folder {
+            MAY_WRITE_DRAFTS_HERE
+        } else {
+            MAY_WRITE_DRAFTS_ANYWHERE
         };
         let brief = BRIEF.replace(MAY_WRITE_DRAFTS, about_files);
+        /* ZDANIE O KOMENDACH PADA WTEDY I TYLKO WTEDY, GDY `--tools` NIESIE `Bash`. Doklejane,
+         * a nie wpisane w [`BRIEF`]: sam brief mówi to, co jest prawdą o KAŻDYM liderze, a to
+         * zdanie jest prawdą o tym jednym loadoucie. Wersja stojąca w stałej obiecywałaby powłokę
+         * liderowi do researchu — czyli dokładnie temu, dla którego człowiek ją odebrał. */
+        let brief = if can.runs_commands {
+            format!("{brief}\n\n{MAY_RUN_COMMANDS}")
+        } else {
+            brief
+        };
         // Puste `instructions` znaczą „nie mam zdania", a nie „dopisz pustkę": dwie puste linie
         // na końcu promptu systemowego to ten sam artefakt, którym `some_text` w biegu odmawia
         // być (`commands::run`).
@@ -659,6 +739,30 @@ impl Lead {
         }
         format!("{brief}\n\n{says}")
     }
+}
+
+/// Co może lider, na którego człowiek wskazał — odpowiedź dla okna.
+///
+/// # Dlaczego to jest osobna droga, a nie pole w odpowiedzi na pierwsze zdanie (2026-09, Z-50)
+///
+/// Bo zdanie pod polem stoi na ekranie ZANIM ktokolwiek naciśnie Enter, a odpowiedź lidera
+/// kosztuje turę. Ostrzeżenie, które przychodzi razem z pierwszą płatną odpowiedzią, jest
+/// ostrzeżeniem po fakcie: człowiek zdążył już napisać zdanie, nie wiedząc, komu je oddaje.
+///
+/// Wskazanie sądzimy tą samą drogą, co rozmowa ([`Lead::pointed_at`]), więc lider, którego nie
+/// ma w bibliotece, odmawia tu tym samym zdaniem, którym odmówi przy pierwszym Enterze — a nie
+/// milczy i nie zgaduje.
+pub fn what_the_lead_can_do_inner(
+    library: &Path,
+    drivers: &Drivers,
+    who: Option<&str>,
+) -> Result<WhatTheLeadCanDo, ChatError> {
+    let lead = Lead::pointed_at(library, who)?;
+    // STEROWNIKA PYTAMY TAK SAMO, JAK PYTA GO ROZMOWA (`Threads::say_in_with_images`): „czy ten
+    // vendor umie zawężać listę" jest faktem o sterowniku, a nie o nazwie vendora, więc bierzemy
+    // go z fabryki, a nie z pola `runs_with` przeczytanego drugi raz po swojemu.
+    let narrows = drivers(lead.agent.runs_with).narrows_its_tools();
+    Ok(lead.what_it_can_do(narrows))
 }
 
 /// Wątki lidera: po jednym na TERMINAL, wszystkie w jednym miejscu.
@@ -3299,25 +3403,31 @@ fn spec_hard_wired(cwd: PathBuf, first: &str) -> RunSpec {
     }
 }
 
-/// Specyfikacja sesji **wskazanego** lidera: cztery pola, wszystkie z jego zapisanej definicji.
+/// Co ten lider dostaje: listę narzędzi, moce, które z niej wynikają, i zdanie o tym, czego nie
+/// dostał.
 ///
-/// To jest całe miejsce, w którym definicja agenta spotyka sesję, i dlatego jest jedno
-/// (niezmiennik 13): `model` jedzie do [`RunSpec::model`] (do dziś było tam zawsze `None`, czyli
-/// „co vendor ma domyślnie"), dial przechodzi przez [`Lead::policy`], a `instructions` doklejają
-/// się do briefu w [`Lead::brief`]. Vendora nie ma w tej strukturze — on wybrał sterownik jedną
-/// linią wyżej, u wołającego.
+/// Jedna wartość, trzy odpowiedzi, bo pytanie jest jedno — ten sam kształt i ten sam powód, co
+/// przy [`crate::engine::drivers::claude::ToolSurface`]. Rozbicie na dwie funkcje dałoby dwa
+/// przebiegi tej samej reguły po tej samej definicji i dwa miejsca, w których mogą się rozjechać:
+/// argv mówiłoby jedno, a zdanie pod polem rozmowy drugie, i nikt by tego nie zobaczył.
+struct WhatItGets {
+    /// Co pojedzie do [`RunSpec::tools`]. `None` znaczy „nie zawężaj", czyli sufit polityki.
+    tools: Option<Vec<String>>,
+    /// Co z tego wynika dla człowieka i dla promptu systemowego.
+    can: WhatTheLeadCanDo,
+    /// Zdanie na ekran o tym, czego dial nie dał, albo `None`.
+    said: Option<String>,
+}
+
+/// Lista narzędzi tego lidera i moce, które z niej wynikają — **jedno miejsce** (niezmiennik 23).
 ///
-/// `reaches` przychodzi **argumentem**, a nie jest tu składane z katalogu domowego, i to jest ta
-/// sama granica, którą pilnuje [`Threads::library`]: ta funkcja nie wie, gdzie leży biblioteka,
-/// i nie ma prawa wiedzieć. Wersja czytająca `HOME` w środku znaczyłaby, że każdy test rozmawia
-/// z prawdziwą biblioteką człowieka.
-fn spec_for(
-    lead: &Lead,
-    cwd: PathBuf,
-    first: &str,
-    reaches: Vec<PathBuf>,
-    narrows_its_tools: bool,
-) -> Told {
+/// # 2026-09 (Z-50) — DLACZEGO TO JEST WOLNA FUNKCJA, A NIE DWA KAWAŁKI [`spec_for`]
+///
+/// Bo o tę samą listę pyta teraz druga droga: komenda okna
+/// ([`what_the_lead_can_do_inner`]) odpowiada, zanim padnie pierwsze zdanie i zanim powstanie
+/// jakikolwiek `RunSpec`. Wersja licząca listę drugi raz po swojej stronie byłaby dokładnie tym
+/// rozjazdem, który to zadanie zdejmuje: ekran mówiłby o loadoucie, którego proces nie dostał.
+fn what_it_gets(lead: &Lead, narrows_its_tools: bool) -> WhatItGets {
     /* LISTA NARZĘDZI PRZECHODZI TĄ SAMĄ TABELĄ, CO KROK BIEGU (niezmiennik 23). Kolejność pytań
      * jest przepisana z `commands::run::what_this_step_may_use` co do jednego, bo to jest jedna
      * reguła zadana dwa razy — a nie dwie reguły o tym samym.
@@ -3364,8 +3474,81 @@ fn spec_for(
         None
     };
 
-    Told {
+    WhatItGets {
+        can: powers_of(lead.policy(), tools.as_deref(), narrows_its_tools),
+        tools,
         said: say_out_loud,
+    }
+}
+
+/// Moce lidera odczytane z tej samej pary wartości, z której powstaje jego argv.
+///
+/// `tools` to lista, która pojedzie do `--tools`, a `None` znaczy „nie zawężaj", czyli sufit
+/// polityki ([`tools_for`]) — dokładnie to samo, co czyta `ClaudeDriver::command`. Czytamy więc
+/// to, co vendor DOSTANIE, a nie to, co człowiek wpisał w formularzu.
+fn powers_of(
+    policy: Policy,
+    tools: Option<&[String]>,
+    narrows_its_tools: bool,
+) -> WhatTheLeadCanDo {
+    // GRANICA JEST FAKTEM O DIALU, NIE O LIŚCIE, i dlatego stoi poza rozgałęzieniem po vendorze:
+    // `--tools` mówi CZYM lider zmienia pliki, a `--permission-mode` (u Codeksa `--sandbox`) —
+    // GDZIE. `Unrestricted` jest jedynym szczeblem, który sięga poza folder pracy.
+    let held_to_the_folder = policy != Policy::Unrestricted;
+
+    /* VENDOR, KTÓRY NIE ZAWĘŻA, MA W PIASKOWNICY CAŁĄ ODPOWIEDŹ. Codex nie ma flagi `--tools`
+     * (`codex::narrows_its_tools`), więc pytanie „czy dostał Bash" nie ma dla niego sensu:
+     * powłoka jest jego zwykłą drogą pracy, a piaskownica ogranicza ZAPIS, nie wykonanie.
+     * Sądzenie go listą Claude'a oddawałoby „nie uruchamia niczego" o programie, który uruchamia
+     * wszystko. */
+    if !narrows_its_tools {
+        return WhatTheLeadCanDo {
+            changes_files: policy != Policy::ReadOnly,
+            runs_commands: true,
+            held_to_the_folder,
+        };
+    }
+
+    let carries = |name: &str| {
+        tools.map_or_else(
+            || tools_for(policy).contains(&name),
+            |list| list.iter().any(|one| one == name),
+        )
+    };
+    WhatTheLeadCanDo {
+        changes_files: carries("Edit") || carries("Write"),
+        /* GOŁE `Bash` W `--tools` JEST JEDYNĄ PRAWDZIWĄ BRAMĄ POWŁOKI — zmierzone 2026-08-30
+         * trzema sondami i zapisane w `the_dial_tells_the_truth_about_the_shell`. `Bash(git *)`
+         * z `--allowedTools` nie ogranicza w naszych trybach niczego, więc pytanie o nie
+         * oddawałoby „tylko git" o agencie, który uruchamia każdą komendę na tej maszynie. */
+        runs_commands: carries("Bash"),
+        held_to_the_folder,
+    }
+}
+
+/// Specyfikacja sesji **wskazanego** lidera: cztery pola, wszystkie z jego zapisanej definicji.
+///
+/// To jest całe miejsce, w którym definicja agenta spotyka sesję, i dlatego jest jedno
+/// (niezmiennik 13): `model` jedzie do [`RunSpec::model`] (do dziś było tam zawsze `None`, czyli
+/// „co vendor ma domyślnie"), dial przechodzi przez [`Lead::policy`], a `instructions` doklejają
+/// się do briefu w [`Lead::brief`]. Vendora nie ma w tej strukturze — on wybrał sterownik jedną
+/// linią wyżej, u wołającego.
+///
+/// `reaches` przychodzi **argumentem**, a nie jest tu składane z katalogu domowego, i to jest ta
+/// sama granica, którą pilnuje [`Threads::library`]: ta funkcja nie wie, gdzie leży biblioteka,
+/// i nie ma prawa wiedzieć. Wersja czytająca `HOME` w środku znaczyłaby, że każdy test rozmawia
+/// z prawdziwą biblioteką człowieka.
+fn spec_for(
+    lead: &Lead,
+    cwd: PathBuf,
+    first: &str,
+    reaches: Vec<PathBuf>,
+    narrows_its_tools: bool,
+) -> Told {
+    let gets = what_it_gets(lead, narrows_its_tools);
+
+    Told {
+        said: gets.said,
         limit: ReplyLimit::for_lead(lead),
         spec: RunSpec {
             run_id: Uuid::now_v7(),
@@ -3376,7 +3559,10 @@ fn spec_for(
              * nazwie: druga `some_text` w drzewie czytałaby się jak rozjazd do wyśledzenia, a mamy tu
              * jedno miejsce wołania. `None` znaczy dla sterownika „to, co vendor ma domyślnie". */
             model: (!lead.agent.model.trim().is_empty()).then(|| lead.agent.model.clone()),
-            system_append: Some(lead.brief()),
+            /* PROMPT SYSTEMOWY BIERZE TE SAME MOCE, KTÓRE POJADĄ DO `--tools` (2026-09, Z-50).
+             * Tą samą wartością, nie drugim odczytem definicji: model, któremu obiecano powłokę,
+             * a którego argv jej nie niesie, obiecuje ją potem człowiekowi. */
+            system_append: Some(lead.brief(gets.can)),
             policy: lead.policy(),
             /* Z DEFINICJI AGENTA, tą samą drogą co dial. Rozmowa z liderem do researchu, która nie
              * widzi świata, jest tą samą połową kontrolki, co krok biegu bez sieci. */
@@ -3397,7 +3583,7 @@ fn spec_for(
              * dialem nie odbiera rozmowy, tylko mówi to na ekranie ([`Told::said`]) —
              * bo przycięcie po cichu jest tą samą wadą, którą bieg nazwał już raz: agent, któremu po
              * cichu zabrano narzędzie, wygląda dokładnie jak agent, który „nie umiał". */
-            tools,
+            tools: gets.tools,
             /* 2026-08-20 (T-70) — BIBLIOTEKA W ZASIĘGU ROZMOWY I **TYLKO** ROZMOWY.
              *
              * Do tego dnia stało tu `Vec::new()`, więc lider widział wyłącznie folder zakresu, a twoje

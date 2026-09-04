@@ -61,6 +61,20 @@ fn lead_with(access: FileAccess) -> Lead {
     }
 }
 
+/// Prompt systemowy tego lidera — przez ten sam szew, którym składa go rozmowa.
+///
+/// 2026-09 (Z-50) — MOCE PRZYCHODZĄ ARGUMENTEM, bo od tego dnia brief zależy od listy narzędzi,
+/// a nie od samego dialu: lider zawężony w formularzu do czytania dostawał wcześniej obietnicę
+/// zapisu, której `--tools` nie niosło. `true` znaczy „vendor, który umie zawężać listę", czyli
+/// Claude z `Agent::example()`; Codex ma tu własne kryterium (`lead_powers_match_the_argv`).
+///
+/// Przez [`Lead::what_it_can_do`], a nie przez wartość wpisaną w tym pliku: moce liczy ta sama
+/// funkcja, która składa argv, więc ten plik sądzi prompt PRAWDZIWEGO loadoutu, a nie prompt
+/// loadoutu wymyślonego przez kryterium.
+fn brief_of(lead: &Lead) -> String {
+    lead.brief(lead.what_it_can_do(true))
+}
+
 #[test]
 fn the_phrases_this_file_judges_are_the_ones_the_brief_uses_today() {
     // KONTROLA WYROCZNI. Wszystkie trzy igły są czytane z dzisiejszej stałej, a nie wymyślone:
@@ -94,7 +108,7 @@ fn read_only_makes_no_promise_it_cannot_keep() {
          judged below is not the brief for the policy this test names"
     );
 
-    let brief = lead.brief();
+    let brief = brief_of(&lead);
     assert!(
         !brief.contains(PROMISE),
         "a lead that may only read was told it can write draft files. The person then waits for a \
@@ -125,7 +139,7 @@ fn the_two_dials_that_allow_writing_still_promise_it() {
             expected,
             "the control for this case: {access:?} has to be {expected:?}"
         );
-        let brief = lead.brief();
+        let brief = brief_of(&lead);
         assert!(
             brief.contains(PROMISE),
             "a lead allowed to write files was not told so ({expected:?}). It said:\n{brief}"
@@ -141,7 +155,7 @@ fn every_version_says_who_starts_the_work_and_at_least_two_differ() {
         FileAccess::WorkFreely,
     ]
     .into_iter()
-    .map(|access| lead_with(access).brief())
+    .map(|access| brief_of(&lead_with(access)))
     .collect();
 
     // ── (c) ZDANIE O TYM, KTO ZACZYNA PRACĘ, STOI W KAŻDEJ Z TRZECH ─────────────────────────

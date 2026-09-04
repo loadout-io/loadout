@@ -89,3 +89,4 @@ suggest_branch_name
 suggest_paths
 test_linear_connection
 update_trigger
+what_the_lead_can_do

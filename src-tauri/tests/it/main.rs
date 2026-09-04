@@ -207,6 +207,7 @@ mod lead_bridge_pair_is_atomic;
 mod lead_comes_from_the_agent;
 mod lead_evidence_is_durable;
 mod lead_image_reaches_both_vendors;
+mod lead_powers_match_the_argv;
 mod lead_reaches_loadouts_own_verbs;
 mod lead_reaches_the_library;
 mod lead_stall_is_visible;

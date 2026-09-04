@@ -41,6 +41,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { startAskFromLine } from '../ask-command';
 import { openHistoryFromLine } from '../history-command';
+import type { WhatTheLeadCanDo } from '../io';
 import { startFromLine } from '../rail/processes';
 import type { Named } from '../run-command';
 import type { WindowLine } from './echo';
@@ -209,6 +210,52 @@ export function whatStopSaid(stopped: boolean, where: string | null = null): str
 }
 
 /**
+ * Zdanie dla lidera, o którym Loadout jeszcze nic nie wie — albo takiego, który naprawdę tylko
+ * czyta i rozmawia.
+ *
+ * Znak w znak to, co ten wiersz mówił od 2026-08-19, i to jest wymóg, nie ostrożność: dla lidera
+ * zawężonego do `Read`, `Grep` i `Glob` jest ono PRAWDZIWE, a przepisanie go przy okazji tej
+ * zmiany byłoby zmianą, o którą nikt nie prosił.
+ */
+const TALK_AND_PREPARE =
+  'Enter sends this to the lead agent — it can talk things through and prepare, ' +
+  'but only /run starts work.';
+
+/**
+ * Co ten lider robi w tym folderze — zdanie składane z jego prawdziwych mocy (2026-09, Z-50).
+ *
+ * # Po co to istnieje
+ *
+ * Bo [`TALK_AND_PREPARE`] stało tu dla KAŻDEGO lidera, a lider z dialem „work freely" jedzie
+ * z ośmioma narzędziami — `Bash`, `Edit` i `Write` włącznie. Zmierzone 2026-09-01: taki lider
+ * zrobił sobie kopię repozytorium, zmienił kod, uruchomił testy i zatrzymał dwie pracujące
+ * rzeczy. Zdanie obiecywało rozmowę, a człowiek dostawał agenta piszącego po jego plikach
+ * (niezmiennik 4).
+ *
+ * # Dlaczego SKŁADAMY je z flag, a nie wybieramy z czterech literałów
+ *
+ * Bo moce są dwie i niezależne: człowiek może zostawić liderowi samą powłokę (`Read`, `Grep`,
+ * `Glob`, `Bash`) albo sam zapis. Cztery gotowe zdania to cztery miejsca, w których trzeba
+ * pamiętać o tej samej granicy folderu — a piąty stan, który przyjdzie z nowym narzędziem,
+ * trafiłby na wersję dla trzech.
+ *
+ * GRANICA FOLDERU ZNIKA PRZY LIDERZE, KTÓRY NIE JEST DO NIEGO PRZYWIĄZANY. „in this folder"
+ * powiedziane o `work freely` jest tą samą klasą nieprawdy, którą to zadanie zdejmuje, tylko
+ * pokazaną w drugą stronę: człowiek czyta granicę, której argv nie niesie.
+ */
+function whatTheLeadDoesHere(can: WhatTheLeadCanDo | null): string {
+  if (can === null || (!can.changesFiles && !can.runsCommands)) return TALK_AND_PREPARE;
+  const files = can.changesFiles
+    ? 'read and change files' + (can.heldToTheFolder ? ' in this folder' : ' anywhere')
+    : 'read files';
+  const powers = can.runsCommands ? files + ' and run commands' : files;
+  /* NAZYWAMY NASTĘPNY RUCH (DESIGN §8). Zdanie mówiące wyłącznie, co lider potrafi, zostawia
+   * człowieka bez odpowiedzi na „to jak mam uruchomić workflow" — a to jest pytanie, z którym
+   * ten wiersz w ogóle powstał. */
+  return `The lead can ${powers}. /run starts a workflow.`;
+}
+
+/**
  * Zdanie pod polem: DO KOGO pójdzie to, co człowiek pisze.
  *
  * # Po co to istnieje
@@ -233,8 +280,14 @@ export function whatStopSaid(stopped: boolean, where: string | null = null): str
  * kopia polityki: tam mieszka odmowa, tu jej UPRZEDZENIE. Adres bierzemy z listy pracujących
  * kroków, czyli z tego samego faktu, z którego Rust bierze swoją odpowiedź — a nie z osobnego
  * pola „czy można pisać", które mogłoby mówić co innego (niezmiennik 13).
+ *
+ * @param can co ten lider naprawdę może — odpowiedź Rusta, `null` dopóki jej nie ma. Powód
+ *   w całości stoi przy [`TALK_AND_PREPARE`].
  */
-export function whereItGoes(working: readonly string[]): string {
+export function whereItGoes(
+  working: readonly string[],
+  can: WhatTheLeadCanDo | null = null,
+): string {
   const [only] = working;
   if (only === undefined) {
     /* NIKT NIE PRACUJE → ROZMOWA Z ORCHESTRATOREM, nie pustka i nie cichy start biegu.
@@ -245,10 +298,7 @@ export function whereItGoes(working: readonly string[]): string {
      * ma komu pisać", co było prawdą i było ubogie: nie było z kim rozmawiać o tym, co dopiero ma
      * się stać. Rozstrzygnięcie: rozmowa TAK, uruchomienie NIE — „tylko komendy determinują akcje
      * workflow" (`commands::chat`). */
-    return (
-      'Enter sends this to the lead agent — it can talk things through and prepare, ' +
-      'but only /run starts work.'
-    );
+    return whatTheLeadDoesHere(can);
   }
   if (working.length === 1) {
     /* NAZWA JEST ADRESEM, nie informacją o tym, kto pracuje. Do 2026-08-20 stało tu „Enter
@@ -500,6 +550,18 @@ export interface EntryProps {
    */
   readonly talkingTo?: readonly string[];
   /**
+   * Co lider tego człowieka naprawdę może — do zdania pod polem ([`whereItGoes`]).
+   *
+   * 2026-09 (Z-50) — PROPSEM, NIE WŁASNYM ODCZYTEM, z tego samego powodu, co
+   * [`EntryProps::workflows`]: „co ten lider może" jest pytaniem do Rusta, bo to on składa argv
+   * jego procesu, a komponent, który zadaje je sam, jest drugim miejscem z tą odpowiedzią
+   * (niezmiennik 13).
+   *
+   * `null` znaczy „jeszcze nie przeczytano" i wtedy wiersz mówi to, co mówił zawsze. Wartość
+   * domyślna jest MOSTEM dla cudzych kryteriów, które montują ten wiersz bez tego propsa.
+   */
+  readonly can?: WhatTheLeadCanDo | null;
+  /**
    * Nazwy workflow do podpowiedzenia po `/run` — puste, dopóki katalog się czyta.
    *
    * Propsem, nie własnym odczytem: „jakie workflow istnieją" jest pytaniem do adaptera
@@ -613,6 +675,7 @@ export function Entry({
   onOpenHistory = openHistoryFromLine,
   runsIn = null,
   talkingTo = [],
+  can = null,
   workflows = [],
   onShowInStream = () => undefined,
   fieldRef,
@@ -1127,7 +1190,7 @@ export function Entry({
            który jeszcze stoi w polu; „co Loadout odpowiedział" jest zdaniem PO Enterze i dotyczy
            linii, która już poszła. Jeden region na jeden fakt (niezmiennik 13). */
         <p data-entry-hint className="mt-[6px] ml-[26px] font-mono text-label text-muted">
-          {whereItGoes(talkingTo)}
+          {whereItGoes(talkingTo, can)}
         </p>
       )}
 
