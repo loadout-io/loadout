@@ -96,9 +96,7 @@ impl Bench {
     }
 
     fn reconcile(&self, path: PathUnderTest, survivor: bool) {
-        // 2026-09 (Z-30): domykacz wartością, nie `&mut` — grupy tej drogi czekają obok siebie,
-        // więc pożyczka na wyłączność nie da się rozdać wątkom. Odpowiedź jest ta sama.
-        let _ = with_reaper(&self.project, |_pgid| match (path, survivor) {
+        let _ = with_reaper(&self.project, &mut |_pgid| match (path, survivor) {
             (PathUnderTest::RunningProcess, true) => ReapOutcome::StillAlive,
             _ => ReapOutcome::ProvenDead,
         });

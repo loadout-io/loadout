@@ -110,71 +110,13 @@ where
     Fut: Future<Output = StepReport> + Send + 'static,
     R: Fn(StepId, StepReport) -> Route,
 {
-    // Wołający, który nie zna pojęcia „naprawdę ruszył", potwierdza start w chwili permitu —
-    // czyli dokładnie tam, gdzie to przejście stało do 2026-09. Nic mu się nie zmienia.
-    let run_step = move |id, cancel, started: Started| {
-        started.now();
-        run_step(id, cancel)
-    };
-    execute_routed_with_start(dag, limit, cancel, run_step, route_after).await
-}
-
-/// Potwierdzenie, że krok NAPRAWDĘ ruszył — jednorazowe, oddawane krokowi do środka.
-///
-/// 2026-09 (Z-30) — POWSTAŁO, BO PERMIT PLANISTY NIE JEST STARTEM. `commands::run` woła planistę
-/// z permitem na każdy krok grafu (`limit == dag.len()`), a prawdziwe miejsce w puli aplikacji
-/// bierze dopiero `Live::a_slot_for_this_step`. Bez tego rozróżnienia krok stojący w kolejce po
-/// zasób wart ~583 MB czytał się jako `Running` — i to nie jest kosmetyka: [`settle_leftovers`]
-/// zamykał go po panice jako `Failed`, choć nie zrobił nic, a niezmiennik 11 stoi właśnie na
-/// różnicy między „czeka" a „działa".
-///
-/// Przez wartość, nie referencję: potwierdza się raz albo wcale. Krok, który skończył się przed
-/// startem (sufit budżetu, Stop w kolejce), po prostu porzuca ten token.
-#[derive(Debug)]
-pub struct Started {
-    /// Ten sam wektor, który trzyma pętla — wpis idzie przez tabelę przejść, nie przypisaniem.
-    states: Arc<Mutex<Vec<StepState>>>,
-    /// Który krok się melduje.
-    id: StepId,
-}
-
-impl Started {
-    /// `(Ready, PermitAcquired) → Running` z tabeli `docs/ARCHITECTURE.md` §5.
-    ///
-    /// Przez tabelę, nie przypisaniem wprost: krok, który zdążył już zejść (stożek po anulowaniu),
-    /// zwraca stąd `None` i zostaje na swoim stanie terminalnym.
-    pub fn now(self) {
-        let mut guard = lock(&self.states);
-        if let Some(state) = next(guard[self.id], StepEvent::PermitAcquired) {
-            guard[self.id] = state;
-        }
-    }
-}
-
-/// To samo wykonanie, ale krok sam mówi, w której chwili NAPRAWDĘ ruszył.
-///
-/// Jedyna różnica wobec [`execute_routed`] jest w tym jednym zdaniu — i w tym, co z niego wynika
-/// po panice zadania: krok, który nigdy nie potwierdził startu, jest `Skipped` (albo `Cancelled`
-/// po Stopie), a nie `Failed`.
-pub async fn execute_routed_with_start<F, Fut, R>(
-    dag: &Dag,
-    limit: usize,
-    cancel: CancellationToken,
-    run_step: F,
-    route_after: R,
-) -> Outcome
-where
-    F: Fn(StepId, CancellationToken, Started) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = StepReport> + Send + 'static,
-    R: Fn(StepId, StepReport) -> Route,
-{
     let children = dag.children();
     // Kopia stopni wejściowych, nigdy sam graf: ten sam `Dag` ma dać się uruchomić drugi raz,
     // a AC-6 robi dokładnie to, żeby przyłapać stan przeciekający między biegami.
     let mut remaining = dag.in_degree();
     let mut activated = vec![false; dag.len()];
     // 2026-08-15 — wektor stanów jest współdzielony, bo `Running` wpisuje ZADANIE, nie pętla:
-    // dopiero ono wie, kiedy krok naprawdę ruszył (niezmiennik 11). Zamek jest
+    // dopiero ono wie, kiedy permit naprawdę jest w ręku (niezmiennik 11). Zamek jest
     // `std::sync::Mutex`, a każde jego wzięcie mieści się w jednym bloku bez `await`
     // (niezmiennik 8, `clippy::await_holding_lock` = deny).
     //
@@ -205,8 +147,8 @@ where
                 guard[id] = StepState::Cancelled;
                 mark_cone(children, &mut guard, id, StepEvent::UpstreamCancelled);
             } else {
-                // `Ready` znaczy „w kolejce, jeszcze nie ruszył". Wysyłka kończy się tutaj;
-                // `Running` dopisuje sam krok, kiedy naprawdę zaczyna ([`Started`]).
+                // `Ready` znaczy „w kolejce, jeszcze bez permitu". Wysyłka kończy się tutaj;
+                // `Running` dopisuje sobie samo zadanie, kiedy permit jest już w ręku.
                 lock(&states)[id] = StepState::Ready;
                 let semaphore = Arc::clone(&semaphore);
                 let run_step = run_step.clone();
@@ -224,22 +166,28 @@ where
                         // nie awaria kroku.
                         return (id, StepReport::Cancelled);
                     };
-                    // 2026-09 (Z-30) — `(Ready, PermitAcquired) → Running` NIE stoi już tutaj.
-                    // Permit tego semafora jest warunkiem koniecznym startu, ale nie jest
-                    // startem: `commands::run` woła planistę z permitem na każdy krok grafu,
-                    // a prawdziwe miejsce daje dopiero pula aplikacji. Wpis w tym miejscu
-                    // pokazywał krok stojący w kolejce jako działający — czyli meldował dokładnie
-                    // tę nieprawdę, przez którą poprzedni prototyp „miał" równoległość
-                    // (niezmiennik 11). Przejście wpisuje teraz sam krok, przez [`Started`].
-                    //
+                    {
+                        // 2026-08-15 — `(Ready, PermitAcquired) → Running` z tabeli
+                        // `docs/ARCHITECTURE.md` §5, wpisane DOKŁADNIE tutaj: permit jest
+                        // wzięty, więc krok naprawdę działa. Wpis w pętli wysyłki (przed
+                        // permitem) pokazywałby zakolejkowany krok jako działający i kasował
+                        // rozróżnienie, którego pilnuje niezmiennik 11 — czyli meldowałby
+                        // dokładnie tę nieprawdę, przez którą poprzedni prototyp „miał" równoległość.
+                        //
+                        // Przez tabelę, nie przypisaniem wprost: krok, który zdążył już zejść
+                        // (np. stożek po anulowaniu), zwraca stąd `None` i zostaje na swoim
+                        // stanie terminalnym.
+                        let mut guard = lock(&states);
+                        if let Some(state) = next(guard[id], StepEvent::PermitAcquired) {
+                            guard[id] = state;
+                        }
+                        // Guard ginie razem z tym blokiem, PRZED jedynym `await` w tym
+                        // zadaniu (niezmiennik 8).
+                    }
                     // Token idzie DO ŚRODKA kroku. Zdjęcie zadania z zewnątrz też wróciłoby
                     // szybko i też wyglądało na anulowane, ale w T-03 zostawia żywą grupę
                     // procesów palącą limit u dostawcy [T7 §3.1].
-                    let started = Started {
-                        states: Arc::clone(&states),
-                        id,
-                    };
-                    (id, run_step(id, cancel, started).await)
+                    (id, run_step(id, cancel).await)
                 });
                 inflight += 1;
             }
@@ -259,9 +207,8 @@ where
 
         let Ok((id, report)) = joined else {
             // Zadanie padło paniką, więc nie wróciło ze swoim numerem i nie da się go stąd
-            // nazwać. Zostaje na tym stanie, do którego zdążyło dojść — `Ready` albo `Running` —
-            // a zamiatanie za pętlą zamknie je razem ze stożkiem, i to właśnie ta różnica mówi
-            // mu, czy ten krok pracował, czy tylko czekał (niezmiennik 11).
+            // nazwać. Zostaje `Ready`, a zamiatanie za pętlą zamknie je razem ze stożkiem —
+            // bieg nie ma prawa wrócić z krokiem bez rozstrzygnięcia.
             continue;
         };
 
@@ -400,35 +347,15 @@ fn mark_cone(children: &[Vec<StepId>], states: &mut [StepState], from: StepId, e
 /// to wiersz kręcący się w UI w nieskończoność.
 ///
 /// W zdrowym biegu ta funkcja nic nie robi. Dochodzi do głosu, kiedy zadanie kroku padło paniką
-/// i nie wróciło ze swoim numerem.
-///
-/// Wtedy rozstrzyga JEDNO pytanie: czy ten krok zdążył ruszyć. `Running` znaczy „potwierdził
-/// start i nie doszedł do końca" — to jest `Failed`, tak samo jak przy zwykłym niepowodzeniu.
-/// `Ready` znaczy „stał w kolejce i nie zrobił nic": taki krok nie jest niepowodzeniem, tylko
-/// pracą, która się nie odbyła, więc kończy jako `Skipped` — albo `Cancelled`, jeżeli bieg
-/// zatrzymał człowiek (2026-09, Z-30).
+/// i nie wróciło ze swoim numerem — wtedy krok kończy jako `Failed`, a jego stożek jako
+/// `Skipped`, tak samo jak przy zwykłym niepowodzeniu.
 fn settle_leftovers(children: &[Vec<StepId>], states: &mut [StepState], cancelled: bool) {
-    let broke_while_running: Vec<StepId> = (0..states.len())
-        .filter(|&id| states[id] == StepState::Running)
+    let stalled: Vec<StepId> = (0..states.len())
+        .filter(|&id| matches!(states[id], StepState::Ready | StepState::Running))
         .collect();
-    for id in broke_while_running {
+    for id in stalled {
         states[id] = StepState::Failed;
         mark_cone(children, states, id, StepEvent::UpstreamFailed);
-    }
-
-    // Krok, który nigdy nie potwierdził startu, i stożek pod nim dostają ten sam powód: nikt tu
-    // nie padł. Po Stopie jest nim człowiek, w każdym innym przypadku — brak wykonania.
-    let (settled, reason) = if cancelled {
-        (StepState::Cancelled, StepEvent::UpstreamCancelled)
-    } else {
-        (StepState::Skipped, StepEvent::UpstreamFailed)
-    };
-    let never_started: Vec<StepId> = (0..states.len())
-        .filter(|&id| states[id] == StepState::Ready)
-        .collect();
-    for id in never_started {
-        states[id] = settled;
-        mark_cone(children, states, id, reason);
     }
 
     // Co zostało w `Pending`, nigdy nie doczekało się rodziców.

@@ -24,7 +24,6 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
 
 use loadout_lib::commands::Drivers;
 use loadout_lib::commands::reconcile::with_reaper;
@@ -134,20 +133,14 @@ fn a_run_left_running_by_a_closed_window_is_written_off() -> Result<(), Box<dyn 
             .join("run.json"),
     )?;
 
+    let mut asked: Vec<i32> = Vec::new();
     // 2026-09 (Z-01d): domykacz dostaje cel, nie goły numer — produkcyjny pyta grupę, do którego
     // biegu należy, zanim cokolwiek wyśle. To kryterium liczy pytania, więc bierze sam numer.
-    // 2026-09 (Z-30): licznik za zamkiem, bo grupy tej drogi czekają obok siebie i domykacz jedzie
-    // do kilku wątków naraz. Liczba pytań i ich treść się nie zmieniają — tylko sposób zapisu.
-    let asked: Mutex<Vec<i32>> = Mutex::new(Vec::new());
-    let done = with_reaper(project, |target| {
-        asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(target.pgid);
+    let done = with_reaper(project, &mut |target| {
+        asked.push(target.pgid);
         ReapOutcome::ProvenDead
     });
 
-    let asked = asked.into_inner().unwrap_or_else(PoisonError::into_inner);
     assert_eq!(
         asked,
         vec![DEAD_GROUP],
@@ -418,19 +411,14 @@ fn a_run_left_standing_on_a_question_is_written_off_too() -> Result<(), Box<dyn 
             .join("run.json"),
     )?;
 
+    let mut asked: Vec<i32> = Vec::new();
     // 2026-09 (Z-01d): domykacz dostaje cel, nie goły numer — produkcyjny pyta grupę, do którego
     // biegu należy, zanim cokolwiek wyśle. To kryterium liczy pytania, więc bierze sam numer.
-    // 2026-09 (Z-30): licznik za zamkiem — powód przy bliźniaczym kryterium wyżej.
-    let asked: Mutex<Vec<i32>> = Mutex::new(Vec::new());
-    let done = with_reaper(project, |target| {
-        asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(target.pgid);
+    let done = with_reaper(project, &mut |target| {
+        asked.push(target.pgid);
         ReapOutcome::ProvenDead
     });
 
-    let asked = asked.into_inner().unwrap_or_else(PoisonError::into_inner);
     assert!(
         asked.is_empty(),
         "a signal was sent while settling a run in which nothing was working. Every number here \

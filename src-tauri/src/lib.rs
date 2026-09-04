@@ -400,12 +400,8 @@ pub async fn recover_from_last_time(
      * Do tego dnia były w tym miejscu dwa ramiona `match` nad `reap_group` — czyli własna kopia
      * decyzji o tym, kiedy wolno zabić zastaną grupę, bez pytania jej o znacznik biegu. Dwie
      * kopie znaczyły, że ta droga zabija cudze grupy, a droga folderu ich nie tyka: różnica
-     * zależna wyłącznie od tego, gdzie mieszka bieg (niezmiennik 23).
-     *
-     * 2026-09 (Z-30) — I CZEKA NA WSZYSTKIE NARAZ. Wersja synchroniczna sprzątała grupy po
-     * kolei, w wątku, który za chwilę ma pokazać okno: jedna sierota ignorująca SIGTERM to pełne
-     * okno łaski plus dowód po dziewiątce, a pięć takich to pięć takich okien jedno za drugim. */
-    let report = commands::reconcile::reap_what_is_ours_concurrently(&plan).await;
+     * zależna wyłącznie od tego, gdzie mieszka bieg (niezmiennik 23). */
+    let report = commands::reconcile::reap_what_is_ours(&plan);
 
     // Zapis idzie JEDYNYM pisarzem (niezmiennik 2), a nie własnym połączeniem: drugie
     // połączenie zapisujące do tej bazy jest zakleszczeniem, nie „czasem wolniej", i
