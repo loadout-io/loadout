@@ -328,11 +328,11 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-20 | `z20-roster-same-copy-skill` | `prompts/Z-20.md` | R | X→C | | Z-19 | **LANDED** `2026-09-04` | dwie rundy |
 | Z-21 | `z21-borrow-review` | `prompts/Z-21.md` | R | C→X | | Z-20 | **LANDED** `2026-09-04` | jedna runda |
 | Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | **LANDED** `2026-09-04` | trzy rundy + ręka; planista Codeksa |
-| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | RUNNING | wznowione po **decyzji właściciela: wariant B** (niezmiennik 9 ma wyjątek, `AGENTS.md`); gałąź niesie już trzy czwarte pracy, `main` do niej wmergowany |
+| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | **LANDED** `2026-09-04` | jedna runda po decyzji B; wyrocznia zawężona i **wzmocniona** |
 | Z-34 | `z34-agent-app-preflight` | `prompts/Z-34.md` | R+TS | C→X | | — | TODO | z uratowanej gałęzi: sonda gotowości CLI zamiast bezwarunkowego „Claude · Codex ready" |
 | Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | — | **PRZYWRÓCONE** `2026-09-04` (`392c58c4`) | werdykt DZIALA, ale pełne CI po merge'u złapało regresję; `git revert -m 1` = `4778c4af`; gałąź zostaje materiałem |
 | Z-30b | `z30b-death-proof-keeps-the-status` | `prompts/Z-30b.md` | R | C→X | | — | **LANDED** `2026-09-04` | jedna runda; pełna suita w checku (197 s) zamiast zawężonej |
-| Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | TODO | |
+| Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | RUNNING | |
 | Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | TODO | |
 | Z-33 | `z33-record-truth` | `prompts/Z-33.md` | R | X→C | | Z-32 | TODO | |
 
