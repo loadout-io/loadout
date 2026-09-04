@@ -124,6 +124,7 @@ mod driver_codex_argv;
 mod driver_codex_cancel;
 mod driver_codex_finish;
 mod driver_codex_resume;
+mod driver_codex_resume_without_git;
 mod driver_codex_stream;
 mod driver_codex_unknown;
 mod engine_cancel_outcome;

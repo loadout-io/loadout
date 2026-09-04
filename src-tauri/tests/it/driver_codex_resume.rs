@@ -123,6 +123,7 @@ fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
         thread.to_owned(),
         "--json".to_owned(),
         "--ignore-user-config".to_owned(),
+        "--skip-git-repo-check".to_owned(),
         "-".to_owned(),
     ]
 }
@@ -192,7 +193,7 @@ async fn three_turns_keep_one_identity_and_resume_the_newest_thread() -> Result<
         "the second turn is a FRESH PROCESS resuming the first thread - codex exec has no \
          bidirectional mode, so this is the only way a second turn exists at all [T1 6.4]. \
          Note what is absent from this line and must stay absent: -m and -s belong to the first \
-         turn, and --skip-git-repo-check with it"
+         turn. The git gate is per invocation, so --skip-git-repo-check must be present again"
     );
     assert_eq!(
         text_of(&dir.path().join("stdin-2.log"))?,
@@ -227,6 +228,25 @@ async fn three_turns_keep_one_identity_and_resume_the_newest_thread() -> Result<
          acknowledged - T1 section 11 question 5 leaves open whether resume mints a new id, so \
          the driver has to be right either way. Resuming thread-1 here would be a driver that \
          assumed the answer"
+    );
+
+    // 2026-09-02 — codex-cli 0.152.0 sprawdza zaufany katalog w KAŻDYM procesie `resume`.
+    // Równa liczba przypina flagę w obu drogach wznowienia do wiążącej pierwszej tury.
+    let skip_git_repo_checks: Vec<usize> = ["argv-1.log", "argv-2.log", "argv-3.log"]
+        .iter()
+        .map(|name| {
+            lines_of(&dir.path().join(name)).map(|argv| {
+                argv.iter()
+                    .filter(|argument| argument.as_str() == "--skip-git-repo-check")
+                    .count()
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        skip_git_repo_checks,
+        vec![1, 1, 1],
+        "the first turn and both resume processes must cross the same per-invocation git gate \
+         exactly once"
     );
     assert_eq!(
         handle.session().id,
