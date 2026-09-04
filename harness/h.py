@@ -922,6 +922,20 @@ def cmd_clean(a):
     # 0b.5 (audyt 2026-09-04, C-2): transkrypty zostawaly po KAZDYM zamknietym zadaniu --
     # 165 katalogow i 547 MB w `runs/`, z czego 22 starsze niz dwa tygodnie. Ida razem
     # z zadaniem, chyba ze ktos poprosi o zachowanie: `--keep-runs`.
+    # KSIEGA PRZEZYWA ZADANIE (2026-09-05). Pierwsza wersja 0b.2 zapisywala koszt do stanu
+    # i do `runs/<id>/cost.json` — czyli do DWOCH miejsc, ktore `h clean` kasuje. Po nocy
+    # z szesnastoma zadaniami nie zostalo ani jedno rozliczenie: ksiega, ktora ginie razem
+    # z zadaniem, odpowiada na pytanie „ile kosztowal ten bieg" tylko dopoki nikt nie pyta.
+    # Wiersz idzie do `.git/h/ledger.jsonl`, obok stanow, bo przezywa `clean` kazdego zadania.
+    state = load_state(a.task_id)
+    if state.get("cost_usd") is not None:
+        row = {"task": a.task_id, "usd": state.get("cost_usd"),
+               "rounds": state.get("rounds"), "phases": state.get("costs") or [],
+               "verdict": (state.get("last_verdict") or {}).get("werdykt")}
+        with (STATE_DIR / "ledger.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        log("koszt %s dopisany do ksiegi: %.2f USD" % (a.task_id, state["cost_usd"]))
+
     rd = ROOT / "runs" / a.task_id
     if rd.exists() and not getattr(a, "keep_runs", False):
         size = sum(f.stat().st_size for f in rd.rglob("*") if f.is_file())
