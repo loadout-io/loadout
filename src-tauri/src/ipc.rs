@@ -2940,7 +2940,13 @@ pub async fn forget_run(
 /// po notatce, którą bieg pisze o każdym katalogu, jaki sobie otworzył — a bieg sprzed tej notatki
 /// nie ma jej wcale. Zmierzone u właściciela 2026-09-03 na `urc-monorepo`: dziennik zameldował
 /// „75 folder(s) closed", a `git worktree list` dalej wymieniał dwanaście katalogów po 264 MB
-/// i 99 gałęzi `loadout/*` przy czternastu biegach. Do tego dnia jedyną drogą był terminal.
+/// i 99 gałęzi `loadout/<bieg>` przy czternastu biegach. Do tego dnia jedyną drogą był
+/// terminal.
+///
+/// Nazwa wzorca stoi tu jako `loadout/<bieg>`, a nie z gwiazdką, i to jest wymuszone:
+/// `no_command_freezes_the_window` zdejmuje komentarze blokowe PRZED liniowymi, więc
+/// `/` z gwiazdką w prozie czyta jako otwarcie bloku i połyka plik aż do następnego
+/// domknięcia — zmierzone 2026-09-05, jedenaście skorup zniknęło temu testowi z oczu.
 ///
 /// **Nic nie kasuje.** To jest wyłącznie liczenie — kasują dwie komendy niżej, każda po
 /// kliknięciu i każda po zdaniu, które człowiek przeczytał.
