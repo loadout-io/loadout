@@ -393,6 +393,7 @@ mod t210_parallel_handoff_writers_keep_their_temps;
 mod t210_private_replace_preserves_fail_closed_guards;
 mod the_dial_tells_the_truth_about_the_shell;
 mod the_index_says_what_each_file_is;
+mod the_index_stops_copying_the_transcript;
 mod the_lead_reaches_the_connections;
 mod the_result_branch_takes_the_shape_this_repo_uses;
 mod the_step_knows_its_deadline;

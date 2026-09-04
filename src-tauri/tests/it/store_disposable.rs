@@ -24,8 +24,8 @@
 //! sprawdzać — zmiana kształtu przechodziłaby po obu stronach naraz [04 §6.4].
 //!
 //! **Konsekwencja, którą trzeba nazwać wprost:** wymaganie „oba zrzuty są równe" zmusza każdą
-//! kolumnę do bycia **funkcją plików**, także `events.ts` i `artifacts.id`. Odbudowa, która
-//! stempluje którąkolwiek z nich czasem teraźniejszym albo świeżym uuid-em, jest tu czerwona
+//! kolumnę do bycia **funkcją plików**, także `artifacts.created_at` i `artifacts.id`. Odbudowa,
+//! która stempluje którąkolwiek z nich czasem teraźniejszym albo świeżym uuid-em, jest tu czerwona
 //! i ma być — bo to znaczy, że po skasowaniu bazy dostaje się co innego, niż się miało.
 
 use std::fs;
@@ -44,17 +44,12 @@ const STEP_A: &str = "01996500-0000-7000-8000-00000000000a";
 /// Drugi krok.
 const STEP_B: &str = "01996500-0000-7000-8000-00000000000b";
 
-/// Ile linii niosą razem oba pliki `logs/agent-<id>.jsonl`. Górna granica liczby zdarzeń:
-/// żadna kuracja nie robi z jednej linii dwóch.
-const LOG_LINES: i64 = 14;
-
-/// Dolna granica liczby zdarzeń.
+/// Ile linii niosą razem oba pliki `logs/agent-<id>.jsonl`.
 ///
-/// Nie jest to liczba dokładna **z rozmysłem**: dokładna kuracja zdarzenie→linia jest kontraktem
-/// T-05 (`system/init` nie daje nic, sąsiednie odczyty sklejają się w oknie 2 s), a to kryterium
-/// nie jest o niej. Jest o tym, że zdarzenia **przeżywają** skasowanie bazy i zachowują
-/// kolejność. Zero zdarzeń przewraca ten warunek, a o to tu chodzi.
-const LOG_EVENTS_AT_LEAST: i64 = 8;
+/// Liczymy je **z dysku**, nie z indeksu (2026-09, Z-15): od tej zmiany odbudowa nie kopiuje linii
+/// do bazy, więc pytanie „czy transkrypt przeżył skasowanie `loadout.db`" ma dokładnie jedno
+/// miejsce, w którym wolno je zadać — pliki, które są prawdą (niezmiennik 4).
+const LOG_LINES: i64 = 14;
 
 /// `workflow_snapshot` — kopia grafu **jak biegł**. Bez niej stary bieg po edycji workflow po
 /// cichu zaczyna opowiadać o sobie coś innego [T7 §5.4].
@@ -310,11 +305,41 @@ fn assert_same_dump(rebuilt: &[String], indexed: &[String]) {
     );
 }
 
+/// Ile niepustych linii leży w obu plikach strumienia. **Z dysku**, nigdy z bazy.
+fn lines_on_disk(run_dir: &Path) -> anyhow::Result<i64> {
+    let mut lines = 0_i64;
+    for step in [STEP_A, STEP_B] {
+        let text = fs::read_to_string(run_dir.join("logs").join(format!("agent-{step}.jsonl")))?;
+        lines += i64::try_from(text.lines().filter(|line| !line.trim().is_empty()).count())?;
+    }
+    Ok(lines)
+}
+
+/// Wiersze `artifacts` obu strumieni: czyj krok i ile bajtów, po kroku.
+fn raw_log_rows(conn: &Connection) -> anyhow::Result<Vec<(String, i64)>> {
+    let mut stmt = conn
+        .prepare("SELECT step_id, bytes FROM artifacts WHERE kind = 'raw_log' ORDER BY step_id")?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Te same dwa wiersze, wyliczone z plików leżących na dysku.
+fn wanted_logs(run_dir: &Path) -> Vec<(String, i64)> {
+    [STEP_A, STEP_B]
+        .iter()
+        .map(|step| {
+            let path = run_dir.join("logs").join(format!("agent-{step}.jsonl"));
+            let bytes = fs::metadata(&path).map_or(0, |one| i64::try_from(one.len()).unwrap_or(0));
+            ((*step).to_owned(), bytes)
+        })
+        .collect()
+}
+
 /// Kontrola przeciw pustej asercji **i** cztery pola, o które chodzi.
 ///
 /// Wołane po obu indeksowaniach. Bez tego całe kryterium przechodzi na odbudowie, która nie
 /// robi nic: dwa puste zrzuty są równe.
-fn assert_fixture_landed(conn: &Connection, when: &str) -> anyhow::Result<()> {
+fn assert_fixture_landed(conn: &Connection, run_dir: &Path, when: &str) -> anyhow::Result<()> {
     let runs: i64 = conn.query_row("SELECT count(*) FROM runs", [], |row| row.get(0))?;
     assert_eq!(
         runs, 1,
@@ -328,44 +353,31 @@ fn assert_fixture_landed(conn: &Connection, when: &str) -> anyhow::Result<()> {
         "{when}: run.json describes two steps and the index holds {steps}"
     );
 
+    // ── Transkrypt: w plikach, a w indeksie tylko wskazanie palcem (2026-09, Z-15) ─────────
     let events: i64 = conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?;
-    assert!(
-        (LOG_EVENTS_AT_LEAST..=LOG_LINES).contains(&events),
-        "{when}: the two log files carry {LOG_LINES} lines between them and the index holds \
-         {events} events. The exact number is the curation contract of T-05 and not this \
-         criterion's business, but zero means the raw logs were never opened — and then the \
-         transcript is a thing that only exists while the database does"
-    );
-
-    let (lowest, highest): (i64, i64) =
-        conn.query_row("SELECT min(seq), max(seq) FROM events", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
     assert_eq!(
-        (lowest, highest),
-        (1, events),
-        "{when}: seq should run 1..{events} with no gaps. seq IS the order of the transcript, \
-         so a gap is a line that a reopened run will never show"
+        events, 0,
+        "{when}: the rebuild copied {events} lines of the transcript into the index. They are \
+         already on disk and nothing reads them from anywhere else, so each of those rows is the \
+         same line written twice — 86% of a 72 MB library the day this was measured"
     );
 
-    let stepped: i64 = conn.query_row(
-        "SELECT count(DISTINCT step_id) FROM events WHERE step_id IS NOT NULL",
-        [],
-        |row| row.get(0),
-    )?;
+    let landed = lines_on_disk(run_dir)?;
     assert_eq!(
-        stepped, 2,
-        "{when}: events name {stepped} distinct steps, not 2. One log file per agent, and the \
-         rail opens ONE agent at a time — events that do not know their step cannot be shown \
-         to anybody"
+        landed, LOG_LINES,
+        "{when}: the two log files carry {landed} lines between them, not {LOG_LINES}. This is \
+         the line that keeps 'the index does not copy the transcript' apart from 'the transcript \
+         is gone': one of them is the point of this change and the other is what it must not cost"
     );
 
-    let stray: i64 = conn.query_row(
-        "SELECT count(*) FROM events WHERE run_id <> ?1",
-        [RUN_ID],
-        |row| row.get(0),
-    )?;
-    assert_eq!(stray, 0, "{when}: {stray} events belong to no known run");
+    let logs = raw_log_rows(conn)?;
+    assert_eq!(
+        logs,
+        wanted_logs(run_dir),
+        "{when}: the index does not name both transcripts with the size they have on disk. Once \
+         the lines themselves stay out, this row is the whole of what deleting loadout.db costs — \
+         and it has to come back off disk naming the step it belongs to"
+    );
 
     // ── Cztery pola, których nikt nie pomyślał zapisać do run.json ─────────────────────────
     let mut stmt = conn.prepare(
@@ -427,7 +439,7 @@ async fn deleting_the_database_and_rebuilding_from_files_gives_the_same_rows() -
     let store = Store::open(&db)?;
     store.rebuild_from(&run_dir).await?;
     let reader = store.reader()?;
-    assert_fixture_landed(&reader, "after the first index")?;
+    assert_fixture_landed(&reader, &run_dir, "after the first index")?;
     let indexed = dump_everything(&reader)?;
     drop(reader);
     store.close().await?;
@@ -443,7 +455,7 @@ async fn deleting_the_database_and_rebuilding_from_files_gives_the_same_rows() -
     let store = Store::open(&db)?;
     store.rebuild_from(&run_dir).await?;
     let reader = store.reader()?;
-    assert_fixture_landed(&reader, "after the rebuild")?;
+    assert_fixture_landed(&reader, &run_dir, "after the rebuild")?;
     let rebuilt = dump_everything(&reader)?;
     assert_same_dump(&rebuilt, &indexed);
     drop(reader);

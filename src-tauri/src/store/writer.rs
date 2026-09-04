@@ -342,7 +342,11 @@ fn write_until_the_queue_is_empty(
     }
 }
 
-/// Przepisuje dziennik do bazy i **przycina plik**, jako ostatnia rzecz przed końcem pisarza.
+/// Przepisuje dziennik do bazy i **przycina plik**.
+///
+/// Dwa miejsca wołają to zdanie i oba są tym samym pytaniem zadanym o inną chwilę: [`Job::Close`]
+/// pyta o nie przy wyjściu z aplikacji, [`replace_snapshot`] po każdej odbudowie biegu — powody
+/// stoją przy obu.
 ///
 /// # 2026-09 (Z-6) — dlaczego samo zamknięcie połączenia nie wystarcza
 ///
@@ -363,9 +367,11 @@ fn truncate_the_journal(conn: &Connection) {
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0));
     match busy {
         Ok(0) => {}
+        // Zdanie mówi „próbowaliśmy", nie „przy zamykaniu": od Z-15 wołają to dwie drogi i tylko
+        // jedna z nich jest wyjściem z aplikacji.
         Ok(_) => tracing::warn!(
-            "the index journal was still in use when Loadout closed it, so it stays on disk until \
-             the next start"
+            "the index journal was still in use when Loadout tried to close it down, so it stays \
+             on disk for now"
         ),
         Err(error) => tracing::warn!("the index journal could not be closed down: {error}"),
     }
@@ -383,7 +389,20 @@ fn write(conn: &mut Connection, rows: &Rows) -> Result<()> {
     }
 }
 
-/// Wymienia cztery tabele indeksu biegu w jednej transakcji tego samego pisarza.
+/// Wymienia cztery tabele indeksu biegu w jednej transakcji tego samego pisarza — i domyka po
+/// sobie dziennik.
+///
+/// # 2026-09 (Z-15) — dlaczego domknięcie stoi TUTAJ, a nie tylko na [`Job::Close`]
+///
+/// To jest jedyny zapis w tej aplikacji, który potrafi ruszyć dziesiątki tysięcy wierszy naraz:
+/// kaskada `DELETE FROM runs` zdejmuje stary indeks biegu, a inserty kładą nowy. Wszystko w jednej
+/// transakcji, więc dziennik rośnie do rozmiaru całej wymiany, zanim `SQLite` ma prawo cokolwiek
+/// przepisać. Zmierzone na biegu z 10 MB strumienia: `loadout.db-wal` stał po odbudowie na 11,4 MB
+/// przy otwartym oknie — a domknięcie z drogi wyjścia (Z-6) przychodzi dopiero przy ⌘Q, czyli
+/// godziny później.
+///
+/// Dzieje się raz na bieg, więc koszt jest jednorazowy, a zajętość niczego nie blokuje:
+/// [`truncate_the_journal`] traktuje `busy` jako ostrzeżenie, nie odmowę.
 fn replace_snapshot(conn: &mut Connection, snapshot: &RunSnapshot) -> Result<()> {
     let transaction = conn.transaction()?;
     // Usunięcie rodzica uruchamia kaskady dla kroków, zdarzeń i artefaktów. Dzieje się wewnątrz
@@ -403,6 +422,9 @@ fn replace_snapshot(conn: &mut Connection, snapshot: &RunSnapshot) -> Result<()>
         insert_artifact(&transaction, artifact)?;
     }
     transaction.commit()?;
+    // PO `commit()`, nigdy przed: domknięcie przepisuje do bazy to, co jest już zatwierdzone,
+    // a wywołane w środku transakcji nie miałoby czego przenieść i odmówiłoby zajętością.
+    truncate_the_journal(conn);
     Ok(())
 }
 

@@ -72,6 +72,13 @@ const LINES_IN_FLIGHT: usize = 256;
 /// wsad ma jeden wiersz i nic na to nie czeka — ta stała jest sufitem, nie progiem.
 const LINES_PER_BATCH: usize = 100;
 
+/// Jedyny poziom linii, który indeks przyjmuje (2026-09, Z-15).
+///
+/// Jeden z trójki dozwolonej przez `CHECK` w `store::schema` — i tam też stoi powód, dla którego
+/// pozostałe dwa zostają w plikach. Ta stała jest jego drugą połową: schemat mówi, co WOLNO,
+/// a pompa jest jedynym miejscem, które zna poziom linii i może odsiać resztę.
+const LEVEL_HEADLINE: &str = "headline";
+
 /// Karta w rejestrze: identyfikator folderu i magazyn tego folderu.
 #[derive(Debug)]
 struct OpenTab {
@@ -237,7 +244,7 @@ pub struct RunLine {
 pub struct RunSink {
     /// Kanał do pompy karty.
     lines: mpsc::Sender<RunLine>,
-    /// Zadanie pompy. Oddaje, **ile linii naprawdę dopisało do magazynu**.
+    /// Zadanie pompy. Oddaje, **ile linii naprawdę doniosło do magazynu**.
     pump: JoinHandle<u64>,
     /// Ile linii ten uchwyt przyjął. Porównanie tych dwóch liczb jest jedynym miejscem,
     /// w którym „nic nie zginęło" jest zdaniem sprawdzalnym, a nie założeniem.
@@ -551,25 +558,38 @@ fn open_store(folder: &Path) -> Result<Arc<Store>> {
     Ok(Arc::new(Store::open(&project.join(INDEX_FILE))?))
 }
 
-/// Pompa jednej karty: czyta kanał **do końca** i dopisuje linie do magazynu tego folderu.
+/// Pompa jednej karty: czyta kanał **do końca** i donosi linie do magazynu tego folderu.
 ///
-/// Oddaje, ile linii naprawdę weszło do magazynu. Ta liczba, porównana z tym, ile linii karta
-/// przyjęła, jest jedynym miejscem, w którym „nic nie zginęło" jest zdaniem sprawdzalnym —
-/// bez niej bieg z dziurą w transkrypcie melduje `Succeeded` i wygląda dokładnie jak zdrowy.
+/// Oddaje, ile linii **doniosła**. Ta liczba, porównana z tym, ile linii karta przyjęła, jest
+/// jedynym miejscem, w którym „nic nie zginęło" jest zdaniem sprawdzalnym — bez niej bieg z dziurą
+/// w transkrypcie melduje `Succeeded` i wygląda dokładnie jak zdrowy.
 ///
 /// Zapis idzie przez [`Store::writer`] tej karty, nigdy przez własne połączenie (niezmiennik 2).
 async fn pump(store: Arc<Store>, run_id: String, mut lines: mpsc::Receiver<RunLine>) -> u64 {
     let writer = store.writer();
     let mut taken: Vec<RunLine> = Vec::with_capacity(LINES_PER_BATCH);
-    let mut written: u64 = 0;
+    let mut carried: u64 = 0;
 
     // `recv_many`, nie `recv` w pętli: wsad wielkości tego, co akurat stoi w kanale, jest
     // o rząd wielkości tańszy od wiersza na transakcję [T7 §5.3] i nie kosztuje ani milisekundy
     // czekania — przy jednej linii w kanale wsad ma jedną linię. Zero znaczy kanał zamknięty
     // i opróżniony, czyli koniec biegu; dopiero wtedy ta pętla ma prawo się skończyć.
     while lines.recv_many(&mut taken, LINES_PER_BATCH).await > 0 {
+        // PRZED odsianiem, i to jest ta jedna liczba, o którą pyta [`RunSink::finish`]. Liczenie
+        // wstawionych wierszy meldowałoby [`RunOutcome::Interrupted`] po KAŻDYM biegu, odkąd
+        // indeks przyjmuje wyłącznie nagłówki (2026-09, Z-15) — a linia, której indeks nie
+        // przyjmuje, nie jest linią zgubioną: leży w `logs/agent-<krok>.jsonl` i stamtąd czyta
+        // ją ekran historii.
+        //
+        // `try_from`, nie `as`: obcięte bity policzyłyby linie, których nie było, i wtedy ta
+        // liczba przestaje być dowodem czegokolwiek.
+        let accepted = u64::try_from(taken.len()).unwrap_or(0);
         let batch: Vec<NewEvent> = taken
             .drain(..)
+            // Tylko nagłówki. Powód w całości stoi przy tabeli `events` w `store::schema`:
+            // surowe i szczegółowe linie są już na dysku, a ich kopia w indeksie ważyła 86 %
+            // biblioteki i nie miała ani jednego czytelnika.
+            .filter(|line| line.level == LEVEL_HEADLINE)
             .map(|line| NewEvent {
                 run_id: run_id.clone(),
                 // Karta nie zna kroków — zna bieg. Krok dokłada ten, kto go uruchomił (T-07).
@@ -581,12 +601,14 @@ async fn pump(store: Arc<Store>, run_id: String, mut lines: mpsc::Receiver<RunLi
             })
             .collect();
         let rows = batch.len();
+        if batch.is_empty() {
+            carried += accepted;
+            continue;
+        }
 
         match writer.append_events(batch).await {
-            // `try_from`, nie `as`: obcięte bity policzyłyby zapis, którego nie było, i wtedy
-            // liczba wpisanych linii przestaje być dowodem czegokolwiek.
-            Ok(()) => written += u64::try_from(rows).unwrap_or(0),
-            // Wsad wraca w CAŁOŚCI (transakcja), więc `written` po prostu nie rośnie i bieg
+            Ok(()) => carried += accepted,
+            // Wsad wraca w CAŁOŚCI (transakcja), więc `carried` po prostu nie rośnie i bieg
             // kończy się jako [`RunOutcome::Interrupted`]. Pętla leci dalej: jeden odrzucony
             // wsad nie ma prawa zabrać reszty transkryptu, a wołający i tak się dowie.
             Err(error) => tracing::error!(
@@ -596,7 +618,7 @@ async fn pump(store: Arc<Store>, run_id: String, mut lines: mpsc::Receiver<RunLi
             ),
         }
     }
-    written
+    carried
 }
 
 /// Zamek na stanie rejestru.

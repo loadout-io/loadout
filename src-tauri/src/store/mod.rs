@@ -349,13 +349,13 @@ impl Store {
     /// Odbudowuje **cały** indeks z katalogu biegu. To jest ta ucieczka, o której mówi
     /// `ARCHITECTURE.md` §2 pyt. 2: kasujesz `loadout.db`, wołasz to, dostajesz te same wiersze.
     ///
-    /// Czyta `run.json` (bieg i kroki), `logs/agent-<id>.jsonl` (zdarzenia, w kolejności `seq`)
-    /// i `handoffs/` (pliki przekazań). Wszystko, czego tu nie ma, **nie istnieje** po skasowaniu
-    /// bazy — i to jest jedyny test niezmiennika 4, jaki ten podsystem ma.
+    /// Czyta `run.json` (bieg i kroki) oraz `logs/` i `handoffs/` (wiersze `artifacts` wskazujące
+    /// palcem na pliki). Wszystko, czego tu nie ma, **nie istnieje** po skasowaniu bazy — i to
+    /// jest jedyny test niezmiennika 4, jaki ten podsystem ma.
     pub async fn rebuild_from(&self, run_dir: &Path) -> Result<()> {
-        // Czytanie idzie na pulę blokującą, bo `logs/agent-<id>.jsonl` długiego biegu bywa duży
-        // (200 000 zdarzeń to normalna wielkość [T7 §5.3]), a jedyny objaw czytania go wprost na
-        // pętli byłby taki, że okno przestaje odpowiadać w chwili otwierania projektu.
+        // Czytanie idzie na pulę blokującą, bo to jest wejście na dysk — `run.json` plus po jednym
+        // pytaniu o każdy plik biegu — a jedyny objaw robienia tego wprost na pętli byłby taki,
+        // że okno przestaje odpowiadać w chwili otwierania projektu.
         let directory = run_dir.to_path_buf();
         let indexed = tokio::task::spawn_blocking(move || rebuild::read(&directory))
             .await
@@ -363,14 +363,20 @@ impl Store {
             // znaczy „bardzo nie tak" i dla wołającego jest tym, czym każdy inny błąd odczytu.
             .map_err(|joined| StoreError::Io(std::io::Error::other(joined)))??;
 
-        // 2026-08-25: odbudowa jest wymianą jednego materializowanego widoku, więc wszystkie
-        // cztery kolekcje jadą jednym zleceniem. Kilka zleceń pozwalało czytelnikowi zobaczyć
-        // pół starego i pół nowego biegu, a ponowienie zatrzymywało się już na kluczu `runs`.
+        // 2026-08-25: odbudowa jest wymianą jednego materializowanego widoku, więc wszystko jedzie
+        // jednym zleceniem. Kilka zleceń pozwalało czytelnikowi zobaczyć pół starego i pół nowego
+        // biegu, a ponowienie zatrzymywało się już na kluczu `runs`.
         self.writer
             .replace_snapshot(
                 indexed.run,
                 indexed.steps,
-                indexed.steps_events,
+                // 2026-09 (Z-15) — ODBUDOWA NIE NIESIE ANI JEDNEJ LINII, i to jest tu jedyne
+                // miejsce, w którym widać to bez zaglądania do [`rebuild::read`]. Linie leżą
+                // w `logs/agent-<krok>.jsonl`, czyta je stamtąd `commands::history::read_run_inner`
+                // (jedyna droga, którą transkrypt dochodzi do człowieka), a kopia w indeksie była
+                // 86 % jego rozmiaru i nie miała ani jednego czytelnika. Poziom `headline` umie
+                // nazwać wyłącznie kuracja z `engine::line`, a ta tutaj nie biegnie.
+                Vec::new(),
                 indexed.artifacts,
             )
             .await

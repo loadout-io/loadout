@@ -15,20 +15,23 @@
 //! - `artifacts.id` — klucz wyliczony z biegu i ścieżki względnej, nigdy świeży uuid.
 //! - `artifacts.created_at` — z `run.json`, nigdy `mtime` pliku: czas modyfikacji zmienia się
 //!   przy kopiowaniu katalogu, więc indeks przestałby zgadzać się sam ze sobą po `cp -r`.
-//! - `events.ts` — surowy strumień agenta **nie niesie znaczników czasu** (`logs/agent-<id>.jsonl`
-//!   to linie wprost od vendora), więc jedyny czas, jaki da się odtworzyć z plików, to moment
-//!   startu kroku. Dosypywanie do niego numeru linii wyglądałoby dokładniej i byłoby zmyśleniem;
-//!   kolejność transkryptu niesie `events.seq`, i to jest jego zadanie.
-//! - `events` w kolejności `seq` — kroki idą w kolejności z `run.json`, linie w kolejności
-//!   z pliku, a katalog `handoffs/` jest **sortowany po nazwie**, bo `read_dir` nie obiecuje
-//!   żadnej kolejności i na innym systemie plików oddałby inną.
+//! - `artifacts` w kolejności — kroki idą w kolejności z `run.json`, a katalog `handoffs/` jest
+//!   **sortowany po nazwie**, bo `read_dir` nie obiecuje żadnej kolejności i na innym systemie
+//!   plików oddałby inną.
 //!
 //! # Czego ten plik nie robi
 //!
-//! Nie kuruje. Każda niepusta linia surowego strumienia wchodzi jako jedno zdarzenie na poziomie
-//! `raw`; mapowanie zdarzenie→linia (`system/init` nie daje nic, sąsiednie odczyty sklejają się
-//! w oknie 2 s) jest kontraktem T-05 i mieszka w `engine::stream`. Odbudowa, która kurowałaby po
-//! swojemu, byłaby drugą implementacją tej samej polityki — i tą, o której nikt by nie pamiętał.
+//! Nie kuruje i **nie oddaje ani jednego zdarzenia**. 2026-09 (Z-15): do tego dnia każda niepusta
+//! linia surowego strumienia wchodziła tu do indeksu jako wiersz `raw` — 27 362 wiersze i 86 %
+//! z 72 MB żywej biblioteki, zapisane obok pliku, z którego przyszły, i nieczytane przez ani jeden
+//! `SELECT` w produkcie. Transkrypt na ekran składa `commands::history::read_run_inner` prosto
+//! z `logs/agent-<krok>.jsonl`, więc te wiersze były drugą kopią prawdy, którą niezmiennik 4
+//! trzyma w plikach. Zostaje po nich wiersz `artifacts` wskazujący palcem na plik.
+//!
+//! Kuracja i tak nie mieszka tutaj: mapowanie zdarzenie→linia (`system/init` nie daje nic,
+//! sąsiednie odczyty sklejają się w oknie 2 s) jest kontraktem T-05 i stoi w `engine::stream`.
+//! Odbudowa, która kurowałaby po swojemu, żeby nazwać poziom `headline`, byłaby drugą
+//! implementacją tej samej polityki (niezmiennik 23) — i tą, o której nikt by nie pamiętał.
 //!
 //! Nie zapisuje też **niczego**: oddaje wiersze, a do bazy niesie je `store::writer`, bo pisze
 //! wyłącznie on (niezmiennik 2). Dlatego w tym pliku nie ma ani jednego zdania SQL — i dlatego
@@ -40,7 +43,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{NewArtifact, NewEvent, NewRun, NewStep, Result};
+use super::{NewArtifact, NewRun, NewStep, Result};
 
 /// Opis biegu — bieg i jego kroki.
 const RUN_FILE: &str = "run.json";
@@ -53,9 +56,6 @@ const LOGS_DIR: &str = "logs";
 /// przenosi przekazania poprzedniego biegu. Druga stała z tym samym napisem rozjechałaby się
 /// przy pierwszej zmianie układu katalogu biegu.
 pub(crate) const HANDOFFS_DIR: &str = "handoffs";
-
-/// Poziom, na którym ląduje surowa linia strumienia. Jeden z trzech dozwolonych przez `CHECK`.
-const LEVEL_RAW: &str = "raw";
 
 /// `artifacts.kind` surowego strumienia agenta.
 const KIND_RAW_LOG: &str = "raw_log";
@@ -84,8 +84,6 @@ pub(crate) struct Indexed {
     pub(crate) run: NewRun,
     /// Jego kroki, w kolejności z `run.json`.
     pub(crate) steps: Vec<NewStep>,
-    /// Jego zdarzenia, w kolejności, w jakiej mają dostać `seq`.
-    pub(crate) steps_events: Vec<NewEvent>,
     /// Jego artefakty: surowe strumienie i pliki przekazań.
     pub(crate) artifacts: Vec<NewArtifact>,
 }
@@ -141,21 +139,13 @@ struct StepFile {
     error: Option<String>,
 }
 
-/// Jedna linia surowego strumienia. Interesuje nas z niej **wyłącznie** rodzaj.
-#[derive(Debug, Deserialize)]
-struct LogLine {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-}
-
 /// Wartość `concurrency`, kiedy `run.json` jej nie niesie.
 fn default_concurrency() -> i64 {
     DEFAULT_CONCURRENCY
 }
 
 /// Czyta katalog biegu i oddaje wiersze. **Synchronicznie i bez zapisu** — wołający puszcza to
-/// przez `spawn_blocking`, bo surowy strumień długiego biegu bywa duży, a zamrożone okno jest
-/// gorsze niż wolne.
+/// przez `spawn_blocking`, bo to jest wejście na dysk, a zamrożone okno jest gorsze niż wolne.
 pub(crate) fn read(run_dir: &Path) -> Result<Indexed> {
     let text = fs::read_to_string(run_dir.join(RUN_FILE))?;
     let file: RunFile = serde_json::from_str(&text)?;
@@ -181,27 +171,20 @@ pub(crate) fn read(run_dir: &Path) -> Result<Indexed> {
     };
 
     let mut steps = Vec::with_capacity(file.steps.len());
-    let mut steps_events = Vec::new();
     let mut artifacts = Vec::new();
 
     for step in file.steps {
-        // Surowa linia nie niesie własnego czasu, więc bierzemy jedyny, jaki stoi w plikach.
+        // Plik nie niesie własnego czasu, więc bierzemy jedyny, jaki stoi w `run.json`.
         let ts = step.started_at.unwrap_or(run.created_at);
         let log = run_dir
             .join(LOGS_DIR)
             .join(format!("agent-{}.jsonl", step.id));
 
-        if let Some(stream) = read_if_present(&log)? {
-            for line in stream.lines().filter(|line| !line.trim().is_empty()) {
-                steps_events.push(NewEvent {
-                    run_id: run.id.clone(),
-                    step_id: Some(step.id.clone()),
-                    ts,
-                    kind: kind_of(line),
-                    level: LEVEL_RAW.to_owned(),
-                    body: Some(line.to_owned()),
-                });
-            }
+        // 2026-09 (Z-15) — TYLKO `metadata`, ANI JEDNEGO BAJTU TREŚCI. Strumień długiego biegu waży
+        // dziesiątki megabajtów; wczytanie go w całości po to, żeby przepisać każdą linię do bazy,
+        // kosztowało dwie kopie w pamięci (`read_to_string` plus `line.to_owned()`) i drugą kopię
+        // na dysku. Po pytanie o rozmiar `artifact` sięga tu drugi raz i to jest cała cena.
+        if is_on_disk(&log)? {
             artifacts.push(artifact(
                 run_dir,
                 &run.id,
@@ -251,31 +234,18 @@ pub(crate) fn read(run_dir: &Path) -> Result<Indexed> {
     Ok(Indexed {
         run,
         steps,
-        steps_events,
         artifacts,
     })
 }
 
-/// Rodzaj zdarzenia: pole `type` z linii albo `raw`, kiedy linia nie jest naszym JSON-em.
-///
-/// Linii nieznanego kształtu **nie porzucamy** — to jest odwrotność niezmiennika 5 i tak ma być.
-/// Tam chodzi o bieg, który nie ma się wywalić na nowym typie zdarzenia; tutaj plik jest prawdą,
-/// a linia, której nie umiemy nazwać, dalej jest linią, która się wydarzyła.
-fn kind_of(line: &str) -> String {
-    serde_json::from_str::<LogLine>(line)
-        .ok()
-        .and_then(|parsed| parsed.kind)
-        .unwrap_or_else(|| LEVEL_RAW.to_owned())
-}
-
-/// Treść pliku albo `None`, kiedy pliku nie ma.
+/// Czy ten plik leży na dysku.
 ///
 /// Brak surowego strumienia nie jest awarią: krok mógł zostać pominięty albo anulowany, zanim
 /// vendor cokolwiek powiedział. Awarią jest dopiero błąd inny niż „nie ma takiego pliku".
-fn read_if_present(path: &Path) -> Result<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+fn is_on_disk(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
