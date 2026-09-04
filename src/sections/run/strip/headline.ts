@@ -54,6 +54,10 @@ export interface Headline {
 export interface RunFacts {
   /** Nazwa biegu, który idzie. Puste, kiedy nic nie biegnie. */
   readonly workflow: string;
+  /** Nazwa biegu, który już zszedł. Opcjonalna, żeby starsi konstruktorzy dalej byli pełni. */
+  readonly finished?: string;
+  /** Początek skończonego biegu. Opcjonalny z tego samego powodu. */
+  readonly startedAt?: number | string | null;
   /** Nazwa workflow, który ruszy po naciśnięciu `Run`. Puste, kiedy nie ma czego uruchomić. */
   readonly nextUp: string;
   /** Kroki biegu w kolejności grafu — z magazynu biegu albo z pliku workflow. */
@@ -87,12 +91,40 @@ const DOT = ' · ';
 const HOUR_AND_MINUTE = 5;
 
 function startedAt(facts: RunFacts): string {
+  /* Jawny początek skończonego biegu bije okno linii. Po restarcie przychodzi jako gotowy
+   * zapis historii, a w żywej sesji jako milisekundy do tej samej funkcji zegara. */
+  if (facts.startedAt !== undefined) {
+    if (facts.startedAt === null) return '';
+    if (typeof facts.startedAt === 'number')
+      return clockOf(facts.startedAt).slice(0, HOUR_AND_MINUTE);
+    return /(?:^|\s)(\d\d:\d\d)(?::\d\d)?$/u.exec(facts.startedAt)?.[1] ?? '';
+  }
   /* Początku, który wypadł z okna, nie zgadujemy: godzina najstarszej linii, jaka została, nie
    * jest godziną startu i nic na ekranie nie mówiłoby, że to nie to samo. */
   if (facts.droppedBefore > 0) return '';
   const first = facts.lines[0];
   if (first === undefined) return '';
   return clockOf(first.at).slice(0, HOUR_AND_MINUTE);
+}
+
+/** Zegar ścienny skończonego biegu, bez precyzji, której nagłówek nie ma miejsca czytać. */
+function wallClock(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds >= 60 * 60) {
+    const hours = Math.floor(seconds / (60 * 60));
+    const minutes = Math.floor((seconds % (60 * 60)) / 60);
+    return String(hours) + ' h' + (minutes === 0 ? '' : ' ' + String(minutes) + ' min');
+  }
+  if (seconds >= 60) return String(Math.floor(seconds / 60)) + ' min';
+  return String(seconds) + ' s';
+}
+
+/** Czas od pierwszej do ostatniej linii biegu; pusty, kiedy historia nie niesie jego końca. */
+function durationOf(facts: RunFacts): string {
+  if ((facts.finished ?? '') === '' || typeof facts.startedAt !== 'number') return '';
+  const last = facts.lines.at(-1);
+  if (last === undefined || last.at < facts.startedAt) return '';
+  return wallClock(last.at - facts.startedAt);
 }
 
 /**
@@ -109,7 +141,8 @@ function startedAt(facts: RunFacts): string {
  */
 export function headlineFor(facts: RunFacts): Headline {
   const going = facts.workflow !== '';
-  const title = going ? facts.workflow : facts.nextUp;
+  const finished = facts.finished ?? '';
+  const title = going ? facts.workflow : finished === '' ? facts.nextUp : finished;
   const spend = spendFor(facts.lines, facts.budgetUsd);
 
   if (title === '') {
@@ -117,19 +150,25 @@ export function headlineFor(facts: RunFacts): Headline {
   }
 
   const { blocks } = stripFor(title, facts.steps, spend);
-  const running = blocks.some((block) => block.state === 'now');
+  const running = finished === '' && blocks.some((block) => block.state === 'now');
   /* „Skończony" znaczy: ten bieg ma za sobą kroki, a żaden już nie idzie. Bieg, który jeszcze
    * nie ruszył, ma wszystkie kroki w `todo` i nie jest skończony — dlatego pytamy o ślad
    * pracy, a nie o „nic nie biegnie". */
-  const ended = !running && blocks.some((block) => block.state === 'done' || block.ended);
+  const ended =
+    finished !== '' || (!running && blocks.some((block) => block.state === 'done' || block.ended));
 
   const tone: RunTone = running ? 'live' : ended ? 'ended' : 'idle';
   const state = running ? 'Running' : ended ? 'Finished' : 'Ready to run';
-  const when = startedAt(facts);
+  /* Podgląd następnego workflow nie „zaczął się" od starej linii sesji. To właśnie ten rozjazd
+   * stawiał `STARTED 16:2x` obok `READY TO RUN` na zrzucie Z-37. */
+  const when = going || ended ? startedAt(facts) : '';
+  const duration = durationOf(facts);
 
   return {
     tone,
-    eyebrow: when === '' ? state : state + DOT + 'started ' + when,
+    eyebrow: [state, when === '' ? '' : 'started ' + when, duration]
+      .filter((part) => part !== '')
+      .join(DOT),
     title,
     /* Metadana zawsze w tej samej kolejności, a człony, których nie znamy, po prostu nie
      * wchodzą: wiersz z „workspace —" mówi o folderze mniej niż wiersz bez niego. */

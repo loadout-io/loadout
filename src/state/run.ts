@@ -169,6 +169,13 @@ export interface Step {
   readonly at?: Point;
 }
 
+/** Bieg, który już zszedł, ale nadal jest obrazem tej sesji. */
+export interface EndedRun {
+  readonly name: string;
+  /** Milisekundy z żywej sesji albo zapis historii gotowy do przeczytania po restarcie. */
+  readonly startedAt: number | string | null;
+}
+
 /** Kto to powiedział — trzy wartości, nie osiem [FOUNDATIONS §2.2]. */
 export type Who = 'you' | 'agent' | 'loadout';
 
@@ -257,6 +264,15 @@ export interface RunState {
    * wywołaniem `nowRunning`.
    */
   readonly links: readonly Link[] | null;
+  /**
+   * Ostatni skończony bieg tej sesji, albo `null`, kiedy ekran pokazuje coś innego.
+   *
+   * 2026-09 (Z-37) — OSOBNE OD `workflow`, bo puste `workflow` jest jedyną odpowiedzią całej
+   * aplikacji na „czy coś biegnie". Zostawienie w nim nazwy po końcu utrzymałoby Stop nad
+   * procesem, którego już nie ma (niezmiennik 16); skasowanie nazwy bez tej flagi zamieniało
+   * skończony bieg w podgląd następnego.
+   */
+  readonly ended: EndedRun | null;
   readonly answers: readonly Answer[];
 
   /**
@@ -274,9 +290,10 @@ export interface RunState {
    * odwrotnie. Ta chwila jest krótka, przez co objawia się jako mignięcie, którego nikt nie
    * umie powtórzyć.
    *
-   * `nowRunning('', [])` jest tym samym zdaniem w drugą stronę: bieg zszedł. Wołanie tego
-   * z drogi powrotnej Startu jest wymagane przez niezmiennik 16 — Stop, który zostaje na
-   * ekranie po biegu, jest kontrolką, która nie ma czego zatrzymać.
+   * Zejście biegu jest od 2026-09 osobną akcją [`runEnded`]: czyści wyłącznie `workflow`, bo
+   * ono odpowiada na „czy coś biegnie", a plan zostaje jako paragon zakończenia. Pusty argument
+   * tutaj nadal służy testom i jawnemu wyzerowaniu przed następnym obrazem, ale nie jest drogą
+   * powrotną Startu.
    *
    * `folder` jest opcjonalny, bo dwa cudze kryteria wołają tę akcję dwoma argumentami
    * (`stop-becomes-reachable.test.tsx` przez `start()`), a jego brak znaczy dokładnie to,
@@ -289,6 +306,22 @@ export interface RunState {
     fileName?: string,
     links?: readonly Link[] | null,
   ) => void;
+
+  /** Zdejmuje wyłącznie żywość biegu; plan i jego rozstrzygnięcia zostają na ekranie. */
+  runEnded: () => void;
+
+  /** Odtwarza ostatni bieg z tej samej odpowiedzi `read_run`, którą czyta historia. */
+  finishedRun: (
+    name: string,
+    steps: readonly Step[],
+    folder: string | null,
+    fileName: string,
+    links: readonly Link[] | null,
+    startedAt: string,
+  ) => void;
+
+  /** Zdejmuje skończony obraz, kiedy człowiek wskazał inny workflow. */
+  forgetTheLastRun: () => void;
 
   /** Zapisuje odpowiedź człowieka. */
   answer: (questionId: number, option: string) => void;
@@ -338,7 +371,8 @@ const STEP_IS_OVER: ReadonlySet<StepState> = new Set<StepState>([
 
 /** Czy ten stan kroku znaczy, że praca się skończyła. Nieznany napis nie kończy niczego. */
 export function stepIsOver(state: string): boolean {
-  return STEP_STATES.has(state) && STEP_IS_OVER.has(state as StepState);
+  const known = stepStateOf(state);
+  return known !== null && STEP_IS_OVER.has(known);
 }
 
 const STEP_STATES: ReadonlySet<string> = new Set<StepState>([
@@ -350,6 +384,11 @@ const STEP_STATES: ReadonlySet<string> = new Set<StepState>([
   'cancelled',
   'skipped',
 ]);
+
+/** Słowo z drutu jako jeden ze stanów kroku; nieznane słowo jest brakiem, nigdy stanem UI. */
+export function stepStateOf(state: string): StepState | null {
+  return STEP_STATES.has(state) ? (state as StepState) : null;
+}
 
 /**
  * Kroki po zastosowaniu wierszy `stepState` z paczki — TA SAMA tablica, kiedy nic się nie zmieniło.
@@ -374,8 +413,8 @@ function withStepStates(steps: readonly Step[], batch: readonly FeedLine[]): rea
   let next: Step[] | null = null;
   for (const line of batch) {
     if (line.kind === 'stepState') {
-      if (!STEP_STATES.has(line.state)) continue;
-      const state = line.state as StepState;
+      const state = stepStateOf(line.state);
+      if (state === null) continue;
       const at = (next ?? steps).findIndex((step) => step.id === line.stepId);
       if (at < 0) continue;
       const step = (next ?? steps)[at];
@@ -415,6 +454,7 @@ export function createRunStore(): RunStore {
     fileName: '',
     folder: null,
     links: null,
+    ended: null,
     answers: [],
 
     appendLines(batch: readonly FeedLine[]): readonly FeedLine[] {
@@ -466,7 +506,48 @@ export function createRunStore(): RunStore {
        * zaczyna się od swojego planu, nie od sumy z poprzednim. `steps` bierzemy dokładnie
        * takie, jakie przyszły — kopia dawałaby paskowi loadoutu nową tożsamość każdego bloku
        * przy każdym wywołaniu, a `stripFor` liczy się z `useMemo` po tej właśnie tożsamości. */
-      set({ workflow, steps, folder, fileName, links });
+      set({ workflow, steps, folder, fileName, links, ended: null });
+    },
+
+    runEnded(): void {
+      set((state) => ({
+        /* Początek, który wypadł z okna, nie jest do odtworzenia z najstarszej pozostałej
+         * linii. Puste jest uczciwsze od godziny późniejszej niż prawdziwa (niezmiennik 17). */
+        ended: {
+          name: state.workflow,
+          startedAt:
+            state.droppedBefore > 0 || state.lines[0] === undefined ? null : state.lines[0].at,
+        },
+        /* TYLKO żywość schodzi. Kroki, strzałki i adres pliku są paragonem właśnie
+         * zakończonego biegu; ich wyzerowanie stworzyło wadę Z-37. */
+        workflow: '',
+      }));
+    },
+
+    finishedRun(
+      name: string,
+      steps: readonly Step[],
+      folder: string | null,
+      fileName: string,
+      links: readonly Link[] | null,
+      startedAt: string,
+    ): void {
+      /* JEDEN zapis z rozmysłem: dwa wywołania dałyby render z niepustym `workflow`, czyli Stop
+       * nad biegiem sprzed restartu. To kontrolka bez procesu do zatrzymania (niezmiennik 16). */
+      set({
+        workflow: '',
+        steps,
+        folder,
+        fileName,
+        links,
+        ended: { name, startedAt },
+      });
+    },
+
+    forgetTheLastRun(): void {
+      /* Linie zostają historią sesji. Schodzi tylko obraz biegu, żeby plan z nowo wskazanego
+       * pliku mógł wejść jako `waiting` zamiast mieszać się z poprzednimi rozstrzygnięciami. */
+      set({ steps: [], folder: null, fileName: '', links: null, ended: null });
     },
 
     answer(questionId: number, option: string): void {

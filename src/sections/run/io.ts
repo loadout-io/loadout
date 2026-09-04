@@ -607,17 +607,17 @@ export function runEvalSet(
  * PRZYCZYNA NIE JEST W STOPIE. Każdy start pisze do sesji „teraz biegnie to" **przed** `invoke`,
  * bo komenda po tamtej stronie trwa tyle, co bieg. `/ask` nie ma przy tym zapadki `going`
  * i ma jej nie mieć (powód stoi przy [`askOneAgent`]) — więc dochodzi do Rusta, dostaje odmowę,
- * a jego `finally` woła `nowRunning('', [], null)`. Zdanie „bieg zszedł" jest wtedy prawdziwe
+ * a jego `finally` gasi wpis biegu. Zdanie „bieg zszedł" jest wtedy prawdziwe
  * o biegu, który nie ruszył, i **fałszywe o tym, który pracuje**: obu dotyczy jeden wpis
  * w jednej sesji zakresu. Od tej chwili okno uważa, że nic nie biegnie, a Stop znika.
  *
- * # Dlaczego ODTWORZENIE, a nie „nie kasuj przy odmowie"
+ * # Skąd wiemy, czy ODTWORZYĆ, czy ZAKOŃCZYĆ
  *
- * Bo `finally` nie odróżnia odmowy od porażki w połowie biegu, a rozdzielanie tego na
- * `then`/`catch` dawałoby dwie drogi do jednej odpowiedzi. Odtworzenie jest poprawne w OBU
- * przypadkach i nie wymaga tego rozróżnienia: jeżeli ten start naprawdę ruszył, to Rust go
- * wpuścił, czyli przed nim nie biegło nic — a wtedy „odtwórz stan sprzed" znaczy dokładnie
- * tyle samo, co „wyczyść". Różnicę widać wyłącznie tam, gdzie coś już szło.
+ * `finally` nie odróżnia odmowy od porażki w połowie biegu, a rozdzielanie tego na `then`/`catch`
+ * dawałoby dwie drogi do jednej odpowiedzi. Rozstrzyga migawka sprzed próby: niepuste
+ * `workflow` znaczy, że próba dostała odmowę nad cudzym biegiem i musi go odtworzyć; puste
+ * znaczy, że próba była właścicielem sesji i jej plan ma zostać oznaczony jako skończony.
+ * Rust nie wpuści dwóch biegów w jeden folder, więc trzeciego przypadku nie ma.
  */
 function whatWasRunning(session: RunStore): () => void {
   const before = session.getState();
@@ -630,11 +630,20 @@ function whatWasRunning(session: RunStore): () => void {
      * zostawiałoby po odmowie `/ask` pasek opisujący ŻYWY bieg jako listę kroków bez ani jednej
      * relacji — czyli ten sam bieg pokazany jako coś innego, niż jest. */
     links: before.links,
+    /* Flaga jedzie z całą migawką: odtworzenie ma być dokładne także po dołożeniu stanu
+     * skończonego biegu, a nie opierać się na założeniu, że dziś przy żywym jest zawsze pusta. */
+    ended: before.ended,
   };
   return () => {
-    session
-      .getState()
-      .nowRunning(kept.workflow, kept.steps, kept.folder, kept.fileName, kept.links);
+    if (kept.workflow === '') {
+      /* Ten start był właścicielem sesji: Rust mógł go wpuścić wyłącznie wtedy, gdy wcześniej
+       * nic nie biegło. Zdejmujemy żywość, ale zostawiamy jego końcowy plan (Z-37). */
+      session.getState().runEnded();
+      return;
+    }
+    /* Odmówiony `/ask` nad cudzym żywym biegiem nie kończy go. Cała migawka wraca jednym
+     * tyknięciem, więc Stop i kafelki nie widzą pośredniego pustego stanu (niezmiennik 13). */
+    session.setState(kept);
   };
 }
 
