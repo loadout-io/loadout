@@ -327,8 +327,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-19 | `z19-codex-resume-flag` | `prompts/Z-19.md` | R | X→C | | Z-18 | **LANDED** `2026-09-04` | trzy rundy |
 | Z-20 | `z20-roster-same-copy-skill` | `prompts/Z-20.md` | R | X→C | | Z-19 | **LANDED** `2026-09-04` | dwie rundy |
 | Z-21 | `z21-borrow-review` | `prompts/Z-21.md` | R | C→X | | Z-20 | **LANDED** `2026-09-04` | jedna runda |
-| Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | RUNNING | |
-| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | TODO | sonda `env_vars` Codeksa PRZED startem; wynik dopisz do promptu jako akapit „Wynik sondy" |
+| Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | **LANDED** `2026-09-04` | trzy rundy + ręka; planista Codeksa |
+| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | RUNNING | sonda `env_vars` Codeksa PRZED startem; wynik dopisz do promptu jako akapit „Wynik sondy" |
 | Z-34 | `z34-agent-app-preflight` | `prompts/Z-34.md` | R+TS | C→X | | — | TODO | z uratowanej gałęzi: sonda gotowości CLI zamiast bezwarunkowego „Claude · Codex ready" |
 | Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | Z-23 | TODO | |
 | Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | TODO | |
