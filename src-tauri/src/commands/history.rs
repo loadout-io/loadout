@@ -54,6 +54,7 @@ use crate::engine::drivers::claude::ClaudeDecoder;
 use crate::engine::drivers::codex::CodexDecoder;
 use crate::engine::line::{Curator, Line, Seen, context_per_turn};
 use crate::engine::stream::{Decoded, decode};
+use crate::inherit::rewrite;
 
 /// Opis biegu. Ta sama nazwa, którą składa `commands::run` — rozjazd znaczy pustą historię.
 const RUN_FILE: &str = "run.json";
@@ -324,6 +325,18 @@ pub struct PastStepWire {
     /// Ekran ma te dwa stany rozróżniać, bo „nic stąd nie wczytał" i „nie wiemy" to dwa różne
     /// zdania (niezmiennik 17).
     pub loaded_by_the_app: Option<LoadedByTheAppWire>,
+    /// Jedno zdanie o tym, co ten krok wczytał z folderu POZA tym, co włożył mu bieg.
+    ///
+    /// `None` znaczy „nie ma o czym mówić" i mówi to o trzech różnych stanach naraz: krok bez
+    /// rekordu, rekord z pustymi listami i rekord, w którym stoi wyłącznie własność biegu.
+    /// Dla patrzącego są jednym — z tego folderu nie przyszło nic, czego Loadout nie dał —
+    /// a zdanie „przeczytał 0 rzeczy" byłoby wierszem bez treści przy każdym kroku każdego
+    /// biegu (niezmiennik 17 i 16).
+    ///
+    /// LICZONE PRZY ODCZYCIE, nie zapisane w `run.json` (2026-09, Z-47): porównanie potrzebuje
+    /// wyłącznie nazw, którymi bieg sam przypiął swoje rzeczy, więc bieg zapisany przed tą
+    /// zmianą dostaje to zdanie tak samo jak dzisiejszy (niezmiennik 4).
+    pub what_loadout_did_not_give: Option<String>,
     /// Zapisany strumień tego kroku, przepuszczony przez TĘ SAMĄ kurację, co żywy bieg.
     ///
     /// 2026-08-23 (T-95) — POPRAWIONY AKAPIT, BO POPRZEDNI BYŁ NIEPRAWDĄ. Stało tu, że
@@ -476,6 +489,9 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 cost_usd: step.cost_usd,
                 context_per_turn: recorded_context_per_turn(step),
                 memory: memory_for_step(&file.memory, &step.id),
+                what_loadout_did_not_give: what_loadout_did_not_give(
+                    step.loaded_by_the_app.as_ref(),
+                ),
                 loaded_by_the_app: step.loaded_by_the_app.clone(),
                 lines: recorded_lines(
                     &dir,
@@ -828,6 +844,118 @@ fn recorded_context_per_turn(step: &StepDescription) -> Option<String> {
             .flatten()
     })?;
     context_per_turn(uncached_input, cache_read, turns)
+}
+
+/// Pluginy, które zakłada krokowi SAM BIEG — po nazwie, którą przypina ich manifest.
+///
+/// Czytane ze stałych warstwy, która te nazwy nadaje (`inherit::rewrite::pin_the_name`), a nie
+/// przepisane: kopia rozjechałaby się przy pierwszej zmianie nazwy i krok zacząłby liczyć
+/// własność biegu jako cudzą (niezmiennik 13).
+const OUR_PLUGINS: [&str; 2] = [rewrite::LIBRARY_PLUGIN, rewrite::INHERITED_PLUGIN];
+
+/// Klucz, którym aplikacja agenta nazywa katalog pamięci przekierowany przez bieg.
+///
+/// Zmierzone 2026-08-23 w `system/init` każdego kroku: `memory_paths.auto` wskazywał katalog
+/// dzielony z sesjami człowieka, dopóki nie zaczął go podstawiać `StepDocument`
+/// (`engine::drivers::claude`). Każdy inny klucz tej mapy jest pamięcią, której Loadout temu
+/// krokowi nie dał.
+const AUTO_MEMORY: &str = "auto";
+
+/// Zdanie o tym, co ten krok wczytał z folderu POZA tym, co włożył mu bieg — albo `None`.
+///
+/// # Po co ono jest (2026-09, Z-47)
+///
+/// Rekord Z-16 mówi, co aplikacja agenta ogłosiła o sobie; nikt nie porównywał tego z tym, co
+/// Loadout WŁOŻYŁ, a to jest całe pytanie, dla którego tamten rekord powstał. `ARCHITECTURE` §4:
+/// na 2.1.251 plik instrukcji gospodarza docierał do kroku mimo `--setting-sources ""`, na
+/// 2.1.260 już nie, i vendor odwrócił to bez linijki w zmianach. Następny taki obrót zobaczy
+/// wyłącznie ktoś, kto otworzy panel i porówna listy ręcznie, pozycja po pozycji.
+///
+/// # Liczone przy odczycie, bez ani jednego nowego klucza w `run.json`
+///
+/// Rzeczy biegu są rozpoznawalne po nazwach, którymi bieg sam je przypiął: pluginy z
+/// [`OUR_PLUGINS`], umiejętności z nich (wracają jako `<plugin>:<nazwa>` [S1 §2]) i przekierowany
+/// katalog pamięci pod kluczem [`AUTO_MEMORY`]. Zdanie powstaje więc przy każdym otwarciu biegu,
+/// także tego zapisanego przed tą zmianą (niezmiennik 4).
+///
+/// # Trzy listy z sześciu, i to jest wybór
+///
+/// `slash_commands`, `mcp_servers` i `agents` nie mają po naszej stronie nazwy, po której dałoby
+/// się poznać, że przyszły od nas — Loadout nie wkłada krokowi ani jednej z tych trzech rzeczy,
+/// więc każda pozycja byłaby „spoza biegu" i zdanie mówiłoby to samo o każdym kroku, który w ogóle
+/// się przedstawił. Zostaje to, co bieg naprawdę wkłada i co naprawdę da się porównać.
+fn what_loadout_did_not_give(loaded: Option<&LoadedByTheAppWire>) -> Option<String> {
+    let loaded = loaded?;
+    let skills = loaded
+        .skills
+        .iter()
+        .filter(|name| !from_our_plugin(name))
+        .count();
+    let plugins = loaded
+        .plugins
+        .iter()
+        .filter(|name| !OUR_PLUGINS.contains(&name.as_str()))
+        .count();
+    let memory = loaded
+        .memory_paths
+        .iter()
+        .filter(|key| key.as_str() != AUTO_MEMORY)
+        .count();
+
+    // Kolejność jest kolejnością zdania i nie jest przypadkowa: umiejętności są tym, czego z
+    // cudzego folderu przychodzi najwięcej, a katalog pamięci tym, o czym najtrudniej się
+    // dowiedzieć skądkolwiek indziej.
+    let parts: Vec<String> = [
+        a_few(skills, "1 skill", "skills"),
+        a_few(plugins, "a plugin", "plugins"),
+        a_few(memory, "a memory folder", "memory folders"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let what = match parts.as_slice() {
+        // Krok bez rekordu, rekord z pustymi listami i rekord z samą własnością biegu są dla
+        // patrzącego jednym: z tego folderu nie przyszło nic, czego Loadout nie dał. Zdanie
+        // „przeczytał 0 rzeczy" byłoby wierszem bez treści przy niemal każdym kroku
+        // (niezmienniki 16 i 17).
+        [] => return None,
+        [alone] => alone.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+
+    let folder = loaded.folder.as_str();
+    // Folder bez nazwy zdarza się tylko przy uszkodzonym rekordzie. Zdanie zostaje prawdziwe bez
+    // niego; „from " zakończone niczym wyglądałoby jak napis, który się nie dorysował.
+    Some(if folder.is_empty() {
+        format!("This step also read {what} that Loadout did not give it")
+    } else {
+        format!("This step also read {what} from {folder} that Loadout did not give it")
+    })
+}
+
+/// Czy ta umiejętność przyjechała z pluginu, który założył bieg.
+///
+/// Po przedrostku `<plugin>:`, bo tak wymienia je `system/init` [S1 §2] — samo `starts_with`
+/// nazwą pluginu łapałoby też `loadout-skills-of-somebody-else`, czyli cudzą rzecz uznaną
+/// za naszą.
+fn from_our_plugin(skill: &str) -> bool {
+    OUR_PLUGINS.iter().any(|plugin| {
+        skill
+            .strip_prefix(plugin)
+            .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+/// Człon zdania o jednej liście: jedna sztuka nazwana słowem, więcej — liczbą.
+///
+/// `None` przy zerze, żeby wołający nie musiał pytać dwa razy o to samo.
+fn a_few(count: usize, one: &str, many: &str) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(one.to_owned()),
+        _ => Some(format!("{count} {many}")),
+    }
 }
 
 /// Stan jednego fizycznego kroku, który ma przeczytać człowiek.

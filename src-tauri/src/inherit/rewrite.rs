@@ -66,7 +66,12 @@ const MANIFEST_DIR: &str = ".claude-plugin";
 const MANIFEST_FILE: &str = "plugin.json";
 
 /// Nazwa pluginu z materiałem CUDZEGO repozytorium.
-const INHERITED_PLUGIN: &str = "loadout-inherited";
+///
+/// `pub(crate)` od 2026-09 (Z-47): historia biegu poznaje po tej nazwie, co krokowi dał sam bieg,
+/// a co dobrał sobie z folderu. Kopia tego napisu po tamtej stronie rozjechałaby się przy
+/// pierwszej zmianie nazwy — i wtedy krok zacząłby liczyć własność biegu jako cudzą, milcząc
+/// dokładnie o tym, o czym ma mówić (niezmiennik 13).
+pub(crate) const INHERITED_PLUGIN: &str = "loadout-inherited";
 
 /// Nazwa pluginu z materiałem BIBLIOTEKI Loadouta.
 ///
@@ -74,7 +79,9 @@ const INHERITED_PLUGIN: &str = "loadout-inherited";
 /// jest jedyną rzeczą, po której człowiek pozna, skąd wzięła się umiejętność, którą sesja
 /// właśnie ogłosiła. Jedna nazwa na oba źródła zlepiłaby „to twoje" i „to z tego repozytorium"
 /// w jeden napis — a to są dwa różne pytania o zaufanie.
-const LIBRARY_PLUGIN: &str = "loadout-skills";
+///
+/// `pub(crate)` z tego samego powodu, co przy [`INHERITED_PLUGIN`].
+pub(crate) const LIBRARY_PLUGIN: &str = "loadout-skills";
 
 /// Przepisuje wybrane umiejętności gospodarza do katalogu pluginu biegu.
 ///
