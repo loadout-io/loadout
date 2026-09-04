@@ -1997,6 +1997,56 @@ pub enum GroupProof {
     Alive { group: Option<GroupId> },
 }
 
+/// Numer sygnału, od którego zszedł ten proces. `None`, kiedy wyszedł własnym kodem.
+///
+/// # Dlaczego to mieszka TUTAJ, a nie u wołającego (2026-09, Z-39)
+///
+/// Niezmiennik 3: `std::os::unix::` ma w tym drzewie jeden dom i jest nim ten plik. Wołający —
+/// [`crate::commands::run`] — pyta o coś, co jest faktem o platformie („czy ten status niesie
+/// sygnał"), a odpowiedź ma dostać w kształcie, w którym numeru sygnału nie trzeba nigdzie
+/// odzyskiwać drugi raz.
+///
+/// # Po co ktokolwiek o to pyta
+///
+/// Bo `ExitStatus::code()` oddaje `None` zarówno dla kroku ubitego z zewnątrz, jak i dla kroku,
+/// którego status w ogóle nie mówi o kodzie — a to są dwie różne rzeczy do powiedzenia
+/// człowiekowi. Bieg meetnotes `20260901-150035`: lider czytał `pgid` z `run.json` i wysyłał
+/// `kill -TERM` sam, bo nie miał czym zatrzymać biegu; Loadout zapisał to jako zwykłą porażkę
+/// kroku i pojechał dalej.
+#[cfg(unix)]
+#[must_use]
+pub fn signal_that_ended(status: ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    status.signal()
+}
+
+/// Jak wyżej. Windows nie zna sygnałów; gałąź wchodzi razem z resztą portu.
+#[cfg(windows)]
+#[must_use]
+pub fn signal_that_ended(_status: ExitStatus) -> Option<i32> {
+    None
+}
+
+/// Numer sygnału, który **powłoka-opakowanie** zamieniła na własny kod wyjścia — albo `None`.
+///
+/// 2026-09 (Z-39) — DRUGA POŁOWA TEGO SAMEGO PYTANIA, i bez niej odpowiedź bywa nieprawdziwa.
+/// Krok ubity sygnałem nie zawsze zostawia status z sygnałem: `sh`, `npm` i każde inne
+/// opakowanie łapie piętnastkę, sprząta i wychodzi `128 + numer` — czyli `exit 143`, dokładnie
+/// tak, jak widać to w eksporcie diagnostyki tamtego biegu. Status mówi wtedy „kod 143", a to
+/// jest ten sam fakt zapisany inaczej.
+///
+/// ZAKRES `129..=159` JEST TREŚCIĄ, nie ostrożnością: to są jedyne kody, których POSIX nie ma
+/// prawa nadać samodzielnie (`0..=125` należą do programu, `126`/`127` do powłoki), więc niżej
+/// zaczyna się zgadywanie cudzego kodu wyjścia.
+#[must_use]
+pub const fn signal_behind_exit_code(code: i32) -> Option<i32> {
+    match code {
+        129..=159 => Some(code - 128),
+        _ => None,
+    }
+}
+
 /// Jedyny właściciel grupy, której **nie dało się** uznać za martwą — i jedyne, co się z nim robi.
 ///
 /// # Po co ten trait istnieje i dlaczego mieszka TUTAJ (2026-09, Z-4)

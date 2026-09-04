@@ -26,6 +26,7 @@ use super::host::Answers;
 use super::{Answer, Call};
 use crate::commands::agents::list_agents_inner;
 use crate::commands::chat::LEAD;
+use crate::commands::history::list_runs_inner;
 use crate::commands::workflows::{WorkflowPlace, list_workflow_definitions_inner, typable};
 use crate::engine::line::Line;
 use crate::ipc::{LineSink, Sent};
@@ -520,6 +521,107 @@ impl Desk {
                      cannot start right now — appears in the stream this person is watching.",
         }))
     }
+
+    /// Zatrzymuje bieg tego folderu — po tym, jak człowiek się na to zgodził.
+    ///
+    /// # Po co ten czasownik istnieje (2026-09, Z-39)
+    ///
+    /// Bieg meetnotes `20260901-150035`. Lider zapytał człowieka, czy ubić bieg, dostał zgodę —
+    /// i nie miał czym. Most znał wtedy cztery czasowniki i ani jeden z nich nie kończył pracy,
+    /// więc lider zrobił to, co potrafił: przeczytał `pgid` z `run.json` i wykonał
+    /// `kill -TERM -38475 -38476` narzędziem Bash, a 34 minuty później to samo na drugiej parze.
+    /// Z punktu widzenia Loadouta nie stało się nic — dwa kroki po prostu przestały odpowiadać,
+    /// `carry-on` puścił bieg dalej i człowiek zapłacił za 17 minut Codeksa nad pustym miejscem.
+    ///
+    /// # Dlaczego `confirmed` jest w SCHEMACIE, a nie tylko w prompcie
+    ///
+    /// Niezmiennik 28: najpierw to, co da się wyegzekwować. Zdanie „zapytaj najpierw" w prompcie
+    /// jest miękkie — model może je zignorować i nikt się o tym nie dowie. Wymagany klucz jest
+    /// twardy: wywołanie bez niego odbija się od schematu, a wywołanie z `false` odbija się tutaj,
+    /// zdaniem, które mówi, co konkretnie by zeszło. Miękka zostaje wyłącznie ta połowa, której
+    /// skryptem sprawdzić się nie da — czy człowiek naprawdę odpowiedział.
+    ///
+    /// # Czego ta odpowiedź NIE OBIECUJE
+    ///
+    /// Że bieg już zszedł. Wiersz jedzie na ekran tą samą drogą, co start (`Line::Suggested`
+    /// z `auto`), a Stop schodzi po dowodzie z niezmiennika 6 — czyli sekundy później. To jest ten
+    /// sam znany dług, który opisuje u siebie [`Desk::start`], i ma go zamknąć osobna droga
+    /// meldunku, nie zegar w tym miejscu. Że wiersz naprawdę kładzie bieg, dowodzi
+    /// `tests/it/z39_the_lead_stops_a_run.rs` — na żywej grupie procesów i na `ESRCH`.
+    fn stop(&self, input: &Value) -> Result<Value, String> {
+        let Some(lines) = self.lines.as_ref() else {
+            return Err(
+                "Loadout has no stream open for this conversation, so stopping a run would leave \
+                 nothing on screen. Reopen the work screen and ask again."
+                    .to_owned(),
+            );
+        };
+
+        let here = self
+            .project
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        /* CO NAPRAWDĘ BIEGNIE, PYTAMY DYSKU, nie pamięci rozmowy: `list_runs_inner` jest tą samą
+         * funkcją, z której czyta to okno (niezmiennik 13). Lider trzymający własną pamięć o tym,
+         * co ruszył, twierdziłby „zatrzymałem" nad biegiem, który skończył się sam pół godziny
+         * temu — i odwrotnie. */
+        let Some(going) = list_runs_inner(&self.project)
+            .into_iter()
+            .find(|run| matches!(run.state.as_str(), "running" | "paused"))
+        else {
+            /* PRZED PYTANIEM O ZGODĘ, choć schemat wymaga jej zawsze. Kiedy nie ma czego
+             * zatrzymać, „zapytaj najpierw" wysyłałoby lidera do człowieka po zgodę na czynność
+             * bez skutku — a to jest pytanie, którego nie ma o co zadać. Zdanie jest to samo,
+             * którym okno odpowiada na `/stop` (`entry.tsx`, `whatStopSaid`). */
+            return Err(format!("Nothing is running in {here}."));
+        };
+        let title = if going.title.is_empty() {
+            going.folder.clone()
+        } else {
+            going.title.clone()
+        };
+        let steps = if going.steps == 1 {
+            "1 step".to_owned()
+        } else {
+            format!("{} steps", going.steps)
+        };
+
+        if input.get("confirmed").and_then(Value::as_bool) != Some(true) {
+            /* ODMOWA NAZYWA, CO BY ZESZŁO. „Ask first" bez nazwy zostawia lidera przy pytaniu,
+             * którego nie umie zadać konkretnie — a człowiek dostaje wtedy „czy zatrzymać?" bez
+             * ani jednego faktu o tym, co straci. */
+            return Err(format!(
+                "Ask this person first, with ask_the_person, and call this again with confirmed \
+                 only after they say yes. This would stop \"{title}\" ({steps}), the run going in \
+                 {here}, and the work its steps have not finished is lost."
+            ));
+        }
+
+        /* KOMENDA ZNAK W ZNAK TAKA, JAKĄ WPISAŁBY CZŁOWIEK — ten sam powód, co przy starcie:
+         * „w którym folderze" ma jedną odpowiedź, a druga droga zatrzymania rozjechałaby się
+         * po cichu (niezmiennik 23). */
+        let line = Line::Suggested {
+            agent: LEAD.to_owned(),
+            text: format!("Stopping {title}"),
+            auto: true,
+            command: "/stop".to_owned(),
+        };
+        let _ = lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(line);
+
+        Ok(json!({
+            "asked": true,
+            "run": going.folder,
+            "note": format!(
+                "Loadout is stopping \"{title}\" ({steps}), the run going in {here}. It brings \
+                 down everything the run started and makes sure it is gone; what each step ended \
+                 with appears in the stream this person is watching."
+            ),
+        }))
+    }
 }
 
 #[async_trait]
@@ -540,6 +642,7 @@ impl Answers for Desk {
             "list_workflows" => workflows(home, Some(&self.project)),
             "list_agents" => agents(home),
             "start_workflow" => self.start(home, &call.input),
+            "stop_run" => self.stop(&call.input),
             /* CZEKANIE JEST TU, A NIE W TABELI: to jedyny czasownik, który nie odpowiada od razu,
              * i dlatego jako jedyny ma własną gałąź poza `match`em wartości. */
             "ask_the_person" => return self.ask(&call.input).await,

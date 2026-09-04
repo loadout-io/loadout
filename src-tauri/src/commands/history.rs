@@ -299,6 +299,16 @@ pub struct PastStepWire {
     pub summary: String,
     /// Powód, jeśli coś poszło nie tak. Pusty, kiedy poszło dobrze.
     pub error: String,
+    /// Czyjego wyniku ten krok nie miał, choć pojechał dalej — po jednym zdaniu na poprzednika.
+    ///
+    /// 2026-09 (Z-39) — OSOBNO OD `error`, bo mówi o czym innym: tamto jest powodem, dla którego
+    /// TEN krok nie przeszedł, a to jest zdaniem o materiale, którego nie dostał. Krok, który
+    /// pojechał na `carry-on` i sam się udał, ma `error` puste i to zdanie niepuste — a bez tego
+    /// rozdzielenia wyglądałby na krok, który po prostu tak odpowiedział.
+    ///
+    /// Pusta lista jest jawna także dla starych biegów, żeby granica TypeScript nie musiała
+    /// zgadywać, czy pole zaginęło (ten sam wybór, co przy [`PastStepWire::memory`] niżej).
+    pub ran_without: Vec<String>,
     /// Ile kosztował ten krok. `None` znaczy „nie podał", nie zero.
     pub cost_usd: Option<f64>,
     /// Zamrożony receipt wyłącznie TEGO fizycznego kroku. Pusta lista jest jawna także dla
@@ -459,6 +469,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 executed: step.executed,
                 summary: step.summary.clone().unwrap_or_default(),
                 error: step.error.clone().unwrap_or_default(),
+                ran_without: step.ran_without.clone(),
                 cost_usd: step.cost_usd,
                 memory: memory_for_step(&file.memory, &step.id),
                 loaded_by_the_app: step.loaded_by_the_app.clone(),
@@ -744,6 +755,11 @@ struct StepDescription {
     summary: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    /// Czyjego wyniku ten krok nie miał, choć pojechał dalej. Addytywny fakt Z-39; klucza nie ma
+    /// w żadnym `run.json` zapisanym wcześniej, a `default` znaczy tam dokładnie to samo, co
+    /// znaczył brak: ten krok dostał wszystko, po co przyszedł (niezmiennik 5 na granicy pliku).
+    #[serde(default)]
+    ran_without: Vec<String>,
     #[serde(default)]
     cost_usd: Option<f64>,
     /// Migawka agenta, z której bierzemy JEDNO pole: czym ten krok był prowadzony.

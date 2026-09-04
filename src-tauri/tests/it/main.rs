@@ -457,6 +457,8 @@ mod z31_lab_fixes;
 mod z32_library_compat;
 mod z38_reflection_says_it_ran_out;
 mod z38_the_window_reads_the_ceiling;
+mod z39_a_step_stopped_from_outside_says_so;
+mod z39_the_lead_stops_a_run;
 mod z3_a_stop_gives_the_heavy_seat_back;
 mod z5_a_turn_starts_over_a_dead_group;
 mod z5_closing_a_step_has_a_ceiling;

@@ -220,7 +220,8 @@ use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
 use crate::engine::scheduler;
 use crate::engine::step::{StepReport, StepState};
 use crate::engine::supervisor::{
-    GroupId, GroupProof, KeepsLeftovers, Leftover, MissingProgram, PublicationIdentity, StepTag,
+    self, GroupId, GroupProof, KeepsLeftovers, Leftover, MissingProgram, PublicationIdentity,
+    StepTag,
 };
 use crate::evidence::{ContextKind, ContextSource, EvidenceTarget, SafeInputManifest};
 use crate::inherit::rewrite;
@@ -3242,6 +3243,36 @@ const CHECK_SURVIVOR_ERROR: &str = "\
 This check ran to the end, but Loadout could not make sure everything it started had stopped, \
 so some of it may still be running.";
 
+/// Zdanie o kroku, który zszedł od sygnału, **którego Loadout nie wysłał**.
+///
+/// # 2026-09 (Z-39) — po co to jest osobnym zdaniem
+///
+/// Bieg meetnotes `20260901-150035`: lider nie miał czym zatrzymać biegu, więc przeczytał `pgid`
+/// z `run.json` i wykonał `kill -TERM` na cztery grupy ręcznie. Loadout zapisał wtedy to, co
+/// powiedział vendor — „The agent stopped without ever sending its result" — czyli zdanie
+/// o agencie, który przestał mówić. Człowiek czytający historię szukał więc wady u agenta,
+/// a agent nie zrobił nic: ktoś go zabił z zewnątrz.
+///
+/// NUMER SYGNAŁU JEST W ZDANIU, i to nie jest żargon (niezmiennik 14): to jedyna wartość,
+/// po której odróżnia się piętnastkę od dziewiątki, czyli grzeczne zatrzymanie od ubicia.
+/// Bez niej zdanie mówi „coś się stało" i kończy się tam, gdzie zaczyna się pytanie.
+fn stopped_from_outside_sentence(signal: i32) -> String {
+    format!("Something outside Loadout stopped this step (signal {signal}).")
+}
+
+/// Zdanie na karcie kroku, który pojechał dalej BEZ wyniku poprzednika ubitego z zewnątrz.
+///
+/// 2026-09 (Z-39) — powód jest ten sam bieg i ta sama godzina: po ubiciu Reaserch A/B Loadout
+/// puścił dalej Final Plan (17 minut Codeksa) i Combine (26 minut), a na kartach tych kroków nie
+/// stało ani jedno zdanie o tym, że jadą na pustym materiale. Wyglądały dokładnie tak, jak
+/// wyglądałby krok, który po prostu tak odpowiedział.
+///
+/// „runs", nie „ran": ten wiersz staje w strumieniu **w chwili**, w której krok rusza, i zostaje
+/// w `run.json` w tej samej postaci — jedno zdanie na dwa miejsca (niezmiennik 13).
+fn ran_without_sentence(who: &str) -> String {
+    format!("runs without {who}'s result — it was stopped from outside")
+}
+
 /// Puszcza bieg dalej z punktu kontrolnego (T3 §6.1 reguła 5).
 ///
 /// Punkt kontrolny zatrzymuje **bieg**, nie krok, i nic za nim nie startuje, dopóki człowiek nie
@@ -3834,6 +3865,89 @@ struct Closed {
     /// [`processes::Unproven::released_by`], czyli do jedynej drogi, którą wolno zwolnić uchwyt
     /// sesji i miejsce z puli. `bool` zgubiłby i adres, i tę drogę.
     proof: GroupProof,
+}
+
+/// Czym naprawdę skończył się proces kroku, który wrócił z tury — po odróżnieniu **czyj** był
+/// sygnał.
+///
+/// # Sześć dróg zejścia, i gdzie każda z nich mówi swoje (2026-09, Z-39)
+///
+/// Ta lista rozstrzyga cztery z nich, bo tylko tyle da się rozróżnić TU, przy [`Closed`].
+/// Pozostałe dwie schodzą innymi drzwiami i mają własne zdania — wymienione tutaj, bo droga bez
+/// nazwy jest drogą, o której nikt nie pamięta, że istnieje:
+///
+/// | droga | gdzie | co mówi człowiekowi |
+/// |---|---|---|
+/// | kod 0 | tutaj, [`HowItWentDown::ExitedCleanly`] | nic; krok przechodzi |
+/// | kod ≠ 0 bez sygnału | tutaj, [`HowItWentDown::CodeWithoutASignal`] | powód od sterownika |
+/// | sygnał NASZ | tutaj, [`HowItWentDown::LoadoutStoppedIt`] | `cancelled`, albo zdanie o sufcie |
+/// | sygnał OBCY | tutaj, [`HowItWentDown::StoppedFromOutside`] | [`stopped_from_outside_sentence`] |
+/// | limit czasu | [`Live::stop_overdue_agent`] | „ran longer than its N minute limit" |
+/// | brak aplikacji agenta | [`public_start_refusal`] | „could not find … on this Mac" |
+///
+/// Tamte dwie nie przechodzą tędy z powodu strukturalnego, nie z przeoczenia: limit czasu kończy
+/// turę jako [`Ended::Overdue`], czyli zanim powstanie [`Closed`], a vendora, którego nie ma,
+/// odkrywa `start` — krok nie ma wtedy procesu, o którego zejście dałoby się zapytać.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HowItWentDown {
+    /// Proces wyszedł sam i wyszedł zerem.
+    ExitedCleanly,
+    /// Proces wyszedł sam, ale nie zerem, i żaden sygnał w tym nie uczestniczył.
+    CodeWithoutASignal(i32),
+    /// Zejście jest NASZE. Stop człowieka, sufit zamknięcia i awaria transportu kończą się
+    /// każde `Supervised::stop`, więc sygnał widoczny w statusie wysłał Loadout — a zdanie
+    /// o obcej ręce byłoby wtedy zdaniem nieprawdziwym w najgorszym możliwym miejscu.
+    LoadoutStoppedIt,
+    /// Sygnał, którego Loadout nie wysłał: bez Stopu, bez limitu czasu i bez własnej eskalacji.
+    StoppedFromOutside(i32),
+}
+
+impl HowItWentDown {
+    /// Zdanie dla człowieka o TEJ drodze — albo `None`, kiedy droga nie ma nic do dodania ponad
+    /// to, co i tak mówi stan kroku i powód od sterownika.
+    ///
+    /// Trzy pierwsze drogi milczą z rozmysłu: kod zero jest przejściem, kod niezerowy niesie
+    /// powód, który agent podał sam, a nasze własne zatrzymanie ma już swoje zdanie u siebie.
+    /// Zdanie dopisane do którejkolwiek z nich przykryłoby powód prawdziwszy od siebie.
+    fn said(self) -> Option<String> {
+        match self {
+            Self::ExitedCleanly | Self::CodeWithoutASignal(_) | Self::LoadoutStoppedIt => None,
+            Self::StoppedFromOutside(signal) => Some(stopped_from_outside_sentence(signal)),
+        }
+    }
+}
+
+/// Rozstrzyga, czyj był sygnał, którym zszedł ten krok.
+///
+/// # Dwa nośniki jednego faktu, bo powłoka-opakowanie gubi pierwszy
+///
+/// Status niesie numer sygnału wtedy, gdy zginął od niego proces, który sami zebraliśmy. Kiedy
+/// krok jest opakowany powłoką (`sh -c`, `npm`, każdy wrapper), sygnał łapie ona: sprząta
+/// i wychodzi `128 + numer`, czyli `exit 143` — dokładnie tak, jak widać to w eksporcie
+/// diagnostyki biegu `20260901-150035`. Pytamy więc obu (2026-09, Z-39).
+fn how_it_went_down(how: ClosedHow, code: Option<i32>, proof: &GroupProof) -> HowItWentDown {
+    if !matches!(how, ClosedHow::OnItsOwn) {
+        /* NASZE ZEJŚCIE ROZSTRZYGA SIĘ PIERWSZE i nie pyta o status. `StoppedByAPerson`,
+         * `WouldNotLetGo` i `Broke` prowadzą każde przez naszą własną eskalację, więc sygnał,
+         * który po nich zostaje w statusie, jest NASZ — a przeczytany jako obcy zamieniłby
+         * każdy Stop człowieka w oskarżenie kogoś, kogo tam nie było. */
+        return HowItWentDown::LoadoutStoppedIt;
+    }
+    let from_the_status = match proof {
+        GroupProof::Dead {
+            status: Some(status),
+        } => supervisor::signal_that_ended(*status),
+        GroupProof::Dead { status: None } | GroupProof::Alive { .. } => None,
+    };
+    match (from_the_status, code) {
+        (Some(signal), _) => HowItWentDown::StoppedFromOutside(signal),
+        (None, None) => HowItWentDown::ExitedCleanly,
+        (None, Some(code)) => match supervisor::signal_behind_exit_code(code) {
+            Some(signal) => HowItWentDown::StoppedFromOutside(signal),
+            None if code == 0 => HowItWentDown::ExitedCleanly,
+            None => HowItWentDown::CodeWithoutASignal(code),
+        },
+    }
 }
 
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
@@ -8297,6 +8411,22 @@ struct StepRun {
     summary: Option<String>,
     /// Powód, jeśli coś poszło nie tak.
     error: Option<String>,
+    /// Numer sygnału, którym ten krok zszedł, **choć Loadout żadnego nie wysłał**.
+    ///
+    /// 2026-09 (Z-39) — OSOBNO OD `error`, choć zdanie dla człowieka powstaje z tej liczby.
+    /// Tamto pole jest tekstem i przez to nie odpowiada na pytanie „co się stało" inaczej niż
+    /// przez porównywanie napisów; ten numer jest faktem, który przeżywa skasowanie
+    /// `loadout.db` (niezmiennik 4) i po nim jednym poznaje się, że bieg meetnotes
+    /// `20260901-150035` nie padł sam — dostał `kill -TERM` spoza aplikacji.
+    ///
+    /// `None` znaczy „nikt z zewnątrz tego kroku nie tknął", nie zero.
+    stopped_from_outside: Option<i32>,
+    /// Czyjego wyniku ten krok NIE MA, choć jedzie dalej — po jednym zdaniu na poprzednika.
+    ///
+    /// 2026-09 (Z-39) — powstaje wyłącznie przy `carry-on` (i przy `ask-me` → „jedź dalej"),
+    /// czyli wtedy, gdy graf puszcza dalej krok, którego materiał nie istnieje. Pusta lista
+    /// znaczy, że ten krok dostał wszystko, po co przyszedł — i to jest odpowiedź, nie brak.
+    ran_without: Vec<String>,
     /// Nagłówki, których agent nie napisał, a `memory::handoff::reshape` je za niego wstawił.
     ///
     /// Pusta lista znaczy, że odpowiedź przyszła w umówionym kształcie — i to jest odpowiedź,
@@ -8533,6 +8663,8 @@ impl Live {
                 cached_tokens: None,
                 summary: None,
                 error: None,
+                stopped_from_outside: None,
+                ran_without: Vec::new(),
                 repaired: Vec::new(),
                 truncated: false,
                 loaded_by_the_app: None,
@@ -8925,8 +9057,69 @@ impl Live {
         {
             *slot = Some(failed_because);
         }
+        self.tell_the_next_ones_what_they_are_missing(id);
         self.hand_on_its_last_words(id);
         StepReport::FailedAndCarriedOn
+    }
+
+    /// Krokom po strzałce mówi, czyjego wyniku nie dostaną — na karcie i w strumieniu.
+    ///
+    /// # 2026-09 (Z-39) — po co, skoro po kroku zostaje plik
+    ///
+    /// Bo po TYM kroku plik jest pusty i nikt tego nie widzi. `hand_on_its_last_words` niżej
+    /// oddaje to, co krok zdążył powiedzieć — a krok ubity z zewnątrz nie zdążył powiedzieć nic.
+    /// Następny dostaje więc wiersz w indeksie i zero treści pod nim, czyli kształt nieodróżnialny
+    /// od poprzednika, który był po prostu małomówny. Bieg meetnotes `20260901-150035` przejechał
+    /// tak Final Plan (17 minut) i Combine (26 minut).
+    ///
+    /// # WYŁĄCZNIE PO OBCYM ZEJŚCIU, i to jest zawężenie z powodem
+    ///
+    /// Zwykła porażka `carry-on` zostawia po sobie prozę, którą agent zdążył napisać, oraz powód
+    /// stojący na jego własnej karcie — następny krok ma wtedy i materiał, i wyjaśnienie. Zdanie
+    /// dopisywane przy KAŻDYM `carry-on` byłoby wierszem przy każdym kroku każdego biegu, w którym
+    /// cokolwiek nie przeszło, czyli szumem (niezmiennik 16 w duchu).
+    ///
+    /// Jedno zdanie idzie w dwa miejsca i to jest ta sama odpowiedź (niezmiennik 13):
+    /// `Line::Problem` mówi je człowiekowi, który patrzy, a `ran_without` w `run.json` — temu,
+    /// który wróci jutro.
+    fn tell_the_next_ones_what_they_are_missing(&self, id: StepId) {
+        let stopped_from_outside = self
+            .book()
+            .steps
+            .get(id)
+            .is_some_and(|step| step.stopped_from_outside.is_some());
+        if !stopped_from_outside {
+            return;
+        }
+        let said = ran_without_sentence(&self.plan.steps[id].name);
+        let node_key = self.plan.steps[id].node_key.as_str();
+        let after: Vec<StepId> = self
+            .plan
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(_, next)| next.depends_on.iter().any(|key| key == node_key))
+            .map(|(next, _)| next)
+            .collect();
+        if after.is_empty() {
+            return;
+        }
+        // JEDEN ZAPIS NA WSZYSTKIE DZIECI: `update` zrzuca `run.json` przy każdym wywołaniu, więc
+        // pętla wokół niego byłaby tyloma zapisami pliku, ile krok ma potomków.
+        self.update(|book| {
+            for next in &after {
+                book.steps[*next].ran_without.push(said.clone());
+            }
+        });
+        for next in after {
+            // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem
+            // (`ipc::Sent`), a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+            let _ = self.lines.send(Line::Problem {
+                agent: self.plan.steps[next].name.clone(),
+                text: said.clone(),
+                resets_at: None,
+            });
+        }
     }
 
     /// Przekazanie z tym, co ten krok zdazyl powiedziec — moze byc puste.
@@ -9433,6 +9626,8 @@ impl Live {
                 cached_tokens: run.cached_tokens,
                 summary: run.summary.as_deref(),
                 error: run.error.as_deref(),
+                stopped_from_outside: run.stopped_from_outside,
+                ran_without: &run.ran_without,
                 effective: match &planned.job {
                     Job::Agent(job) => Some(&job.effective),
                     // Nie ma czego zamrażać: ani kafelek kontrolny, ani krok „sprawdź" nie mają
@@ -11579,6 +11774,10 @@ impl Live {
             .close_and_prove(id, handle.as_mut(), turn.evidence, turn.cancel)
             .await;
         let proven_dead = matches!(proof, GroupProof::Dead { .. });
+        // PRZED `released_by`, bo tamto konsumuje dowód — a to jest jedyne miejsce, w którym
+        // status zebranego lidera jeszcze istnieje i da się z niego przeczytać numer sygnału
+        // (2026-09, Z-39).
+        let went_down = how_it_went_down(how, code, &proof);
         self.released_by(handle, &mut *turn.slot, proof);
         if !proven_dead {
             turn.finish_forward.cancel();
@@ -11595,6 +11794,12 @@ impl Live {
             step.exit_code = code;
             record_turn(step, &outcome, cost_is_estimate);
             step.summary = summary_of(&outcome.text);
+            /* NUMER SYGNAŁU WCHODZI DO KSIĘGI ZAWSZE, także wtedy, gdy zdanie o nim przegra
+             * z powodem wyżej (2026-09, Z-39). To jest fakt, nie tekst: przeżywa skasowanie
+             * `loadout.db` (niezmiennik 4) i po nim jednym poznaje się, że ten krok nie padł. */
+            if let HowItWentDown::StoppedFromOutside(signal) = went_down {
+                step.stopped_from_outside = Some(signal);
+            }
             if matches!(how, ClosedHow::WouldNotLetGo) && proven_dead {
                 step.error = Some(STEP_WOULD_NOT_LET_GO_ERROR.to_owned());
             } else if matches!(how, ClosedHow::Broke) || !evidence_complete {
@@ -11610,6 +11815,13 @@ impl Live {
                 /* Agent zrobił swoje, ale Loadout nie umie powiedzieć, czy coś po nim zostało.
                  * Ten nasz powód wygrywa z powodem agenta. */
                 step.error = Some(STEP_SURVIVOR_ERROR.to_owned());
+            } else if let Some(said) = went_down.said() {
+                /* NASZE ZDANIE WYGRYWA Z POWODEM STEROWNIKA, tym samym idiomem, którym wygrywa
+                 * z nim `STEP_SURVIVOR_ERROR` wyżej (2026-09, Z-39). Vendor mówi wtedy „The agent
+                 * stopped without ever sending its result" — prawdę o tym, co widział, i zdanie
+                 * o agencie, który nie zrobił nic złego: został ubity z zewnątrz. Człowiek szuka
+                 * po nim wady u agenta i nie znajduje jej, bo jej tam nie ma. */
+                step.error = Some(said);
             } else if !ok
                 && let FinishReason::Failed(said) = &outcome.reason
                 && let Some(short) = one_line(said, SUMMARY_LIMIT)
@@ -13253,6 +13465,31 @@ struct StepEntry<'a> {
     cached_tokens: Option<u64>,
     summary: Option<&'a str>,
     error: Option<&'a str>,
+    /// Numer sygnału, którym ktoś SPOZA Loadouta zatrzymał ten krok.
+    ///
+    /// # 2026-09 (Z-39) — po co ta liczba jest w pliku, skoro zdanie stoi w `error`
+    ///
+    /// Bo zdanie jest tekstem i tydzień później nikt nie odróżni go od zdania sąsiedniego bez
+    /// czytania go w całości; ten klucz odpowiada na to samo pytanie jedną wartością i przeżywa
+    /// skasowanie `loadout.db` (niezmiennik 4). Na biegu meetnotes `20260901-150035` to jest
+    /// jedyny fakt, po którym poznaje się, że cztery kroki nie padły — dostały `kill -TERM`
+    /// spoza aplikacji, w parach po 300 ms.
+    ///
+    /// BRAK KLUCZA, KIEDY NIKT Z ZEWNĄTRZ NICZEGO NIE TKNĄŁ — ta sama decyzja, co przy
+    /// `repaired` i `pgids` obok: klucz mówiący „nic się nie stało" przy każdym kroku każdego
+    /// biegu w historii jest długością zapłaconą za milczenie.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stopped_from_outside: Option<i32>,
+    /// Czyjego wyniku ten krok nie ma, choć pojechał dalej — po jednym zdaniu na poprzednika.
+    ///
+    /// 2026-09 (Z-39) — do tego dnia `carry-on` nie zostawiał po sobie ani jednego trwałego
+    /// śladu w kroku, który z niego skorzystał: powód stał przy kroku, który PADŁ, a ten za nim
+    /// wyglądał na zwykły krok, który po prostu tak odpowiedział. Bieg `20260901-150035` poszedł
+    /// tak przez Final Plan (17 minut) i Combine (26 minut) nad ubitym researchem.
+    ///
+    /// BRAK KLUCZA DLA KROKU, KTÓRY DOSTAŁ WSZYSTKO — powód jak wyżej.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    ran_without: &'a [String],
     /// Konfiguracja **efektywna**, zamrożona w chwili startu [T4 §5.2 p. 3]. `None` dla kafelka
     /// kontrolnego: on nie woła agenta, więc nie ma czego zamrażać.
     effective: Option<&'a Value>,

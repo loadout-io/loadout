@@ -40,13 +40,15 @@ fn a_lead_gets_the_library_and_the_start() {
             "ask_the_person",
             "list_workflows",
             "list_agents",
-            "start_workflow"
+            "start_workflow",
+            "stop_run"
         ],
         "the lead is the orchestrator: it has to be able to ask when it does not know, to see \
-         what this person built, and to start it. These names travel to the model, so they are \
-         part of the contract and not an implementation detail.\n\n\
+         what this person built, to start it, and to end it. These names travel to the model, so \
+         they are part of the contract and not an implementation detail.\n\n\
          `ask_the_person` stands FIRST on purpose: it is the one a model reaches for before it \
-         guesses, and the order of this list is the order it reads them in"
+         guesses, and the order of this list is the order it reads them in. `stop_run` stands \
+         LAST for the mirror reason: after it, nothing is running any more"
     );
 }
 
@@ -67,7 +69,7 @@ fn the_tool_list_is_shaped_the_way_mcp_asks_for_it() {
         .as_array()
         .expect("the verb table is an array of tool definitions");
 
-    assert_eq!(tools.len(), 4, "four verbs, four entries");
+    assert_eq!(tools.len(), 5, "five verbs, five entries");
 
     let first = tools.first().expect("the array carries the first verb");
     assert_eq!(

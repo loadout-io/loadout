@@ -804,7 +804,11 @@ export function openChat(
      * ląduje w strumieniu tego terminalu — porzucona byłaby biegiem, który nie ruszył, i ciszą
      * zamiast powodu. */
     for (const going of autoStarts(stamped)) {
-      void runSuggestion(going.command).then((refusal) => {
+      /* FOLDER TEJ ROZMOWY JEDZIE DALEJ (2026-09, Z-39), bo od dziś wierszem z mostu bywa `/stop`,
+       * a on ADRESUJE bieg: bez adresu zatrzymanie idzie w katalog, pod którym wstała aplikacja,
+       * czyli potrafi zdjąć cudzy bieg z sąsiedniej karty — dokładnie ta wada, którą Z-35
+       * zamknęło po stronie przycisku Stop. */
+      void runSuggestion(going.command, folder).then((refusal) => {
         if (refusal !== null) {
           view.appendLines([
             { kind: 'note', agent: going.agent, text: refusal, id: nextStamp(), at: Date.now() },
@@ -965,6 +969,18 @@ export interface PastStep {
   readonly summary: string;
   /** Powód, jeśli coś poszło nie tak. */
   readonly error: string;
+  /**
+   * Czyjego wyniku ten krok nie miał, choć pojechał dalej — po jednym zdaniu na poprzednika.
+   *
+   * OSOBNE OD `error`, bo mówi o czym innym: tamto jest powodem, dla którego TEN krok nie
+   * przeszedł, a to jest zdaniem o materiale, którego nie dostał. Krok, który pojechał dalej mimo
+   * poprzednika ubitego z zewnątrz, ma `error` puste i to zdanie niepuste.
+   *
+   * KLUCZ OPCJONALNY, i to jest niezmiennik 5 postawiony na granicy: każdy `run.json` zapisany
+   * przed 2026-09 go nie ma. Brak czyta się jak pusta lista — czyli „ten krok dostał wszystko,
+   * po co przyszedł", co jest prawdą także wtedy, gdy nikt nie umiał zapytać.
+   */
+  readonly ranWithout?: readonly string[];
   readonly costUsd: number | null;
   /**
    * Zamrożone notatki przypięte przez Rust do fizycznego UUID tego kroku.
