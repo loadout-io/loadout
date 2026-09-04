@@ -1039,6 +1039,17 @@ export interface PastStep {
    * ani słowa (niezmiennik 16).
    */
   readonly loadedByTheApp?: LoadedByTheApp | null;
+  /**
+   * Jedno zdanie o tym, co ten krok wczytał z folderu POZA tym, co włożył mu bieg.
+   *
+   * SKŁADA JE RUST, przy odczycie biegu — bo to on wie, jakimi nazwami bieg przypina swoje
+   * własne umiejętności i swój katalog pamięci, i bo polityka mieszka w jednym rdzeniu
+   * (niezmiennik 23). Ekran stawia ten napis i nie liczy niczego sam.
+   *
+   * KLUCZ OPCJONALNY, tak samo jak `loadedByTheApp` wyżej i z tego samego powodu. `null` znaczy
+   * „nie ma o czym mówić" — i wtedy ekran nie mówi o tym ani słowa (niezmiennik 17).
+   */
+  readonly whatLoadoutDidNotGive?: string | null;
   /** Zapisany strumień tego kroku — te same wiersze, które widać było na żywo. */
   readonly lines: readonly Line[];
 }

@@ -1,4 +1,4 @@
-/* Krok mówi CZŁOWIEKOWI, co aplikacja agenta dobrała sobie z folderu (niezmiennik 29).
+/* Krok mówi CZŁOWIEKOWI, co wczytał z folderu poza tym, co dał mu bieg (niezmiennik 29).
  *
  * DLACZEGO TO ZDANIE W OGÓLE ISTNIEJE. Krok staje w cudzym repozytorium i bierze stamtąd rzeczy,
  * których Loadout mu nie dał. Ile dokładnie, zależy od wersji aplikacji agenta i raz już zmieniło
@@ -8,15 +8,24 @@
  * jednego miejsca, w którym mógłby zobaczyć którąkolwiek z tych dwóch sytuacji — i to jest ta
  * dziura, nie jedna czy druga odpowiedź vendora.
  *
- * SŁABA WERSJA TEGO KRYTERIUM: `expect(alsoLoadedText(step)).toBe('…')`. Przechodzi ją czysta
+ * ZDANIE MÓWI O RÓŻNICY, NIE O CAŁEJ LIŚCIE (2026-09, Z-47). Do tego dnia stało tu „this step
+ * also reads N skills", liczone ze WSZYSTKIEGO, co ogłosiło CLI — także z umiejętności, które
+ * bieg sam włożył temu krokowi. Zdanie prawdziwe przy każdym kroku każdego biegu nie jest
+ * odpowiedzią na pytanie, dla którego ten rekord powstał; różnicę i tak trzeba było policzyć
+ * ręcznie, pozycja po pozycji. Liczy ją teraz Rust przy odczycie biegu, bo to on wie, jakimi
+ * nazwami bieg przypina swoje rzeczy (`commands::history`, niezmiennik 23).
+ *
+ * SŁABA WERSJA TEGO KRYTERIUM: `expect(sentenceOf(step)).toBe('…')`. Przechodzi ją czysta
  * funkcja, której panel nigdy nie woła — czyli dokładnie ta klasa, dla której to repo powstało
  * (AGENTS.md, niezmiennik 29). Dlatego montowany jest CAŁY ekran pracy (`<Run />`), ta sama
  * decyzja i ten sam powód co w `history-reaches-the-screen.test.tsx`: sam panel przechodziłby na
  * komponencie, którego ekran nigdzie nie montuje.
  *
- * DRUGI KROK FIKSTURY JEST BEZ REKORDU I TO NIE JEST OZDOBA. Implementacja, która rysuje to
- * zdanie zawsze, przechodzi pierwszą asercję i kłamie o każdym kroku Codeksa, o każdym kafelku
- * „sprawdź" i o każdym biegu sprzed tej zmiany — bo `run.json` żadnego z nich tego klucza nie ma.
+ * DRUGI I TRZECI KROK FIKSTURY SĄ CISZĄ I ŻADEN Z NICH NIE JEST OZDOBĄ. Drugi nie ma rekordu
+ * wcale — jak każdy krok Codeksa, każdy kafelek „sprawdź" i każdy bieg sprzed 2026-09. Trzeci
+ * rekord MA, pełen własności biegu, i milczy mimo to: implementacja rysująca to zdanie z samej
+ * obecności rekordu przechodzi wszystko powyżej i mówi o cudzym folderze przy kroku, który nie
+ * wziął z niego ani jednej rzeczy.
  *
  * Granica jest atrapą: żadnego żywego Tauri i żadnej przeglądarki.
  */
@@ -63,15 +72,22 @@ const SKILLS = [
 ];
 
 /**
- * Zdanie, po które człowiek tu przychodzi.
+ * Zdanie, po które człowiek tu przychodzi — złożone przez Rust, tu tylko przepisane.
  *
  * NIE MA W NIM PLIKU INSTRUKCJI PROJEKTU, i to jest rozstrzygnięcie, nie skrócenie. Kryterium
  * Z-16 pisano, gdy plik ten docierał do kroku (2.1.251); sonda z 2026-09-04 na 2.1.260 pokazała,
  * że przy dzisiejszym argv Loadouta nie dociera, a granica nie ma ani jednego pola, po którym
  * dałoby się poznać, że jednak. Zdanie mówi więc wyłącznie to, co aplikacja agenta sama o sobie
  * ogłosiła — nazwanie pliku byłoby zgadywaniem podanym człowiekowi jako fakt.
+ *
+ * Liczby są tu tymi, które policzyłby Rust z rekordu niżej: osiemnaście umiejętności i plugin
+ * `superpowers` przyszły z folderu, a `auto` jest przekierowaną pamięcią biegu, więc nie wchodzi.
  */
-const SENTENCE = 'this step also reads 18 skills from ' + FOLDER;
+const SENTENCE =
+  'This step also read 18 skills and a plugin from ' + FOLDER + ' that Loadout did not give it';
+
+/** Kawałek tamtego zdania, po którym poznać je nawet w innym brzmieniu — do dowodzenia CISZY. */
+const ANY_OF_IT = 'also read';
 
 /** Nazwa, której na tym ekranie nie ma prawa być, dopóki nikt nie donosi o jej wczytaniu. */
 const HOST_INSTRUCTIONS = 'CLAUDE.md';
@@ -81,6 +97,9 @@ const CLAUDE_STEP = '01a02b3c-15f5-7f13-a86f-f2f856e4d781';
 
 /** Krok bez tego rekordu: kafelek „sprawdź" nie woła agenta, więc nie ma kto się przedstawić. */
 const CHECK_STEP = '01a02b3c-15f5-7f13-a86f-f2f856e4d782';
+
+/** Krok, który ogłosił pełen rekord — i nie ma w nim ani jednej rzeczy spoza biegu. */
+const OWN_STEP = '01a02b3c-15f5-7f13-a86f-f2f856e4d783';
 
 const OPENED: PastRun = {
   folder: SHIP.folder,
@@ -108,6 +127,7 @@ const OPENED: PastRun = {
         memoryPaths: ['auto'],
         agents: ['Explore', 'Plan'],
       },
+      whatLoadoutDidNotGive: SENTENCE,
       lines: [],
     },
     {
@@ -120,6 +140,31 @@ const OPENED: PastRun = {
       error: '',
       costUsd: null,
       memory: [],
+      lines: [],
+    },
+    {
+      /* KROK Z PEŁNYM REKORDEM I BEZ ANI JEDNEJ RZECZY SPOZA BIEGU. Umiejętność jedzie
+         z przedrostkiem pluginu, który zakłada Loadout, plugin nazywa się tak samo, a `auto` to
+         przekierowana pamięć biegu — więc różnicy nie ma i Rust nie przysyła zdania. */
+      id: OWN_STEP,
+      tile: 's_tidy',
+      name: 'Tidy',
+      agent: 'claude',
+      state: 'succeeded',
+      summary: 'Tidied up.',
+      error: '',
+      costUsd: 0.25,
+      memory: [],
+      loadedByTheApp: {
+        folder: FOLDER,
+        plugins: ['loadout-skills'],
+        slashCommands: [],
+        skills: ['loadout-skills:pdf'],
+        mcpServers: [],
+        memoryPaths: ['auto'],
+        agents: [],
+      },
+      whatLoadoutDidNotGive: null,
       lines: [],
     },
   ],
@@ -182,8 +227,8 @@ await openHistoryFromLine('');
 await openOneRun(HERE.folder, SHIP.folder);
 const withTheRun = readable(renderToStaticMarkup(<Run />));
 
-describe('an opened run says what the folder handed to each step', () => {
-  it('shows on the screen that the step also read the folder skills', () => {
+describe('an opened run says what each step took beyond what it was given', () => {
+  it('shows on the screen that the step also read what Loadout did not give it', () => {
     expect(
       withTheRun,
       'the whole point of this record is one sentence a person can read in history. A value that ' +
@@ -226,8 +271,27 @@ describe('an opened run says what the folder handed to each step', () => {
         block,
     ).toBe(false);
     expect(
-      block.includes('this step also reads'),
+      block.includes(ANY_OF_IT),
       'and not a word of that sentence may stand next to a step that never said anything',
+    ).toBe(false);
+  });
+
+  it('says nothing about a step that read only what the run itself put there', () => {
+    const block = blockOf(withTheRun, OWN_STEP);
+    expect(block, 'the third step has to be on the screen too').not.toBe('');
+    expect(
+      block.indexOf('data-step-memory') >= 0,
+      'the fixture is wrong if this step drew no such region at all — then its silence proves ' +
+        'nothing about the sentence. The step drew: ' +
+        block,
+    ).toBe(true);
+    expect(
+      block.includes(ANY_OF_IT),
+      'this step announced a skill, a plugin and a memory folder, and every one of them is a ' +
+        'thing the run itself handed it. A sentence here would fire on nearly every step of ' +
+        'every run — and then the one step that really did read a folder nobody handed it ' +
+        'reads exactly like all the others. The step drew: ' +
+        block,
     ).toBe(false);
   });
 });
