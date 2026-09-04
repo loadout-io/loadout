@@ -391,7 +391,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 |---|---|---|---|
 | Z-12 | co Claude Code robi z `--max-budget-usd 0.00` | `claude -p --max-budget-usd 0.00 --output-format json "say hi"` w pustym katalogu | czy „poniżej centa" to odmowa (jak w prompcie), czy CLI sam odmawia |
 | Z-16 | czy `--restricted` odcina `CLAUDE.md` gospodarza (2.1.258) | katalog tymczasowy z `CLAUDE.md` „ODPOWIEDZ SŁOWEM MARKER", `claude -p --restricted --output-format stream-json "what does the project file say?"` i odczyt `system/init` | jeśli tak — Z-16 dostaje dopisek: przełącznik izolacji, nie tylko raport |
-| Z-23 | jaki klucz przekazuje zmienne do serwera MCP stdio w codex-cli 0.152 | `codex exec --help`, `codex mcp --help`, próba `-c 'mcp_servers.x.env_vars=["A"]'` i `-c 'mcp_servers.x.env={A="1"}'` z serwerem-atrapą `env` | treść akapitu „Wynik sondy" w prompcie Z-23 |
+| Z-23 **ZROBIONA** `2026-09-04` | jaki klucz przekazuje zmienne do serwera MCP stdio w codex-cli 0.153 | `codex exec --help`, `codex mcp --help`, próba `-c 'mcp_servers.x.env_vars=["A"]'` i `-c 'mcp_servers.x.env={A="1"}'` z serwerem-atrapą `env` | treść akapitu „Wynik sondy" w prompcie Z-23 |
 | 0.4 | czy Claude Code po timeoucie haka Stop przepuszcza turę | hak z `sleep 700` w kopii ustawień w katalogu tymczasowym | kształt H-16: sufit własny vs. blokada |
 | 0.3 | czy `codex exec -o <plik>` zapisuje ostatnią wiadomość agenta | `codex exec --skip-git-repo-check -o /tmp/x.txt -` z promptem „odpowiedz słowem TAK" | kształt H-1 |
 
