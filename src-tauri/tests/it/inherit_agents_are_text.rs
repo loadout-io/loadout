@@ -77,7 +77,10 @@ const UNCLOSED_FRONT_MATTER: &str =
 
 #[test]
 fn the_body_crosses_the_boundary_and_the_whole_front_matter_stays_behind() {
-    let body = scan::agent_body(AGENT_MD);
+    // `.text`, bo wycinek niesie od 2026-09 także wiersz, na którym ciało zaczyna się w pliku —
+    // pyta o niego `borrowed_text_goes_through_the_same_review.rs`, a to kryterium jest o granicy
+    // front-mattera.
+    let body = scan::agent_body(AGENT_MD).text;
 
     // (a) Ciało naprawdę przyjechało.
     assert!(
@@ -131,12 +134,12 @@ fn the_body_crosses_the_boundary_and_the_whole_front_matter_stays_behind() {
     // (e) Front-matter bez domknięcia NIE JEST front-matterem, a plik bez nagłówka jest samym
     // ciałem. Obie odpowiedzi są dosłownie całą treścią pliku.
     assert_eq!(
-        scan::agent_body(NO_FRONT_MATTER),
+        scan::agent_body(NO_FRONT_MATTER).text,
         NO_FRONT_MATTER,
         "a file with no front matter lost part of its body"
     );
     assert_eq!(
-        scan::agent_body(UNCLOSED_FRONT_MATTER),
+        scan::agent_body(UNCLOSED_FRONT_MATTER).text,
         UNCLOSED_FRONT_MATTER,
         "a `---` on the first line of a file that never closes is a horizontal rule, not a \
          header — and cutting at it silently eats the first paragraph of the agent"

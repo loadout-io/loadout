@@ -113,8 +113,11 @@ fn only_the_patterns_section_reaches_the_prompt_and_a_file_without_one_is_not_a_
         file.patterns.len()
     );
 
-    let cut =
-        scan::recurring_patterns(&file.whole).expect("cutting a section out of text that has one");
+    // `.text`, bo wycinek niesie od 2026-09 także wiersz, na którym zaczyna się w pliku —
+    // pyta o niego `borrowed_text_goes_through_the_same_review.rs`, a to kryterium jest o cięciu.
+    let cut = scan::recurring_patterns(&file.whole)
+        .expect("cutting a section out of text that has one")
+        .text;
 
     // (a) Sekcja patterns naprawdę przyjechała. Naiwne `find` trafia w cytat blokowy z trzeciej
     // linii i zwraca zdanie o tym, że reguły są wiążące — 131 bajtów zamiast 1701.
@@ -155,8 +158,9 @@ fn only_the_patterns_section_reaches_the_prompt_and_a_file_without_one_is_not_a_
 
     // (f) Sekcja będąca ostatnią w pliku jest cięta do końca pliku, a nie gubiona.
     let last = patterns_last();
-    let cut_last =
-        scan::recurring_patterns(&last).expect("cutting a section that runs to the end of file");
+    let cut_last = scan::recurring_patterns(&last)
+        .expect("cutting a section that runs to the end of file")
+        .text;
     assert!(
         cut_last.contains(PATTERNS_MARKER),
         "a patterns section with no heading after it came back empty: {cut_last:?}"
@@ -168,8 +172,10 @@ fn only_the_patterns_section_reaches_the_prompt_and_a_file_without_one_is_not_a_
 
     // (e) Plik bez sekcji — pusty wynik i `Ok`, nigdy błąd. Ten plik NIESIE cytat blokowy, więc
     // naiwne szukanie zwróciłoby tu zdanie zamiast pustki.
-    let none = scan::recurring_patterns(&without_patterns())
-        .expect("a role file with no patterns section is a normal state, not an error");
+    let without = without_patterns();
+    let none = scan::recurring_patterns(&without)
+        .expect("a role file with no patterns section is a normal state, not an error")
+        .text;
     assert!(
         none.is_empty(),
         "a file with no patterns section produced {none:?} — the block quote about the section \

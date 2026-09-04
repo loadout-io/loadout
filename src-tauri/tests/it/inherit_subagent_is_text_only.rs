@@ -229,7 +229,7 @@ fn the_subagents_body_crosses_the_boundary_and_its_front_matter_never_does()
     // (a) CIAŁO, i to dokładnie to ciało, które oddaje `scan::agent_body` — czyli wszystko za
     // drugim `---`. Pytamy wiersz po wierszu, bo pytanie o jeden znacznik przechodzi dla
     // implementacji, która przywiozła pierwsze zdanie i zgubiła resztę.
-    let body = scan::agent_body(AGENT_MD);
+    let body = scan::agent_body(AGENT_MD).text;
     assert!(
         body.contains(BODY_MARKER)
             && body.lines().filter(|line| !line.trim().is_empty()).count() >= 3,

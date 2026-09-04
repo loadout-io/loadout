@@ -27,10 +27,13 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use serde::Serialize;
+
 use super::{Error, Result, rewrite, scan};
 // Powód tego importu — jedna definicja półek gospodarza — stoi przy stałych w `scan`.
 use super::scan::{HOST_DIR, LEARNINGS_DIR, SUBAGENTS_DIR};
 use crate::engine::drivers::RunSpec;
+use crate::skills::ingest;
 
 /// Podkatalog katalogu biegu, w którym staje katalog pluginu.
 ///
@@ -111,6 +114,32 @@ pub struct Inherited {
     text: String,
     /// Uporządkowane, bezpieczne fakty o materiałach, które naprawdę weszły do vendora.
     sources: Vec<InheritedSource>,
+    /// Co przegląd zauważył w tekście, który mimo to pojechał — po jednym wpisie na linię.
+    concerns: Vec<BorrowedConcern>,
+}
+
+/// Jedna rzecz, którą przegląd zauważył w pożyczonym tekście — **bez samego tekstu**.
+///
+/// # 2026-09 (Z-21) — dlaczego to nie jest [`ingest::Finding`]
+///
+/// Tamten typ opisuje znalezisko w pliku, który dopiero ma powstać: niesie wagę, źródło
+/// i `recovered`, czyli to, co ZDJĘTO z ciała. Tu waga jest już rozstrzygnięta — ciężkie
+/// znalezisko zabrało bieg ([`Error::Blocked`]), więc do tej listy trafia wyłącznie to, co bieg
+/// przepuścił — a adres jest inny: nie „linia ciała", tylko plik gospodarza i wiersz w nim.
+///
+/// Cztery pola, bo to są cztery osobne fakty i człowiek potrzebuje wszystkich: reguła mówi,
+/// czego to dotyczy, plik i wiersz — gdzie to otworzyć, a cytat — czy w ogóle jest się czym
+/// przejmować.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BorrowedConcern {
+    /// Id reguły z `skills::ingest`, dosłownie takie, jakie przyszło z przeglądu.
+    pub rule: String,
+    /// Ścieżka pliku u gospodarza, względna: `.claude/learnings/backend-dev.md`.
+    pub reference: String,
+    /// Wiersz w TYM pliku, liczony od 1 — nie w wycinku, który pojechał do przeglądu.
+    pub line: usize,
+    /// Linia zacytowana dosłownie.
+    pub quoted: String,
 }
 
 /// Zamknięty rodzaj odziedziczonego materiału do manifestu wejścia.
@@ -143,6 +172,17 @@ impl Inherited {
     #[must_use]
     pub fn sources(&self) -> &[InheritedSource] {
         &self.sources
+    }
+
+    /// Co przegląd zauważył w tekście, który mimo to pojechał — w kolejności bloków.
+    ///
+    /// OBOK [`Inherited::sources`], nie zamiast: tamto mówi, CO weszło do vendora, a to — co
+    /// z tym było nie tak. Pusta lista jest normalnym wynikiem i znaczy dokładnie „przegląd
+    /// niczego nie zauważył", a nie „nikt nie patrzył": tekst bez przeglądu nie ma jak tu
+    /// dojechać, bo odmowa pada wcześniej (2026-09, Z-21).
+    #[must_use]
+    pub fn concerns(&self) -> &[BorrowedConcern] {
+        &self.concerns
     }
 
     /// Ten sam krok, ale z odziedziczonym tekstem w prompcie — i **nigdzie indziej**.
@@ -203,14 +243,15 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
     // model, że ta sekcja bywa pusta, i kosztuje długość za nic.
     let mut blocks: Vec<String> = Vec::new();
     let mut text_sources = Vec::new();
+    let mut concerns = Vec::new();
 
     if let Some(role) = &chosen.learnings {
         // WYCINA `scan::recurring_patterns`, NIE MY. Naiwne `text.find("## Recurring patterns")`
         // trafia w cytat blokowy z trzeciej linii każdego pliku roli u gospodarza i oddaje 131
         // bajtów zdania o tym, że reguły są wiążące, zamiast 1701 bajtów reguł [2026-08-19].
         // Przepisanie tego cięcia tutaj byłoby drugim znaczeniem słowa „sekcja" (niezmiennik 23).
-        let file = host_text(project, LEARNINGS_DIR, A_LEARNINGS_FILE, role)?;
-        let rules = scan::recurring_patterns(&file)?;
+        let looked_over = the_rules_of(project, role)?;
+        let rules = looked_over.text.trim();
         if !rules.is_empty() {
             // Reszta pliku — u gospodarza do 73 KB `## Run journal` — nie wchodzi do budżetu
             // tokenów ani razu, i to jest cała różnica między wstrzykiwaczem a wklejeniem pliku.
@@ -218,10 +259,11 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
             let block = format!("{PATTERNS_HEADING}\n\n{rules}");
             text_sources.push(InheritedSource {
                 kind: InheritedSourceKind::Learning,
-                reference: format!(".claude/{LEARNINGS_DIR}/{role}.md"),
+                reference: looked_over.reference,
                 bytes,
             });
             blocks.push(block);
+            concerns.extend(looked_over.concerns);
         }
     }
 
@@ -236,17 +278,18 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
         // listy pól: czarna lista jest z definicji niekompletna i pęknie po cichu przy
         // następnym wydaniu CLI, a filtr zdejmujący sam wiersz `mcpServers:` zostawia jego
         // wcięte dzieci — czyli te dwie wartości, które startują proces.
-        let file = host_text(project, SUBAGENTS_DIR, A_SUBAGENT, role)?;
-        let body = scan::agent_body(&file).trim();
+        let looked_over = the_role_described_by(project, role)?;
+        let body = looked_over.text.trim();
         if !body.is_empty() {
             let bytes = body.len();
             let block = format!("{SUBAGENT_HEADING}\n\n{body}");
             text_sources.push(InheritedSource {
                 kind: InheritedSourceKind::Learning,
-                reference: format!(".claude/{SUBAGENTS_DIR}/{role}.md"),
+                reference: looked_over.reference,
                 bytes,
             });
             blocks.push(block);
+            concerns.extend(looked_over.concerns);
         }
     }
 
@@ -287,10 +330,107 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
         flags: rewrite::plugin_argv(&rewritten),
         text,
         sources,
+        concerns,
     })
 }
 
-/// Czy wszystko, co człowiek zaznaczył, naprawdę leży u gospodarza — **bez zapisu**.
+/// Cudzy tekst po TYM SAMYM przeglądzie, przez który przechodzi import — albo odmowa.
+///
+/// # 2026-09 (Z-21) — po co ta funkcja istnieje osobno
+///
+/// Bo pyta się o to dwa razy: raz przy planowaniu ([`nothing_is_missing`], zanim powstanie
+/// katalog biegu) i raz przy składaniu promptu ([`from_the_host`]). Dwa wywołania `review`
+/// pisane osobno byłyby dwoma znaczeniami słowa „przejrzany" — a rozjazd między nimi jest
+/// niewidoczny z zewnątrz: bieg po prostu rusza (niezmiennik 23).
+///
+/// CIĘŻKIE ZNALEZISKO ZABIERA CAŁY BIEG, lekkie jedzie dalej jako fakt. Trzeciego wyjścia nie
+/// ma i nie ma „prawie czysto": import rozstrzyga to tak samo od T-19, a dwa różne progi dla
+/// tych samych bajtów znaczyłyby, że droga, którą tekst przyszedł, zmienia to, czy jest groźny.
+///
+/// WIERSZ LICZYMY W PLIKU. `review` liczy od początku wycinka, który dostało, a człowiek
+/// otwiera plik — przy podagencie te dwie liczby dzieli cały front-matter.
+fn looked_over(
+    what: &'static str,
+    reference: String,
+    project: &Path,
+    cut: scan::Excerpt<'_>,
+) -> Result<Looked> {
+    let reviewed = ingest::review(cut.text);
+    let in_the_file = |finding: &ingest::Finding| {
+        // `unwrap_or(1)`: znalezisko bez linii to dziś wyłącznie „głęboki skan nie pobiegł",
+        // którego `review` nie produkuje. Wskazanie na pierwszy wiersz bloku jest wtedy
+        // uczciwsze niż zgadywanie, a cytat i tak stoi obok.
+        cut.first_line + finding.line.unwrap_or(1) - 1
+    };
+
+    if let Some(stop) = reviewed
+        .findings
+        .iter()
+        .find(|finding| finding.weight == ingest::Weight::Block)
+    {
+        return Err(Error::Blocked {
+            what,
+            reference,
+            line: in_the_file(stop),
+            quoted: stop.quoted.clone(),
+            folder: project.to_path_buf(),
+        });
+    }
+
+    Ok(Looked {
+        // Ciało PO przeglądzie, nie surowy wycinek: `review` zdejmuje komentarze HTML i znaki
+        // niewidzialne, a zapisujemy dokładnie to, co przeskanowaliśmy. Odwrotna kolejność jest
+        // cichą porażką numer jeden całego tamtego pliku.
+        text: reviewed.body,
+        concerns: reviewed
+            .findings
+            .iter()
+            .map(|finding| BorrowedConcern {
+                rule: finding.rule.clone(),
+                reference: reference.clone(),
+                line: in_the_file(finding),
+                quoted: finding.quoted.clone(),
+            })
+            .collect(),
+        reference,
+    })
+}
+
+/// Jeden przejrzany blok gospodarza: skąd jest, co w nim zostało i co przegląd zauważył.
+struct Looked {
+    /// Ścieżka pliku u gospodarza, względna — ta sama, która stoi w odmowie i w znalezisku.
+    reference: String,
+    /// Tekst po przeglądzie, gotowy do promptu.
+    text: String,
+    concerns: Vec<BorrowedConcern>,
+}
+
+/// Sekcja `## Recurring patterns` wybranego pliku roli, po przeglądzie.
+fn the_rules_of(project: &Path, role: &str) -> Result<Looked> {
+    let file = host_text(project, LEARNINGS_DIR, A_LEARNINGS_FILE, role)?;
+    let cut = scan::recurring_patterns(&file)?;
+    looked_over(
+        A_LEARNINGS_FILE,
+        format!(".claude/{LEARNINGS_DIR}/{role}.md"),
+        project,
+        cut,
+    )
+}
+
+/// Ciało wybranego podagenta, po przeglądzie.
+fn the_role_described_by(project: &Path, role: &str) -> Result<Looked> {
+    let file = host_text(project, SUBAGENTS_DIR, A_SUBAGENT, role)?;
+    let body = scan::agent_body(&file);
+    looked_over(
+        A_SUBAGENT,
+        format!(".claude/{SUBAGENTS_DIR}/{role}.md"),
+        project,
+        body,
+    )
+}
+
+/// Czy wszystko, co człowiek zaznaczył, naprawdę leży u gospodarza **i da się to wpuścić do
+/// promptu** — bez zapisu.
 ///
 /// # Dlaczego to jest osobna, publiczna funkcja
 ///
@@ -303,16 +443,23 @@ pub fn from_the_host(project: &Path, run_dir: &Path, chosen: &Chosen) -> Result<
 ///
 /// Pusty wybór nie ma czego nie znaleźć i nie czyta cudzego katalogu ani razu: brak `.claude/`
 /// jest normalnym stanem cudzego repozytorium, nie błędem (niezmiennik 5).
+///
+/// # 2026-09 (Z-21) — pytań jest dwa, nie jedno
+///
+/// „Czy ten plik jest" i „czy jego tekst wolno wpuścić do promptu". Drugie pytanie stoi TUTAJ,
+/// a nie przy zapisie, z tego samego powodu, co pierwsze: odmowa ma paść, zanim powstanie
+/// katalog biegu i zanim ruszy pierwszy agent (niezmiennik 12). Ten sam plik wciągnięty linkiem
+/// jako umiejętność jest odrzucany od T-19; pożyczony z projektu wchodził wprost do promptu.
 pub fn nothing_is_missing(project: &Path, chosen: &Chosen) -> Result<()> {
     every_name_is_really_there(project, &chosen.skills)?;
     if let Some(role) = &chosen.learnings {
-        // Wynik odrzucamy: pytanie brzmi „czy ten plik jest", a jego treść czyta ten, kto
-        // naprawdę składa prompt. Drugi odczyt kosztuje jedno `read` i jest ceną za to, że
-        // planowanie nie zapisuje ani jednego bajtu.
-        host_text(project, LEARNINGS_DIR, A_LEARNINGS_FILE, role)?;
+        // Wynik odrzucamy: pytanie brzmi „czy ten plik jest i czy przejdzie przegląd", a jego
+        // treść składa w prompt ten, kto naprawdę go składa. Drugi odczyt kosztuje jedno `read`
+        // i jest ceną za to, że planowanie nie zapisuje ani jednego bajtu.
+        the_rules_of(project, role)?;
     }
     if let Some(role) = &chosen.subagent {
-        host_text(project, SUBAGENTS_DIR, A_SUBAGENT, role)?;
+        the_role_described_by(project, role)?;
     }
     Ok(())
 }
