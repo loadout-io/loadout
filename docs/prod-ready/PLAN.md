@@ -330,8 +330,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | **LANDED** `2026-09-04` | trzy rundy + ręka; planista Codeksa |
 | Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | **BLOCKED** `2026-09-04` | trzy czwarte pracy gotowe i zacommitowane na `h-z23-connection-secrets` (`2364944a`); ostatnie kryterium wymaga DECYZJI właściciela — pytanie niżej |
 | Z-34 | `z34-agent-app-preflight` | `prompts/Z-34.md` | R+TS | C→X | | — | TODO | z uratowanej gałęzi: sonda gotowości CLI zamiast bezwarunkowego „Claude · Codex ready" |
-| Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | — | **COFNIĘTE** `2026-09-04` | werdykt DZIALA, ale pełne CI po merge'u złapało regresję; `git revert -m 1` = `4778c4af`; gałąź zostaje materiałem |
-| Z-30b | `z30b-death-proof-keeps-the-status` | `prompts/Z-30b.md` | R | C→X | | — | RUNNING | ta sama praca bez gubienia kodu wyjścia w `stop()`; **PRZED `land`: `git rebase main` w worktree** — inaczej merge doniesie samą poprawkę, bo cofnięcie merge'a zostawia stare commity „już scalone" |
+| Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | — | **PRZYWRÓCONE** `2026-09-04` (`392c58c4`) | werdykt DZIALA, ale pełne CI po merge'u złapało regresję; `git revert -m 1` = `4778c4af`; gałąź zostaje materiałem |
+| Z-30b | `z30b-death-proof-keeps-the-status` | `prompts/Z-30b.md` | R | C→X | | — | **LANDED** `2026-09-04` | jedna runda; pełna suita w checku (197 s) zamiast zawężonej |
 | Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | TODO | |
 | Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | TODO | |
 | Z-33 | `z33-record-truth` | `prompts/Z-33.md` | R | X→C | | Z-32 | TODO | |
@@ -409,6 +409,14 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
   to odczyty z cache'u (7,8 mln tokenów). Poprawka jest tego samego kształtu co w `phase_implement`:
   zapisz `sid` w stanie przed wołaniem, a przy ponowieniu podaj `--resume`. Nie robię tego teraz,
   bo `harness/` jest zamknięte poza Falą 0 (patrz „Czego orkiestrator nie robi").
+
+- **H-25 (lista `deny` nie zatrzymuje basha).** `docs/ARCHITECTURE.md` jest w `deny`
+  w `.claude/settings.json`, a mimo to bieg Z-30 go zmienił: `deny` rządzi narzędziami Edit/Write,
+  nie `python3` ani `cat` z poziomu basha, a krotka `ORACLE` w `harness/h.py` — ta, która potrafi
+  ubić bieg — tego pliku nie zna. Tym razem zmiana była trafna i CI zielone, więc zostaje; ale
+  ochrona jest dziś wyłącznie grzecznościowa. Poprawka: dopisz `docs/ARCHITECTURE.md`
+  i `docs/design/DESIGN.md` do `ORACLE`. Nie robię tego teraz, bo `harness/` jest zamknięte
+  poza Falą 0.
 
 ## 5. Dziennik
 
