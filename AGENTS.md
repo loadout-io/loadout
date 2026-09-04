@@ -113,6 +113,19 @@ Numerowane, bo kontrakty biegów i prompty cytują je po numerze („niezmiennik
 8. **`std::sync::Mutex` nigdy nie jest trzymany przez `await`.** Udokumentuj to na samym polu.
 9. **Prompt i sekrety wyłącznie przez stdin.** Nigdy w argv, nigdy w pliku tymczasowym, nigdy w logu.
    `env_clear()` plus jawna lista przepuszczanych zmiennych.
+
+   **Jeden wyjątek, otwarty decyzją właściciela 2026-09-04 (Z-23).** Wartość sekretu wolno podać
+   w argv **wyłącznie** w nadpisaniu `-c mcp_servers.<nazwa>.env.<ZMIENNA>` przekazywanym Codeksowi,
+   i wyłącznie po to, żeby doszła do procesu serwera MCP. Powód jest zmierzony (2026-09-04,
+   `codex-cli 0.153.0`): serwer stdio pod Codeksem **nie dziedziczy środowiska rodzica** — dostaje
+   zamkniętą listę kilkunastu zmiennych — a jedyną drogą podania wartości jest ten klucz. Nakładka
+   `thread/start.params.config` idzie stdinem, ale to droga wyłącznie App Servera (lider), nie
+   `codex exec`, czyli nie kroku biegu.
+
+   **Cena, którą właściciel zaakceptował:** przez czas życia procesu Codeksa wartość widzi każdy
+   `ps` na tej maszynie. Wyjątek nie rozciąga się na nic innego: prompt, klucze vendora i wszystko,
+   co nie jedzie do serwera MCP, zostaje na stdinie. Wyrocznia nie znika, tylko się zawęża —
+   ma dowodzić, że sekret nie występuje w argv **nigdzie poza** tym jednym kluczem.
 10. **`tokio::time::timeout` wokół kroku anuluje zadanie Rusta, nie proces systemowy.**
     Każda ścieżka limitu czasu przechodzi przez eskalację zabijania w supervisorze.
 11. **„Ile naraz" musi znaczyć naraz.** Poprzedni prototyp miał `max_parallel`, które było tylko szerokością
