@@ -3600,6 +3600,28 @@ pub async fn answer_the_lead(
     Ok(state.leads.answer_in(terminal, agent, answer.to_owned()))
 }
 
+/// Co wskazany lider naprawdę może zrobić w folderze człowieka.
+///
+/// Okno pyta o to przy montażu ekranu pracy i po każdej zmianie wskazania, bo z tej odpowiedzi
+/// składa zdanie stojące POD polem rozmowy — a to zdanie ma być prawdziwe, zanim ktokolwiek
+/// naciśnie Enter (2026-09, Z-50). Odmowa wraca napisem, jak każda odmowa tej granicy.
+#[tauri::command]
+pub async fn what_the_lead_can_do(
+    state: State<'_, AppState>,
+    lead: Option<String>,
+) -> Result<commands::chat::WhatTheLeadCanDo, String> {
+    commands::chat::what_the_lead_can_do_inner(
+        state.home.as_path(),
+        &state.drivers,
+        lead.as_deref(),
+    )
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
 /// Mówi zdanie liderowi tego terminalu. **Nie uruchamia biegu i nie ma jak** — powód przy
 /// `commands::chat`.
 ///
@@ -4163,6 +4185,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         stop_using_note,
         test_linear_connection,
         update_trigger,
+        what_the_lead_can_do,
     ]
 }
 

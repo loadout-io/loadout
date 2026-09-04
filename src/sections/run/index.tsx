@@ -86,8 +86,15 @@ import {
   stop,
 } from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
- * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
-import { lead } from './lead';
+ * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania.
+ * CO TEN LIDER MOŻE, odpowiada Rust, a ten moduł trzyma jego ostatnią odpowiedź (2026-09, Z-50). */
+import {
+  lead,
+  readWhatTheLeadCanDo,
+  subscribeToLead,
+  subscribeToLeadPowers,
+  whatTheLeadCanDo as whatItCanDoNow,
+} from './lead';
 import {
   atOnce as atOnceNow,
   budgetOfTheRun,
@@ -745,6 +752,23 @@ export default function Run(): ReactElement {
     () => installedSkills.map((one) => one.name),
     [installedSkills],
   );
+
+  /* CO WSKAZANY LIDER MOŻE — pytanie do Rusta, bo to tam powstaje argv jego procesu
+   * (2026-09, Z-50, `commands::chat::what_the_lead_can_do_inner`).
+   *
+   * PRZY KAŻDEJ ZMIANIE WSKAZANIA, nie tylko przy montażu: człowiek przełącza lidera kontrolką
+   * w pasku, a zdanie pod polem ma mówić o tym, którego właśnie wybrał. Zdanie opisujące
+   * poprzedniego nie ma na ekranie ani jednego znaku, po którym dałoby się to poznać.
+   *
+   * FOLDERA W TEJ LIŚCIE NIE MA i to nie jest przeoczenie: odpowiedź składa się z zapisanej
+   * definicji agenta i z sufitu jego dialu, a biblioteka jest globalna (`docs/ARCHITECTURE.md`
+   * §8). Przełączenie zakresu nie zmienia w niej ani jednego pola — w odróżnieniu od listy
+   * umiejętności wyżej, która czyta półki projektu. */
+  const chosenLead = useSyncExternalStore(subscribeToLead, lead, lead);
+  useEffect(() => {
+    void readWhatTheLeadCanDo();
+  }, [chosenLead]);
+  const leadCanDo = useSyncExternalStore(subscribeToLeadPowers, whatItCanDoNow, whatItCanDoNow);
 
   /**
    * KTÓRY WORKFLOW RUSZY, KIEDY CZŁOWIEK NACIŚNIE `Run` — ta sama funkcja nad tym samym
@@ -1799,6 +1823,10 @@ export default function Run(): ReactElement {
               /* Kto pracuje, żeby wiersz mógł powiedzieć POD polem, gdzie pójdzie zdanie —
                  zamiast pozwolić człowiekowi wysłać je w ciemno. */
               talkingTo={listening}
+              /* CO TEN LIDER MOŻE, żeby zdanie pod polem mówiło prawdę, zanim człowiek naciśnie
+                 Enter (2026-09, Z-50). Odpowiedź Rusta, nie wyliczenie z dialu po tej stronie:
+                 argv powstaje tam, a druga kopia tej reguły rozjechałaby się po cichu. */
+              can={leadCanDo}
               workflows={namesToRun}
               /* NAZWY UMIEJĘTNOŚCI, po których ukośnik przestaje być literówką i jedzie do lidera
                  znak w znak. Powód, dla którego odczyt mieszka w tym ekranie, stoi przy
