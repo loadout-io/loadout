@@ -377,13 +377,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
         return vec![problem(None, "There are no steps yet.".to_owned())];
     }
 
-    // Numer kroku to jego pozycja w pliku. Przy powtórzonym id wygrywa PIERWSZY — to samo
-    // rozstrzygnięcie, o którym mówi uwaga o powtórzeniu, więc strzałka nie celuje raz w jeden
-    // krok, raz w drugi, zależnie od reguły, która akurat pyta.
-    let mut position: BTreeMap<&str, usize> = BTreeMap::new();
-    for (index, step) in steps.iter().enumerate() {
-        position.entry(step.id).or_insert(index);
-    }
+    let position = positions(&steps);
 
     // Strzałki, których OBA końce istnieją. Strzałka w nieistniejący krok jest osobną uwagą
     // i nie ma prawa przewrócić ani obchodu, ani liczenia cyklu.
@@ -398,21 +392,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
         })
         .collect();
 
-    // Strzałki BEZ POWROTÓW — to na nich liczy się koło. Powrót (`max_turns`) domyka koło
-    // z rozmysłu i jest całą treścią pętli; koło zamknięte czymkolwiek innym jest pomyłką,
-    // najczęściej strzałką pociągniętą w złą stronę, i ma zostać odmową. Reguła w jednym
-    // zdaniu: po usunięciu powrotów graf musi być bez cykli.
-    let forward: Vec<(usize, usize)> = workflow
-        .links
-        .iter()
-        .filter(|link| !link.is_a_way_back())
-        .filter_map(|link| {
-            Some((
-                *position.get(link.from.as_str())?,
-                *position.get(link.to.as_str())?,
-            ))
-        })
-        .collect();
+    let forward = forward_arrows(workflow, &position);
 
     // Kolejność reguł jest kolejnością, w jakiej użytkownik zobaczy uwagi, a `save()` odmawia
     // zdaniem PIERWSZEGO problemu — więc idzie od „ten plik nie trzyma się kupy" do „ten bieg
@@ -441,6 +421,59 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     one_folder_two_steps(&steps, &arrows, &forward, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
+}
+
+/// Czy folder każdego kroku jest kopią należącą do biegu — po rozwiązaniu `same-copy`.
+///
+/// Brak wpisu znaczy, że odpowiedzi nie ma: kafelek kontrolny nie ma folderu, a `same-copy`
+/// bez poprzednika ma już własną odmowę w [`nothing_before_it`].
+pub(super) fn works_in_a_copy_of_ours(workflow: &WorkflowFile) -> BTreeMap<&str, bool> {
+    let steps: Vec<Facts<'_>> = workflow.steps.iter().map(facts).collect();
+    let position = positions(&steps);
+    let forward = forward_arrows(workflow, &position);
+    let mut ours = BTreeMap::new();
+    for (index, step) in steps.iter().enumerate() {
+        let Some(spot) = spot_of(index, &steps, &forward) else {
+            continue;
+        };
+        // Pierwszy wygrywa tak samo jak w `positions`: powtórzone id nie może znaczyć dwóch
+        // różnych odpowiedzi zależnie od reguły, która akurat o nie pyta.
+        ours.entry(step.id)
+            .or_insert(matches!(spot, Spot::OwnCopy(_)));
+    }
+    ours
+}
+
+fn positions<'a>(steps: &[Facts<'a>]) -> BTreeMap<&'a str, usize> {
+    // Numer kroku to jego pozycja w pliku. Przy powtórzonym id wygrywa PIERWSZY — to samo
+    // rozstrzygnięcie, o którym mówi uwaga o powtórzeniu, więc strzałka nie celuje raz w jeden
+    // krok, raz w drugi, zależnie od reguły, która akurat pyta.
+    let mut position = BTreeMap::new();
+    for (index, step) in steps.iter().enumerate() {
+        position.entry(step.id).or_insert(index);
+    }
+    position
+}
+
+fn forward_arrows(
+    workflow: &WorkflowFile,
+    position: &BTreeMap<&str, usize>,
+) -> Vec<(usize, usize)> {
+    // Strzałki BEZ POWROTÓW — to na nich liczy się koło. Powrót (`max_turns`) domyka koło
+    // z rozmysłu i jest całą treścią pętli; koło zamknięte czymkolwiek innym jest pomyłką,
+    // najczęściej strzałką pociągniętą w złą stronę, i ma zostać odmową. Reguła w jednym
+    // zdaniu: po usunięciu powrotów graf musi być bez cykli.
+    workflow
+        .links
+        .iter()
+        .filter(|link| !link.is_a_way_back())
+        .filter_map(|link| {
+            Some((
+                *position.get(link.from.as_str())?,
+                *position.get(link.to.as_str())?,
+            ))
+        })
+        .collect()
 }
 
 fn conditional_routes(workflow: &WorkflowFile, notes: &mut Vec<Note>) {

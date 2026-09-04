@@ -105,6 +105,10 @@ pub fn check_the_roster(
         return notes;
     }
 
+    // Odpowiedź dla `same-copy` wymaga przejścia po grafie. Liczymy ją raz, nie osobno dla
+    // każdej pozycji obsady, bo `spots_before` może odwiedzić cały łańcuch.
+    let copies_owned_by_run = super::check::works_in_a_copy_of_ours(file);
+
     for step in &file.steps {
         let super::Step::Agent(one) = step else {
             continue;
@@ -146,7 +150,12 @@ pub fn check_the_roster(
 
         tools_fit_the_dial(&one.id, saved, &effective, &mut notes);
         named_things_exist(&one.id, &effective, connections, skills, &mut notes);
-        a_skill_needs_a_copy(one, &effective, &mut notes);
+        a_skill_needs_a_copy(
+            one,
+            &effective,
+            copies_owned_by_run.get(one.id.as_str()).copied(),
+            &mut notes,
+        );
     }
 
     notes
@@ -308,14 +317,24 @@ fn named_things_exist(
 /// Bo `Skills::All` znaczy „wszystko, co ma agent", a to jest lista w bibliotece. Krok, który
 /// niczego nie zawęża, dostaje umiejętności agenta — i to on odmówi przy Starcie, nie agent.
 ///
-/// # Dlaczego `is_own_copy`, a nie porównanie z `Folder::Project`
+/// # Dlaczego `spot_of`, a nie samo pole `folder`
 ///
-/// Bo odmowa przy Starcie pyta o `ours` — czy ten katalog jest NASZ — a nasz jest wyłącznie
-/// wtedy, gdy bieg go założył. `Pick { path }` i `SameCopy` też są folderami człowieka albo
-/// cudzym drzewem: pierwszy jest katalogiem, który wskazał ręcznie, drugi należy do kroku przed
-/// nim. Jedno pytanie, jedna odpowiedź (niezmiennik 13).
-fn a_skill_needs_a_copy(step: &AgentStep, effective: &Agent, notes: &mut Vec<Note>) {
-    if effective.skills.is_empty() || step.folder.is_own_copy() {
+/// Odmowa przy Starcie pyta o rozwiązany katalog: kopia umiejętności może stanąć wszędzie pod
+/// katalogiem biegu. `SameCopy` nie odpowiada na to pytanie sam — za `fresh-copy` wskazuje naszą
+/// kopię, za `project` folder człowieka, a przy składaniu dwóch miejsc dostaje nową kopię biegu.
+/// `spot_of` jest regułą, która rozstrzyga już te same cztery drogi dla kolizji folderów, więc
+/// płótno nie utrzymuje drugiej odpowiedzi na ten sam fakt (niezmiennik 13).
+///
+/// 2026-09 (Z-20) — `None` zostaje milczeniem: `same-copy` bez poprzednika ma już własną odmowę
+/// w `nothing_before_it`, a drugi problem na tym samym kafelku opisywałby tę samą przyczynę
+/// drugi raz (niezmiennik 13).
+fn a_skill_needs_a_copy(
+    step: &AgentStep,
+    effective: &Agent,
+    works_in_a_copy_of_ours: Option<bool>,
+    notes: &mut Vec<Note>,
+) {
+    if effective.skills.is_empty() || works_in_a_copy_of_ours != Some(false) {
         return;
     }
     // PIERWSZA Z LISTY, nie wszystkie — ta sama reguła i ten sam powód, co w odmowie przy
