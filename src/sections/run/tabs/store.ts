@@ -16,12 +16,12 @@
  * o drugi bieg naraz. Karta jest więc od T-71 TERMINALEM z własną tożsamością (`./terminal.ts`),
  * folder jest jej polem (`path`), i w jednym zakresie stoi ich tyle, ile człowiek otworzył.
  *
- * BIEG DALEJ JEST JEDEN NA APLIKACJĘ (`AppState.live`, zapadka `going` w `../io`), więc karta
- * biegu, który właśnie ruszył, nadal nazywa się jego FOLDEREM (`cardForRun` niżej). To nie jest
- * drugie znaczenie pola `id` dołożone obok pierwszego, tylko to samo pole użyte przez jedynego
- * właściciela, jakiego bieg dziś ma: bieg należy do folderu, nie do karty, bo na drucie nie ma
- * czym go zaadresować (`stop_run` nie bierze identyfikatora). Dzień, w którym bieg dostanie
- * tożsamość na drucie — etap B — jest dniem, w którym to znika.
+ * KARTA BIEGU NAZYWA SIĘ JEGO FOLDEREM (`cardForRun` niżej). To nie jest drugie znaczenie pola
+ * `id` dołożone obok pierwszego, tylko to samo pole użyte przez właściciela, jakiego bieg ma:
+ * bieg należy do folderu, bo w jednym folderze idzie najwyżej jeden (zapadka `AppState::live`
+ * odmawia drugiemu). 2026-09 (Z-35): FOLDER JEST OD DZIŚ ADRESEM NA DRUCIE — `stop_run`,
+ * `continue_run` i `say_to_agent` biorą go argumentem — więc ta nazwa przestała być obejściem
+ * i stała się tym, czym wygląda.
  *
  * MAGAZYN NA POZIOMIE MODUŁU, bo bieg trwa dłużej niż ekran: wyjście do Agentów odmontowuje
  * komponent i nie ma prawa zgubić kart ani skasować biegu.
@@ -34,6 +34,7 @@ import { createWorkspacesStore } from '../../../state/run-tabs';
 import type { WorkspaceTab, WorkspacesStore } from '../../../state/run-tabs';
 import { knownRun } from '../../../state/run';
 import { forgetFeed } from '../feed/live';
+import { whereTheRunIs } from '../folders';
 import { closeTerminal, stop } from '../io';
 
 /**
@@ -46,27 +47,38 @@ import { closeTerminal, stop } from '../io';
  *
  * Rozstrzygamy tym, co okno WIE: `id` karty jest folderem jej biegu, a istniejąca sesja tego
  * folderu (`knownRun`) niesie nazwę workflow dokładnie wtedy, kiedy w tym folderze coś idzie.
- * Silnik prowadzi dziś jeden bieg naraz (zapadka `going` w `../io`), więc „w tym folderze coś idzie"
- * jest równoważne „to jest TEN bieg, który zatrzyma `stop_run`" — i to jest cała uczciwość,
- * jaką ta funkcja może mieć bez argumentu po tamtej stronie granicy.
  *
- * DALEJ ZATRZYMUJEMY, kiedy sesja bez zakresu (klucz `null`) ma żywy bieg: tak wygląda bieg
- * puszczony przez `start()` bez folderu, czyli tam, gdzie wstała aplikacja. Nie wiemy, czyj
- * jest, a osierocony agent palący limit jest gorszy niż zatrzymanie o jedno za dużo
- * (niezmiennik 6).
+ * # 2026-09 (Z-35) — DRUGA POŁOWA TEJ NAPRAWY WRESZCIE ISTNIEJE
  *
- * PRAWDZIWA NAPRAWA JEST PO STRONIE RUSTA i jest zgłoszona: `stop_run` nie bierze
- * identyfikatora, więc okno prowadzące dwa biegi naraz nadal nie miałoby czym wybrać. Ta
- * funkcja nie udaje, że go ma — po prostu nie zabija biegu, o którym wie, że nie należy do
- * zamykanej karty.
+ * Stało tu od 2026-08-18 jedno zdanie zgłoszenia: „prawdziwa naprawa jest po stronie Rusta,
+ * `stop_run` nie bierze identyfikatora". Nie bierze go od dziś: komenda przyjmuje folder karty
+ * i zatrzymuje wyłącznie bieg z tego folderu (`AppState::stop_the_run_in`). Znika przez to cały
+ * akapit o „zatrzymaniu o jedno za dużo" — ta funkcja nie musi już wybierać między osieroconym
+ * agentem a cudzą pracą, bo umie wskazać dokładnie jedną.
+ *
+ * # 2026-09 (Z-35, runda naprawcza) — `×` NIE PYTA JUŻ SESJI BEZ ZAKRESU
+ *
+ * Stała tu druga gałąź: kiedy własna sesja karty milczała, `×` sięgało do sesji bez zakresu
+ * (klucz `null`) i wołało `stop(null)`. Miało to sens dokładnie tak długo, jak długo `stop_run`
+ * nie brał folderu — wtedy `null` znaczyło „każdy żywy bieg", a osierocony agent palący limit
+ * był gorszy niż zatrzymanie o jedno za dużo. Od tego zadania `null` znaczy KATALOG, POD KTÓRYM
+ * WSTAŁA APLIKACJA (`AppState::project_for`), czyli **cudzy** bieg: zamknięcie karty `atlas`
+ * kończyłoby pracę, która z tą kartą nie ma nic wspólnego. To jest ta sama wada, którą całe to
+ * zadanie zamyka, tylko o jedną warstwę dalej — więc gałąź znika.
+ *
+ * Bieg z tamtej sesji nie zostaje przez to bez drogi: widzi go ekran, który go znalazł
+ * (`../index.tsx`, efekt przy `listRuns`), zatrzymuje przycisk Stop nad tym ekranem, a zamknięcie
+ * okna kończy go tak czy owak (`AppState::stop_every_live_run_before_closing`).
+ *
+ * ŻADNA CZYNNOŚĆ Z KARTY NIE WYSYŁA WIĘC BRAKU ADRESU. `whereTheRunIs(tab)` oddaje folder, który
+ * okno samo wysłało do `run_workflow`, a przy jego braku sam identyfikator karty — nigdy `null`.
  */
 async function stopRunOf(tab: string): Promise<void> {
   /* 2026-09 (Z-26): samo pytanie przy `×` nie zakłada magazynu biegu pod identyfikatorem
    * terminalu. Taki klucz nie jest folderem i żaden bieg nigdy niczego do niego nie zapisze. */
   const here = knownRun(tab)?.getState().workflow ?? '';
-  const withoutScope = knownRun(null)?.getState().workflow ?? '';
-  if (here === '' && withoutScope === '') return;
-  await stop();
+  if (here === '') return;
+  await stop(whereTheRunIs(tab));
 }
 
 /**
@@ -100,9 +112,8 @@ function endLeadOf(tab: string): void {
 /**
  * Karty biegów tego okna.
  *
- * ZATRZYMANIE WCHODZI ARGUMENTEM i dziś jest nim `stopRunOf` — `stop_run` obwarowany pytaniem
- * „czy ten bieg w ogóle należy do tej karty". Dzień, w którym `stop_run` dostanie identyfikator
- * biegu, jest dniem, w którym zmienia się dokładnie ta jedna linia.
+ * ZATRZYMANIE WCHODZI ARGUMENTEM i dziś jest nim `stopRunOf` — `stop_run` zawołany z folderem
+ * tej karty, a przy karcie bez biegu nie zawołany wcale.
  *
  * KONIEC ROZMOWY WCHODZI DRUGIM ARGUMENTEM, a nie tym samym: zatrzymanie biegu dzieje się tylko
  * po potwierdzeniu pytania, a rozmowa schodzi przy KAŻDYM zamknięciu karty. Powód w całości stoi

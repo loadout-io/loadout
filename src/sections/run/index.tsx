@@ -74,7 +74,7 @@ import type { FeedView, NowZone, Question } from './feed/model';
 import { Entry } from './entry/entry';
 import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
-import { chooseWorkingFolder, folderName } from './folders';
+import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
 import { openOneRun, theOneThatIsGoing } from './history-command';
 import { answerTheLead, listRuns, openChat, sayToAgent, sayToOrchestrator, stop } from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
@@ -868,10 +868,19 @@ export default function Run(): ReactElement {
     [tabs.tabs, tabs.activeId, folder],
   );
 
-  /* INSTANCJA COMPOSERA, nie tylko kanoniczny klucz feedu. Zwykłe `null → folder` zachowuje
-   * rozmowę, bo oba zapisy znaczą domyślny terminal folderu. Ruch odwrotny jest inny: dzieje się
-   * po `Close`, które woła `close_terminal`, więc ten sam napis klucza nazywa już NOWĄ rozmowę.
-   * Generacja niesie tę różnicę bez zmiany kontraktu kart (poza OWNS T-34). */
+  /* KANONICZNY KLUCZ TEJ KARTY — jedna odpowiedź na „w której sesji jesteśmy" (niezmiennik 13).
+   *
+   * Czyta go dziś dwóch: instancja composera niżej i `showInStream`, czyli wszystko, co OKNO
+   * dopisuje do historii. To samo wyrażenie liczy rejestr strumienia po swojej stronie
+   * (`./feed/live.ts`, `shown()`), bo `here?.id` jest folderem z kontraktu granicy — i to jest
+   * cały powód, dla którego te dwie strony nie mają jak się rozjechać. 2026-09 (Z-35): rozjechały
+   * się, dopóki `showInStream` miało własne `folder ?? ''`, a zdanie Stopu szło wtedy do sesji,
+   * na którą nikt nie patrzy.
+   *
+   * INSTANCJA COMPOSERA, nie tylko klucz. Zwykłe `null → folder` zachowuje rozmowę, bo oba zapisy
+   * znaczą domyślny terminal folderu. Ruch odwrotny jest inny: dzieje się po `Close`, które woła
+   * `close_terminal`, więc ten sam napis klucza nazywa już NOWĄ rozmowę. Generacja niesie tę
+   * różnicę bez zmiany kontraktu kart (poza OWNS T-34). */
   const canonicalEntryTerminal = onTop ?? folder ?? '';
   const entryInstance = useRef({
     folder,
@@ -1256,8 +1265,12 @@ export default function Run(): ReactElement {
      * niż ciche zdjęcie załączników ze szkicu adresowanego nazwą żywego kroku. */
     if (images.length > 0 && going.to === 'agent') return IMAGES_TO_LEAD_ONLY;
     try {
+      /* FOLDER TEJ KARTY JEDZIE DO OBU DRÓG, i do agenta doszedł 2026-09 (Z-35): bez niego
+       * „ten jeden, który pracuje" znaczyło po tamtej stronie „gdziekolwiek", więc zdanie
+       * wpisane tutaj potrafiło pójść do agenta z innego workspace'u — turą, za którą ktoś
+       * płaci. Ten sam adres, którym stąd zatrzymuje się bieg (`stopRun` niżej). */
       await (going.to === 'agent'
-        ? sayToAgent(going.text, going.agent)
+        ? sayToAgent(going.text, going.agent, whereTheRunIs(folder))
         : sayToOrchestrator(going.text, folder, onTop, lead(), images));
       return null;
     } catch (error: unknown) {
@@ -1274,13 +1287,26 @@ export default function Run(): ReactElement {
   }
 
   /**
-   * Wiersz złożony przez OKNO → strumień tego zakresu.
+   * Wiersz złożony przez OKNO → strumień KARTY, na którą człowiek patrzy.
    *
-   * `feedFor(folder ?? '')`, nie `runFeed`: to jest ta sama sesja i ten sam sentinel pustego
-   * napisu, którymi piszą obie pompy na granicy (`./io.ts`, `start` i `openChat`), więc wiersz
-   * wpisany tutaj stoi w historii w kolejności, w której się wydarzył. `runFeed` rozstrzyga sesję
-   * W CHWILI WYWOŁANIA, czyli po zakresie AKTUALNIE widocznym — a linia należy do zakresu, w
-   * którym ją wpisano, nawet jeśli człowiek przełączy się, zanim wróci odmowa.
+   * # 2026-09 (Z-35, runda naprawcza) — KLUCZEM JEST KARTA, NIE ZAKRES
+   *
+   * Stało tu `feedFor(folder ?? '')` i było to kluczowanie ZAKRESEM, podczas gdy widok czyta
+   * sesję KARTY na wierzchu (`./feed/live.ts`, `shown()` → `cardOnTop`). Przy karcie założonej
+   * `＋` te dwie odpowiedzi są różne — terminal ma własną tożsamość, nie ścieżkę folderu
+   * (`./tabs/terminal.ts`) — więc każde zdanie okna lądowało w sesji, na którą nikt nie patrzy.
+   * Znalazł to sprawdzający na zdaniu „Nothing is running in …": Stop odpowiadał do niewidocznego
+   * strumienia, czyli z ekranu wyglądał dokładnie jak przycisk bez handlera (niezmiennik 29).
+   * Przy karcie BIEGU wady nie było widać, bo tam `id === folder` i oba klucze się zgadzają —
+   * dokładnie ten kształt, przez który to przeżyło całą falę.
+   *
+   * `canonicalEntryTerminal`, nie drugie wyrażenie: to jest ta sama odpowiedź na „która karta jest
+   * na wierzchu", której używa klucz wiersza wejścia wyżej, i ta sama, którą liczy rejestr
+   * strumienia (niezmiennik 13). Trzecia kopia rozjechałaby się przy pierwszej zmianie reguły.
+   *
+   * DOMKNIĘCIE RENDERU, NIE `runFeed`, i to jest ta połowa, która została bez zmian: `runFeed`
+   * rozstrzyga sesję W CHWILI WYWOŁANIA, a odpowiedź na Stop wraca po drucie — człowiek zdąży
+   * przełączyć kartę, zanim ona przyjdzie. Wiersz należy do karty, w której go zamówiono.
    *
    * DO WIDOKU, NIGDY DO MAGAZYNU LINII (`runFor`). Ten wiersz nie jest zdarzeniem biegu: nie ma
    * go w `run.json`, nie przeżyje przeładowania okna i niesie to w swoim ujemnym identyfikatorze
@@ -1289,7 +1315,7 @@ export default function Run(): ReactElement {
    * czy bieg czeka na limit dostawcy.
    */
   function showInStream(row: WindowLine): void {
-    feedFor(folder ?? '').appendLines([row]);
+    feedFor(canonicalEntryTerminal).appendLines([row]);
   }
 
   /**
@@ -1351,8 +1377,13 @@ export default function Run(): ReactElement {
    *
    * WOŁANE ZAWSZE, także wtedy, gdy to okno nic o biegu nie wie — i to jest cała naprawa
    * zgłoszenia właściciela z 2026-08-23 („Nothing is running." nad biegiem, który pracował).
-   * Pamięć okna o żywym biegu jest ulotna: gubi ją przeładowanie strony. Zapadka biegu jest
-   * jedna na aplikację i mieszka po tamtej stronie, więc pytamy JĄ (niezmiennik 13).
+   * Pamięć okna o żywym biegu jest ulotna: gubi ją przeładowanie strony. Zapadka biegu mieszka
+   * po tamtej stronie, więc pytamy JĄ (niezmiennik 13).
+   *
+   * 2026-09 (Z-35) — Z FOLDEREM TEJ KARTY. Bez niego `/stop` kończyło bieg w KAŻDYM żywym
+   * workspace, czyli wiersz wejścia jednej karty zabierał pracę drugiej. Adres bierzemy przez
+   * `whereTheRunIs`, a nie z `folder` wprost, bo to tam mieszka jedna odpowiedź na pytanie
+   * „gdzie ten bieg idzie" (niezmiennik 13) — ta sama, którą czyta `×` na karcie.
    *
    * Błąd oddaje `true`: zdanie o nim stoi już na ekranie, a doklejenie do niego „Nothing is
    * running." byłoby drugą, sprzeczną odpowiedzią na tę samą próbę.
@@ -1360,7 +1391,7 @@ export default function Run(): ReactElement {
   async function stopRun(): Promise<boolean> {
     setSaid(null);
     try {
-      return await stop();
+      return await stop(whereTheRunIs(folder));
     } catch (error: unknown) {
       setSaid(why(error, 'Loadout could not stop the run.'));
       return true;
@@ -1700,6 +1731,12 @@ export default function Run(): ReactElement {
                  wiersz odpowiadał z pamięci okna — a ta pamięć bywa nieprawdziwa i wtedy `/stop`
                  mówiło „Nothing is running." nad pracującym biegiem. Odpowiada Rust. */
               onStopRun={stopRun}
+              /* JAK NAZWAĆ TĘ KARTĘ, kiedy Stop odpowie „nic tu nie idzie" (2026-09, Z-35).
+                 Nazwa, nie ścieżka: to ona stoi na pasku i w menu, więc to jej człowiek będzie
+                 szukał. `run.folder` bije zakres, bo bieg mógł ruszyć w folderze, którego dziś
+                 nie widać; pusty napis znaczy „nie ma czym nazwać" i wiersz wraca wtedy do
+                 zdania ogólnego. */
+              runsIn={folderName(run.folder ?? folder ?? '')}
               onSayToAgent={sayIt}
               /* `/run` idzie WPROST do polityki startu, bez przechodzenia przez ten komponent:
                  `startFromLine` czyta katalog workflow, rozbiera linię i woła `launchRun` z tym

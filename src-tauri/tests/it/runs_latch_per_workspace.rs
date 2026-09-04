@@ -258,7 +258,18 @@ async fn two_folders_running(
                         Some(door) => {
                             both_are_working(&ledger_run, &atlas_run).await?;
                             match door {
-                                Door::Stop => state.stop_every_live_run().await.map(|_| ()),
+                                /* 2026-09 (Z-35) — DWA WYWOŁANIA, PO JEDNYM NA FOLDER, i sens
+                                 * AC-4 zostaje ten sam: „Stop dosięga biegu w KAŻDYM folderze".
+                                 * Zmieniło się tylko założenie, że robi to jednym wywołaniem —
+                                 * Stop bierze dziś folder karty, na której go naciśnięto
+                                 * (`AppState::stop_the_run_in`), bo bez tego karta `ledger`
+                                 * zabierała pracę karcie `atlas`. Człowiek, który chce
+                                 * zatrzymać oba biegi, naciska dwa razy: raz na każdej karcie. */
+                                Door::Stop => {
+                                    let first = state.stop_the_run_in(&ledger).await;
+                                    let second = state.stop_the_run_in(&atlas).await;
+                                    first.and(second).map(|_| ())
+                                }
                                 Door::Close => state.stop_every_live_run_before_closing().await,
                             }
                             .map_err(|error| error.to_string())

@@ -20,6 +20,31 @@
  */
 import { open as chooseFolder } from '@tauri-apps/plugin-dialog';
 
+import { knownRun } from '../../state/run';
+
+/**
+ * Katalog, w którym idzie bieg tej karty — czyli adres dla Stopu, „dalej" i „powiedz agentowi".
+ *
+ * 2026-09 (Z-35) — POWSTAŁO, BO TE TRZY DROGI DOSTAŁY FOLDER NA DRUCIE. Dopóki `stop_run` nie
+ * brało argumentu, okno nie miało czym celować i tamta strona kończyła bieg w KAŻDYM żywym
+ * workspace. Odpowiedź na „gdzie on idzie" okno ma od dawna i ma ją w JEDNYM miejscu: sesja
+ * biegu zapisuje folder tym samym wywołaniem, którym ogłasza start (`RunState.folder`), a
+ * wysyła go tam ta sama krawędź, która wysłała go do `run_workflow` (`./io.ts`, `start`).
+ * Trzy kopie tego wyrażenia w trzech ciałach handlerów rozjechałyby się przy pierwszej zmianie
+ * (niezmiennik 13).
+ *
+ * ZAKRES JEST ODPOWIEDZIĄ ZAPASOWĄ, nie `null`, i to jest ta połowa, która ma znaczenie przy
+ * PUSTEJ karcie: `null` znaczy po tamtej stronie „katalog, pod którym wstała aplikacja", więc
+ * Stop naciśnięty tam, gdzie nic nie idzie, pytałby o cudzy folder i mógłby zatrzymać cudzy
+ * bieg. Zdanie „Nothing is running in <folder>" ma nazywać ten folder, na który człowiek patrzy.
+ *
+ * TU, A NIE W `io.ts`: tamten plik jest krawędzią komend i nie zna magazynów okna. Ten pyta
+ * o folder — dokładnie jak `folderName` niżej i `chooseWorkingFolder` pod nim.
+ */
+export function whereTheRunIs(scope: string | null): string | null {
+  return knownRun(scope)?.getState().folder ?? scope;
+}
+
 /** Nazwa folderu, czyli to, co widać, kiedy pełna ścieżka się nie mieści. */
 export function folderName(path: string): string {
   return (

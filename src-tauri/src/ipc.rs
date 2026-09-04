@@ -965,9 +965,21 @@ impl AppState {
     /// od tego, w którym folderze ten start poszedł. Zapadka kluczowana workspace'em ma teraz
     /// tych uchwytów kilka, a `deps_in(self.project)` znaczyłoby „folder, pod którym wstało
     /// okno" — czyli Dalej, Powiedz i zamknięcie karty gubiłyby bieg idący gdziekolwiek indziej.
-    /// Adresowanie tych trzech dróg folderem plus identyfikatorem biegu jest osobną robotą;
-    /// dopóki jej nie ma, „ten, który ruszył ostatni" jest jedynym wyborem, który niczego nie
-    /// odcina od okna.
+    ///
+    /// # 2026-09 (Z-35) — CO PO TEJ METODZIE ZOSTAŁO: ANI JEDNA DROGA Z OKNA
+    ///
+    /// Trzy drogi wymienione wyżej — Dalej, Powiedz i Stop — biorą od dziś folder karty
+    /// ([`AppState::stop_the_run_in`], [`AppState::continue_the_run_in`],
+    /// [`AppState::say_in_the_run_at`]), bo okno ten folder ZNA: samo wysłało go do
+    /// `run_workflow` (`src/sections/run/io.ts`, `start`). „Ten, który ruszył ostatni" był
+    /// wyborem na czas, w którym adresu nie było, i miał zmierzoną cenę: „dalej" naciśnięte
+    /// w folderze A podbijało licznik biegu B.
+    ///
+    /// Zostają wyłącznie trzy szwy pytające „CZYJ uchwyt jest żywy", wszystkie w `tests/it`
+    /// i żaden nie z okna: `no_start_orphans_the_previous.rs`, `ask_respects_the_pool.rs`
+    /// i `trigger_run_is_accepted_once.rs`. Te pytają o osierocenie, czyli o rzecz, na którą
+    /// odpowiedź MUSI być „najnowszy" — klon, który wołający trzyma w ręku, nie zauważa
+    /// podmiany (powód wyżej, akapit z 2026-08-20).
     pub fn deps(&self) -> RunDeps<'_> {
         // Zamek wzięty i oddany w JEDNYM wyrażeniu, przed czymkolwiek, co czeka (niezmiennik 8).
         let newest = self
@@ -1196,56 +1208,95 @@ impl AppState {
         }))
     }
 
-    /// Zatrzymuje bieg w KAŻDYM żywym folderze i mówi, czy było co zatrzymywać.
+    /* ── TRZY DROGI Z OKNA, WSZYSTKIE ADRESOWANE FOLDEREM (2026-09, Z-35) ───────────────────
+     *
+     * CO BYŁO. Stop wołał `stop_every_live_run`, czyli kończył bieg w KAŻDYM żywym workspace,
+     * a Dalej i Powiedz brały [`AppState::deps`], czyli „uchwyt, który ruszył ostatni". Trzy
+     * różne drogi, jeden skutek: karta `ledger` zabierała pracę karcie `atlas`. Audyt
+     * 2026-09-04 nazywa to A-1 i A-2, a komentarze przy tamtych funkcjach nazywały to wprost
+     * jako robotę do zrobienia.
+     *
+     * DLACZEGO DA SIĘ TO DZIŚ, A NIE DAŁO WCZORAJ. Zapadka [`AppState::live`] jest kluczowana
+     * kanoniczną tożsamością workspace'u od 2026-08-28, więc uchwyt tego folderu jest jednym
+     * odczytem ([`AppState::deps_in`]). Brakowało wyłącznie ADRESU na drucie — a ten okno zna,
+     * bo samo wysłało folder do `run_workflow` (`src/sections/run/io.ts`, `start`).
+     *
+     * DLACZEGO TO SĄ METODY `AppState`, A NIE CIAŁA SKORUP. Bo `State<'_, AppState>` nie da się
+     * zbudować bez żywego Tauri, więc polityka zamknięta w skorupie jest polityką, na którą nie
+     * da się napisać kryterium — ta sama cena, którą raz już zapłacił `say_to_agent_inner`
+     * (jego nagłówek). Każda z nich ma po dwie linie: uchwyt tego folderu plus wywołanie
+     * rdzenia (niezmienniki 1 i 23).
+     *
+     * CZEGO TU NIE MA: identyfikatora biegu. W jednym folderze idzie najwyżej jeden bieg
+     * (zapadka odmawia drugiemu), więc folder JEST adresem — dokładnie ten sam, którym karta
+     * biegu nazywa się w oknie (`src/sections/run/tabs/store.ts`, `cardForRun`).
+     */
+
+    /// Stop naciśnięty na karcie TEGO folderu. Mówi, czy było co zatrzymywać.
     ///
-    /// # Dlaczego KAŻDY, skoro człowiek nacisnął Stop na jednym ekranie
+    /// Wraca **dopiero z dowodem**, że po biegu nic nie żyje (niezmiennik 6), a `false` znaczy
+    /// „w tym folderze nic nie idzie" i JEST odpowiedzią, nie błędem: naciśnięcie Stopu nad pustą
+    /// kartą nie jest pomyłką człowieka. Zdanie `Nothing is running in <folder>.` składa z tej
+    /// odpowiedzi okno (`src/sections/run/entry/entry.tsx`, `whatStopSaid`).
     ///
-    /// Bo `stop_run` nie bierze identyfikatora i okno o tym wie: adresowanie Stopu folderem plus
-    /// numerem biegu jest osobną robotą. Dopóki go nie ma, Stop sięgający do jednego uchwytu
-    /// zostawiałby przy dwóch żywych biegach jeden BEZ ANI JEDNEJ drogi z okna — a repo ma ten
-    /// spór rozstrzygnięty wprost i w drugą stronę: osierocony agent palący limit jest gorszy niż
-    /// zatrzymanie o jedno za dużo (`src/sections/run/tabs/store.ts`, niezmienniki 6 i 11).
-    ///
-    /// Foldery zbieramy POD zamkiem, a zatrzymujemy PO jego oddaniu (niezmiennik 8): zatrzymanie
-    /// czeka na dowód śmierci grupy, więc zamek trzymany przez ten czas zawieszałby każdy inny
-    /// folder dokładnie wtedy, kiedy schodzi ten pierwszy.
-    ///
-    /// Porażka jednego folderu NIE zabiera drogi pozostałym — zdanie wraca dopiero po wszystkich.
-    /// Pierwsze `?` w środku zostawiałoby żywego agenta za każdym razem, gdy zatrzymanie któregoś
-    /// z wcześniejszych folderów się nie udało.
-    ///
-    /// # 2026-09 (Z-10) — WSZYSTKIE FOLDERY NARAZ, nie jeden po drugim
-    ///
-    /// Zatrzymanie czeka na dowód śmierci grupy, czyli na eskalację `TERM` → łaska → `KILL`
-    /// (`engine::supervisor`). Pętla sekwencyjna kazała człowiekowi czekać na sumę tych okien:
-    /// przy dwóch żywych folderach dwa razy tyle, choć zejścia nie mają ze sobą nic wspólnego.
-    /// `stop()` w środku każdej z tych przyszłości pada przy PIERWSZYM odpytaniu, więc wszystkie
-    /// foldery dostają sygnał w tej samej chwili, a czekanie zaczyna się dla nich razem.
-    pub async fn stop_every_live_run(&self) -> Result<bool, commands::RunError> {
-        let folders = self.live_folders();
-        let deps: Vec<RunDeps<'_>> = folders.iter().map(|folder| self.deps_in(folder)).collect();
-        let outcomes = all_at_once(
-            deps.iter()
-                .map(commands::run::stop_if_anything_is_going)
-                .collect(),
-        )
-        .await;
-        let stopped = outcomes.iter().any(|one| matches!(one, Ok(true)));
-        // Pierwsza porażka W KOLEJNOŚCI FOLDERÓW, nie pierwsza w czasie: zdanie o zamknięciu ma
-        // być tym samym zdaniem przy tym samym stanie aplikacji, a nie tym, które wróciło szybciej.
-        outcomes
-            .into_iter()
-            .find_map(Result::err)
-            .map_or(Ok(stopped), Err)
+    /// Folder bez wpisu w zapadce dostaje uchwyt z dowodem zejścia ([`AppState::nothing_going`]),
+    /// więc ta droga wraca **bez czekania** — inaczej Stop nad pustą kartą czekałby na dowód od
+    /// biegu, którego nigdy nie było, czyli wieszałby okno w najczęstszym przypadku ze wszystkich.
+    pub async fn stop_the_run_in(&self, project: &Path) -> Result<bool, commands::RunError> {
+        commands::run::stop_if_anything_is_going(&self.deps_in(project)).await
     }
 
-    /// To samo przy zamykaniu okna: każdy żywy folder, ale z sufitem czasu na folder.
+    /// „Dalej" na punkcie kontrolnym karty TEGO folderu.
+    ///
+    /// Wraca dopiero wtedy, gdy bieg naprawdę ruszył (`wait_until_moving` w rdzeniu), i wraca
+    /// od razu, kiedy nie było na co odpowiadać — powód w całości stoi przy
+    /// [`commands::run::continue_run_inner`].
+    pub async fn continue_the_run_in(
+        &self,
+        project: &Path,
+        answer: Option<String>,
+    ) -> Result<(), commands::RunError> {
+        commands::run::continue_run_inner(&self.deps_in(project), answer).await
+    }
+
+    /// „Powiedz coś agentowi, który pracuje" — agentowi biegu TEGO folderu.
+    ///
+    /// Brak nazwy znaczy od dziś „ten jeden, który pracuje **w tym folderze**", a nie
+    /// „gdziekolwiek": lista pracujących kroków wisi na uchwycie biegu, więc adresowanie uchwytu
+    /// adresuje też odmowy (`RunError::SeveralAreWorking` i pozostałe cztery). Nazwa kroku
+    /// z sąsiedniego folderu jest przez to ODMÓWIONA, a nie doręczona — i to jest właściwa
+    /// odpowiedź: nazwa jest adresem wewnątrz biegu, nigdy drogą do biegu obok.
+    pub async fn say_in_the_run_at(
+        &self,
+        project: &Path,
+        agent: Option<&str>,
+        text: &str,
+    ) -> Result<(), commands::RunError> {
+        let deps = self.deps_in(project);
+        commands::run::say_to_agent_inner(&deps.control, agent, text).await
+    }
+
+    /// Przy zamykaniu okna: każdy żywy folder, ale z sufitem czasu na folder.
+    ///
+    /// # 2026-09 (Z-35) — JEDYNA DROGA „KAŻDY ŻYWY FOLDER", JAKA ZOSTAŁA
+    ///
+    /// I ma nią zostać. Stała obok niej `stop_every_live_run`, którą wołał Stop z okna, i to
+    /// przez nią jedna karta zabierała pracę drugiej. Zamknięcie okna jest inną czynnością
+    /// i dlatego zasięg ma inny: człowiek nie mówi wtedy „skończ ten bieg", tylko „skończ tę
+    /// aplikację", a rzecz, która przeżyje Loadouta, przechodzi pod PID 1 i pali limit dostawcy
+    /// dalej (niezmiennik 6). Tutaj „wszystkie" jest odpowiedzią na zadane pytanie; tam było
+    /// odpowiedzią na inne. Wołający jest jeden: [`AppState::close_everything_down`], czyli
+    /// czerwony guzik i ⌘Q.
     ///
     /// DWIE METODY, NIE JEDNA Z FLAGĄ, bo to są dwie polityki i obie mieszkają w rdzeniu
     /// (niezmiennik 23): `stop_if_anything_is_going` czeka na dowód tak długo, jak trzeba, a
     /// `stop_before_closing` odróżnia schodzenie od zacięcia — bo przy zamykaniu podniesione jest
     /// już `prevent_close` i człowiek zostaje z oknem, którego nie da się zamknąć. Tutaj zostaje
     /// wyłącznie „po każdym żywym folderze"; sufit i jego uzasadnienie są tam, gdzie były.
+    ///
+    /// Foldery zbieramy POD zamkiem, a zatrzymujemy PO jego oddaniu (niezmiennik 8): zatrzymanie
+    /// czeka na dowód śmierci grupy, więc zamek trzymany przez ten czas zawieszałby każdy inny
+    /// folder dokładnie wtedy, kiedy schodzi ten pierwszy.
     ///
     /// 2026-09 (Z-10) — RAZEM, nie po kolei, i tu boli to najbardziej: sufit jest **na folder**,
     /// więc dwa zacięte biegi trzymały okno przez dwa razy trzydzieści sekund. Zmierzone
@@ -1260,7 +1311,11 @@ impl AppState {
                 .collect(),
         )
         .await;
-        // Pierwsza porażka w kolejności folderów — powód przy [`AppState::stop_every_live_run`].
+        /* Pierwsza porażka W KOLEJNOŚCI FOLDERÓW, nie pierwsza w czasie: zdanie o zamknięciu ma
+         * być tym samym zdaniem przy tym samym stanie aplikacji, a nie tym, które wróciło
+         * szybciej. Porażka jednego folderu NIE zabiera drogi pozostałym — pierwsze `?` w środku
+         * zostawiałoby żywego agenta za każdym razem, gdy zatrzymanie któregoś z wcześniejszych
+         * folderów się nie udało. */
         outcomes
             .into_iter()
             .find_map(Result::err)
@@ -3422,13 +3477,34 @@ fn refused(said: &String) {
     tracing::warn!(%said, "Loadout turned down a run");
 }
 
-/// Stop: zatrzymuje bieg i wraca **dopiero z dowodem**, że nic po nim nie żyje (niezmiennik 6).
+/// Stop: zatrzymuje bieg TEGO folderu i wraca **dopiero z dowodem**, że nic po nim nie żyje
+/// (niezmiennik 6).
 ///
 /// [`crate::commands::Outcome`] przepada tutaj i nic się z nim nie traci: `stop_run_inner` ma
 /// jedną odpowiedź — `Cancelled` — bo bieg z anulowanym tokenem melduje anulowanie także wtedy,
 /// gdy ostatni krok zdążył się udać.
+///
+/// # Co znaczy `folder`, a czego `None` znaczyć NIE MOŻE (2026-09, Z-35)
+///
+/// `folder` jest **kartą, na której naciśnięto Stop**, i przyjeżdża tą samą wartością, którą to
+/// okno wysłało do `run_workflow`. ŻADNA CZYNNOŚĆ Z KARTY NIE WYSYŁA `None` — ani `×`
+/// (`src/sections/run/tabs/store.ts`, `stopRunOf`), ani przycisk Stop, ani `/stop`: wszystkie trzy
+/// biorą adres z `whereTheRunIs`, a ten przy braku pola oddaje identyfikator karty, nie pustkę.
+///
+/// Zostaje jeden wołający, który `None` podać może, i jest nim okno BEZ ANI JEDNEGO ZAKRESU:
+/// bieg, który takie okno ZASTAJE przy montażu, idzie w katalogu, pod którym wstała aplikacja
+/// ([`AppState::project_for`]) — czyli w jedynym folderze, którego okno nie umie wypisać, bo
+/// `list_runs` oddaje nazwę katalogu biegu, nie ścieżkę projektu. `None` jest tam ADRESEM tego
+/// jednego folderu, nie brakiem adresu, a bez niego zdanie „Stop reaches it.", które ten ekran
+/// sam wypowiada, byłoby nieprawdą (niezmiennik 29).
+///
+/// „BEZ FOLDERU" W ZNACZENIU „KAŻDY ŻYWY" nie istnieje w tej komendzie i istnieć nie ma prawa.
+/// Ten zasięg należy do dwóch dróg bez okna i tylko do nich: zamknięcia aplikacji
+/// ([`AppState::close_everything_down`] → [`AppState::stop_every_live_run_before_closing`], czyli
+/// czerwony guzik i ⌘Q) oraz uzgodnienia po poprzednim oknie
+/// ([`AppState::settle_everything_left_behind`]).
 #[tauri::command]
-pub async fn stop_run(state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn stop_run(state: State<'_, AppState>, folder: Option<String>) -> Result<bool, String> {
     /* CZY JEST CO ZATRZYMYWAĆ — PYTANIE ODPOWIADANE TUTAJ, I TO JEST CAŁA TA ZMIANA.
      *
      * Zgłoszenie właściciela 2026-08-23, cztery wiersze pod rząd: odmowa „A run is already
@@ -3450,12 +3526,16 @@ pub async fn stop_run(state: State<'_, AppState>) -> Result<bool, String> {
      * z drugim powodem, dla którego jest konieczne: bez niego Stop nad pustym ekranem wieszałby
      * aplikację. Tutaj zostaje wyłącznie transport (niezmienniki 1 i 23).
      *
-     * 2026-08-28 — KAŻDY ŻYWY FOLDER, NIE JEDEN UCHWYT. Zapadka jest kluczowana workspace'em,
-     * więc dwa foldery mogą mieć swoje biegi naraz — a ta komenda nie bierze identyfikatora
-     * i okno o tym wie. Stop sięgający do jednego uchwytu zostawiłby wtedy drugi bieg bez ani
-     * jednej drogi z okna; powód, dla którego wybieramy „o jedno za dużo", stoi w całości przy
-     * [`AppState::stop_every_live_run`]. */
-    state.stop_every_live_run().await.map_err(|error| {
+     * 2026-09 (Z-35) — BIEG TEGO FOLDERU, NIE KAŻDY ŻYWY. Do tego dnia stało tu
+     * `stop_every_live_run` i cena była zmierzona: przy dwóch kartach Stop na jednej kończył
+     * bieg na obu. Wybór „o jedno za dużo" był świadomy i miał termin ważności — sięgał, bo ta
+     * komenda nie brała folderu, a bieg pozostawiony bez ani jednej drogi z okna jest gorszy niż
+     * cudzy bieg zatrzymany. Folder zdejmuje ten wybór z obu stron naraz. */
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    state.stop_the_run_in(&project).await.map_err(|error| {
         let said = error.to_string();
         refused(&said);
         said
@@ -3641,13 +3721,25 @@ pub async fn close_terminal(state: State<'_, AppState>, terminal: &str) -> Resul
     Ok(())
 }
 
-/// „Dalej": puszcza bieg zza punktu kontrolnego.
+/// „Dalej": puszcza bieg TEJ karty zza punktu kontrolnego.
+///
+/// 2026-09 (Z-35) — `folder` DOSZEDŁ I JEST CAŁĄ NAPRAWĄ. Do tego dnia ta skorupa brała
+/// [`AppState::deps`], czyli „uchwyt, który ruszył ostatni", więc odpowiedź na pytanie zadane
+/// w folderze A podbijała licznik zgód biegowi w folderze B: pytanie z ekranu zostawało bez
+/// odpowiedzi, a cudzy bieg ruszał dalej. Nikt tego nie widzi, bo oba skutki wyglądają jak brak
+/// skutku.
 #[tauri::command]
 pub async fn continue_run(
     state: State<'_, AppState>,
+    folder: Option<String>,
     answer: Option<String>,
 ) -> Result<(), String> {
-    commands::run::continue_run_inner(&state.deps(), answer)
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    state
+        .continue_the_run_in(&project, answer)
         .await
         .map_err(|error| {
             let said = error.to_string();
@@ -3662,13 +3754,24 @@ pub async fn continue_run(
 /// [`commands::run::say_to_agent_inner`], razem z powodem, dla którego stoi tam, a nie tutaj.
 /// Ta skorupa robi dwie rzeczy, które umie zrobić tylko ona: sięga po zależności biegu
 /// z `State` i zamienia odmowę w napis dla okna.
+///
+/// 2026-09 (Z-35) — `folder` DOSZEDŁ, bo bez niego „ten jeden, który pracuje" znaczyło
+/// „gdziekolwiek": [`AppState::deps`] oddawało uchwyt biegu, który ruszył ostatni, więc zdanie
+/// wpisane na karcie A szło do agenta z karty B. Tura, za którą ktoś płaci, trafiała do kogoś
+/// innego, niż widać na ekranie.
 #[tauri::command]
 pub async fn say_to_agent(
     state: State<'_, AppState>,
+    folder: Option<String>,
     agent: Option<String>,
     text: &str,
 ) -> Result<(), String> {
-    commands::run::say_to_agent_inner(&state.deps().control, agent.as_deref(), text)
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    state
+        .say_in_the_run_at(&project, agent.as_deref(), text)
         .await
         .map_err(|error| {
             let said = error.to_string();

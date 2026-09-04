@@ -48,4 +48,37 @@ describe('what Stop says comes from the run, not from what the window remembers'
         'appeared over a working run, which is the report this fix comes from',
     ).toBeNull();
   });
+
+  /* 2026-09 (Z-35) — ZDANIE NAZYWA FOLDER, odkąd Stop jest folderem adresowany. `false` znaczy
+   * od tego dnia „nic nie biegnie TUTAJ", a nie „w tej aplikacji": przy dwóch kartach zdanie bez
+   * nazwy jest po prostu nieprawdziwe — człowiek widzi obok pracującego agenta i czyta pod ręką,
+   * że nic nie idzie. To jest to samo, co złapało zgłoszenie wyżej, o jedną kartę dalej. */
+  /* NAZWA FOLDERU W TEJ FIKSTURZE TO `invoices`, NIE `ledger`, i to nie jest gust: „ledger" jest
+   * po stronie tego repo ŻARGONEM (FOUNDATIONS §2.2 — mówimy „activity"), więc `quick-vocabulary`
+   * czyta je jako zdanie dla człowieka i słusznie świeci na czerwono. Sprawdzenie nie odróżnia
+   * nazwy katalogu w fikstury od słowa na ekranie i nie ma jak — więc zmienia się fikstura. */
+  it('names the folder the person is standing in', () => {
+    expect(
+      whatStopSaid(false, 'invoices'),
+      'Stop pressed on the invoices card found nothing to stop and answered without saying ' +
+        'where. With a run going in the next card that sentence contradicts what the person ' +
+        'can see',
+    ).toBe('Nothing is running in invoices.');
+  });
+
+  it('falls back to the plain sentence when the window has no name for the card', () => {
+    expect(
+      whatStopSaid(false, ''),
+      'a card the window cannot name has to get the plain sentence. A sentence with a hole in ' +
+        'it ("Nothing is running in .") reads as a defect, not as an answer',
+    ).toBe(NOTHING_RUNS);
+  });
+
+  it('says nothing at all when a run in a named folder really was stopped', () => {
+    expect(
+      whatStopSaid(true, 'invoices'),
+      'the name is part of the sentence, never a reason to say one: a stopped run is answered ' +
+        'with silence in every folder',
+    ).toBeNull();
+  });
 });
