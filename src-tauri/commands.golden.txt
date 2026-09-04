@@ -41,6 +41,7 @@ forget_run_branches
 forget_runs_older_than
 forget_what_the_old_runs_left
 install_skill
+interrupt_the_lead
 list_agents
 list_eval_sets
 list_handoffs

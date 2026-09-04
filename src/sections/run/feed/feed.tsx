@@ -32,6 +32,15 @@ export interface FeedProps {
   onAnswer: (questionId: number, option: string) => void;
   onJumpToNewest: () => void;
   /**
+   * Człowiek naciska „Interrupt" — kontrolki nie ma, dopóki nikt tego nie odbiera.
+   *
+   * 2026-09 (Z-40) — opcjonalny z tego samego powodu, co `guide` niżej: sześć cudzych kryteriów
+   * stawia ten komponent bez ekranu obok, a droga do Rusta idzie z ekranu (`../index.tsx`).
+   * Przycisk narysowany nad brakiem handlera byłby kontrolką bez skutku (niezmiennik 16);
+   * zdanie odmowy stoi bez niego, bo zdanie nie obiecuje niczego, czego nie zrobi.
+   */
+  onInterrupt?: () => void;
+  /**
    * Czy pytanie stoi już PRZY KROKU, który je zadał — wtedy tutaj go nie ma.
    *
    * 2026-08-31 — TO NIE JEST DRUGI WARUNEK NA „CZY BIEG ŻYJE", i to jest cała różnica wobec
@@ -274,6 +283,7 @@ export function Feed({
   onToggle,
   onAnswer,
   onJumpToNewest,
+  onInterrupt,
   askedAtItsStep = false,
   guide,
 }: FeedProps): ReactElement {
@@ -407,6 +417,41 @@ export function Feed({
         <p data-queued className="value shrink-0 px-[18px] pt-1 text-meta text-live">
           {view.queued}
         </p>
+      )}
+
+      {/* WYJŚCIE Z DŁUGIEJ TURY — w tym samym miejscu i z tego samego powodu, co zdanie wyżej:
+          tuż nad wierszem wejścia, czyli tam, gdzie oko wraca, kiedy nic się nie dzieje.
+
+          MODEL ODPOWIADA „CZY", TEN PLIK „GDZIE". Progi, podmiot i zdanie odmowy powstają
+          w `./model.ts`; tutaj zostaje wybór między przyciskiem a zdaniem, bo to jest różnica
+          w kształcie, nie w treści (niezmiennik 15).
+
+          BEZ HANDLERA NIE MA PRZYCISKU (niezmiennik 16). Sześć cudzych kryteriów montuje ten
+          komponent bez ekranu obok — ten sam powód, dla którego `askedAtItsStep` i `guide` są
+          opcjonalne — a przycisk narysowany nad pustką obiecywałby przerwanie, którego nie ma
+          jak wysłać. Zdanie odmowy stoi zawsze: to tekst, nie kontrolka. */}
+      {view.interrupt === null ||
+      (view.interrupt.refusal === null && onInterrupt === undefined) ? null : (
+        <div data-interrupt className="flex shrink-0 items-center px-[18px] pt-1">
+          {view.interrupt.refusal === null ? (
+            <button
+              type="button"
+              onClick={onInterrupt}
+              className="btn-quiet"
+              /* CO DOKŁADNIE STANIE, kiedy stoi kilka rzeczy naraz. Nazwa kontrolki brzmi
+                 „Interrupt" i tyle — reszta należy do opisu, nie do etykiety. */
+              title={
+                view.interrupt.subject === null
+                  ? undefined
+                  : 'Stop ' + view.interrupt.subject + ' and let the lead answer'
+              }
+            >
+              Interrupt
+            </button>
+          ) : (
+            <p className="value text-meta text-live">{view.interrupt.refusal}</p>
+          )}
+        </div>
       )}
 
       {/* Karta stoi tu wtedy i tylko wtedy, gdy nie stoi PRZY SWOIM KROKU — powód w całości

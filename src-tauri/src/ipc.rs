@@ -1002,6 +1002,24 @@ impl AppState {
             })
     }
 
+    /// Człowiek prosi turę lidera tego terminalu, żeby stanęła — rozmowa zostaje.
+    ///
+    /// Odpowiedź WRACA, zamiast ginąć w ciszy, i to jest cała treść tej granicy (niezmiennik 29):
+    /// CLI, które nie ogłosiło przerwania, ma powiedzieć to zdaniem w miejscu przycisku. Przycisk,
+    /// po którym nic się nie dzieje i nic tego nie tłumaczy, jest gorszy niż jego brak — bo
+    /// człowiek naciska go drugi i trzeci raz nad agentem, który go nie usłyszy.
+    /* NAZWA RÓŻNI SIĘ OD NAZWY KOMENDY Z ROZMYSŁEM, tak samo jak `say_to_the_lead` obok
+     * `say_to_orchestrator`: lustro podpisów (`src/sections/ipc-signature.ts`) czyta argumenty
+     * po pierwszym `fn <nazwa>(` w tym pliku, więc metoda o nazwie komendy podstawia oknu swój
+     * własny podpis razem z `&self` — i kryterium szwu mówi wtedy o argumencie, którego nikt nie
+     * wysyła. */
+    pub async fn interrupt_the_leads_turn(
+        &self,
+        terminal: &str,
+    ) -> commands::chat::InterruptedTheLead {
+        self.leads.interrupt_at(terminal).await.into()
+    }
+
     /// Współpracownicy biegu, który idzie teraz.
     ///
     /// Zamek zatruty odplatamy zamiast panikować: `panic!` w agentowym runtime zabiera cały
@@ -3801,6 +3819,21 @@ pub async fn answer_the_lead(
     Ok(state.leads.answer_in(terminal, agent, answer.to_owned()))
 }
 
+/// Przerywa turę, którą lider tego terminalu właśnie ciągnie. **Nie kończy rozmowy.**
+///
+/// Osobna komenda, a nie argument `stop_the_lead`, bo to są dwie różne prośby i dwa różne skutki:
+/// Stop dowodzi śmierci grupy i zabiera kontekst rozmowy, a to zdanie zatrzymuje jedną turę
+/// i zostawia sesję wznawialną. Człowiek naciska je po to, żeby rozmawiać dalej.
+/* `async` i `Result`, jak każda komenda biorąca `State` w tym pliku. Ciężkiej pracy tu nie ma:
+ * pod zamkiem stoi lookup i klon, a samo pytanie jedzie kanałem do zadania pisarza. */
+#[tauri::command]
+pub async fn interrupt_the_lead(
+    state: State<'_, AppState>,
+    terminal: &str,
+) -> Result<commands::chat::InterruptedTheLead, String> {
+    Ok(state.interrupt_the_leads_turn(terminal).await)
+}
+
 /// Co wskazany lider naprawdę może zrobić w folderze człowieka.
 ///
 /// Okno pyta o to przy montażu ekranu pracy i po każdej zmianie wskazania, bo z tej odpowiedzi
@@ -4343,6 +4376,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         forget_runs_older_than,
         forget_what_the_old_runs_left,
         install_skill,
+        interrupt_the_lead,
         list_agents,
         list_eval_sets,
         list_handoffs,

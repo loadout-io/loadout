@@ -49,6 +49,7 @@ import type { Feed, FeedView } from './model';
 import { createFeed } from './model';
 import type { HistoryRow, Scroller } from './model';
 import type { Incoming } from '../../../state/run';
+import type { Interrupted } from '../io';
 import { activeWorkspace, useWorkspaces } from '../../../state/workspaces';
 /* Magazyn kart, nie jego fabryka: pytanie brzmi „na którą kartę patrzy TO okno", a odpowiada na
  * nie egzemplarz. Import zamyka pętlę `./live` → `../tabs/store` → `./live` i jest bezpieczny
@@ -182,6 +183,12 @@ export const runFeed: Feed = {
   },
   runEnded(): void {
     feedFor(shown()).runEnded();
+  },
+  tick(now: number): void {
+    feedFor(shown()).tick(now);
+  },
+  interruptAnswered(said: Interrupted): void {
+    feedFor(shown()).interruptAnswered(said);
   },
   toggle(rowId: number): void {
     feedFor(shown()).toggle(rowId);

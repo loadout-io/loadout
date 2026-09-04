@@ -851,6 +851,44 @@ export function answerTheLead(
 }
 
 /**
+ * Co się stało z prośbą o przerwanie tury — lustro `commands::chat::InterruptedTheLead`.
+ *
+ * DWA FAKTY, NIE GOTOWE ZDANIE, i to jest ten sam powód, co przy [`WhatTheLeadCanDo`] niżej:
+ * zdanie jest po angielsku i mieszka w oknie (decyzja D5), a to, co się stało z prośbą, jest
+ * faktem o protokole i mieszka tam, gdzie ten protokół powstaje.
+ */
+export interface Interrupted {
+  /** Co się stało: prośba pojechała, to CLI tego nie umie, albo nie ma już czego przerywać. */
+  readonly answer: 'sent' | 'notAnnounced' | 'noLongerListening';
+  /** Aplikacja agenta, którą ta rozmowa prowadzi. Pusto, kiedy nie ma o kim mówić. */
+  readonly agentApp: string;
+}
+
+/**
+ * Poproś turę lidera tego terminalu, żeby stanęła. **Nie kończy rozmowy.**
+ *
+ * # Po co osobna krawędź, a nie `closeTerminal` (2026-09, Z-40)
+ *
+ * Bo to są dwie różne prośby i dwa różne skutki. Zamknięcie karty dowodzi śmierci grupy i zabiera
+ * cały kontekst, który człowiek z liderem zbudował; tutaj staje jedna tura, a rozmowa zostaje
+ * wznawialna — i wiadomość, która czekała za tą komendą, idzie następna.
+ *
+ * ODPOWIEDŹ WRACA I MA STANĄĆ NA EKRANIE: CLI, które przerwania nie ogłosiło, mówi to zdaniem
+ * w miejscu przycisku (niezmiennik 29). Przycisk, po którym nic się nie dzieje i nic tego nie
+ * tłumaczy, jest gorszy niż jego brak.
+ *
+ * @param terminal karta, w której stoi ta rozmowa, albo `null` — wtedy odpowiada folder
+ *   ([`terminalOf`]).
+ * @param folder katalog tej karty albo `null`; nazywa domyślny terminal zakresu.
+ */
+export function interruptTheLead(
+  terminal: string | null,
+  folder: string | null = null,
+): Promise<Interrupted> {
+  return invoke<Interrupted>('interrupt_the_lead', { terminal: terminalOf(terminal, folder) });
+}
+
+/**
  * Powiedz zdanie liderowi tego terminalu — rozmowa, nie praca.
  *
  * LIDER NIE URUCHAMIA BIEGU I NIE MA JAK. Rozstrzygnięcie właściciela 2026-08-19: „tylko

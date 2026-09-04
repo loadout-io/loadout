@@ -25,7 +25,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -1240,6 +1240,110 @@ impl std::fmt::Debug for ToAgent {
 /// i czyta go jeden odbiorca.
 pub type Voice = mpsc::Sender<ToAgent>;
 
+/// Klamka, którą przerywa się TURĘ — z zewnątrz sesji, bez uchwytu i bez `&mut`.
+///
+/// # Po co to istnieje (2026-09, Z-40)
+///
+/// Bo przerwanie w paśmie miało w tym drzewie dokładnie jednego wołającego: [`AgentHandle::cancel`],
+/// czyli czasownik, który KOŃCZY rozmowę. Człowiek patrzący na lidera siedzącego siódmą minutę
+/// w jednym wywołaniu Basha mógł więc tylko czekać albo zamknąć rozmowę razem z jej kontekstem —
+/// a to są dwa złe wyjścia z sytuacji, w której CLI umie stanąć i wrócić do rozmowy.
+///
+/// **Klon głosu, nigdy pożyczka uchwytu**, i to jest ten sam pomiar, z którego wziął się
+/// [`Voice`]: uchwyt sesji należy do actora rozmowy, a actor stoi w tej chwili w `handle.wait()`.
+/// Klamka wisząca na `&mut self` byłaby więc osiągalna dokładnie wtedy, kiedy nie ma czego
+/// przerywać.
+///
+/// **Zdolność czytana W CHWILI PYTANIA, nie przy wydaniu klamki.** Lista z `system/init`
+/// przychodzi po starcie sesji, więc klamka, która przepisałaby ją sobie przy powstaniu, znałaby
+/// wyłącznie pustkę — i mówiłaby „ten agent tego nie umie" o agencie, który umie.
+#[derive(Debug, Clone)]
+pub struct TurnBreak {
+    /// Ten sam kanał, którym jadą tury: jeden pisarz nad jednym `stdin` (powód przy [`ToAgent`]).
+    voice: Voice,
+    /// Zdolności, które CLI ogłosiło o sobie. Puste, dopóki `init` nie przyszedł.
+    announced: Arc<OnceLock<Vec<String>>>,
+    /// Nazwa zdolności, której ten vendor wymaga do przerwania w paśmie. Zna ją **wyłącznie
+    /// adapter** (niezmiennik 23) — ten plik nie ma prawa znać ani jednej nazwy z drutu.
+    capability: &'static str,
+    /// Aplikacja agenta, którą ta sesja prowadzi. Niesie ją odmowa, bo zdanie dla człowieka ma
+    /// nazwać TĘ aplikację: Codex nie ma dostać zdania o Claude.
+    agent_app: &'static str,
+}
+
+impl TurnBreak {
+    /// Klamka do żywej sesji. Buduje ją adapter, bo tylko on zna nazwę zdolności i swoją własną.
+    #[must_use]
+    pub fn new(
+        voice: Voice,
+        announced: Arc<OnceLock<Vec<String>>>,
+        capability: &'static str,
+        agent_app: &'static str,
+    ) -> Self {
+        Self {
+            voice,
+            announced,
+            capability,
+            agent_app,
+        }
+    }
+
+    /// Prosi turę, żeby stanęła — **dokładnie jedną linią i dokładnie raz**.
+    ///
+    /// Powtórzone pytanie, kiedy odpowiedź jest już w drodze, jest nieodróżnialne od dwóch
+    /// przerwań i tak samo wygląda w dzienniku CLI.
+    pub async fn ask(&self) -> Interrupted {
+        // BEZ OGŁOSZONEJ ZDOLNOŚCI NIE WYSYŁAMY NICZEGO. Ta sama linia posłana tam, gdzie CLI
+        // o `control_request` nie słyszało, kosztuje pełne okno czekania na odpowiedź, której
+        // nie będzie — a człowiek widzi wtedy pięć sekund ciszy zamiast zdania [T1 §4.1].
+        if !self.announces_interrupt() {
+            return Interrupted::NotAnnounced {
+                agent_app: self.agent_app,
+            };
+        }
+        if self
+            .voice
+            .send(ToAgent::Interrupt(format!(
+                "req_{}",
+                Uuid::now_v7().simple()
+            )))
+            .await
+            .is_err()
+        {
+            // Kanał bez odbiornika znaczy, że pisarz tej sesji już zszedł — czyli że nie ma
+            // czego przerywać. To jest odpowiedź, nie awaria.
+            return Interrupted::NoLongerListening;
+        }
+        Interrupted::Sent
+    }
+
+    /// Czy to CLI samo powiedziało, że rozumie przerwanie w paśmie.
+    ///
+    /// Po **liście z `init`**, nigdy po numerze wersji [T1 §4.1]. `false`, dopóki `init` nie
+    /// przyszedł: przerwanie przed startem sesji nie ma czego feature-detektować.
+    fn announces_interrupt(&self) -> bool {
+        self.announced
+            .get()
+            .is_some_and(|announced| announced.iter().any(|name| name == self.capability))
+    }
+}
+
+/// Co się stało z prośbą o przerwanie tury [T1 §8.5].
+///
+/// Trzy warianty, bo człowiek czyta trzy różne zdania — a **odmowa nie ma prawa udawać, że coś
+/// pojechało**: droga, w której „nie umiem" wygląda jak „wysłałem", zostawia go przed ekranem,
+/// na którym nic się nie dzieje i nic tego nie tłumaczy (niezmiennik 29).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interrupted {
+    /// Prośba pojechała w paśmie, tym samym potokiem, co tura.
+    Sent,
+    /// To CLI nie ogłosiło zdolności przerwania, więc **nie wysłaliśmy niczego**. Niesie nazwę
+    /// aplikacji agenta, bo zdanie odmowy ma nazwać tę jedną, którą ta rozmowa prowadzi.
+    NotAnnounced { agent_app: &'static str },
+    /// Nie ma czego przerywać: rozmowy nie ma albo jej proces przestał czytać wejście.
+    NoLongerListening,
+}
+
 /// Agent nie wyszedł sam po zamknięciu wejścia i wymagał eskalacji supervisora.
 ///
 /// Osobny typ pozwala rdzeniowi odróżnić kontrolowane zejście przez dowód od awarii transportu:
@@ -1267,6 +1371,18 @@ pub trait AgentHandle: Send {
     /// który nie ma procesu. Domyślnie `None`, żeby sterownik bez dwukierunkowego stdinu nie
     /// musiał udawać, że go ma — a wołający dostał odpowiedź „nie da się", nie ciszę.
     fn voice(&self) -> Option<Voice> {
+        None
+    }
+
+    /// Klamka do przerwania TEJ tury — albo `None`, kiedy tej sesji nie da się przerwać.
+    ///
+    /// 2026-09 (Z-40) — metoda na TRAICIE z domyślnym `None`, dokładnie jak [`AgentHandle::voice`]
+    /// obok i z tego samego powodu: rozmowa trzyma uchwyt jako `Box<dyn AgentHandle>`, więc
+    /// klamka żyjąca na konkretnym typie jest z niej nieosiągalna. `None` znaczy „tej sesji nie
+    /// ma jak poprosić, żeby stanęła" — tak odpowiada `absent`, tak odpowiada Codex i tak
+    /// odpowiada każdy dubel, który o tym szwie nic nie wie, więc ani jeden z nich nie zmienia
+    /// się o linię (niezmiennik 23).
+    fn turn_break(&self) -> Option<TurnBreak> {
         None
     }
 

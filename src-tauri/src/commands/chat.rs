@@ -42,8 +42,8 @@ use crate::bridge::host::Bridge;
 use crate::bridge::library::{Desk as BridgeLibrary, Waiting as AskWaiting};
 use crate::engine::drivers::claude::{no_such_tools, tool_surface, tools_for};
 use crate::engine::drivers::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason, Policy,
-    RunSpec, StepSettings, ToAgent, ValidatedImages, Voice,
+    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason,
+    Interrupted, Policy, RunSpec, StepSettings, ToAgent, TurnBreak, ValidatedImages, Voice,
 };
 use crate::engine::line::{Curator, Line, Seen, suggested};
 use crate::engine::supervisor::{self, GroupProof};
@@ -589,6 +589,45 @@ pub struct WhatTheLeadCanDo {
     pub held_to_the_folder: bool,
 }
 
+/// Co okno dostaje po naciśnięciu „Interrupt" — lustro [`Interrupted`] na drucie.
+///
+/// # Dlaczego okno dostaje DWA FAKTY, a nie gotowe zdanie (2026-09, Z-40)
+///
+/// Ten sam powód, co przy [`WhatTheLeadCanDo`] wyżej: zdanie jest po angielsku i mieszka w oknie
+/// razem z resztą tekstu (decyzja D5), a to, co się stało z prośbą, jest faktem o protokole
+/// i mieszka tam, gdzie ten protokół powstaje.
+///
+/// `agent_app` jedzie osobno, bo bez niego okno musiałoby zgadnąć, o kim mówi odmowa —
+/// a zdanie o Claude postawione nad rozmową z Codeksem jest błędem, którego nikt nie zauważy,
+/// dopóki nie zmieni vendora.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterruptedTheLead {
+    /// Co się stało z prośbą: `sent`, `notAnnounced` albo `noLongerListening`.
+    pub answer: &'static str,
+    /// Aplikacja agenta, którą ta rozmowa prowadzi. Pusto, kiedy nie ma o kim mówić.
+    pub agent_app: &'static str,
+}
+
+impl From<Interrupted> for InterruptedTheLead {
+    fn from(interrupted: Interrupted) -> Self {
+        match interrupted {
+            Interrupted::Sent => Self {
+                answer: "sent",
+                agent_app: "",
+            },
+            Interrupted::NotAnnounced { agent_app } => Self {
+                answer: "notAnnounced",
+                agent_app,
+            },
+            Interrupted::NoLongerListening => Self {
+                answer: "noLongerListening",
+                agent_app: "",
+            },
+        }
+    }
+}
+
 /// Kim jest lider tej rozmowy — jego zapisana definicja i nic obok niej.
 ///
 /// # Dlaczego to jest typ, a nie sam [`Agent`]
@@ -872,6 +911,18 @@ struct ConversationInner {
     /// Jedynym autorytetem śmierci pozostaje `GroupProof`. Atom służy wyłącznie temu, by
     /// synchroniczne `is_live_at` nie musiało zaglądać do uchwytu należącego do zadania.
     status: Arc<AtomicU8>,
+    /// Klamka do przerwania tury, którą aktualnie trzyma actor — albo pusto, gdy sesji nie ma.
+    ///
+    /// # Dlaczego to NIE jedzie kanałem actora (2026-09, Z-40)
+    ///
+    /// Bo actor stoi wtedy w `handle.wait()`, czyli dokładnie tam, gdzie przerwanie ma sens. Oba
+    /// jego kanały — tur i Stopu — są wtedy odbierane przez `tokio::select!`, więc prośba
+    /// wysłana którymkolwiek z nich albo czekałaby na koniec tury, albo ją zakończyła. To jest
+    /// ten sam pomiar, z którego wziął się [`Voice`], tylko o piętro wyżej.
+    ///
+    /// `std::sync::Mutex` i **nigdy trzymany przez `await`** (niezmiennik 8): pod nim mieści się
+    /// wyłącznie podmiana i klon, a właściwe pytanie do agenta idzie już po jego zwolnieniu.
+    breaking: Arc<Mutex<Option<TurnBreak>>>,
 }
 
 struct TurnRequest {
@@ -968,17 +1019,20 @@ impl Conversation {
         let (turns, turn_inbox) = mpsc::channel(THREAD_COMMANDS);
         let (stops, stop_inbox) = mpsc::channel(1);
         let status = Arc::new(AtomicU8::new(THREAD_IDLE));
+        let breaking = Arc::new(Mutex::new(None));
         tokio::spawn(conversation_actor(
             turn_inbox,
             stop_inbox,
             Arc::clone(&status),
             lines,
+            Arc::clone(&breaking),
         ));
         Self {
             inner: Arc::new(ConversationInner {
                 turns,
                 stops,
                 status,
+                breaking,
             }),
         }
     }
@@ -1022,6 +1076,26 @@ impl Conversation {
         answer.await.unwrap_or(Err(ChatError::StoppedListening))
     }
 
+    /// Prosi turę, która właśnie idzie, żeby stanęła — **bez kończenia rozmowy**.
+    ///
+    /// Klamkę klonujemy spod zamka i dopiero potem czekamy: `std::sync::Mutex` nigdy nie jest
+    /// trzymany przez `await` (niezmiennik 8), a poza tym zamek wzięty na czas pytania blokowałby
+    /// actora, który akurat podmienia sesję.
+    async fn interrupt(&self) -> Interrupted {
+        let turn_break = self
+            .inner
+            .breaking
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match turn_break {
+            Some(turn_break) => turn_break.ask().await,
+            // Pusto znaczy „actor nie trzyma teraz żadnej sesji": rozmowa jeszcze nie ruszyła
+            // albo już zeszła. W obu razach nie ma czego przerywać i to jest odpowiedź.
+            None => Interrupted::NoLongerListening,
+        }
+    }
+
     /// Wysyła Stop i oddaje odbiornik dowodu. Rozdzielenie wysłania od czekania pozwala
     /// [`Threads::close`] najpierw obudzić KAŻDEGO actora, a dopiero potem czekać na najwolniejszy.
     async fn ask_to_stop(&self) -> Result<oneshot::Receiver<Option<GroupProof>>, ()> {
@@ -1060,6 +1134,7 @@ async fn conversation_actor(
     mut stops: mpsc::Receiver<StopRequest>,
     status: Arc<AtomicU8>,
     lines: Arc<Mutex<LineSink>>,
+    breaking: Arc<Mutex<Option<TurnBreak>>>,
 ) {
     let mut session: Option<Session> = None;
     let mut deadlines = VecDeque::new();
@@ -1100,15 +1175,34 @@ async fn conversation_actor(
                 ActorAction::Stop
             }
         };
+        /* KLAMKA PRZERWANIA JEST ZAWSZE KLAMKĄ SESJI, KTÓRĄ ACTOR TRZYMA TERAZ (2026-09, Z-40).
+         *
+         * JEDNO miejsce, a nie wpis przy każdym `session.take()` — a tych jest w tym pliku
+         * siedem. Odświeżenie po każdym obsłużonym zdarzeniu daje ten sam wynik i nie zostawia
+         * ani jednej drogi, którą klamka mogłaby przeżyć swoją sesję: klamka wskazująca sesję,
+         * której nie ma, oddawałaby oknu „wysłałem" o prośbie, której nikt nie odbierze. */
+        remember_turn_break(&breaking, session.as_ref());
         match action {
             ActorAction::Continue => {}
             ActorAction::Closing(ending) => {
                 serve_while_closing(&mut session, &mut turns, &mut stops, &status, ending).await;
+                remember_turn_break(&breaking, None);
                 return;
             }
-            ActorAction::Stop => return,
+            ActorAction::Stop => {
+                remember_turn_break(&breaking, None);
+                return;
+            }
         }
     }
+}
+
+/// Zapamiętuje klamkę tej sesji — albo gasi ją, kiedy żadnej nie ma.
+///
+/// Zamek żyje przez jedno wyrażenie i nie widzi ani jednego `await` (niezmiennik 8).
+fn remember_turn_break(breaking: &Mutex<Option<TurnBreak>>, session: Option<&Session>) {
+    *breaking.lock().unwrap_or_else(PoisonError::into_inner) =
+        session.and_then(|running| running.handle.turn_break());
 }
 
 async fn handle_conversation_stop(
@@ -2633,6 +2727,32 @@ impl Threads {
             .get(terminal)
             .map(Arc::clone);
         waiting.is_some_and(|waiting| waiting.answer(agent, said))
+    }
+
+    /// Człowiek nacisnął „Interrupt": tura tego terminalu ma stanąć, a **rozmowa ma zostać**.
+    ///
+    /// # Czym to NIE jest
+    ///
+    /// Nie jest Stopem. [`Threads::close_at`] kończy rozmowę i dowodzi śmierci grupy, więc razem
+    /// z siedmiominutową komendą zabiera cały kontekst, który człowiek z liderem zbudował. Tu
+    /// stoi wyłącznie tura: sesja zostaje wznawialna, a wiadomość, która czekała za tą komendą,
+    /// idzie następna [T1 §4.6].
+    ///
+    /// [`Interrupted::NoLongerListening`], kiedy w tym terminalu nie stoi żadna rozmowa — nie ma
+    /// wtedy czego przerywać i **nie jest to odmowa**. Okno tej odpowiedzi w praktyce nie widzi:
+    /// kontrolka pojawia się dopiero nad pracą, która naprawdę idzie.
+    pub async fn interrupt_at(&self, terminal: &str) -> Interrupted {
+        let thread = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live
+            .get(terminal)
+            .cloned();
+        match thread {
+            Some(thread) => thread.interrupt().await,
+            None => Interrupted::NoLongerListening,
+        }
     }
 
     /// Człowiek zamknął ten terminal: jego wątek schodzi i oddaje dowód śmierci swojej grupy.

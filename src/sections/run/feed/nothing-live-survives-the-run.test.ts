@@ -34,6 +34,9 @@ import { createFeed } from './model';
 const FORGE = 'Forge';
 const NEEDLE = 'Needle';
 
+/** Podpis, którym stoi w strumieniu lider — ten sam, który stawia `commands::chat::LEAD`. */
+const LEAD = 'Lead';
+
 const FORGE_SAID = 'Rewriting the splitter.';
 const NEEDLE_SAID = 'Checking the header row.';
 const FORGE_RESUMED = 'Back on the splitter.';
@@ -60,6 +63,12 @@ const RUNNING_FOR = 450_000;
 /** Zdanie człowieka, które staje w kolejce za tą komendą. */
 const WROTE_MEANWHILE = 'also add a dark mode toggle';
 
+/** Zdanie, które otwiera turę LIDERA — bez niej pole `interrupt` nie ma czego opisywać. */
+const ASKED_THE_LEAD = 'is Murmur up yet?';
+
+/** Komenda, w której stoi lider (2026-09, Z-40). Nad nią stoi kontrolka „Interrupt". */
+const LEAD_COMMAND = 'tail -f /tmp/murmur.log';
+
 /**
  * Wiersze historii, które ta scena zostawia, po numerach.
  *
@@ -67,7 +76,7 @@ const WROTE_MEANWHILE = 'also add a dark mode toggle';
  * Wypisane wprost, bo porównanie listy z samą sobą przeszłoby też na historii pustej — a wtedy
  * kontrola przeciw przebudowie modelu nie kontrolowałaby niczego.
  */
-const HISTORY_IDS: readonly number[] = [1, 2, FIRST_ID, 4, 5, 6, 7];
+const HISTORY_IDS: readonly number[] = [1, 2, FIRST_ID, 4, 5, 6, 7, 8, 9];
 
 /** Jedno pole widoku, które opisuje ŻYWY bieg. */
 interface LiveField {
@@ -143,6 +152,16 @@ const LIVE: readonly LiveField[] = [
     quiet: null,
     says: 'a message standing in a queue behind a command that is no longer running',
   },
+  {
+    /* 2026-09 (Z-40) — ÓSME POLE, dopisane w tej samej zmianie, w której powstało. Kontrolka
+     * „Interrupt" prowadzi do tury, która IDZIE; po zejściu biegu nie idzie żadna, więc
+     * zostawiona obiecuje przerwanie czegoś, czego nie ma. */
+    field: 'interrupt',
+    at: 'interrupt',
+    reads: (view) => view.interrupt?.subject ?? null,
+    quiet: null,
+    says: 'a way out of a turn offered over a run that has already gone down',
+  },
 ];
 
 /**
@@ -208,7 +227,13 @@ function everythingLive() {
     line.note(5, 2_000, FORGE, FORGE_RESUMED),
     line.running(6, 2_100, FORGE, LONG_COMMAND, RUNNING_FOR),
     line.told(7, 2_200, FORGE, WROTE_MEANWHILE),
-    line.thinking(8, 2_500, NEEDLE),
+    /* TURA LIDERA I JEGO WŁASNA KOMENDA (2026-09, Z-40) — z tego samego powodu, co dwa pytania
+     * wyżej: kontrolka „Interrupt" prowadzi do rozmowy z liderem, a nie do kroku biegu, więc bez
+     * pary podpisanej liderem pole `interrupt` byłoby puste już w trakcie biegu i pustka po nim
+     * nie dowodziłaby o nim niczego. Przed `thinking`, bo prawdziwa linia gasi slot. */
+    line.told(8, 2_300, LEAD, ASKED_THE_LEAD),
+    line.running(9, 2_400, LEAD, LEAD_COMMAND, RUNNING_FOR),
+    line.thinking(10, 2_500, NEEDLE),
   ]);
   return feed;
 }
@@ -270,6 +295,8 @@ describe('nothing that described a live run survives the run', () => {
       FORGE_RESUMED,
       'Working: ' + LONG_COMMAND + ' · 7m 30s',
       WROTE_MEANWHILE,
+      ASKED_THE_LEAD,
+      'Working: ' + LEAD_COMMAND + ' · 7m 30s',
     ]);
     expect(
       feed.view.history,
