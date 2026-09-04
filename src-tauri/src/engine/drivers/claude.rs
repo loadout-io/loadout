@@ -1093,7 +1093,15 @@ pub fn budget_argv(dollars: f64) -> Vec<String> {
     // W dół, i to jest treść: `floor` na centach oddaje vendorowi tylko te pieniądze, które
     // naprawdę zostały. `format!("{:.2}")` zaokrągla do NAJBLIŻSZEGO centa, więc przy reszcie
     // 6,665 wypisałoby 6,67 — pół centa ponad sufit, który postawił człowiek.
-    let cents = (dollars.max(0.0) * 100.0).floor() / 100.0;
+    //
+    // 2026-09-05 (Z-38) — TOLERANCJA MILIONOWEJ CENTA, bo `floor` sam w sobie nie odróżnia
+    // „o cent za mało" od błędu reprezentacji. Zmierzone: `0.58 * 100.0` daje w `f64`
+    // 57.999999999999996, więc kwota, która JEST pięćdziesięcioma ośmioma centami, schodziła
+    // stąd jako `0.57`. Zdanie na ekranie mówiło wtedy o cencie, którego proces nie dostał.
+    // Milionowa część centa nie jest w stanie dołożyć ani jednego prawdziwego centa — do tego
+    // brakowałoby jej sześciu rzędów wielkości — więc reszta budżetu człowieka zostaje
+    // nieprzekroczona (powód wyżej).
+    let cents = (dollars.max(0.0) * 100.0 + 1e-6).floor() / 100.0;
     // 2026-09 (Z-12): Claude Code 2.1.259 odrzuca zero przed startem zdaniem
     // `--max-budget-usd must be a positive number greater than 0`. Pusty fragment pozwala
     // wspólnej księdze odmówić kroku własnym, zrozumiałym zdaniem o wyczerpanym budżecie.

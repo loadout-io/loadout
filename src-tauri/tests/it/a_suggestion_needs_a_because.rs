@@ -73,9 +73,6 @@ const VENDOR: &str = "fake";
 /// „nie uruchomiło się" (rc 124), a nie czerwienią.
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// Znacznik instrukcji kroku grafu.
-const STEP_MARK: &str = "IBEX-STEP-ONE";
-
 /// Reguła z uzasadnieniem — jedyna, która ma zostać plikiem.
 const KEEP_RULE: &str = "IBEX-KEEP the queue is drained in exactly one place";
 const KEEP_REASON: &str = "IBEX-KEEP-REASON run 7f3a step 2 reproduced it twice";
@@ -298,13 +295,26 @@ async fn a_pair_without_a_reason_is_dropped_and_the_same_rule_twice_is_one_note(
 // ── dubler ─────────────────────────────────────────────────────────────────────────────────
 
 fn fake_drivers(reflection_says: String) -> Drivers {
-    let driver: Arc<dyn AgentDriver> = Arc::new(Fake { reflection_says });
+    let driver: Arc<dyn AgentDriver> = Arc::new(Fake {
+        reflection_says,
+        // Sterownik z fabryki prowadzi KROKI; turę Loadouta prowadzi dopiero ten, który wyjdzie
+        // z `reflecting()` — tak samo, jak w produkcji.
+        is_loadouts_turn: false,
+    });
     Arc::new(move |_vendor| Arc::clone(&driver))
 }
 
 #[derive(Debug, Clone)]
 struct Fake {
     reflection_says: String,
+    /// Czy ten egzemplarz JEST tym, który wyszedł z [`AgentDriver::reflecting`].
+    ///
+    /// 2026-09 (Z-38) — TĄ DROGĄ, A NIE ZNACZNIKIEM W INSTRUKCJI KROKU. Prompt refleksji niesie
+    /// od tego zadania indeks tego, co bieg zostawił, a tytuł przekazania jest tym, o co
+    /// poproszono krok (`commands::run::title_of`) — czyli jego instrukcją. Znacznik kroku stał
+    /// przez to w promptach OBU tur, dubel czytał refleksję jako krok i odpowiadał jej zdaniem
+    /// napisanym dla kroku: zero par, zero notatek, zielony mechanizm nad martwym pytaniem.
+    is_loadouts_turn: bool,
 }
 
 #[async_trait]
@@ -319,7 +329,10 @@ impl AgentDriver for Fake {
     /// go nie podaje, nie widzi tury, o którą nie prosił żaden krok. To jest cały powód, dla
     /// którego ta tura nie przestawiła ani jednej cudzej specyfikacji liczącej wywołania.
     fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
-        Some(Arc::new(self.clone()))
+        Some(Arc::new(Self {
+            is_loadouts_turn: true,
+            ..self.clone()
+        }))
     }
 
     fn with_settings(
@@ -352,9 +365,9 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        // Krok grafu poznajemy po znaczniku jego instrukcji; wszystko inne jest turą, o którą
-        // ten krok nie prosił — czyli refleksją.
-        let is_step = spec.prompt.contains(STEP_MARK);
+        // Turę Loadouta prowadzi wyłącznie egzemplarz z `reflecting()`; wszystko inne jest
+        // krokiem grafu (powód przy `Fake::is_loadouts_turn`).
+        let is_step = !self.is_loadouts_turn;
         let session = SessionRef {
             vendor: VENDOR,
             id: spec.run_id.to_string(),

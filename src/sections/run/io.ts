@@ -898,6 +898,15 @@ export interface PastRunRow {
   readonly costUsd: number | null;
   /** Uczciwe zdanie, kiedy opisu biegu nie dało się przeczytać. `null` znaczy „przeczytany". */
   readonly said: string | null;
+  /**
+   * Co prywatna tura Loadouta zrobiła z tym biegiem.
+   *
+   * KLUCZ OPCJONALNY (niezmiennik 5 na granicy), choć dzisiejszy Rust wysyła go zawsze: bieg
+   * zapisany przed tym polem ma się dać wypisać, a nie wywrócić listy. Czyta go sekcja
+   * Knowledge, żeby powiedzieć, dlaczego po ostatnim biegu nie przyszła ani jedna notatka
+   * (2026-09, Z-38).
+   */
+  readonly reflection?: PastReflection | null;
 }
 
 /** Krok otwartego biegu. Lustro `commands::history::PastStepWire`. */
@@ -1009,6 +1018,13 @@ export interface PastReflection {
   readonly ran: boolean;
   /** Kod powodu, dla którego nie pytano. Brak zachowuje czytelność starszych plików. */
   readonly why?: string | null;
+  /**
+   * Sufit ceny, który tę turę obowiązywał — w dolarach.
+   *
+   * KLUCZ OPCJONALNY (niezmiennik 5 na granicy): bieg zapisany przed 2026-09 nie niesie ani
+   * tej liczby, ani powodu, który ją cytuje, a panel historii ma się otworzyć tak samo.
+   */
+  readonly budgetUsd?: number | null;
   /** Ile notatek z niej powstało — te czekają w Memory na decyzję człowieka. */
   readonly kept: number;
   /** Ile wróciło takich, które człowiek już raz odrzucił. */

@@ -41,6 +41,7 @@ import { useSkills } from '../../state/skills';
 import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import type { MemoryStore } from '../memory/shelf';
 import NotesShelf, { waitingFrom } from '../memory/shelf';
+import { ranOutOfSomething } from '../run/reflection/said';
 import type { SkillsStore } from '../skills/shelf';
 import SkillsShelf from '../skills/shelf';
 
@@ -162,6 +163,25 @@ export default function KnowledgeScreen({
   /** Czy OBIE strony już odpowiedziały. Jedna nieprzeczytana wystarczy, żeby nie mówić „nic". */
   const bothAnswered = noteState.read && skillState.folders === 'read';
 
+  /* DLACZEGO PO OSTATNIM BIEGU NIE PRZYSZŁA ANI JEDNA NOTATKA — albo `undefined`, kiedy nie ma
+   * o czym mówić (2026-09, Z-38).
+   *
+   * Notatki w kolejce decyzji pisze prywatna tura po biegu. Zmierzone na biegu z 2026-09-04:
+   * tura dostała osiem centów, zeszła na nich po 22 sekundach i nie zostawiła nic — a ten ekran
+   * wyglądał wtedy dokładnie tak, jak po biegu, z którego nie było się czego nauczyć. Cisza jest
+   * tu nieodróżnialna od awarii, a ktoś za tę turę zapłacił.
+   *
+   * TRZECI ŻYWY REGION TEGO FAKTU (strumień biegu, panel historii, ten ekran) jest WYJĄTKIEM od
+   * niezmiennika 13 — zgłoszonym właścicielowi i przez niego podtrzymanym. Zdanie ma jedno
+   * źródło po tej stronie granicy (`ranOutOfSomething`), więc trzy powierzchnie nie mogą się
+   * rozjechać w słowach; rozjechać się może tylko liczba miejsc, w które trzeba spojrzeć.
+   *
+   * WYŁĄCZNIE DWIE DROGI ZEJŚCIA. Bieg, po którym tura zrobiła swoje, nie mówi tu nic: „zostawiła
+   * dwie notatki" jest już powiedziane samą kolejką, a „nie było czego zapisać" jest odpowiedzią
+   * pustej kolejki. Tylko tura, która poszła i nie wróciła, zostawia po sobie pytanie. */
+  const learningStopped =
+    noteState.lastLearning === null ? undefined : ranOutOfSomething(noteState.lastLearning);
+
   return (
     <section className="flex h-full flex-col">
       {/* Pasek nagłówka jest chrome, więc materiał bierze z klasy materiału: `.screen-head`
@@ -173,6 +193,17 @@ export default function KnowledgeScreen({
       </header>
 
       <div className="screen-body">
+        {/* NAD OBIEMA GAŁĘZIAMI, bo to zdanie jest prawdziwe w obu i w obu mówi to samo: bieg,
+            po którym tura nie odpowiedziała, zostawia pustą kolejkę na ekranie pełnym i pusty
+            ekran na świeżym projekcie. Wewnątrz gałęzi byłoby dwoma kopiami tego samego wiersza
+            albo — gorzej — wierszem widocznym tylko w jednym z dwóch stanów, czyli dokładnie
+            tam, gdzie akurat się na niego nie patrzy. Stopień `lead`, nie nagłówek: to jest
+            wyjaśnienie kolejki, a nie druga nazwa sekcji. */}
+        {learningStopped === undefined ? null : (
+          <p data-learning-stopped className="lead mb-4">
+            {learningStopped}
+          </p>
+        )}
         {nothingOnScreen && nothingWentWrong ? (
           <div className="mx-auto flex h-full max-w-240 flex-col items-center justify-center gap-4">
             <span className="mark">◇</span>

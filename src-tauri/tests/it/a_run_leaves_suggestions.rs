@@ -35,10 +35,17 @@
 //!
 //! # Jak dubler odróżnia turę refleksji od kroku grafu
 //!
-//! Po znaczniku w instrukcji kroku, nie po modelu: rozpoznawanie po modelu znaczyłoby, że
+//! Po SZWIE, którym produkcja tę turę nazywa ([`AgentDriver::reflecting`]) — nie po modelu
+//! i nie po znaczniku w instrukcji kroku. Model odpada, bo rozpoznawanie po nim znaczyłoby, że
 //! implementacja z innym modelem daje „nie było refleksji" zamiast „refleksja miała zły model",
-//! a to są dwie różne wady i mają się różnie nazywać. Model jest osobną asercją, przeciw
-//! [`REFLECTION_MODEL`] — czyli przeciw stałej, a nie przeciw literałowi przepisanemu do testu.
+//! a to są dwie różne wady i mają się różnie nazywać (model jest osobną asercją, przeciw
+//! [`REFLECTION_MODEL`], czyli przeciw stałej, a nie przeciw literałowi przepisanemu do testu).
+//!
+//! 2026-09 (Z-38) — ZNACZNIK INSTRUKCJI ODPADŁ, I TO Z POMIARU. Od tego zadania prompt refleksji
+//! niesie indeks tego, co bieg zostawił, a tytuł przekazania jest tym, o co poproszono krok
+//! (`commands::run::title_of`) — czyli jego instrukcją. Znacznik kroku stał więc w promptach OBU
+//! tur, dubel czytał refleksję jako krok i oba testy niżej meldowały „refleksji nie było" nad
+//! kodem, który pytał normalnie.
 
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem, a `?` w tej samej linii
 // zamieniłby nazwany komunikat asercji w bezimienne `Err`. `checks/full-clippy.sh` biegnie
@@ -93,10 +100,6 @@ const PATIENCE: Duration = Duration::from_secs(20);
 
 /// Sufit z [T6 §5.3]: „najwyżej trzy rzeczy warte zapamiętania".
 const AT_MOST: usize = 3;
-
-/// Znacznik instrukcji kroku grafu. Prompt zaczyna się od bloku „co wiadomo", więc kroku nie da
-/// się rozpoznać po jego początku.
-const STEP_MARK: &str = "IBEX-STEP-ONE";
 
 const AGENT_ID: &str = "01990000-0000-7000-8000-0000000000a1";
 
@@ -730,6 +733,9 @@ fn fake_drivers(
         reflection_says,
         step_succeeds,
         takes_loadouts_turn,
+        // Sterownik z fabryki prowadzi KROKI; turę Loadouta prowadzi dopiero ten, który wyjdzie
+        // z `reflecting()` — tak samo, jak w produkcji.
+        is_loadouts_turn: false,
     });
     Arc::new(move |vendor| {
         seen.record_vendor(vendor);
@@ -747,6 +753,9 @@ struct Fake {
     /// Czy ten dubel **podaje szew** tury Loadouta. `false` jest tu wartością, nie brakiem: tak
     /// wygląda każdy inny dubel w tym drzewie i dlatego żaden z nich tej tury nie widzi.
     takes_loadouts_turn: bool,
+    /// Czy ten egzemplarz JEST tym, który wyszedł z [`AgentDriver::reflecting`] — czyli tym,
+    /// który poprowadzi turę Loadouta, a nie krok grafu (powód w nagłówku pliku).
+    is_loadouts_turn: bool,
 }
 
 #[async_trait]
@@ -762,8 +771,14 @@ impl AgentDriver for Fake {
     /// wersja tego mechanizmu brała sterownik prosto z fabryki i przewróciła 26 cudzych
     /// specyfikacji, z których każda liczy albo enumeruje wywołania sterownika.
     fn reflecting(&self) -> Option<Arc<dyn AgentDriver>> {
-        self.takes_loadouts_turn
-            .then(|| Arc::new(self.clone()) as Arc<dyn AgentDriver>)
+        self.takes_loadouts_turn.then(|| {
+            // Egzemplarz, który tę turę poprowadzi, wie o sobie, że nią jest — i to jest jedyna
+            // rzecz w tym dublerze, która odróżnia ją od kroku grafu (powód w nagłówku pliku).
+            Arc::new(Self {
+                is_loadouts_turn: true,
+                ..self.clone()
+            }) as Arc<dyn AgentDriver>
+        })
     }
 
     fn with_settings(
@@ -796,9 +811,9 @@ impl AgentDriver for Fake {
         spec: RunSpec,
         events: mpsc::Sender<DecodedEvent>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        // Krok grafu poznajemy po znaczniku jego instrukcji; wszystko inne jest turą, o którą
-        // ten krok nie prosił — czyli refleksją, jeśli ktokolwiek ją zada.
-        let is_step = spec.prompt.contains(STEP_MARK);
+        // Turę Loadouta prowadzi wyłącznie egzemplarz z `reflecting()`; wszystko inne jest
+        // krokiem grafu.
+        let is_step = !self.is_loadouts_turn;
         if !is_step {
             self.seen.record(Asked {
                 cwd: spec.cwd.clone(),

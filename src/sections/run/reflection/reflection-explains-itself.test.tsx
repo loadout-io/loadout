@@ -53,6 +53,12 @@ const TURNED_OFF = '20260904-101506__0198a1f2-3b4c-7d5e-8f60-000000000107';
 const NO_AGENT_WORKED = '20260904-101507__0198a1f2-3b4c-7d5e-8f60-000000000108';
 const NOTHING_WAS_LEFT = '20260904-101508__0198a1f2-3b4c-7d5e-8f60-000000000109';
 const NOTHING_CAME_BACK = '20260904-101509__0198a1f2-3b4c-7d5e-8f60-000000000110';
+const NO_AGENT_APP = '20260904-101510__0198a1f2-3b4c-7d5e-8f60-000000000111';
+const RAN_OUT_OF_BUDGET = '20260904-101511__0198a1f2-3b4c-7d5e-8f60-000000000112';
+const RAN_OUT_OF_TIME = '20260904-101512__0198a1f2-3b4c-7d5e-8f60-000000000113';
+
+/** Sufit, który obowiązywał bieg z audytu 2026-09-04: 1 % z 57,52 USD. */
+const CEILING_USD = 0.58;
 
 function row(folder: string, title: string): PastRunRow {
   return {
@@ -78,6 +84,9 @@ const ROWS: readonly PastRunRow[] = [
   row(NO_AGENT_WORKED, 'No agent worked'),
   row(NOTHING_WAS_LEFT, 'Nothing was left'),
   row(NOTHING_CAME_BACK, 'Nothing came back'),
+  row(NO_AGENT_APP, 'No agent app'),
+  row(RAN_OUT_OF_BUDGET, 'Ran out of money'),
+  row(RAN_OUT_OF_TIME, 'Ran out of time'),
 ];
 
 /** Otwarty bieg w kształcie, w którym przyjeżdża z Rusta. `undefined` znaczy „opis tego nie ma". */
@@ -157,6 +166,31 @@ const KEPT: Readonly<Record<string, PastRun>> = {
     discardedAgain: 0,
     droppedWithoutReason: 0,
     why: 'nothing-came-back',
+  }),
+  [NO_AGENT_APP]: opened(NO_AGENT_APP, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'no-agent-app',
+  }),
+  /* DWA BIEGI, W KTÓRYCH TURA BYŁA I ZA KTÓRE KTOŚ ZAPŁACIŁ (2026-09, Z-38). `budgetUsd` stoi
+     przy pierwszym z nich, bo jego zdanie kończy się kwotą — tą samą, którą dostałby bieg
+     z audytu 2026-09-04: jeden procent z 57,52 USD zamiast ośmiu centów dla każdego. */
+  [RAN_OUT_OF_BUDGET]: opened(RAN_OUT_OF_BUDGET, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'ran-out-of-budget',
+    budgetUsd: CEILING_USD,
+  }),
+  [RAN_OUT_OF_TIME]: opened(RAN_OUT_OF_TIME, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'ran-out-of-time',
   }),
 };
 
@@ -268,6 +302,9 @@ const turnedOff = await afterOpening(TURNED_OFF);
 const noAgentWorked = await afterOpening(NO_AGENT_WORKED);
 const nothingWasLeft = await afterOpening(NOTHING_WAS_LEFT);
 const nothingCameBack = await afterOpening(NOTHING_CAME_BACK);
+const noAgentApp = await afterOpening(NO_AGENT_APP);
+const ranOutOfBudget = await afterOpening(RAN_OUT_OF_BUDGET);
+const ranOutOfTime = await afterOpening(RAN_OUT_OF_TIME);
 
 closeHistory();
 
@@ -467,5 +504,66 @@ describe('says what it did with this run, and says it outright when it kept noth
     expect(reflectionRow(nothingCameBack)).toBe(
       'Loadout did not look back at this run because nothing came back from the learning turn.',
     );
+    expect(reflectionRow(noAgentApp)).toBe(
+      'Loadout did not look back at this run because the agent app it needed did not start.',
+    );
+  });
+
+  /* DOPISANY 2026-09-04 (Z-38), Z BIEGU WŁAŚCICIELA. Dwie godziny pracy, 57,52 USD, dziewięć
+   * przekazań, ptaszek włączony — a tura dostała osiem centów, zeszła na nich po 22 sekundach
+   * i historia napisała o niej „did not look back at this run". Zdanie prawdziwe o biegu, o
+   * który nikt nie pytał, postawione nad biegiem, za którego turę człowiek zapłacił.
+   *
+   * SŁABA WERSJA: sprawdzić, że zdanie jest RÓŻNE od tamtego. Przechodzi ją każde zdanie, także
+   * takie, które nie mówi ani co się stało, ani ile to kosztowało. Dlatego niżej stoi treść
+   * i kwota — a kwota bierze się z rachunku, bo sufit nie jest już stałą i jedna liczba
+   * przepisana do okna byłaby prawdą wyłącznie dla najtańszego biegu. */
+  it('says outright when the turn went and ran out before it answered', () => {
+    expect(
+      reflectionRow(ranOutOfBudget),
+      'a run whose private turn spent everything it was given has to say so, with the amount. ' +
+        'Anything else here reads as a turn nobody took — and this one was paid for',
+    ).toBe("Learn from this run didn't finish: the note-taker used its $0.58 before answering.");
+    expect(
+      reflectionRow(ranOutOfBudget) === reflectionRow(nothingCameBack),
+      'a turn that ran out of money is not a turn that came back with nothing, and one sentence ' +
+        'for both leaves the person with no way to tell that raising the ceiling is the answer',
+    ).toBe(false);
+    expect(
+      reflectionRow(ranOutOfTime),
+      'the same run, stopped by the clock instead of the price, has to say THAT — the two have ' +
+        'different answers: one costs more money, the other costs more minutes',
+    ).toBe("Learn from this run didn't finish: the note-taker ran out of time before answering.");
+    /* WSZYSTKIE DZIEWIĘĆ DRÓG NARAZ, i to jest osobne pytanie od każdego zdania z osobna: dwie
+       drogi opisane jednym zdaniem czytają się jak jeden stan, a wtedy człowiek nie ma jak
+       poznać, którą z nich właśnie zobaczył. Punkty wyżej pilnują treści; ten pilnuje, że żadna
+       para się nie zlewa. */
+    const everyPath = [
+      withNothing,
+      neverAsked,
+      olderThanTheField,
+      stopped,
+      turnedOff,
+      noAgentWorked,
+      nothingWasLeft,
+      nothingCameBack,
+      noAgentApp,
+      ranOutOfBudget,
+      ranOutOfTime,
+    ].map(reflectionRow);
+    expect(
+      new Set(everyPath).size,
+      'two of the paths a run can take through the private turn ended up with the SAME ' +
+        'sentence: ' +
+        JSON.stringify(everyPath),
+    ).toBe(everyPath.length);
+
+    expect(
+      reflectionRow(ranOutOfBudget).startsWith(REFLECTION_LABEL),
+      'the sentence names something the person never turned on. What they ticked is called ' +
+        JSON.stringify(REFLECTION_LABEL) +
+        ', and a sentence about "the private turn" or "the reflection" is about a thing this ' +
+        'screen has no name for (invariant 14)',
+    ).toBe(true);
   });
 });
