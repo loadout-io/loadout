@@ -57,6 +57,7 @@ scripts/h run <id> --prompt "$(cat docs/prod-ready/prompts/<ID>.md)" [--dev code
 |---|---|---|
 | 0 | DZIALA, praca zacommitowana na `h-<id>` | status `DZIALA`; gdy nic nie biegnie: `scripts/h land <id>` → `scripts/h clean <id>` → `LANDED` |
 | 1 | check padł **albo padł model** | przeczytaj ogon `runs/<id>/build-*.jsonl` i `.git/h/<id>.json`. Trzy przyczyny MASZYNOWE, wszystkie zmierzone 2026-09-03 i wszystkie dające kod 1: `api_error_status: 429` z frazą o limicie sesji; `cannot execute binary file`, gdy vendor aktualizował się w oknie zapisu (plik nazywa się `claude.exe` i JEST binarką macOS — sprawdź `claude --version`); timeout checka pod obcym obciążeniem. Przy każdej z nich **powtórz raz** to samo polecenie, worktree zostaje. Dopiero przyczyna w kodzie to `BLOCKED` |
+| 1 | **faza planu zjadła sufit dolara** | Piąta przyczyna maszynowa, poznana 2026-09-04 na Z-22: w transkrypcie stoi `terminal_reason: "budget_exhausted"`, `subtype: "error_max_budget_usd"` i zdanie `Reached maximum budget ($12)`. To NIE jest porażka sprawdzenia ani wada kodu — to `LOADOUT_BUDGET_PLAN` robiący swoje. Bieg ginie **przed** napisaniem czegokolwiek, a sesja planu nie jest zapisywana, więc ponowienie płaci od nowa (dług H-24, opisany pod tabelą sond). Odpowiedź: **jeden** ponowny bieg z tańszym planistą (`--planner codex`) i podniesionym sufitem; jeśli i on zje sufit, zadanie idzie na BLOCKED z powodem „plan". Zanim ponowisz, policz narzędzia w `runs/<id>/plan.jsonl` — dwanaście odczytów tego samego pliku znaczy planistę kręcącego się w kółko, nie szeroki zakres. |
 | 2 | STOP po dwóch poprawkach albo NIE_WIEM albo bieg dotknął wyroczni | `BLOCKED` z pierwszym zdaniem `co_nie_dziala`; worktree zostaje do wglądu |
 | 3 | sufit czasu/tur | powtórz raz z `LOADOUT_MAX_TURNS=400 LOADOUT_BUDGET_DEV=70` i `--no-plan` (plan jest w stanie); drugi raz — `BLOCKED` |
 
@@ -397,6 +398,16 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 | 0.3 | czy `codex exec -o <plik>` zapisuje ostatnią wiadomość agenta | `codex exec --skip-git-repo-check -o /tmp/x.txt -` z promptem „odpowiedz słowem TAK" | kształt H-1 |
 
 ---
+
+### Dług harnessu poznany w trakcie pętli (poza Falą 0 — do zrobienia po niej)
+
+- **H-24 (faza planu nie ma sesji).** `phase_plan` woła `call_model` bez `session=`, więc bieg
+  ubity w planie — z sufitu dolara, limitu sesji albo podmiany binarki — nie ma czego wznowić
+  i płaci od zera. Faza implementacji ma to od `b157a6a0` (`saved = load_state(task_id).get("session")`),
+  faza planu nie. Koszt zmierzony 2026-09-04 na Z-22: **12,35 USD** za nic, z czego prawie wszystko
+  to odczyty z cache'u (7,8 mln tokenów). Poprawka jest tego samego kształtu co w `phase_implement`:
+  zapisz `sid` w stanie przed wołaniem, a przy ponowieniu podaj `--resume`. Nie robię tego teraz,
+  bo `harness/` jest zamknięte poza Falą 0 (patrz „Czego orkiestrator nie robi").
 
 ## 5. Dziennik
 
