@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use uuid::{Uuid, Version};
 
@@ -28,23 +28,45 @@ pub enum Source {
     Linear,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Secret(String);
+#[derive(Clone, PartialEq, Eq)]
+enum SecretSource {
+    Literal(String),
+    Environment(String),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(SecretSource);
 
 impl Secret {
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        Self(SecretSource::Literal(value.into()))
     }
 
     #[must_use]
     pub fn exposes(&self, expected: &str) -> bool {
-        self.0 == expected
+        self.as_str() == expected
     }
 
     fn as_str(&self) -> &str {
-        &self.0
+        match &self.0 {
+            SecretSource::Literal(value) | SecretSource::Environment(value) => value,
+        }
+    }
+
+    fn environment(value: impl Into<String>) -> Self {
+        Self(SecretSource::Environment(value.into()))
+    }
+
+    fn environment_name(&self) -> Option<&str> {
+        match &self.0 {
+            SecretSource::Environment(value) => Some(value),
+            SecretSource::Literal(_) => None,
+        }
+    }
+
+    const fn requires_migration(&self) -> bool {
+        matches!(&self.0, SecretSource::Literal(_))
     }
 }
 
@@ -54,8 +76,16 @@ impl fmt::Debug for Secret {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+impl<'de> Deserialize<'de> for Secret {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Trigger {
     pub schema: u32,
     pub source: Source,
@@ -63,10 +93,8 @@ pub struct Trigger {
     pub workflow: String,
     /// Workspace jest opcjonalny wyłącznie na granicy odczytu plików sprzed 2026-08-21.
     /// Każdy nowy zapis niesie `Some`, a brak nigdy nie może zostać domyślnie przypisany.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     pub condition: String,
-    #[serde(default = "default_poll_every_minutes")]
     pub poll_every_minutes: u32,
     pub api_key: Secret,
 }
@@ -85,7 +113,10 @@ pub struct TriggerDraft {
     pub workflow: String,
     pub workspace: String,
     pub poll_every_minutes: u32,
-    pub api_key: Option<Secret>,
+    // 2026-09: `apiKey` pozostaje wyłącznie aliasem odczytu, żeby starsze okno dostało jawną
+    // odmowę wspólnego detektora zamiast błędu deserializacji, którego człowiek nie umie naprawić.
+    #[serde(default, rename = "tokenEnvironment", alias = "apiKey")]
+    pub token_environment: Option<String>,
 }
 
 impl fmt::Debug for TriggerDraft {
@@ -99,7 +130,10 @@ impl fmt::Debug for TriggerDraft {
             .field("workflow", &"<selected>")
             .field("workspace", &"<selected>")
             .field("poll_every_minutes", &self.poll_every_minutes)
-            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "token_environment",
+                &self.token_environment.as_ref().map(|_| "<provided>"),
+            )
             .finish()
     }
 }
@@ -115,6 +149,7 @@ pub struct TriggerSnapshot {
     pub workspace: Option<String>,
     pub enabled: bool,
     pub poll_every_minutes: u32,
+    /// Redagowany fakt legacy; `false` znaczy, że plik ma już bezpieczną referencję env.
     #[serde(rename = "hasApiKey")]
     pub key_saved: bool,
 }
@@ -158,9 +193,15 @@ pub struct TriggerEntry {
     /// Czestotliwosc sprawdzania; uszkodzony wpis nie zmysla wartosci.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll_every_minutes: Option<u32>,
-    /// Sam fakt zapisania sekretu. Wartosc ani jej pochodna nie przekracza IPC.
+    /// Czy plik nadal ma legacy literal. Wartość ani jej pochodna nie przekracza IPC.
     #[serde(rename = "hasApiKey", skip_serializing_if = "Option::is_none")]
     pub key_saved: Option<bool>,
+    /// Bezpieczna nazwa zmiennej, nigdy jej wartość. Legacy plik pomija pole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_environment: Option<String>,
+    /// `true` znaczy, że jedyny klucz nadal stoi literalnie w pliku i zapis jest zablokowany.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_migration: Option<bool>,
     /// Nazwany problem z konkretnym plikiem; zdrowy wpis pomija to pole.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
@@ -280,10 +321,29 @@ pub enum TriggerError {
     ReadConfig(io::Error),
     #[error("The trigger file has an invalid field: {0}")]
     InvalidConfig(serde_json::Error),
-    #[error("Add a Linear API key as `api_key` in this trigger file, then try again.")]
+    #[error(
+        "Add `token_environment` with the name of an environment variable containing the Linear \
+         API key, then try again."
+    )]
     MissingKey,
-    #[error("Enter a Linear API key, then try again.")]
-    EditorMissingKey,
+    #[error("Enter the name of an environment variable that contains the Linear key.")]
+    EditorMissingEnvironment,
+    #[error(
+        "This trigger was not saved: the key field has what looks like {what}. Put the key in an \
+         environment variable and enter that variable's name instead."
+    )]
+    LiteralKey { what: &'static str },
+    #[error("Use an environment variable name made of letters, numbers and underscores.")]
+    InvalidEnvironment,
+    #[error("Put the Linear key in the environment variable `{0}`, then try again.")]
+    EnvironmentMissing(String),
+    #[error(
+        "This trigger stores its Linear key in the file. Edit it and enter an environment \
+         variable name before changing it."
+    )]
+    LegacyKeyNeedsMigration,
+    #[error("This trigger names both an environment variable and a legacy key.")]
+    ConflictingKeySources,
     #[error("The trigger source `{0}` is not available. Choose `linear`.")]
     UnknownSource(String),
     #[error("This trigger source is not available. Choose `linear`.")]
@@ -441,6 +501,8 @@ where
                 enabled: None,
                 poll_every_minutes: None,
                 key_saved: None,
+                token_environment: None,
+                requires_migration: None,
                 problem: Some(
                     "This trigger is not a regular file, so Loadout left it unchanged.".to_owned(),
                 ),
@@ -456,7 +518,9 @@ where
                 workspace: trigger.workspace,
                 enabled: Some(trigger.enabled),
                 poll_every_minutes: Some(trigger.poll_every_minutes),
-                key_saved: Some(true),
+                key_saved: Some(trigger.api_key.requires_migration()),
+                token_environment: trigger.api_key.environment_name().map(str::to_owned),
+                requires_migration: Some(trigger.api_key.requires_migration()),
                 problem: None,
             }),
             Err(error) => out.push(TriggerEntry {
@@ -468,6 +532,8 @@ where
                 enabled: None,
                 poll_every_minutes: None,
                 key_saved: None,
+                token_environment: None,
+                requires_migration: None,
                 // Biblioteka jest granica redakcji. Nawet wartosc wpisana omylkowo w `source`
                 // nie moze stac sie komunikatem, bo mogla byc sekretem w zlym polu.
                 problem: Some(library_problem(&error)),
@@ -705,7 +771,7 @@ fn library_problem(error: &TriggerError) -> String {
     }
 }
 
-/// Atomowo zmienia `enabled`, zachowujac sekret, pozostale pola i prawa pliku.
+/// Atomowo zmienia `enabled`, zachowujac referencje env, pozostale pola i prawa pliku.
 pub fn set_enabled(home: &Path, slug: &str, enabled: bool) -> Result<TriggerEntry, TriggerError> {
     set_enabled_with(home, slug, enabled, |_, _| Ok(()))
 }
@@ -747,13 +813,20 @@ where
     // rename nie zalezal od uniksowej semantyki otwartego pliku docelowego.
     drop(original);
     let mut trigger = parse_trigger(&snapshot)?;
+    if trigger.api_key.requires_migration() {
+        // 2026-09: Toggle też jest zapisem całego configu, więc pyta dokładnie ten sam detektor
+        // co Create/Update. Osobna polityka „bo to legacy” odtworzyłaby dziurę z niezmiennika 23.
+        let what =
+            crate::workflow::check::secret_shaped(trigger.api_key.as_str()).unwrap_or("a key");
+        return Err(TriggerError::LiteralKey { what });
+    }
     if enabled {
         // 2026-08-21: stare pliki bez workspace wolno wyłączyć i naprawić, ale ponowne
         // włączenie nie może odtworzyć dawnego błędu, w którym okno wybierało bieżący projekt.
         require_registered_workspace(home, trigger.workspace.as_deref())?;
     }
     trigger.enabled = enabled;
-    let bytes = serde_json::to_vec_pretty(&trigger).map_err(TriggerError::InvalidConfig)?;
+    let bytes = safe_trigger_bytes(&trigger)?;
     match replace_atomically(
         &path,
         &bytes,
@@ -774,7 +847,9 @@ where
         workspace: trigger.workspace,
         enabled: Some(trigger.enabled),
         poll_every_minutes: Some(trigger.poll_every_minutes),
-        key_saved: Some(true),
+        key_saved: Some(false),
+        token_environment: trigger.api_key.environment_name().map(str::to_owned),
+        requires_migration: Some(false),
         problem: None,
     })
 }
@@ -814,11 +889,11 @@ where
     F: FnMut(EditorStage, &Path) -> io::Result<()>,
 {
     let _guard = config_guard();
-    let trigger = trigger_from_draft(home, draft, TRIGGER_SCHEMA, true, None)?;
+    let trigger = trigger_from_draft(home, draft, TRIGGER_SCHEMA, true)?;
     let slug = format!("linear-{}", mint());
     let parent = ensure_trigger_dir(home)?;
     let path = parent.join(format!("{slug}.json"));
-    let bytes = serde_json::to_vec_pretty(&trigger).map_err(TriggerError::InvalidConfig)?;
+    let bytes = safe_trigger_bytes(&trigger)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(&format!(".{slug}-"))
         .suffix(".writing")
@@ -846,7 +921,7 @@ where
     Ok(entry_for(&slug, &trigger))
 }
 
-/// Zmienia niesekretne pola, a pusty klucz zachowuje sekret ze swiezej wersji pliku.
+/// Zmienia pola i zapisuje wyłącznie jawną referencję env; legacy klucza nigdy nie przepisuje.
 pub fn update(
     home: &Path,
     slug: &str,
@@ -876,14 +951,8 @@ where
     if snapshot_for(slug, &current) != *expected {
         return Err(TriggerError::ConfigChanged);
     }
-    let trigger = trigger_from_draft(
-        home,
-        draft,
-        current.schema,
-        current.enabled,
-        Some(current.api_key),
-    )?;
-    let bytes = serde_json::to_vec_pretty(&trigger).map_err(TriggerError::InvalidConfig)?;
+    let trigger = trigger_from_draft(home, draft, current.schema, current.enabled)?;
+    let bytes = safe_trigger_bytes(&trigger)?;
     let mut editor_observer = |stage, path: &Path| {
         let stage = match stage {
             ToggleStage::BeforeContent => EditorStage::BeforeContent,
@@ -977,25 +1046,37 @@ where
     Ok(())
 }
 
-/// Rozstrzyga klucz podany w formularzu albo zapisany pod slugiem; niczego nie zapisuje.
+/// Rozstrzyga nazwę env podaną w formularzu albo referencję zapisaną pod slugiem.
 pub fn connection_key(
     home: &Path,
     slug: Option<&str>,
-    api_key: Option<Secret>,
+    token_environment: Option<Secret>,
 ) -> Result<Secret, TriggerError> {
-    let key = if let Some(key) = api_key {
-        key
+    connection_key_with(home, slug, token_environment, |name| {
+        std::env::var(name).ok()
+    })
+}
+
+/// Wstrzykiwany odczyt env dowodzi, że Test nie potrzebuje sekretu ani w IPC, ani na dysku.
+pub fn connection_key_with<F>(
+    home: &Path,
+    slug: Option<&str>,
+    token_environment: Option<Secret>,
+    read_environment: F,
+) -> Result<Secret, TriggerError>
+where
+    F: FnOnce(&str) -> Option<String>,
+{
+    let credential = if let Some(name) = token_environment {
+        token_environment_from_editor(name.as_str())?
     } else {
-        let slug = slug.ok_or(TriggerError::EditorMissingKey)?;
+        let slug = slug.ok_or(TriggerError::EditorMissingEnvironment)?;
         valid_slug(slug)?;
         let path = require_trigger_dir(home)?.join(format!("{slug}.json"));
         let (raw, _) = read_regular_config(&path)?;
         parse_trigger(&raw)?.api_key
     };
-    if !valid_key(key.as_str()) {
-        return Err(TriggerError::InvalidKey);
-    }
-    Ok(key)
+    resolve_key_with(&credential, read_environment)
 }
 
 fn trigger_from_draft(
@@ -1003,7 +1084,6 @@ fn trigger_from_draft(
     draft: TriggerDraft,
     schema: u32,
     enabled: bool,
-    saved_key: Option<Secret>,
 ) -> Result<Trigger, TriggerError> {
     let TriggerDraft {
         source,
@@ -1011,7 +1091,7 @@ fn trigger_from_draft(
         workflow,
         workspace,
         poll_every_minutes,
-        api_key,
+        token_environment,
     } = draft;
     if source != "linear" {
         return Err(TriggerError::UnknownSourceRedacted);
@@ -1022,12 +1102,12 @@ fn trigger_from_draft(
     if !valid_cadence(poll_every_minutes) {
         return Err(TriggerError::InvalidCadence);
     }
-    let api_key = api_key
-        .or(saved_key)
-        .ok_or(TriggerError::EditorMissingKey)?;
-    if !valid_key(api_key.as_str()) {
-        return Err(TriggerError::InvalidKey);
-    }
+    // 2026-09: wspólny detektor stoi przed pierwszą drogą dotykającą biblioteki. Alias
+    // `apiKey` może więc nadal się zdeserializować, ale literal zostaje odrzucony zanim Create
+    // utworzy katalog albo Update przygotuje plik tymczasowy (niezmienniki 9 i 23).
+    let token_environment = token_environment
+        .ok_or(TriggerError::EditorMissingEnvironment)
+        .and_then(|name| token_environment_from_editor(&name))?;
     // 2026-08-21: konfiguracja jest globalna, ale praca nie. Dokładny folder z rejestru
     // zapisujemy przed publikacją configu, zamiast zgadywać aktywną kartę przy późniejszym ticku.
     //
@@ -1048,8 +1128,42 @@ fn trigger_from_draft(
         workspace: Some(workspace.to_string_lossy().into_owned()),
         condition,
         poll_every_minutes,
-        api_key,
+        api_key: token_environment,
     })
+}
+
+fn token_environment_from_editor(name: &str) -> Result<Secret, TriggerError> {
+    if let Some(what) = crate::workflow::check::secret_shaped(name) {
+        return Err(TriggerError::LiteralKey { what });
+    }
+    if !valid_environment_name(name) {
+        return Err(TriggerError::InvalidEnvironment);
+    }
+    Ok(Secret::environment(name))
+}
+
+fn resolve_key_with<F>(credential: &Secret, read_environment: F) -> Result<Secret, TriggerError>
+where
+    F: FnOnce(&str) -> Option<String>,
+{
+    let key = match credential.environment_name() {
+        Some(name) => read_environment(name)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| TriggerError::EnvironmentMissing(name.to_owned()))?,
+        None => credential.as_str().to_owned(),
+    };
+    if !valid_key(&key) {
+        return Err(TriggerError::InvalidKey);
+    }
+    Ok(Secret::new(key))
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn read_regular_config(path: &Path) -> Result<(Vec<u8>, fs::Permissions), TriggerError> {
@@ -1082,7 +1196,7 @@ fn snapshot_for(slug: &str, trigger: &Trigger) -> TriggerSnapshot {
         workspace: trigger.workspace.clone(),
         enabled: trigger.enabled,
         poll_every_minutes: trigger.poll_every_minutes,
-        key_saved: true,
+        key_saved: trigger.api_key.requires_migration(),
     }
 }
 
@@ -1095,7 +1209,9 @@ fn entry_for(slug: &str, trigger: &Trigger) -> TriggerEntry {
         workspace: trigger.workspace.clone(),
         enabled: Some(trigger.enabled),
         poll_every_minutes: Some(trigger.poll_every_minutes),
-        key_saved: Some(true),
+        key_saved: Some(trigger.api_key.requires_migration()),
+        token_environment: trigger.api_key.environment_name().map(str::to_owned),
+        requires_migration: Some(trigger.api_key.requires_migration()),
         problem: None,
     }
 }
@@ -1377,9 +1493,31 @@ pub fn poll_with_curl_runner<F>(
 where
     F: FnOnce(Command, &str) -> Result<Vec<u8>, TriggerError>,
 {
+    poll_with_environment_and_curl_runner(
+        home,
+        slug,
+        created_at,
+        |name| std::env::var(name).ok(),
+        run,
+    )
+}
+
+/// Wstrzykiwany odczyt rozdziela bezpieczny plik od sekretu używanego tylko przez stdin curl.
+pub fn poll_with_environment_and_curl_runner<E, F>(
+    home: &Path,
+    slug: &str,
+    created_at: i64,
+    read_environment: E,
+    run: F,
+) -> Result<TriggerPoll, TriggerError>
+where
+    E: FnOnce(&str) -> Option<String>,
+    F: FnOnce(Command, &str) -> Result<Vec<u8>, TriggerError>,
+{
     poll_with(home, slug, created_at, |trigger| {
-        let config = curl_config(trigger);
-        run(build_curl_command(trigger), &config)
+        let key = resolve_key_with(&trigger.api_key, read_environment)?;
+        let config = linear_curl_config(&key, ISSUES_QUERY);
+        run(build_linear_curl_command(&key, ISSUES_QUERY), &config)
     })
 }
 
@@ -2152,7 +2290,7 @@ where
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TriggerWire {
     schema: u32,
@@ -2164,6 +2302,11 @@ struct TriggerWire {
     condition: String,
     #[serde(default = "default_poll_every_minutes")]
     poll_every_minutes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_environment: Option<String>,
+    // 2026-09: pole jest wyłącznie czytnikiem migracji. Żaden zapis w tym module nie buduje
+    // `Some`, więc istniejące pliki działają, ale literal nie ma drogi powrotnej na dysk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     api_key: Option<String>,
 }
 
@@ -2237,13 +2380,22 @@ fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
             return Err(error);
         }
     };
-    let api_key = wire
-        .api_key
-        .filter(|key| !key.trim().is_empty())
-        .ok_or(TriggerError::MissingKey)?;
-    if !valid_key(&api_key) {
-        return Err(TriggerError::InvalidKey);
-    }
+    let api_key = match (wire.token_environment, wire.api_key) {
+        (Some(_), Some(_)) => return Err(TriggerError::ConflictingKeySources),
+        (Some(name), None) => {
+            if !valid_environment_name(&name) {
+                return Err(TriggerError::InvalidEnvironment);
+            }
+            Secret::environment(name)
+        }
+        (None, Some(key)) if !key.trim().is_empty() => {
+            if !valid_key(&key) {
+                return Err(TriggerError::InvalidKey);
+            }
+            Secret::new(key)
+        }
+        (None, Some(_) | None) => return Err(TriggerError::MissingKey),
+    };
     // 2026-08-21, T-74: T-65 zapisywalo czytelne `assigned to me`. Loader utrzymuje te
     // istniejace pliki, lecz formularz i kazdy nowy zapis pozostaja przy jednym kanonie.
     let condition = match wire.condition.as_str() {
@@ -2261,8 +2413,29 @@ fn parse_trigger(raw: &[u8]) -> Result<Trigger, TriggerError> {
         workspace: wire.workspace,
         condition,
         poll_every_minutes: wire.poll_every_minutes,
-        api_key: Secret::new(api_key),
+        api_key,
     })
+}
+
+fn safe_trigger_bytes(trigger: &Trigger) -> Result<Vec<u8>, TriggerError> {
+    let token_environment = trigger
+        .api_key
+        .environment_name()
+        .ok_or(TriggerError::LegacyKeyNeedsMigration)?;
+    let wire = TriggerWire {
+        schema: trigger.schema,
+        source: match &trigger.source {
+            Source::Linear => "linear".to_owned(),
+        },
+        enabled: trigger.enabled,
+        workflow: trigger.workflow.clone(),
+        workspace: trigger.workspace.clone(),
+        condition: trigger.condition.clone(),
+        poll_every_minutes: trigger.poll_every_minutes,
+        token_environment: Some(token_environment.to_owned()),
+        api_key: None,
+    };
+    serde_json::to_vec_pretty(&wire).map_err(TriggerError::InvalidConfig)
 }
 
 fn public_unsupported_source(source: &str) -> Option<&'static str> {

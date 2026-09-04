@@ -20,7 +20,9 @@ const CLOCK: TriggerClock = {
 const REDACTED = {
   workspace: '/project',
   pollEveryMinutes: 1 as const,
-  hasApiKey: true as const,
+  tokenEnvironment: 'LINEAR_API_KEY',
+  requiresMigration: false as const,
+  hasApiKey: false as const,
 };
 const EDITOR_IO: Pick<
   TriggerIo,
@@ -225,16 +227,18 @@ describe('the real Triggers screen explains and controls its library', () => {
     }
   });
 
-  it('keeps a legacy row editable and turn-off-able, but cannot arm or retry it', async () => {
+  it('shows the complete migration path in a real legacy row and blocks its toggle', () => {
     const legacy = {
       slug: 'legacy-linear',
       source: 'Linear',
       condition: 'Assigned to you',
       workflow: 'analysis.json',
       workflowName: 'Analysis',
-      workspace: null,
+      workspace: '/project',
       enabled: true,
       pollEveryMinutes: 1 as const,
+      tokenEnvironment: null,
+      requiresMigration: true,
       hasApiKey: true,
       status: { kind: 'armed' as const },
     } satisfies TriggerView;
@@ -245,7 +249,7 @@ describe('the real Triggers screen explains and controls its library', () => {
       workflow: legacy.workflow,
       enabled,
       ...REDACTED,
-      workspace: null,
+      workspace: '/project',
     }));
     const store = createTriggersStore(ioWith(saved), CLOCK, RUN);
     store.setState({ triggers: [legacy] });
@@ -255,23 +259,17 @@ describe('the real Triggers screen explains and controls its library', () => {
       return <TriggerRow {...props} />;
     }
 
-    const enabledMarkup = renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />);
-    const enabledRow = row(enabledMarkup, legacy.slug);
-    expect(enabledRow).toContain('Choose a workspace in Edit before this trigger can run.');
-    expect(enabledRow).toContain('data-trigger-open');
-    expect(enabledRow).not.toContain('data-trigger-run-again');
-    expect(enabledRow).toMatch(/data-trigger-toggle(?![^>]*disabled)/);
-
-    await handlers.get(legacy.slug)?.(legacy.slug, false);
-    expect(saved).toHaveBeenCalledTimes(1);
-    const disabledRow = row(
+    const visible = row(
       renderToStaticMarkup(<TriggersScreen store={store} row={Probe} />),
       legacy.slug,
     );
-    expect(disabledRow).toMatch(/data-trigger-toggle[^>]*disabled/);
-
-    await handlers.get(legacy.slug)?.(legacy.slug, true);
-    expect(saved, 'a missing target must not be armed again').toHaveBeenCalledTimes(1);
+    expect(visible).toContain(
+      'This trigger stores its Linear key in the file. Put the key in an environment variable, then edit this trigger and enter that variable’s name.',
+    );
+    expect(visible).toContain('data-trigger-open');
+    expect(visible).toMatch(/data-trigger-toggle[^>]*disabled/);
+    expect(saved).not.toHaveBeenCalled();
+    expect(handlers.has(legacy.slug)).toBe(true);
   });
 
   it('runs an accepted delivery again through the visible handler, once, with Rust returned identity', async () => {

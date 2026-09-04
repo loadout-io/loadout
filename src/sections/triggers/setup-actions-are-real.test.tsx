@@ -35,6 +35,7 @@ const RUN: TriggerRunPath = {
 };
 
 const KEY = 'lin_api_1234567890123456789012345678901234567890';
+const ENVIRONMENT = 'LINEAR_API_KEY';
 const WORKSPACE = '/project';
 const OTHER_WORKSPACE = '/other-project';
 const DRAFT: TriggerDraft = {
@@ -43,7 +44,7 @@ const DRAFT: TriggerDraft = {
   workflow: 'analysis.json',
   workspace: WORKSPACE,
   pollEveryMinutes: 5,
-  apiKey: KEY,
+  tokenEnvironment: ENVIRONMENT,
 };
 const ENTRY = {
   slug: 'linear-0198ca82-ded0-7000-8000-000000000074',
@@ -53,15 +54,26 @@ const ENTRY = {
   workspace: DRAFT.workspace,
   enabled: true,
   pollEveryMinutes: DRAFT.pollEveryMinutes,
-  hasApiKey: true,
+  tokenEnvironment: ENVIRONMENT,
+  requiresMigration: false,
+  hasApiKey: false,
 } satisfies ConfiguredTriggerEntry;
-const EXPECTED: TriggerSnapshot = { ...ENTRY };
+const EXPECTED: TriggerSnapshot = {
+  slug: ENTRY.slug,
+  source: ENTRY.source,
+  condition: ENTRY.condition,
+  workflow: ENTRY.workflow,
+  workspace: ENTRY.workspace,
+  enabled: ENTRY.enabled,
+  pollEveryMinutes: ENTRY.pollEveryMinutes,
+  hasApiKey: ENTRY.hasApiKey,
+};
 
 const CREATE: OpenedTriggerEditor = {
   mode: 'create',
   value: {
     connector: 'linear',
-    apiKey: KEY,
+    apiKey: ENVIRONMENT,
     workflow: DRAFT.workflow,
     workspace: DRAFT.workspace,
     pollEveryMinutes: DRAFT.pollEveryMinutes,
@@ -81,7 +93,7 @@ const EDIT: OpenedTriggerEditor = {
   mode: 'edit',
   value: {
     connector: 'linear',
-    apiKey: '',
+    apiKey: ENVIRONMENT,
     workflow: 'verify.json',
     workspace: DRAFT.workspace,
     pollEveryMinutes: 15,
@@ -282,15 +294,15 @@ beforeEach(() => {
 });
 
 describe('the four setup actions cross the true screen and the disk-backed store', () => {
-  it('tests the entered key without saving or changing the library, then shows success', async () => {
-    const tested = vi.fn(async (_slug: string | null, _apiKey: string | null) => undefined);
+  it('tests the entered environment name without saving or changing the library', async () => {
+    const tested = vi.fn(async (_slug: string | null, _environment: string | null) => undefined);
     const created = vi.fn(async (_draft: TriggerDraft) => ENTRY);
     const io = ioWith({ testLinearConnection: tested, createTrigger: created });
     const { store, editor, form } = capture(io, CREATE);
 
     await Promise.resolve(clickThroughRealForm(form, 'test')).catch(() => undefined);
     expect(tested).toHaveBeenCalledTimes(1);
-    expect(tested).toHaveBeenCalledWith(null, KEY);
+    expect(tested).toHaveBeenCalledWith(null, ENVIRONMENT);
     expect(created).not.toHaveBeenCalled();
     expect(store.getState().triggers).toEqual([]);
 
@@ -298,15 +310,15 @@ describe('the four setup actions cross the true screen and the disk-backed store
     expect(visible).toContain('Linear connection works.');
   });
 
-  it('tests the saved key from the real Edit panel without asking the window for it', async () => {
-    const tested = vi.fn(async (_slug: string | null, _apiKey: string | null) => undefined);
+  it('tests the saved environment name from the real Edit panel', async () => {
+    const tested = vi.fn(async (_slug: string | null, _environment: string | null) => undefined);
     const { store, editor, form } = capture(ioWith({ testLinearConnection: tested }), EDIT, {
       entry: ENTRY,
     });
 
     await Promise.resolve(clickThroughRealForm(form, 'test')).catch(() => undefined);
     expect(tested).toHaveBeenCalledTimes(1);
-    expect(tested).toHaveBeenCalledWith(ENTRY.slug, null);
+    expect(tested).toHaveBeenCalledWith(ENTRY.slug, ENVIRONMENT);
     const visible = renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />);
     expect(visible).toContain('Linear connection works.');
     expect(visible).not.toContain(KEY);
@@ -318,7 +330,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
     const { store, editor } = capture(ioWith({ createTrigger: create }), BLANK_CREATE);
 
     changeThroughRealForm(observeForm(store, editor), 'connector', 'linear');
-    changeThroughRealForm(observeForm(store, editor), 'apiKey', KEY);
+    changeThroughRealForm(observeForm(store, editor), 'tokenEnvironment', ENVIRONMENT);
     changeThroughRealForm(observeForm(store, editor), 'workspace', WORKSPACE);
     changeThroughRealForm(observeForm(store, editor), 'cadence', '5');
     changeThroughRealForm(observeForm(store, editor), 'workflow', 'analysis.json');
@@ -343,7 +355,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
     expect(editor.state.opened).toBeNull();
   });
 
-  it('edits by redacted saved copy and sends null for an untouched replacement key', async () => {
+  it('edits by redacted saved copy and sends the safe environment name', async () => {
     const saved = deferred<ConfiguredTriggerEntry>();
     const update = vi.fn(
       (_slug: string, _expected: TriggerSnapshot, _draft: TriggerDraft) => saved.promise,
@@ -359,7 +371,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
       workflow: 'verify.json',
       workspace: WORKSPACE,
       pollEveryMinutes: 15,
-      apiKey: null,
+      tokenEnvironment: ENVIRONMENT,
     });
     expect(store.getState().triggers[0]).toEqual(
       expect.objectContaining({ workflow: 'analysis.json', pollEveryMinutes: 5 }),
@@ -373,10 +385,28 @@ describe('the four setup actions cross the true screen and the disk-backed store
     expect(editor.state.opened).toBeNull();
   });
 
-  it('keeps a legacy trigger editable but blocks Save until its workspace is explicit', async () => {
-    const legacy: ConfiguredTriggerEntry = { ...ENTRY, workspace: null, enabled: false };
-    const expected: TriggerSnapshot = { ...legacy, workspace: legacy.workspace ?? null };
-    const repaired: ConfiguredTriggerEntry = { ...legacy, workspace: WORKSPACE };
+  it('requires both workspace and environment name before migrating a legacy trigger', async () => {
+    const legacy: ConfiguredTriggerEntry = {
+      ...ENTRY,
+      workspace: null,
+      enabled: false,
+      tokenEnvironment: null,
+      requiresMigration: true,
+      hasApiKey: true,
+    };
+    const expected: TriggerSnapshot = {
+      ...EXPECTED,
+      workspace: legacy.workspace ?? null,
+      enabled: legacy.enabled,
+      hasApiKey: legacy.hasApiKey,
+    };
+    const repaired: ConfiguredTriggerEntry = {
+      ...legacy,
+      workspace: WORKSPACE,
+      tokenEnvironment: ENVIRONMENT,
+      requiresMigration: false,
+      hasApiKey: false,
+    };
     const update = vi.fn(
       async (_slug: string, _expected: TriggerSnapshot, _draft: TriggerDraft) => repaired,
     );
@@ -407,10 +437,15 @@ describe('the four setup actions cross the true screen and the disk-backed store
       true,
     );
     expect(renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />)).toContain(
-      'Choose an available workspace to save this trigger.',
+      'Enter an environment variable name to save this trigger.',
     );
 
     changeThroughRealForm(blocked, 'workspace', WORKSPACE);
+    expect(
+      findControl(realForm(observeForm(store, editor)), 'data-trigger-action', 'save')?.props
+        .disabled,
+    ).toBe(true);
+    changeThroughRealForm(observeForm(store, editor), 'tokenEnvironment', ENVIRONMENT);
     await Promise.resolve(submitThroughRealForm(observeForm(store, editor)));
     expect(update).toHaveBeenCalledWith(legacy.slug, expected, {
       source: 'linear',
@@ -418,13 +453,16 @@ describe('the four setup actions cross the true screen and the disk-backed store
       workflow: legacy.workflow,
       workspace: WORKSPACE,
       pollEveryMinutes: legacy.pollEveryMinutes,
-      apiKey: null,
+      tokenEnvironment: ENVIRONMENT,
     });
+    expect(renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />)).not.toContain(
+      'This trigger stores its Linear key in the file.',
+    );
   });
 
   it('removes an old missing-workspace retry refusal after the real Save repairs the target', async () => {
     const legacy: ConfiguredTriggerEntry = { ...ENTRY, workspace: null };
-    const expected: TriggerSnapshot = { ...legacy, workspace: null };
+    const expected: TriggerSnapshot = { ...EXPECTED, workspace: null };
     const repaired: ConfiguredTriggerEntry = { ...legacy, workspace: WORKSPACE };
     const update = vi.fn(async () => repaired);
     const store = createTriggersStore(ioWith({ updateTrigger: update }), CLOCK, RUN);
@@ -457,7 +495,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
       workflow: legacy.workflow,
       workspace: WORKSPACE,
       pollEveryMinutes: legacy.pollEveryMinutes,
-      apiKey: null,
+      tokenEnvironment: ENVIRONMENT,
     });
     const visible = renderToStaticMarkup(<TriggersScreen store={store} editor={editor} />);
     expect(visible).toContain('Analysis · Project · Every 5 minutes');

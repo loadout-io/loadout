@@ -153,7 +153,7 @@ export default function TriggersScreen({
       mode: 'edit',
       value: {
         connector: 'linear',
-        apiKey: '',
+        apiKey: trigger.tokenEnvironment ?? '',
         workflow: trigger.workflow,
         workspace: trigger.workspace ?? '',
         pollEveryMinutes: trigger.pollEveryMinutes,
@@ -177,7 +177,7 @@ export default function TriggersScreen({
     workflow: value.workflow,
     workspace: value.workspace,
     pollEveryMinutes: value.pollEveryMinutes,
-    apiKey: value.apiKey.trim() === '' ? null : value.apiKey,
+    tokenEnvironment: value.apiKey.trim() === '' ? null : value.apiKey,
   });
 
   const saveOpened = (): Promise<void> => {
@@ -189,11 +189,10 @@ export default function TriggersScreen({
     }
     mutationsInFlight.current.add(revision);
     const draft = draftOf(opened.value);
-    /* The explicit Save owns the one-way secret transfer. Once that request has started,
-     * keep the useful choices but remove the key from the rendered tree. */
+    /* 2026-09: this value is only an environment name, so a refused Save keeps it visible for
+     * correction. Clearing it here was needed only while the editor carried the secret itself. */
     changeEditor({
       ...current,
-      opened: { ...opened, value: { ...opened.value, apiKey: '' } },
       confirmingDelete: false,
       busy: 'saving',
       refusal: null,
@@ -341,7 +340,7 @@ export default function TriggersScreen({
                   .getState()
                   .testConnection(
                     opened.mode === 'edit' ? opened.expected.slug : null,
-                    draftOf(opened.value).apiKey,
+                    draftOf(opened.value).tokenEnvironment ?? null,
                   )
                   .then(() => undefined)
               }

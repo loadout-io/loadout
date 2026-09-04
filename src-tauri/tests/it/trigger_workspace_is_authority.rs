@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use loadout_lib::commands::Drivers;
 use loadout_lib::commands::triggers::{
-    self, Secret, TriggerDelivery, TriggerDraft, TriggerEntry, TriggerPoll, TriggerSnapshot,
+    self, TriggerDelivery, TriggerDraft, TriggerEntry, TriggerPoll, TriggerSnapshot,
 };
 use loadout_lib::commands::workspaces;
 use loadout_lib::engine::drivers::AgentDriver;
@@ -24,6 +24,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 const KEY: &str = "lin_api_1234567890123456789012345678901234567890";
+const ENVIRONMENT: &str = "LINEAR_API_KEY";
 const CREATED: i64 = 1_777_777_777_000;
 type TriggerTree = Vec<(PathBuf, Vec<u8>)>;
 type FullTree = Vec<(PathBuf, Option<Vec<u8>>)>;
@@ -779,7 +780,7 @@ fn draft(workspace: &Path) -> TriggerDraft {
         workflow: "ship.json".to_owned(),
         workspace: workspace.to_string_lossy().into_owned(),
         poll_every_minutes: 1,
-        api_key: Some(Secret::new(KEY)),
+        token_environment: Some(ENVIRONMENT.to_owned()),
     }
 }
 

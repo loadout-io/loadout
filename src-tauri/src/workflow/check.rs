@@ -1362,6 +1362,10 @@ pub(crate) fn literal_secret_in(flag: &str, value: &str) -> Option<&'static str>
 /// i zostaw" bierze od kroku przed sobą (`ServeStep::command_from`), **nie przechodzi przez zapis
 /// ani razu** — plik workflow jest wtedy w tym miejscu pusty. Idzie więc przez tę samą funkcję
 /// w `commands::run`, bo inaczej cała ta droga omijałaby skan sekretów w ciszy.
+///
+/// 2026-09 — trigger jest kolejnym bezpośrednim użytkownikiem. Stare `apiKey` celowo dociera do
+/// `commands::triggers::token_environment_from_editor`, żeby ta sama polityka odmówiła literału
+/// przed utworzeniem pliku; drugi detektor tylko dla triggerów łamałby niezmiennik 23.
 #[must_use]
 pub(crate) fn secret_shaped(text: &str) -> Option<&'static str> {
     a_web_address_carrying_one(text)
