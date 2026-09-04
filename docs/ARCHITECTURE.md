@@ -118,6 +118,29 @@ supervisor: spawn w grupie procesów, zapisz pid+pgid do bazy
      │         --add-dir <handoffs/>  --add-dir <attachments/>
      ▼
 stdout: NDJSON, linia po linii
+
+**Co `--setting-sources ""` naprawdę odcina — ZMIERZONE, nie założone.** To zachowanie zmienia
+się między wersjami CLI po cichu, więc jest tu z datą i numerem wersji, a nie jako reguła.
+
+*2026-09-04, Claude Code 2.1.260.* Katalog z `CLAUDE.md` każącym odpowiadać jednym słowem,
+pytanie `What is 2+2?`, trzy przebiegi z kontrolą negatywną:
+
+| przebieg | flagi | odpowiedź | wniosek |
+|---|---|---|---|
+| A | `--setting-sources "" --strict-mcp-config` (tak robi Loadout) | `4` | plik projektu **nie dociera** |
+| B | bez flag — kontrola negatywna | `MARKER-FROM-PROJECT-FILE` | fikstura działa |
+| C | `--restricted` | `4` | też nie dociera |
+
+**Odpowiedź: NIE — `CLAUDE.md` gospodarza nie dochodzi dziś do kroku.** Na **2.1.251** było
+odwrotnie: reguły projektu wchodziły mimo tej flagi, i na tamtym pomiarze stał audyt z 2026-09-02.
+Vendor odwrócił to bez ani jednej linijki w zmianach.
+
+Wniosek dla projektu nie brzmi „flaga działa, można na niej polegać", tylko odwrotnie: **na tym
+nie wolno polegać bez świeżego pomiaru.** Dlatego od Z-16 bieg zapisuje do `run.json` to, co CLI
+SAMO ogłosiło w `system/init` (`plugins`, `slash_commands`, `skills`, `mcp_servers`,
+`memory_paths`), a panel „co ten agent dostał" pokazuje to człowiekowi. Zapis z biegu przeżyje
+kolejną taką zmianę; komentarz w kodzie nie przeżyje.
+
      │
      ├──► tee do <run>/logs/agent-<id>.jsonl        ← surowe, nietknięte, prawda
      │

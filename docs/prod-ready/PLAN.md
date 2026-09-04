@@ -320,7 +320,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-13 | `z13-budget-reservation` | `prompts/Z-13.md` | R | C→X | duże | Z-12 | TODO | |
 | Z-14 | `z14-tee-tool-results` | `prompts/Z-14.md` | R | C→X | | Z-13 | **LANDED** `2026-09-04` | dwie rundy | |
 | Z-15 | `z15-index-without-raw` | `prompts/Z-15.md` | R | C→X | duże | Z-14 | **LANDED** `2026-09-04` | dwie rundy; sprawdzone kasowaniem indeksu | migracja addytywna; po wlaniu orkiestrator kasuje `~/.loadout/loadout.db*` (indeks odbuduje się) i zapisuje rozmiar przed/po |
-| Z-16 | `z16-context-loaded-by-cli` | `prompts/Z-16.md` | R | C→X | | Z-15 | TODO | sonda `--restricted` PRZED startem |
+| Z-16 | `z16-context-loaded-by-cli` | `prompts/Z-16.md` | R | C→X | | Z-15 | **LANDED** `2026-09-04` | domknięte ręką: brakowało wyłącznie akapitu do mnie |
 | Z-17 | `z17-prompt-file-lead-settings` | `prompts/Z-17.md` | R | X→C | | Z-16 | TODO | |
 | Z-18 | `z18-reflection-switch` | `prompts/Z-18.md` | R | X→C | | Z-17 | TODO | |
 | Z-19 | `z19-codex-resume-flag` | `prompts/Z-19.md` | R | X→C | | Z-18 | TODO | jedna flaga |
