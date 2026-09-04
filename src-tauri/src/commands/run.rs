@@ -2084,9 +2084,9 @@ async fn run_planned_graph(
 ) -> scheduler::Outcome {
     let run_step = {
         let live = Arc::clone(&live);
-        move |id: StepId, cancel: CancellationToken| {
+        move |id: StepId, cancel: CancellationToken, started: scheduler::Started| {
             let live = Arc::clone(&live);
-            async move { live.step(id, cancel).await }
+            async move { live.step(id, cancel, started).await }
         }
     };
     let route_after = {
@@ -2094,8 +2094,10 @@ async fn run_planned_graph(
         move |id: StepId, _report: StepReport| live.route_after(id)
     };
     // Semafor planisty celowo nie ogranicza: każdy krok bierze permit ze wspólnej puli
-    // aplikacji w `Live::a_slot_for_this_step` (niezmiennik 11).
-    scheduler::execute_routed(dag, dag.len(), cancel, run_step, route_after).await
+    // aplikacji w `Live::a_slot_for_this_step` (niezmiennik 11). Dlatego droga jest
+    // „start-aware" (2026-09, Z-30): permit tego semafora nie jest tu startem i krok, który
+    // stoi w kolejce po prawdziwe miejsce, nie ma prawa czytać się jako `running`.
+    scheduler::execute_routed_with_start(dag, dag.len(), cancel, run_step, route_after).await
 }
 
 async fn finish_planned_run(
@@ -9085,7 +9087,12 @@ impl Live {
     ///
     /// `self: Arc<Self>`, bo pętla czytająca zdarzenia sterownika jest **osobnym zadaniem**
     /// ([`forward`]) i musi umieć powiedzieć o limicie dostawcy temu samemu biegowi.
-    async fn step(self: Arc<Self>, id: StepId, cancel: CancellationToken) -> StepReport {
+    async fn step(
+        self: Arc<Self>,
+        id: StepId,
+        cancel: CancellationToken,
+        started: scheduler::Started,
+    ) -> StepReport {
         // Miejsce ZANIM cokolwiek wpiszemy do księgi: `running` z chwilą startu wpisaną przed
         // wzięciem miejsca to ten sam fałsz, przed którym stoi niezmiennik 11 — krok stojący
         // w kolejce czytałby się jak krok, który działa.
@@ -9230,6 +9237,13 @@ impl Live {
             Job::Ask { .. } | Job::Serve(_) => None,
         };
 
+        // 2026-09 (Z-30) — START MELDUJEMY PLANIŚCIE DOKŁADNIE TUTAJ, w tej samej chwili, w której
+        // księga dostaje `running`. Wyżej krok czekał na miejsce w puli albo na sufit wydatku,
+        // a kafelek „zapytaj" i „uruchom i zostaw" nie czekają na nic — dla nich to jest po
+        // prostu chwila, w której naprawdę się zaczynają. Krok, który skończył się przed tą
+        // linią, porzuca potwierdzenie i po panice zadania czyta się jako pominięty, nie jako
+        // taki, który pracował i nie przeszedł (niezmiennik 11).
+        started.now();
         let at = now_ms();
         self.update(|book| {
             book.started_at.get_or_insert(at);

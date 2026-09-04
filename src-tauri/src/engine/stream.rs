@@ -71,7 +71,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use super::drivers::AgentEvent;
@@ -118,6 +118,21 @@ pub enum Decoded {
 /// Typy linii, dla których mamy jakąkolwiek regułę. Wszystko inne jest nierozpoznane —
 /// i ma zostać **policzone**, a nie po cichu połknięte.
 const KNOWN_TYPES: [&str; 5] = ["system", "assistant", "user", "rate_limit_event", "result"];
+
+/// Sufit JEDNEJ linii NDJSON, w bajtach.
+///
+/// 2026-09 (Z-30) — do tego dnia go nie było, a `read_until` rośnie tak długo, jak długo druga
+/// strona nie wypisze `\n`. Cena jest wielokrotna, nie pojedyncza: ta sama treść stoi wtedy
+/// naraz w buforze, w [`serde_json::Value`], w mapie faktów o narzędziach i w zdekodowanym
+/// zdarzeniu — czyli jedna linia potrafi zająć kilka razy tyle pamięci, ile waży. Wypluć ją może
+/// zarówno agent czytający wielki plik, jak i vendor, który kiedyś przestanie łamać linie.
+///
+/// 16 MiB, bo to jest o rząd wielkości więcej niż jakakolwiek linia, którą ci vendorzy wypisują,
+/// i wciąż o rząd wielkości mniej niż miejsce, którego zabrakłoby oknu.
+const LINE_CAP: usize = 16 * 1024 * 1024;
+
+/// Ile bajtów naraz bierze odprowadzanie reszty zbyt długiej linii.
+const DRAIN_CHUNK: usize = 64 * 1024;
 
 /// Transkrypt jednego kroku: dysk i ekran, w tej kolejności.
 ///
@@ -244,13 +259,34 @@ where
         buffer.clear();
         // `read_until`, nie `lines()`: `lines()` zjada `\r` i po takim przejściu bajtowa
         // identyczność tee jest nie do spełnienia. Ta jedna linia jest całym AC-5.
-        if reader.read_until(b'\n', &mut buffer).await? == 0 {
+        //
+        // 2026-09 (Z-30) — `take` na czytniku, żeby JEDNA linia nie mogła wciągnąć całej pamięci
+        // procesu. Sufit dotyczy tego, co idzie dalej do zrozumienia; do tee idzie i tak
+        // wszystko, co przyszło (niezmiennik 4).
+        let read = (&mut reader)
+            .take(u64::try_from(LINE_CAP).unwrap_or(u64::MAX))
+            .read_until(b'\n', &mut buffer)
+            .await?;
+        if read == 0 {
             break;
         }
         // TEE PRZED PARSOWANIEM. Linia, której nikt nie zrozumie, jest w pliku tak samo jak
         // każda inna — a to właśnie ona jest potrzebna w zgłoszeniu błędu.
         recorder.raw(&buffer).await?;
         stats.lines += 1;
+
+        // Sufit wyczerpany bez znaku końca linii: reszta tej linii jedzie na dysk porcjami
+        // i **nie dochodzi do dekodera**. Liczy się raz, jako nierozpoznana — bieg nigdy nie
+        // kończy się na jednej linii (niezmiennik 5), a licznik jest jedynym miejscem, z którego
+        // człowiek dowie się, że coś takiego w ogóle przyszło.
+        if read == LINE_CAP && !buffer.ends_with(b"\n") {
+            tee_the_rest_of_this_line(&mut reader, &mut recorder).await?;
+            stats.unrecognised += 1;
+            // Bufor oddaje pamięć od razu: bez tego jedna przesadzona linia trzymałaby swoje
+            // 16 MiB do końca biegu, czyli byłaby dokładnie tym wyciekiem, przed którym stoi sufit.
+            buffer.shrink_to(8 * 1024);
+            continue;
+        }
 
         let Ok(text) = std::str::from_utf8(&buffer) else {
             // Bajty nie-UTF-8 są w tee i tam zostają czytelne dla człowieka; dla dekodera to
@@ -278,6 +314,35 @@ where
 
     recorder.close().await?;
     Ok(stats)
+}
+
+/// Odprowadza resztę zbyt długiej linii **na dysk** i nigdzie indziej.
+///
+/// 2026-09 (Z-30) — porcjami, bo cała ta funkcja istnieje po to, żeby nie trzymać tej linii
+/// w pamięci naraz. Tee dostaje ją co do bajta, więc `logs/agent-<krok>.jsonl` dalej jest tym, co
+/// wypluło dziecko — kasowanie indeksu zostaje bezpieczne (niezmiennik 4), a zgłoszenie błędu ma
+/// z czego powstać.
+///
+/// Koniec wejścia w środku linii jest normalnym końcem: proces mógł zginąć w połowie zdania.
+async fn tee_the_rest_of_this_line<R>(reader: &mut R, recorder: &mut Recorder) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin + Send,
+{
+    let mut chunk: Vec<u8> = Vec::with_capacity(DRAIN_CHUNK);
+    loop {
+        chunk.clear();
+        let read = (&mut *reader)
+            .take(u64::try_from(DRAIN_CHUNK).unwrap_or(u64::MAX))
+            .read_until(b'\n', &mut chunk)
+            .await?;
+        if read == 0 {
+            return Ok(());
+        }
+        recorder.raw(&chunk).await?;
+        if chunk.ends_with(b"\n") {
+            return Ok(());
+        }
+    }
 }
 
 /// Linia drutu Claude'a → zdarzenia gotowe dla kuratora.

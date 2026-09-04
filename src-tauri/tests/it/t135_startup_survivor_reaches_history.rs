@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 use loadout_lib::commands::history::read_run_inner;
 use loadout_lib::commands::reconcile::with_reaper;
@@ -46,12 +47,20 @@ fn a_surviving_process_is_written_once_and_read_back_by_history() -> Result<(), 
     put(project, FINISHED_FOLDER, FINISHED)?;
     let finished_before = read_text(project, FINISHED_FOLDER)?;
 
-    let mut calls = Vec::new();
     // 2026-09 (Z-01d): the closer is handed a target, not a bare number, because the production
     // one asks the group which run it belongs to before it signals anything. This criterion is
     // about the recorded groups being closed once each, so it keeps reading only the number.
-    let reconciled = with_reaper(project, &mut |target| {
-        calls.push(target.pgid);
+    // 2026-09 (Z-30): behind a lock and sorted before the comparison, because the recorded groups
+    // now wait side by side -- five orphans that ignore SIGTERM used to cost five grace windows
+    // one after another. "Exactly once" is what this line was always about; the order in which
+    // two threads reach the closer is not a fact about the code. The order of the REPORT is
+    // untouched: `recovery::apply` still walks the plan in step order.
+    let calls: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+    let reconciled = with_reaper(project, |target| {
+        calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(target.pgid);
         if target.pgid == DEAD_PGID {
             ReapOutcome::ProvenDead
         } else {
@@ -59,10 +68,12 @@ fn a_surviving_process_is_written_once_and_read_back_by_history() -> Result<(), 
         }
     });
 
+    let mut calls = calls.into_inner().unwrap_or_else(PoisonError::into_inner);
+    calls.sort_unstable();
     assert_eq!(
         calls,
         vec![DEAD_PGID, SURVIVOR_PGID],
-        "each recorded group must be closed exactly once, in step order"
+        "each recorded group must be closed exactly once"
     );
     assert_eq!(reconciled.runs, 1);
     assert_eq!(reconciled.steps, 2);
@@ -132,12 +143,30 @@ fn a_surviving_process_is_written_once_and_read_back_by_history() -> Result<(), 
         "startup reconciliation rewrote a run that had already finished"
     );
 
+    a_second_settling_of_the_same_folder_changes_nothing(project)
+}
+
+/// Drugie uzgodnienie tego samego folderu nie ma już czego zatrzymywać ani czego przepisywać.
+///
+/// Osobna funkcja od 2026-09 (Z-30), i to nie jest kosmetyka: kryterium wyżej przekroczyło sufit
+/// stu wierszy (`clippy::too_many_lines`, pedantic przy `-D warnings`), kiedy licznik pytań musiał
+/// zamieszkać za zamkiem. Wyciągnięty jest ten kawałek, bo daje się nazwać jednym zdaniem.
+fn a_second_settling_of_the_same_folder_changes_nothing(
+    project: &Path,
+) -> Result<(), Box<dyn Error>> {
     let repaired_once = read_text(project, LEFT_OVER)?;
-    let mut second_calls = Vec::new();
-    let second = with_reaper(project, &mut |target| {
-        second_calls.push(target.pgid);
+    // 2026-09 (Z-30): za zamkiem, z tego samego powodu, co licznik w kryterium wyżej.
+    let second_calls: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+    let second = with_reaper(project, |target| {
+        second_calls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(target.pgid);
         ReapOutcome::ProvenDead
     });
+    let second_calls = second_calls
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner);
     assert!(
         second_calls.is_empty(),
         "the second reconciliation tried to stop an already settled group: {second_calls:?}"

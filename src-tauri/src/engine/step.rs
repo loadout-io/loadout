@@ -80,7 +80,9 @@ pub enum StepEvent {
     UpstreamFailed,
     /// Któryś krok wyżej został anulowany.
     UpstreamCancelled,
-    /// Semafor przepuścił krok.
+    /// Semafor przepuścił krok — a w drodze `scheduler::execute_routed_with_start` melduje to
+    /// sam krok, w chwili, w której naprawdę rusza (2026-09, Z-30): permit planisty jest
+    /// warunkiem startu, ale nie jest startem, kiedy prawdziwe miejsce daje pula aplikacji.
     PermitAcquired,
     /// Proces wyszedł czysto.
     ExitOk,
