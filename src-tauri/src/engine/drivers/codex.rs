@@ -2077,9 +2077,12 @@ fn first_turn_argv(spec: &RunSpec) -> Vec<String> {
 /// natychmiast `unexpected argument '-C'`, zanim prompt dotrze do rozmowy. Proces mimo to daje
 /// się uruchomić, więc z okna wyglądało to jak `Didn't work · 0 turns · 0.0s`.
 ///
-/// Czego tu **nie ma i nie ma prawa być**: `-m` i `-s` należą do pierwszej tury (rozmowa ma już
-/// swój model i swoją piaskownicę), a `--skip-git-repo-check` razem z nimi — wznawiana rozmowa
-/// przeszła tę bramkę raz.
+/// Czego tu **nie ma i nie ma prawa być**: `-m` i `-s` należą do pierwszej tury — rozmowa ma
+/// już swój model i swoją piaskownicę.
+///
+/// 2026-09-02, codex-cli 0.152.0 — bramka zaufanego katalogu działa per wywołanie, a `resume`
+/// ma własne `--skip-git-repo-check`. Flaga musi więc wracać w każdej turze, nawet gdy ta sama
+/// rozmowa przeszła bramkę przy pierwszej (niezmiennik 24).
 fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
     vec![
         "exec".to_owned(),
@@ -2089,6 +2092,7 @@ fn resume_argv(thread: &str, cwd: &Path) -> Vec<String> {
         thread.to_owned(),
         "--json".to_owned(),
         "--ignore-user-config".to_owned(),
+        "--skip-git-repo-check".to_owned(),
         "-".to_owned(),
     ]
 }
