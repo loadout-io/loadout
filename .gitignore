@@ -23,6 +23,9 @@ node_modules
 
 # Transkrypty agentów: bywają duże i mogą zawierać treść z prywatnych repo.
 *.jsonl
+# ...poza tablica przypadkow haka pre-bash: `harness/guards.sh` dopisuje do niej
+# naruszenie i przywraca plik przez `git checkout --`, wiec musi byc sledzony.
+!checks/bash-guard-cases.jsonl
 !docs/research/**/*.jsonl
 
 # Benchmark IPC zostaje w repo — T8 ryzyko 2 każe go powtórzyć przy majorze Tauri,

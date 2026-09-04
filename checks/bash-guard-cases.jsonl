@@ -1,0 +1,42 @@
+{"cmd": "cargo clippy --all-targets", "expect": "deny"}
+{"cmd": "cd src-tauri && cargo clippy", "expect": "deny"}
+{"cmd": "cargo test", "expect": "deny"}
+{"cmd": "cargo test --lib", "expect": "deny"}
+{"cmd": "cargo test --tests", "expect": "deny"}
+{"cmd": "cargo build --release", "expect": "deny"}
+{"cmd": "cargo clean", "expect": "deny"}
+{"cmd": "npx vitest run", "expect": "deny"}
+{"cmd": "npm test", "expect": "deny"}
+{"cmd": "scripts/h check", "expect": "deny"}
+{"cmd": "bash scripts/ci.sh full", "expect": "deny"}
+{"cmd": "cargo test --test it engine::supervisor::a_group_dies", "expect": "allow"}
+{"cmd": "cd src-tauri && cargo test --test it ipc::stop_per_folder", "expect": "allow"}
+{"cmd": "cargo fmt", "expect": "allow"}
+{"cmd": "npx vitest run src/sections/run/io.test.ts", "expect": "allow"}
+{"cmd": "npx prettier --write src/sections/run/io.ts", "expect": "allow"}
+{"cmd": "grep -rn \"cargo clippy\" runs/", "expect": "allow"}
+{"cmd": "echo 'cargo build' >> notes.md", "expect": "allow"}
+{"cmd": "rg --no-heading 'npm test' docs/", "expect": "allow"}
+{"cmd": "echo x >> harness/guards.sh", "expect": "deny"}
+{"cmd": "sed -i '' s/a/b/ checks/density.sh", "expect": "deny"}
+{"cmd": "python3 -c \"open('.claude/settings.json','w')\"", "expect": "deny"}
+{"cmd": "python3 - <<'PY'\nprint(open('docs/ARCHITECTURE.md').read())\nPY", "expect": "deny"}
+{"cmd": "cat harness/h.py", "expect": "allow"}
+{"cmd": "grep -n ORACLE harness/h.py", "expect": "allow"}
+{"cmd": "sed -n '1,40p' checks/density.sh", "expect": "allow"}
+{"cmd": "rm -rf /Users/jakubgawronski/Projects/Loadout/target", "expect": "deny", "cwd": "/Users/jakubgawronski/Projects/loadout-h-x"}
+{"cmd": "rm -rf node_modules", "expect": "allow", "cwd": "/Users/jakubgawronski/Projects/Loadout"}
+{"cmd": "git branch -D h-z35-stop-per-folder", "expect": "deny"}
+{"cmd": "git branch --list", "expect": "allow"}
+{"cmd": "", "expect": "allow"}
+{"cmd": "ls -la", "expect": "allow"}
+{"cmd": "cargo test --test it -- processes reconcile recovery", "expect": "allow", "why": "korpus z01: filtr slowami zamiast ::"}
+{"cmd": "cargo check --lib --message-format short", "expect": "allow", "why": "tani dowod, ze drzewo sie kompiluje"}
+{"cmd": "cargo check --test it --message-format short", "expect": "allow"}
+{"cmd": "grep -n \"clippy\" scripts/ci.sh | head -20", "expect": "allow", "why": "korpus z01b: odczyt bramki, nie jej odpalenie"}
+{"cmd": "npx --no-install vitest run e2e 2>&1 | tail -30", "expect": "allow", "why": "korpus z34: katalog to tez cel"}
+{"cmd": "cd /tmp && rm -rf lockprobe && git branch -D r", "expect": "allow", "why": "korpus z07: sonda w repozytorium probnym"}
+{"cmd": "git branch -D main", "expect": "deny"}
+{"cmd": "git branch -D loadout/20260904/s_2", "expect": "deny"}
+{"cmd": "cargo clippy --lib --tests --message-format short 2>&1 | head -40", "expect": "deny"}
+{"cmd": "cd src-tauri && cargo build --lib 2>&1 | tail -15", "expect": "deny"}

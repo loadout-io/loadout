@@ -43,6 +43,17 @@ fi
 BLOCK_CAP=3
 [ -f harness/h.py ] || { echo "stop-gate: nie ma tu harnessu — nic do sprawdzenia." >&2; exit 0; }
 
+# TYLKO BIEG HARNESSU (D-7, audyt 2026-09-04). Do 2026-09-04 ten hak liczyl checki przy
+# KAZDYM Stopie KAZDEJ sesji w tym repo — takze interaktywnej, do 600 s po dotknieciu
+# Rusta. `LOADOUT_HARNESS=1` ustawia `h.py` w srodowisku dziecka; stan w `.git/h/` zostaje
+# jako druga droga, bo sesja wznowiona recznie w worktree zadania ma byc dalej sadzona.
+if [ "${LOADOUT_HARNESS:-}" != "1" ]; then
+  task="$(basename "$PWD" | sed -n 's/^loadout-h-//p')"
+  if [ -z "$task" ] || [ ! -f "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/h/$task.json" ]; then
+    exit 0
+  fi
+fi
+
 # NIE ".git/…": w podpiętym worktree `.git` jest PLIKIEM, więc zapis kończy się
 # "not a directory". `rev-parse --git-dir` zwraca prawdziwy katalog gita tego worktree,
 # więc licznik zostaje prywatny dla gałęzi zamiast być wspólny dla wszystkich naraz.

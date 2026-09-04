@@ -22,13 +22,9 @@ Dwie rzeczy o narzędziach, obie zmierzone i obie kosztowały bieg:
   Interpretery i lokalne skrypty są odrzucane w biegu bez człowieka, cokolwiek
   stoi w `allow` — jeden bieg spalił 81 tur i 10,40 USD na proszenie o zgodę,
   której nikt nie mógł dać.
-- **Testuj ZAWĘŻONYM poleceniem**, nie całym suitem: `cargo test --test it <moduł>::`
-  zamiast `cargo test --tests`, pojedynczy plik vitest zamiast całego katalogu.
-  Harness i tak odpali właściwe checki po tobie; twój przebieg ma tylko
-  potwierdzić, że test pada przed poprawką i przechodzi po niej.
-- **Nie odpalaj `scripts/h check` ani pełnej suity.** Checki biegną po tobie dwa razy:
-  z haka Stop i z samego harnessu. Zmierzone 2026-09-02 na biegu `skills-reach-the-lead`:
-  agent zawołał `scripts/h check` 3 razy, `cargo test` 6 razy i `cargo clippy` 4 razy —
-  za każdym razem płacąc kilka minut zegara i tokeny za wynik, który i tak dostanie.
+- **Testuj ZAWĘŻONYM poleceniem**: `cargo test --test it <moduł>::<nazwa>`, pojedynczy
+  plik vitest. Ciężkie komendy — `cargo clippy`, pełny `cargo test`, `cargo build`,
+  goły `vitest run`, `scripts/h check` — odrzuca hak `pre-bash` i mówi ci to zdaniem.
+  Nie obchodź go: bramka odpala je po tobie i tak.
 
 Jak skończysz, napisz jednym akapitem, co zrobiłeś.

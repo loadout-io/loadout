@@ -42,8 +42,15 @@ MAX_FIX_ROUNDS = 2
 # nie zobaczyl. Prompt tego zabrania od poczatku (implement.md), ale prompt jest miekki
 # (niezmiennik 28). To jest ta sama lista co w `deny`, egzekwowana twardo: raz przed commitem
 # biegu, drugi raz przed merge'em w `land`.
+# H-25 (audyt 2026-09-02, domkniete 2026-09-04): `docs/ARCHITECTURE.md` i
+# `docs/design/DESIGN.md` byly w `deny` w .claude/settings.json i mimo to bieg Z-30 zmienil
+# ARCHITECTURE — `deny` rzadzi narzedziami Edit/Write, nie `python3` ani `sed` z Basha,
+# a ta krotka, ktora potrafi ubic bieg, tych plikow nie znala. Sufit gestosci i tabela
+# tokenow sa CZYTANE z nich przez checki, wiec bieg, ktory je zmienia, rozluznia wlasna
+# bramke. Ta sama lista stoi w `.claude/hooks/pre-bash.py`.
 ORACLE = ("harness/", "checks/", "scripts/", ".claude/", "AGENTS.md",
-          "docs/DECISIONS-LOCKED.md", "worktree.sh", "CLAUDE.md")
+          "docs/DECISIONS-LOCKED.md", "worktree.sh", "CLAUDE.md",
+          "docs/ARCHITECTURE.md", "docs/design/DESIGN.md")
 
 
 def trunk_name():
@@ -302,7 +309,8 @@ def kill_group(proc):
 
 
 def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=False,
-              turns=None, transcript=None, session=None, budget_usd=None):
+              turns=None, transcript=None, session=None, budget_usd=None,
+              task_id=None, phase=None):
     exe = shutil.which(vendor)
     if not exe:
         # H-10 (audyt 2026-09-02): D3 mowi wprost "recenzent niedostepny to NIE czerwone".
@@ -397,7 +405,10 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
     # `claude not found in PATH` (kod 127) -- oba po 30+ minutach pracy, oba wygladaja jak
     # wada kodu. `DISABLE_AUTOUPDATER` istnieje w binarce (sprawdzone `strings`); aktualizacje
     # robi czlowiek miedzy biegami, nie bieg sam sobie w polowie implementacji.
-    child_env = dict(os.environ, DISABLE_AUTOUPDATER="1")
+    # LOADOUT_HARNESS wlacza hak `.claude/hooks/pre-bash.sh` (0b.1, 2026-09-04). Poza
+    # biegiem harnessu ta zmienna nie istnieje, wiec sesja czlowieka w tym repo nie czuje
+    # haka wcale — inaczej pierwszy `cargo clippy` wlasciciela wylaczylby go na dobre.
+    child_env = dict(os.environ, DISABLE_AUTOUPDATER="1", LOADOUT_HARNESS="1")
 
     # Prompt STDIN-em, nigdy w argv (niezmiennik 9): argv widzi kazdy `ps`.
     # Wlasna grupa procesow, zeby dalo sie ubic CALE drzewo z dowodem (patrz kill_group).
@@ -441,6 +452,10 @@ def call_model(vendor, prompt, cwd, *, write, schema=None, budget=None, resume=F
     kill_group(proc)
     if transcript:
         Path(transcript).write_text(out, encoding="utf-8")
+    # Koszt zapisujemy PRZED osadem kodu wyjscia: faza, ktora zjadla sufit albo padla,
+    # kosztowala tyle samo co udana, a to wlasnie jej cene chce znac czlowiek.
+    if task_id and phase:
+        record_cost(task_id, phase, vendor, out)
     if proc.returncode != 0:
         # Sufit tur to NIE kod 1. ZMIERZONE 2026-08-28 na biegu p8-t151-newer-truth: agent
         # zjadl 250 tur na 145 edycjach mechanicznego wachlarza (`tsc` wymusza jedna linie
@@ -507,7 +522,135 @@ def rundir(task_id):
     return d
 
 
+
+# ---------------------------------------------------------------- ksiega kosztow
+
+# Ceny za milion tokenow, przepisane z `src-tauri/src/engine/drivers/codex.rs` (PRICES).
+# Rozjazd z tamta tabela jest wada — obie mowia o jednym, a tamta jest zrodlem.
+CODEX_PRICES = {
+    "gpt-5.6-sol": (2.0, 0.4, 21.0),
+    "gpt-5.6-terra": (1.0, 0.2, 12.5),
+    "gpt-5.6-luna": (0.1, 0.02, 1.25),
+}
+
+
+def cost_of(vendor, out):
+    """(USD, czy oszacowane) z transkryptu fazy, albo (None, False), gdy nie da sie policzyc.
+
+    D-2 (audyt 2026-09-04): pole „koszt" w Dzienniku planu bylo puste we WSZYSTKICH 60
+    wierszach, bo nikt go nie liczyl. Kwoty do tamtego audytu policzylem grepem po 159
+    transkryptach — to jest ten grep, przeniesiony w miejsce, ktore biegnie samo.
+    """
+    if not out:
+        return None, False
+    if vendor == "claude":
+        # Ostatni wiersz `"type":"result"` niesie `total_cost_usd`. Szukamy od konca,
+        # bo strumien ma jeden taki wiersz i jest ostatni.
+        for line in reversed(out.splitlines()):
+            if '"type":"result"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev.get("total_cost_usd"), (int, float)):
+                return float(ev["total_cost_usd"]), False
+            break
+        return None, False
+    if vendor == "codex":
+        model, usage = None, None
+        for line in out.splitlines():
+            if '"usage"' not in line and '"model"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            model = _dig(ev, "model") or model
+            u = _dig(ev, "usage")
+            if isinstance(u, dict):
+                usage = u
+        if not usage:
+            return None, False
+        price = None
+        for prefix, p in CODEX_PRICES.items():
+            if (model or "").startswith(prefix):
+                price = p
+                break
+        if price is None:
+            return None, False
+        cached = float(usage.get("cached_input_tokens") or 0)
+        fresh = max(0.0, float(usage.get("input_tokens") or 0) - cached)
+        outp = float(usage.get("output_tokens") or 0)
+        usd = (fresh * price[0] + cached * price[1] + outp * price[2]) / 1_000_000
+        return usd, True
+    return None, False
+
+
+def _dig(node, key):
+    """Pierwsza wartosc pod `key`, na dowolnej glebokosci. Codex zmienial ksztalt zdarzen
+    trzy razy w sierpniu; sciezka po nazwach pol zestarzalaby sie razem z nim."""
+    if isinstance(node, dict):
+        if key in node:
+            return node[key]
+        for v in node.values():
+            got = _dig(v, key)
+            if got is not None:
+                return got
+    elif isinstance(node, list):
+        for v in node:
+            got = _dig(v, key)
+            if got is not None:
+                return got
+    return None
+
+
+def record_cost(task_id, phase, vendor, out):
+    """Dopisuje koszt fazy do stanu zadania i do `runs/<id>/cost.json`."""
+    if not task_id:
+        return
+    usd, estimated = cost_of(vendor, out)
+    entry = {"phase": phase, "vendor": vendor,
+             "usd": round(usd, 4) if usd is not None else None,
+             "estimated": estimated}
+    s = load_state(task_id)
+    costs = list(s.get("costs") or [])
+    costs.append(entry)
+    total = round(sum(c["usd"] for c in costs if c.get("usd")), 4)
+    save_state(task_id, costs=costs, cost_usd=total)
+    (rundir(task_id) / "cost.json").write_text(
+        json.dumps({"task": task_id, "total_usd": total, "phases": costs},
+                   indent=2, ensure_ascii=False), encoding="utf-8")
+    log("koszt %s: %s USD%s (razem %.2f)"
+        % (phase, "%.2f" % usd if usd is not None else "nieznany",
+           " (szacunek)" if estimated else "", total))
+
+
+def spent_so_far(task_id):
+    return float(load_state(task_id).get("cost_usd") or 0.0)
+
+
+def refuse_over_task_budget(task_id, phase):
+    """Sufit CALEGO zadania, nie fazy. Trzy biegi fali Z zjadly 254 USD i skonczyly
+    BLOCKED — sufity per faza nie widza sumy, bo kazda faza patrzy tylko na siebie."""
+    cap = os.environ.get("LOADOUT_BUDGET_TASK")
+    if not cap:
+        return
+    spent = spent_so_far(task_id)
+    if spent >= float(cap):
+        die("zadanie %s wydalo juz %.2f USD przy suficie %s (LOADOUT_BUDGET_TASK), wiec faza "
+            "\"%s\" NIE startuje. Podniesienie sufitu jest decyzja czlowieka."
+            % (task_id, spent, cap, phase), 2)
+
 def phase_plan(task_id, task, wt, vendor):
+    # H-24 (poznane 2026-09-04 na Z-22): `phase_plan` wolal `call_model` BEZ sesji, wiec plan
+    # ubity sufitem dolara, limitem sesji albo podmiana binarki nie mial czego wznowic
+    # i placil od zera — 12,35 USD za nic, z czego prawie wszystko to odczyty z cache'u.
+    # Ten sam ksztalt, co w `phase_implement`: sesja zapisana w stanie znaczy „wznow".
+    plan_saved = load_state(task_id).get("plan_session")
+    plan_sid = plan_saved or str(uuid.uuid4())
+    save_state(task_id, plan_session=plan_sid)
+    refuse_over_task_budget(task_id, "plan")
     log("plan (%s)..." % vendor)
     p = "%s\n\n## Zadanie\n\n%s\n" % (prompt_file("plan"), task)
     # Sufit planu KONFIGUROWALNY, bo 60 tur to za malo na zakres o dwoch mechanizmach
@@ -518,6 +661,8 @@ def phase_plan(task_id, task, wt, vendor):
     raw = call_model(vendor, p, wt, write=False,
                      turns=int(os.environ.get("LOADOUT_PLAN_TURNS", "60")), budget=2400,
                      budget_usd=float(os.environ.get("LOADOUT_BUDGET_PLAN", "12")),
+                     session=plan_sid, resume=bool(plan_saved),
+                     task_id=task_id, phase="plan",
                      transcript=str(rundir(task_id) / "plan.jsonl"))
     plan = last_text(raw) if vendor == "claude" else raw.strip()
     # H-1 (audyt 2026-09-02): kontrola negatywna do poprawki wyzej. Plan, ktory zaczyna sie
@@ -548,8 +693,9 @@ def phase_implement(task_id, task, plan, wt, vendor, feedback="", rnd=0):
     saved = load_state(task_id).get("session")
     sid = saved or str(uuid.uuid4())
     save_state(task_id, session=sid)
+    refuse_over_task_budget(task_id, "implementacja")
     call_model(vendor, p, wt, write=True, resume=bool(feedback) or bool(saved), budget=5400,
-               session=sid,
+               session=sid, task_id=task_id, phase="implementacja-%d" % rnd,
                budget_usd=float(os.environ.get("LOADOUT_BUDGET_DEV", "40")),
                transcript=str(rundir(task_id) / ("build-%d.jsonl" % rnd)))
 
@@ -579,7 +725,8 @@ def phase_verify(task_id, task, plan, wt, checks, vendor, rnd=0):
     # H-10: weryfikacja zostawia slad. Bez niego `die("model nie zwrocil JSON-a")` po 30-50
     # minutach implementacji nie zostawial ani werdyktu, ani niczego do przeczytania.
     return parse_json(call_model(vendor, p, wt, write=False, schema=VERIFY_SCHEMA,
-                                 turns=40, budget=1800,
+                                 turns=40, budget=1800, task_id=task_id,
+                                 phase="weryfikacja-%d" % rnd,
                                  budget_usd=float(os.environ.get("LOADOUT_BUDGET_VERIFY", "6")),
                                  transcript=str(rundir(task_id) / ("verify-%d.jsonl" % rnd))))
 
@@ -791,7 +938,10 @@ def cmd_list(a):
     for p in rows:
         s = json.loads(p.read_text(encoding="utf-8"))
         v = (s.get("last_verdict") or {}).get("werdykt", "-")
-        print("%-32s rundy=%s werdykt=%s" % (p.stem, s.get("rounds", "-"), v))
+        usd = s.get("cost_usd")
+        print("%-32s rundy=%s werdykt=%-10s koszt=%s"
+              % (p.stem, s.get("rounds", "-"), v,
+                 "%.2f USD" % usd if isinstance(usd, (int, float)) else "-"))
 
 
 def main():

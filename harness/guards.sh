@@ -315,6 +315,16 @@ EOF
 }
 
 
+guard_bash_guard() {
+  # Przypadek sprzeczny z tym, co hak robi: `cargo clippy` ma byc odmowione, a tablica
+  # zada przepuszczenia. Check, ktory czyta plik i sadzi po nim, musi tu sczerwieniec;
+  # check, ktory tylko sprawdza istnienie haka, przejdzie i tym samym sie zdemaskuje.
+  plant_append checks/bash-guard-cases.jsonl <<'EOF'
+{"cmd": "cargo clippy --all-targets", "expect": "allow", "why": "guard: sprzeczne z hakiem"}
+EOF
+}
+
+
 # ── pętla ────────────────────────────────────────────────────────────────────
 
 fired=0; missed=0; no_guard=0; na=0
