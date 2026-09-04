@@ -319,7 +319,7 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-12 | `z12-codex-pricing` | `prompts/Z-12.md` | R | X→C | | Z-11 | **LANDED** `2026-09-03` | dwie rundy; jeden test rodzeństwa dopisany na `main` |
 | Z-13 | `z13-budget-reservation` | `prompts/Z-13.md` | R | C→X | duże | Z-12 | TODO | |
 | Z-14 | `z14-tee-tool-results` | `prompts/Z-14.md` | R | C→X | | Z-13 | **LANDED** `2026-09-04` | dwie rundy | |
-| Z-15 | `z15-index-without-raw` | `prompts/Z-15.md` | R | C→X | duże | Z-14 | RUNNING | migracja addytywna; po wlaniu orkiestrator kasuje `~/.loadout/loadout.db*` (indeks odbuduje się) i zapisuje rozmiar przed/po |
+| Z-15 | `z15-index-without-raw` | `prompts/Z-15.md` | R | C→X | duże | Z-14 | **LANDED** `2026-09-04` | dwie rundy; sprawdzone kasowaniem indeksu | migracja addytywna; po wlaniu orkiestrator kasuje `~/.loadout/loadout.db*` (indeks odbuduje się) i zapisuje rozmiar przed/po |
 | Z-16 | `z16-context-loaded-by-cli` | `prompts/Z-16.md` | R | C→X | | Z-15 | TODO | sonda `--restricted` PRZED startem |
 | Z-17 | `z17-prompt-file-lead-settings` | `prompts/Z-17.md` | R | X→C | | Z-16 | TODO | |
 | Z-18 | `z18-reflection-switch` | `prompts/Z-18.md` | R | X→C | | Z-17 | TODO | |
@@ -375,8 +375,11 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
   `sleep 600 &` z terminala agenta, naciśnij ⌘Q i sprawdź `ps ax | grep -c claude` oraz
   rozmiar `~/.loadout/loadout.db-wal`. Agenci mają zejść, a dziennik zejść poniżej 8 MB.
 - **po Z-11:** `cargo test --test it -- --ignored skills_reach_claude` raz (płatne ~0,05 USD).
-- **po Z-15:** zamknij aplikację, `rm ~/.loadout/loadout.db ~/.loadout/loadout.db-wal ~/.loadout/loadout.db-shm`,
-  uruchom, sprawdź, że historia biegów jest kompletna (niezmiennik 4), zapisz rozmiar nowej bazy.
+- **po Z-15 — ZROBIONE 2026-09-04.** Kopia zapasowa (`loadout.db.bak-2026-09-04`), skasowanie
+  indeksu, start aplikacji: wstała bez błędu, a 31 katalogów biegów w trzech projektach
+  zostało nietkniętych — pliki są prawdą (niezmiennik 4). Zmierzone przed i po:
+  baza **71,7 MB → 0,004 MB**, dziennik **42,2 MB → 0,11 MB**. Indeks zapełnia się od nowa
+  przy kolejnych biegach; historia i tak czyta pliki.
 - **po Z-25:** jeśli werdykt „wirtualizacja niepotrzebna" — `npm uninstall @tanstack/react-virtual`.
 - **po Z-20:** otwórz workflow Urc w aplikacji — kafelek „Figma check" bez Problemu (zrzut do Dziennika).
 
