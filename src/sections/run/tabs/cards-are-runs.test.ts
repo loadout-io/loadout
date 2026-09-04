@@ -16,7 +16,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { stopped } = vi.hoisted(() => ({ stopped: vi.fn(() => Promise.resolve()) }));
+/* ATRAPA BIERZE ARGUMENT, i to nie jest kosmetyka typu: bez niego `mock.calls` jest listą pustych
+ * krotek, a `addressless()` niżej nie miałby czego przeczytać — czyli asercja o adresie
+ * przechodziłaby dla każdego wywołania, także dla `stop()` bez niczego. */
+const { stopped } = vi.hoisted(() => ({
+  stopped: vi.fn((_where?: string | null) => Promise.resolve()),
+}));
 
 /* `closeTerminal` dołożone do atrapy 2026-08-20: magazyn kart bierze z `../io` DWA kanały —
  * zatrzymanie biegu i koniec rozmowy z liderem zamykanej karty — a atrapa znała tylko pierwszy,
@@ -43,6 +48,18 @@ beforeEach(() => {
   runFor(THERE).getState().nowRunning('', [], null);
   runFor(null).getState().nowRunning('', [], null);
 });
+
+/**
+ * Zamknięcia karty, które przeszły granicę BEZ adresu — czyli `stop()` albo `stop(null)`.
+ *
+ * 2026-09 (Z-35, runda naprawcza): `toHaveBeenCalledWith` opisuje JEDNO wywołanie i milczy
+ * o pozostałych, więc droga wołająca dodatkowo `stop(null)` przechodziła je bez słowa. Ta lista
+ * sądzi wszystkie naraz. Brak adresu należy WYŁĄCZNIE do drogi zamykania okna
+ * (`AppState::stop_every_live_run_before_closing`), a ta nie idzie przez `×`.
+ */
+function addressless(): unknown[] {
+  return stopped.mock.calls.filter(([where]) => typeof where !== 'string' || where === '');
+}
 
 describe('the tab bar shows the runs of the scope a person is standing in', () => {
   it('keeps the cards of this scope and hides the ones from another', () => {
@@ -116,5 +133,51 @@ describe('the tab bar shows the runs of the scope a person is standing in', () =
         'off the bar leaves an agent running and burning the usage limit — a financial error, ' +
         'not a hygiene one (invariant 6).',
     ).toHaveBeenCalledTimes(1);
+    /* 2026-09 (Z-35) — I MA TO ZROBIĆ Z ADRESEM. Do tego dnia stało tu `stop()` bez argumentu,
+     * a tamta strona kończyła wtedy bieg w KAŻDYM żywym folderze: `×` na jednej karcie ubijał
+     * pracę w drugim projekcie. Sama liczba wywołań tego nie odróżnia — jedno wywołanie bez
+     * folderu i jedno z folderem wyglądają w niej identycznie. */
+    expect(
+      stopped,
+      'the × of this card reached the boundary without saying WHICH folder to stop. A stop with ' +
+        'no address ends every live run in the application, so closing one card kills the work ' +
+        'going on in another project (invariant 6).',
+    ).toHaveBeenCalledWith(HERE);
+    expect(
+      addressless(),
+      'a close crossed the boundary without an address: ' + JSON.stringify(addressless()),
+    ).toEqual([]);
+  });
+
+  /* 2026-09 (Z-35, runda naprawcza) — GAŁĄŹ, KTÓREJ NIE POKRYWAŁ ŻADEN PRZYPADEK WYŻEJ.
+   *
+   * `stopRunOf` miało drugą gałąź: kiedy własna sesja karty milczała, pytało sesję BEZ ZAKRESU
+   * i wołało `stop(null)`. Póki `stop_run` nie brał folderu, `null` znaczyło „każdy żywy bieg"
+   * i była to świadoma cena. Od tego zadania `null` znaczy katalog, pod którym wstała
+   * aplikacja — czyli bieg, który do tej karty nie należy. Zamknięcie karty `atlas` kończyło
+   * przez to pracę, o której ta karta nie wie: dokładnie ta wada, tylko o warstwę dalej.
+   *
+   * Przypadek wyżej tego nie łapie, bo tam sesja bez zakresu jest pusta i obie implementacje
+   * milczą tak samo. */
+  it('closing a quiet card says nothing, even when a run with no scope is going', async () => {
+    cardForRun('Ship it', HERE);
+    runTabs.getState().setAgents(HERE, 2);
+    /* Bieg BEZ ZAKRESU: tak wygląda ten, który okno ZASTAJE w katalogu swojego startu
+     * (`../index.tsx`, efekt przy `listRuns`). Nie należy do żadnej karty — karty nie ma. */
+    runFor(null).getState().nowRunning('Left over', [], null);
+
+    runTabs.getState().requestClose(HERE);
+    await runTabs.getState().confirmClose();
+
+    expect(
+      stopped,
+      'closing a card where nothing runs reached the boundary because a run with NO scope was ' +
+        'going. That run lives in the folder the application started in, so this × stops work ' +
+        'the card knows nothing about — the same defect as before, one screen further out.',
+    ).not.toHaveBeenCalled();
+    expect(
+      runTabs.getState().tabs,
+      'the card still has to come off the bar: nothing was running on it',
+    ).toEqual([]);
   });
 });

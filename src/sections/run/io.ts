@@ -406,18 +406,28 @@ export function ask(
 }
 
 /**
- * Stop: zatrzymuje bieg, który idzie.
+ * Stop: zatrzymuje bieg TEGO folderu.
  *
  * Rozwiązuje się dopiero z **dowodem**, że po biegu nic nie żyje — `stop_run` po tamtej stronie
  * wraca po `kill(-pgid, 0) == ESRCH`, nie po wysłaniu sygnału (niezmiennik 6). Ekran, który
  * powie „zatrzymane" wcześniej, kłamie o agencie, który dalej pisze i dalej płaci.
+ *
+ * 2026-09 (Z-35) — FOLDER DOSZEDŁ I JEST CAŁĄ NAPRAWĄ „karta zabiera pracę sąsiadce". Do tego
+ * dnia ta krawędź wołała komendę bez ani jednego argumentu, a tamta strona zatrzymywała wtedy
+ * bieg w KAŻDYM żywym workspace. Okno zna ten folder, bo samo je wysłało do `run_workflow`
+ * (patrz `invoke` w [`start`]) i trzyma je w `RunState.folder`.
+ *
+ * @param folder katalog karty, na której naciśnięto Stop, albo `null`. Klucz jedzie ZAWSZE,
+ *   także jako `null` — Tauri dopasowuje argumenty po nazwie, a `null` znaczy po tamtej stronie
+ *   „sesja bez zakresu", czyli katalog, pod którym wstała aplikacja. Wartość domyślna zostaje,
+ *   bo cudze kryteria wołają tę krawędź bez argumentów i nie wolno ich tknąć.
  */
-export function stop(): Promise<boolean> {
-  /* ODDAJE ODPOWIEDŹ, NIE NIC. `false` znaczy „nie było czego zatrzymać" i przychodzi z Rusta,
-   * bo tam mieszka jedyna zapadka biegu na całą aplikację. Okno miało tę odpowiedź u siebie
+export function stop(folder: string | null = null): Promise<boolean> {
+  /* ODDAJE ODPOWIEDŹ, NIE NIC. `false` znaczy „w tym folderze nie było czego zatrzymać"
+   * i przychodzi z Rusta, bo tam mieszka zapadka biegu. Okno miało tę odpowiedź u siebie
    * (`workflow !== ''` w sesji zakresu) i bywała nieprawdziwa: gubi ją przeładowanie strony.
    * Powód w całości stoi przy `stop_run` w `src-tauri/src/ipc.rs`. */
-  return invoke<boolean>('stop_run');
+  return invoke<boolean>('stop_run', { folder });
 }
 
 /**
@@ -455,12 +465,20 @@ export function closeTerminal(terminal: string): Promise<void> {
  * (`continue-at-checkpoint.test.tsx`) woła tę krawędź bez argumentów i nie wolno go tknąć;
  * klucz jedzie jednak ZAWSZE, bo pominięty klucz to odrzucone wywołanie.
  *
+ * 2026-09 (Z-35) — FOLDER DOSZEDŁ DRUGIM ARGUMENTEM, i to nie jest wygoda. Bez niego tamta
+ * strona brała „uchwyt, który ruszył ostatni", więc odpowiedź na punkt kontrolny widoczny na
+ * karcie A puszczała dalej bieg z karty B: pytanie z ekranu zostawało bez odpowiedzi, a cudzy
+ * bieg ruszał. DRUGIM, nie pierwszym, bo pierwszy jest zajęty przez cudze kryterium.
+ *
  * Rozwiązuje się dopiero wtedy, kiedy bieg NAPRAWDĘ ruszył (`wait_until_moving` po tamtej
  * stronie) — tak samo jak Stop wraca dopiero z dowodem. Ekran, który wróci wcześniej, pokazuje
  * człowiekowi dalej stojący bieg tuż po tym, jak ten człowiek go puścił.
  */
-export function continueRun(answer: string | null = null): Promise<void> {
-  return invoke<void>('continue_run', { answer });
+export function continueRun(
+  answer: string | null = null,
+  folder: string | null = null,
+): Promise<void> {
+  return invoke<void>('continue_run', { folder, answer });
 }
 
 /**
@@ -689,13 +707,25 @@ function asARun(
  * warstwy niżej: `stdin` był polem uchwytu, więc pisanie wymagało `&mut`, a uchwyt jest
  * pożyczony mutowalnie przez całą turę. Naprawa poszła w przyczynę (`engine::drivers::Voice`).
  *
+ * 2026-09 (Z-35) — FOLDER DOSZEDŁ TRZECIM ARGUMENTEM, bo bez niego „ten jeden, który pracuje"
+ * znaczyło „gdziekolwiek". Tamta strona brała uchwyt biegu, który ruszył ostatni, więc zdanie
+ * wpisane na karcie A szło do agenta z karty B — tura, za którą ktoś płaci, trafiała do kogoś
+ * innego, niż widać na ekranie.
+ *
  * @param text co człowiek napisał. Puste odmawia po tamtej stronie — nie zgadujemy tu, co znaczy
  *   pusty Enter.
  * @param agent nazwa kroku, do którego mówimy, albo `null`. `null` znaczy „ten jeden, który
- *   pracuje": przy dwóch i więcej Rust odmawia z listą nazw, zamiast wysyłać do losowego.
+ *   pracuje **w tym folderze**": przy dwóch i więcej Rust odmawia z listą nazw, zamiast wysyłać
+ *   do losowego.
+ * @param folder katalog karty, z której to zdanie wyszło, albo `null`. Klucz jedzie ZAWSZE —
+ *   powód w całości stoi przy `invoke` w [`start`].
  */
-export function sayToAgent(text: string, agent: string | null = null): Promise<void> {
-  return invoke<void>('say_to_agent', { agent, text });
+export function sayToAgent(
+  text: string,
+  agent: string | null = null,
+  folder: string | null = null,
+): Promise<void> {
+  return invoke<void>('say_to_agent', { folder, agent, text });
 }
 
 /**

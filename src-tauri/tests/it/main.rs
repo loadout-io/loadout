@@ -317,6 +317,7 @@ mod started_processes_die_with_the_window;
 mod step_deadline_stops_the_agent;
 mod steps_below_a_spent_budget_say_so;
 mod stop_answers_while_the_trees_close;
+mod stop_is_addressed_by_folder;
 mod stop_kills_every_group_the_step_started;
 mod store_append_only;
 mod store_batch_atomic;

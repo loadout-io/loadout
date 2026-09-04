@@ -176,7 +176,7 @@ export const PROMPT = KNOWN.map((one) => `${one.name} ${one.tail}`).join('  ·  
 export const HINT =
   'Enter sends it. Start with a slash for a command, or just write to the lead agent.';
 
-/** Odpowiedź na `/stop`, kiedy nic nie biegnie. Cisza czyta się jak zepsuty klawisz. */
+/** Odpowiedź na `/stop`, kiedy nic nie biegnie i nie wiadomo, o którym folderze mowa. */
 export const NOTHING_RUNS = 'Nothing is running.';
 
 /**
@@ -189,9 +189,23 @@ export const NOTHING_RUNS = 'Nothing is running.';
  * u właściciela: `/stop` odpowiadało „Nothing is running." nad biegiem pracującym czterdzieści
  * minut, tuż pod odmową, która kazała nacisnąć Stop. Nie zostawało nic, czym dało się ten bieg
  * dosięgnąć.
+ *
+ * # 2026-09 (Z-35) — ZDANIE NAZYWA FOLDER, i to jest wymóg, nie uprzejmość
+ *
+ * Stop jest od dziś adresowany folderem karty (`stop_run` po tamtej stronie), więc `false`
+ * przestało znaczyć „nic nie biegnie w tej aplikacji" i zaczęło znaczyć „nic nie biegnie
+ * TUTAJ". Zdanie bez nazwy mówiłoby przy dwóch kartach coś nieprawdziwego: człowiek widzi na
+ * sąsiedniej karcie pracującego agenta i czyta pod ręką „Nothing is running." Nazwa jest
+ * odpowiedzią na pytanie „to gdzie w takim razie" (DESIGN §8).
+ *
+ * @param where nazwa folderu tej karty — NAZWA, nie ścieżka: to ona stoi na pasku i w menu,
+ *   a „`/Users/x/dev/ledger-ui`" jest prawdziwe i bezużyteczne (ta sama reguła, co po stronie
+ *   Rusta w `AppState::already_going_where`). `null` i pusty napis znaczą „okno nie ma czym tej
+ *   karty nazwać" i wracają do zdania bez nazwy — zdanie ogólne jest lepsze niż zdanie z dziurą.
  */
-export function whatStopSaid(stopped: boolean): string | null {
-  return stopped ? null : NOTHING_RUNS;
+export function whatStopSaid(stopped: boolean, where: string | null = null): string | null {
+  if (stopped) return null;
+  return where === null || where === '' ? NOTHING_RUNS : `Nothing is running in ${where}.`;
 }
 
 /**
@@ -534,6 +548,19 @@ export interface EntryProps {
    */
   readonly onStopRun: (() => Promise<boolean>) | null;
   /**
+   * Jak nazywa się folder TEJ karty — do zdania „Nothing is running in <folder>.".
+   *
+   * 2026-09 (Z-35) — POWSTAŁO RAZEM Z ADRESOWANIEM STOPU. `false` z granicy znaczy od tego dnia
+   * „nic nie biegnie TUTAJ", więc odpowiedź musi nazwać kartę, na której człowiek stoi:
+   * przy dwóch kartach zdanie bez nazwy jest po prostu nieprawdziwe.
+   *
+   * NAZWA, NIE ŚCIEŻKA, i liczy ją ekran (`folderName` w `../folders.ts`) — ten wiersz nie ma
+   * skąd wiedzieć, jak nazywa się workspace. Wartość domyślna jest MOSTEM dla cudzych kryteriów,
+   * które montują ten wiersz bez tego propsa, i znaczy „nie ma czym nazwać": zdanie wraca wtedy
+   * do brzmienia ogólnego.
+   */
+  readonly runsIn?: string | null;
+  /**
    * Wiersz, który to pole właśnie złożyło — do dopisania w strumieniu.
    *
    * PO CO TO ISTNIEJE. Zgłoszenie właściciela 2026-08-20: komendy nie zostawiają po sobie ani
@@ -584,6 +611,7 @@ export function Entry({
   onAskAgent = startAskFromLine,
   onStartCommand = startFromLine,
   onOpenHistory = openHistoryFromLine,
+  runsIn = null,
   talkingTo = [],
   workflows = [],
   onShowInStream = () => undefined,
@@ -892,7 +920,10 @@ export function Entry({
     }
     if (command === '/stop') {
       if (onStopRun === null) {
-        showTheAnswer(NOTHING_RUNS);
+        /* JEDNO ŹRÓDŁO TEGO ZDANIA, także tutaj (niezmiennik 13): brak handlera i odpowiedź
+         * „nie było czego zatrzymać" są dla człowieka tym samym faktem, więc mają brzmieć tak
+         * samo — razem z nazwą folderu, jeśli okno ją zna. */
+        showTheAnswer(whatStopSaid(false, runsIn));
         return;
       }
       /* PYTAMY, ZAMIAST ZGADYWAĆ. Do 2026-08-23 ten wiersz odpowiadał „nic nie biegnie" z pamięci
@@ -900,7 +931,7 @@ export function Entry({
        * i nie zostawało już nic, czym dało się go dosięgnąć. Powód w całości stoi przy `stop_run`
        * w `src-tauri/src/ipc.rs`. */
       void onStopRun().then((stopped) => {
-        showTheAnswer(whatStopSaid(stopped));
+        showTheAnswer(whatStopSaid(stopped, runsIn));
       });
       return;
     }

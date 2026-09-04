@@ -429,7 +429,17 @@ const WIRES: readonly Wire[] = [
     given: [FILE_NAME, 3],
     call: () => run.start(FILE_NAME, 3, { name: 'Ship a feature', steps: [] }, null),
   },
-  { where: 'run', what: 'stop', command: 'stop_run', given: [], call: () => run.stop() },
+  /* 2026-09 (Z-35) — `given` NIESIE FOLDER, bo on JEST tu całym wywołaniem. `stop_run` bierze
+   * od tego dnia folder karty i zatrzymuje wyłącznie bieg z niego; wiersz wołany bez niego
+   * przechodziłby także dla krawędzi, która kończy KAŻDY żywy bieg — czyli dla tej, która
+   * zabierała pracę sąsiedniej karcie. */
+  {
+    where: 'run',
+    what: 'stop',
+    command: 'stop_run',
+    given: [FOLDER],
+    call: () => run.stop(FOLDER),
+  },
   {
     where: 'run',
     what: 'rerunStep',
@@ -566,19 +576,22 @@ const WIRES: readonly Wire[] = [
     given: ['review-rubric', 'with', REVISION],
     call: () => lab.dropVariant(null, 'review-rubric', 'with', REVISION),
   },
+  /* 2026-09 (Z-35) — OBIE Z FOLDEREM KARTY. Bez niego tamta strona brała „uchwyt, który ruszył
+   * ostatni": zgoda z punktu kontrolnego karty A puszczała bieg z karty B, a zdanie wpisane
+   * w A szło do agenta z B. Wiersz bez tej wartości przechodzi dla obu tych krawędzi. */
   {
     where: 'run',
     what: 'continueRun',
     command: 'continue_run',
-    given: ['ship it'],
-    call: () => run.continueRun('ship it'),
+    given: ['ship it', FOLDER],
+    call: () => run.continueRun('ship it', FOLDER),
   },
   {
     where: 'run',
     what: 'sayToAgent',
     command: 'say_to_agent',
-    given: ['also add a dark mode toggle'],
-    call: () => run.sayToAgent('also add a dark mode toggle'),
+    given: ['also add a dark mode toggle', FOLDER],
+    call: () => run.sayToAgent('also add a dark mode toggle', null, FOLDER),
   },
   /* 2026-08-19 — DWIE KRAWĘDZIE ROZMOWY Z AGENTEM WIODĄCYM. Rozstrzygnięcie właściciela: górny
    * wiersz jest rozmową, a sztywny przebieg zaczyna wyłącznie komenda. Rozmowa ma więc własne

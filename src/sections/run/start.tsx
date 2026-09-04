@@ -50,11 +50,14 @@ import { launchRequested } from './requested-launch';
 import { requestedRun, subscribeToRequests } from './requested';
 import { subscribeToWhatIsReady, whatIsReady } from './whats-ready';
 import { list as savedAgents } from '../agents/io';
+import { whatStopSaid } from './entry/entry';
 import { runFeed } from './feed/live';
 import type { FeedView } from './feed/model';
+import { folderName, whereTheRunIs } from './folders';
 import { continueRun, stop } from './io';
 import { useRun } from '../../state/run';
 import { loadSettings } from '../../state/settings';
+import { activeWorkspace } from '../../state/workspaces';
 
 /* PRYMITYWY Z `theme.css`, nie recznie spisana geometria. 2026-08-31.
  *
@@ -256,6 +259,19 @@ export function WorkflowRunButton({
   );
 }
 
+/**
+ * Zakres, w którym człowiek stoi TERAZ — czytany w chwili kliknięcia, nie z migawki renderu.
+ *
+ * 2026-09 (Z-35) — te dwie kontrolki adresują dziś swoje wywołania folderem, więc muszą wiedzieć,
+ * o którym zakresie mówią. Czytamy przy kliknięciu z tego samego powodu, dla którego robi to
+ * `lead()` w `./index.tsx`: Stop ma zatrzymać bieg, który człowiek widzi w chwili naciśnięcia,
+ * a nie ten, który widział, kiedy pasek się rysował. Ta sama droga i ten sam magazyn, którym
+ * pyta o zakres polityka startu (`./launch.ts`).
+ */
+function scope(): string | null {
+  return activeWorkspace()?.folder ?? null;
+}
+
 export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactElement {
   /* CO LEŻY W KATALOGU I CO Z TEGO CZŁOWIEK WSKAZAŁ — czytane z nośnika ekranu, nigdy własnym
    * odczytem dysku, i to jest naprawa zgłoszenia właściciela z 2026-08-31 („czemu mi się ten
@@ -451,7 +467,10 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
        * pustego napisu na `null` należy do sekcji. Bez tego człowiek pisał zdanie w karcie
        * „Needs your answer", a agent po drugiej stronie nie dostawał z niego ani litery —
        * kontrolka przyjmująca tekst i wyrzucająca go jest gorsza niż jej brak (niezmiennik 16). */
-      await continueRun(view.toCarry === '' ? null : view.toCarry);
+      /* FOLDER TEJ KARTY DRUGIM ARGUMENTEM (2026-09, Z-35). Bez niego zgoda szła do „uchwytu,
+       * który ruszył ostatni": człowiek odpowiadał na pytanie widoczne na swoim ekranie, a dalej
+       * ruszał bieg w innym folderze — a to, co widać, zostawało na punkcie kontrolnym. */
+      await continueRun(view.toCarry === '' ? null : view.toCarry, whereTheRunIs(scope()));
       /* BIEG JUŻ NIE STOI, więc kontrolka „dalej" ma zniknąć razem z kolejką wysyłkową. Dopiero
        * po powrocie komendy: `continue_run` wraca z dowodem, że bieg NAPRAWDĘ ruszył
        * (`wait_until_moving`), a zgaszenie tego stanu wcześniej pokazywałoby bieg w drodze
@@ -465,7 +484,13 @@ export function Start({ onSaid, reflectionEnabled = true }: StartProps): ReactEl
   async function halt(): Promise<void> {
     setSaid(null);
     try {
-      await stop();
+      /* PRZYCISK MÓWI TO SAMO, CO `/stop`, i do 2026-09 (Z-35) nie mówił nic: odpowiedź granicy
+       * była tu ŁYKANA, więc Stop naciśnięty nad kartą, w której nic nie idzie, wyglądał
+       * identycznie jak Stop, który coś zatrzymał — czyli jak martwy przycisk (niezmiennik 16).
+       * Zdanie składa jedna funkcja dla obu dróg (`entry/entry.tsx`, `whatStopSaid`), a idzie
+       * do strumienia tej karty przez `onSaid` (`./index.tsx`, `sayWhatDidNotStart`). */
+      const where = whereTheRunIs(scope());
+      setSaid(whatStopSaid(await stop(where), where === null ? null : folderName(where)));
     } catch (error: unknown) {
       setSaid(why(error, 'Loadout could not stop the run.'));
     }
