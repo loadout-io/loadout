@@ -23,23 +23,25 @@
 //!   narzędzi człowieka jest wart dokładnie tyle, ile jego prawa dostępu;
 //! * (d) ta sama droga działa w BIEGU, nie tylko w rozmowie. To są dwa osobne wywołania
 //!   resolvera (`commands::chat::connections_of` i `commands::run::Live::vendor_arguments_for`),
-//!   więc naprawa jednego z nich zostawia drugi dokładnie tam, gdzie był.
+//!   więc naprawa jednego z nich zostawia drugi dokładnie tam, gdzie był;
+//! * (e) wartość, której **nie ma nigdzie**, nie zatrzymuje serwera stdio pod Codeksem i nie
+//!   tworzy pustego nadpisania. To jest druga strona decyzji z 2026-09-04: skoro ta jedna droga
+//!   podaje wartość nadpisaniem w argv, to jej brak znaczy tyle, co przed tym zadaniem — nie ma
+//!   czego nadpisać, a serwer sam powie, czego mu brak.
 //! # Słabą wersją tego kryterium jest pytanie o funkcję resolvera
 //!
 //! `resolve(carrier, name) == Some(value)` przechodzi dla drzewa, w którym ani bieg, ani
 //! rozmowa tej funkcji nie wołają — czyli dla dzisiejszego (niezmiennik 29). Dlatego wszystkie
 //! asercje niżej idą przez tę samą komendę, której używa okno.
 //!
-//! # Czego ten plik NIE mierzy, i jest to zgłoszenie, nie przeoczenie
+//! # Gdzie stoi druga połowa tego zadania
 //!
-//! Tego, czy serwer stdio uruchomiony **przez Codeksa** dostaje tę zmienną. Sonda z 2026-09-04
-//! (`codex-cli 0.153.0`) zmierzyła, że ten vendor daje swoim serwerom MCP zamkniętą listę
-//! trzynastu zmiennych i nic poza nią, a jedyną drogą dostarczenia wartości jest
-//! `mcp_servers.<n>.env` — czyli argv, czego zabrania niezmiennik 9. Wartość rozwiązana niżej
-//! dociera więc do procesu Codeksa i zatrzymuje się na nim. Domknięcie tego wymaga rozszerzenia
-//! zakresu o rozrusznik Loadouta albo jawnej zmiany niezmiennika 9, a jedno i drugie jest
-//! decyzją właściciela (`AGENTS.md` §7). Kryterium tego zadania w tej części pozostaje
-//! niespełnione i celowo nie ma tu asercji, która udawałaby, że jest inaczej.
+//! Że wartość dociera do serwera stdio **pod Codeksem**, dowodzi
+//! `codex_lead_curates_mcp_servers::private_servers_are_false_and_the_approved_connection_is_true`:
+//! nośnik 0600 przy pustej zmiennej procesu, a w argv App Servera dokładne nadpisanie
+//! `mcp_servers.<nazwa>.env.<ZMIENNA>`. Tam też stoi zawężona wyrocznia niezmiennika 9 — wartość
+//! wolno zobaczyć w argv dokładnie raz i tylko pod tym kluczem (wyjątek otwarty decyzją
+//! właściciela 2026-09-04). Tutaj sądzimy drugą stronę tej samej decyzji: (e) niżej.
 
 // `unwrap()`/`expect()` w teście: panika w teście JEST jego wynikiem. Ten sam idiom i ten sam
 // powód, co w `the_lead_reaches_the_connections`.
@@ -58,6 +60,9 @@ use loadout_lib::commands::agents::save_agent_inner;
 use loadout_lib::commands::processes::Processes;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
+use loadout_lib::connections::runtime;
+use loadout_lib::connections::secrets::Carrier;
+use loadout_lib::connections::{Connection, Transport};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DriverConfiguration, FinishReason,
     Outcome as TurnOutcome, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
@@ -274,6 +279,63 @@ async fn a_step_of_a_run_gets_the_value_from_the_carrier() -> Result<(), Box<dyn
         "the step has to finish, or the assertion above is true of a step that never ran"
     );
     Ok(())
+}
+
+/// (e) Nierozwiązana zmienna: bez nadpisania, bez odmowy.
+#[test]
+fn a_value_nobody_can_find_neither_stops_codex_nor_reaches_its_argv() -> Result<(), Box<dyn Error>>
+{
+    // Nośnika NIE zakładamy, a `Z23_FIGMA_TOKEN` nie ma w środowisku tego procesu — czyli tej
+    // wartości nie ma nigdzie.
+    let bench = Bench::new()?;
+    let run = TempDir::new()?;
+
+    // SAM BRAK ODMOWY JEST POŁOWĄ KRYTERIUM: `?` niżej przewraca ten test, jeżeli Loadout
+    // zatrzyma Start (2026-09-04, Z-23 — decyzja właściciela).
+    let configuration = runtime::for_driver_with_secrets(
+        run.path(),
+        "codex",
+        &[a_connection_that_needs_a_value()],
+        &Carrier::in_library(Some(bench.home.path())),
+    )?;
+
+    assert!(
+        configuration
+            .arguments
+            .iter()
+            .all(|argument| !argument.contains(".env.")),
+        "a value nobody could find still produced an env override, so Codex would hand its \
+         server an empty string where a token belongs - which fails later and further away than \
+         no key at all: {:?}",
+        configuration.arguments
+    );
+    assert!(
+        configuration
+            .arguments
+            .iter()
+            .any(|argument| argument.starts_with(&format!("mcp_servers.{SERVER}.command="))),
+        "the missing value took the whole server down with it. The rest of this Connection is \
+         known and has to reach Codex exactly as it did before: {:?}",
+        configuration.arguments
+    );
+    Ok(())
+}
+
+/// Połączenie stdio, które wymaga wartości — tej samej, o którą chodzi wyżej.
+fn a_connection_that_needs_a_value() -> Connection {
+    let mut connection = Connection::imported(
+        SERVER.to_owned(),
+        SERVER.to_owned(),
+        Transport::Stdio {
+            command: SERVER_COMMAND.to_owned(),
+            args: vec!["--stdio".to_owned()],
+            environment: vec![NAME.to_owned()],
+        },
+        PathBuf::from("/tmp/mcp.json"),
+        "0000".to_owned(),
+    );
+    connection.enabled = true;
+    connection
 }
 
 // ── dubler ─────────────────────────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use loadout_lib::connections::runtime;
+use loadout_lib::connections::secrets::Carrier;
 use loadout_lib::connections::{Connection, Transport};
 use loadout_lib::engine::drivers::codex::CodexDriver;
 use loadout_lib::engine::drivers::{AgentDriver, AgentHandle, Policy, RunSpec, ValidatedImages};
@@ -39,6 +40,14 @@ const APPROVED_OVERLAY: &str = r#"mcp_servers."loadout.\"approved-t111".enabled"
 const APPROVED_COMMAND_OVERRIDE: &str =
     r#"mcp_servers."loadout.\"approved-t111".command="approved-command-t111""#;
 const APPROVED_ARGS_OVERRIDE: &str = r#"mcp_servers."loadout.\"approved-t111".args=["--stdio"]"#;
+/// Jedyne miejsce w argv, w którym wolno stać WARTOŚCI sekretu.
+///
+/// 2026-09-04 (Z-23) — wyjątek otwarty decyzją właściciela, zapisany w niezmienniku 9: „Wartość
+/// sekretu wolno podać w argv **wyłącznie** w nadpisaniu `-c mcp_servers.<nazwa>.env.<ZMIENNA>`
+/// przekazywanym Codeksowi, i wyłącznie po to, żeby doszła do procesu serwera MCP." Bez tego
+/// klucza serwer stdio pod Codeksem nie dostaje ani jednego sekretu: zmierzone na
+/// `codex-cli 0.153.0`, że nie dziedziczy on środowiska rodzica.
+const APPROVED_ENV_OVERRIDE: &str = r#"mcp_servers."loadout.\"approved-t111".env.T111_CONNECTION_ENV="PRIVATE_CONNECTION_VALUE_T111""#;
 
 const CONFIG_CURATED: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{"notion-private-t111":{"command":"private-notion"},"team.\"private-t111":{"url":"https://private.invalid"},"control-\u0001-t111":{"url":"https://control.invalid"},"loadout.\"approved-t111":{"command":"private-shadow"}}},"origins":{}}}"#;
 const CONFIG_EMPTY: &str = r#"{"id":%s,"result":{"config":{"mcp_servers":{}},"origins":{}}}"#;
@@ -146,6 +155,20 @@ fn approved_connection() -> Connection {
     connection
 }
 
+/// Biblioteka z nośnikiem wartości i **niczym więcej**.
+///
+/// 2026-09 (Z-23) — WARTOŚĆ IDZIE WYŁĄCZNIE TĘDY, nie domknięciem podstawionym w teście.
+/// `T111_CONNECTION_ENV` nie jest ustawiona w środowisku tego procesu, więc gdyby resolver czytał
+/// tylko środowisko okna — czyli tak, jak czytał aplikacji uruchomionej z Docka — nie byłoby
+/// czego przekazać, a asercje niżej sądziłyby wartość, której nikt nie dostarczył. `0600`, bo
+/// nośnik czytelny dla innych kont jest w całości pomijany (`connections::secrets`).
+fn carrier(library: &Path) -> Result<(), Box<dyn Error>> {
+    let path = library.join("env");
+    fs::write(&path, format!("{ENVIRONMENT_NAME}={ENVIRONMENT_SECRET}\n"))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
 fn evidence_target(workspace: &Path) -> EvidenceTarget {
     EvidenceTarget::lead(
         workspace,
@@ -242,6 +265,8 @@ fn assert_private_data_stayed_private(
             APPROVED_COMMAND_OVERRIDE,
             "-c",
             APPROVED_ARGS_OVERRIDE,
+            "-c",
+            APPROVED_ENV_OVERRIDE,
             "app-server",
             "--listen",
             "stdio://",
@@ -272,14 +297,47 @@ fn assert_private_data_stayed_private(
         ENVIRONMENT_SECRET,
     ] {
         assert!(
-            !argv.iter().any(|argument| argument.contains(private)),
-            "private configuration escaped into argv through {private:?}: {argv:?}"
-        );
-        assert!(
             !private_tree_contains(evidence_root, private.as_bytes())?,
             "private configuration escaped into evidence through {private:?}"
         );
     }
+    /* ARGV: CZTERY NAPISY NIGDZIE, PIĄTY DOKŁADNIE RAZ I TYLKO POD JEDNYM KLUCZEM.
+     *
+     * 2026-09-04 (Z-23) — TA PĘTLA SIĘ ZAWĘZIŁA, nie zniknęła. Właściciel otworzył w niezmienniku
+     * 9 jeden wyjątek: wartość sekretu wolno podać w argv wyłącznie w `-c mcp_servers.<n>.env.<Z>`
+     * i wyłącznie po to, żeby doszła do procesu serwera MCP. Wyrocznia ma więc dowodzić rzeczy
+     * mocniejszej niż „nie ma go w argv": że nie ma go **nigdzie poza** tym jednym kluczem, i że
+     * nie rozlał się na drugie wystąpienie. Prywatna konfiguracja tego człowieka nie dostała
+     * żadnego wyjątku i nadal nie ma prawa pojawić się w argv ani razu. */
+    for private in [
+        PRIVATE_PLAIN,
+        PRIVATE_TRICKY,
+        escaped_private_tricky.as_str(),
+        PRIVATE_CONTROL,
+        PRIVATE_CONTROL_ESCAPED,
+    ] {
+        assert!(
+            !argv.iter().any(|argument| argument.contains(private)),
+            "private configuration escaped into argv through {private:?}: {argv:?}"
+        );
+    }
+    let carrying: Vec<&String> = argv
+        .iter()
+        .filter(|argument| argument.contains(ENVIRONMENT_SECRET))
+        .collect();
+    assert_eq!(
+        carrying.len(),
+        1,
+        "the Connection secret stands in argv {} time(s). The exception is ONE key, so a second \
+         occurrence is a leak wearing the first one's permission: {argv:?}",
+        carrying.len()
+    );
+    assert!(
+        carrying[0].starts_with("mcp_servers.") && carrying[0].contains(".env."),
+        "the Connection secret reached argv outside `mcp_servers.<name>.env.<VARIABLE>`, which is \
+         the only place invariant 9 allows it. It stood in: {:?}",
+        carrying[0]
+    );
     Ok(())
 }
 
@@ -288,11 +346,15 @@ async fn private_servers_are_false_and_the_approved_connection_is_true()
 -> Result<(), Box<dyn Error>> {
     let fixture = tempfile::tempdir()?;
     let workspace = tempfile::tempdir()?;
-    let configuration = runtime::for_driver(
+    let library = tempfile::tempdir()?;
+    carrier(library.path())?;
+    // PRODUKCYJNA DROGA, nie `for_driver` z domknięciem: to ta, którą idzie krok biegu i rozmowa
+    // z liderem, i jedyna, która pyta nośnik Loadouta (2026-09, Z-23).
+    let configuration = runtime::for_driver_with_secrets(
         workspace.path(),
         "codex",
         &[approved_connection()],
-        |name| (name == ENVIRONMENT_NAME).then(|| OsString::from(ENVIRONMENT_SECRET)),
+        &Carrier::in_library(Some(library.path())),
     )?;
     assert_eq!(configuration.servers, [APPROVED]);
 

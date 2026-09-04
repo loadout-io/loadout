@@ -96,32 +96,57 @@ fn claude_config(connections: &[Connection]) -> Value {
 /// słowa. Dwie odpowiedzi na jedno pytanie rozjeżdżają się przy pierwszej zmianie jednej z nich,
 /// a rozjechały się od początku.
 ///
-/// **Czego tu wciąż NIE MA i jest to zgłoszenie, nie przeoczenie.** Wartość wymaganej zmiennej
-/// nie jedzie tędy do serwera stdio Codeksa, bo jedyną drogą, którą daje ten vendor, jest
-/// `mcp_servers.<n>.env` — a Loadout podaje nadpisania w argv, gdzie sekret czyta z `ps` każde
-/// konto na tej maszynie (niezmiennik 9). Obejście wymaga rozszerzenia zakresu o rozrusznik
-/// Loadouta i decyzji właściciela (`AGENTS.md` §7); do tego czasu `required_env` zostaje
-/// nazwami, czyli podglądem.
-fn codex_entry(connection: &Connection) -> Vec<(&'static str, String)> {
+/// `values` to nazwy JUŻ ROZWIĄZANE dla tego biegu. Pusto znaczy „to jest podgląd, nie
+/// uruchomienie": dokument dla człowieka pokazuje wtedy same nazwy w `required_env`, dokładnie
+/// tak, jak `codex mcp get` maskuje wartości.
+fn codex_entry(connection: &Connection, values: &[(String, OsString)]) -> Vec<(String, String)> {
     match &connection.transport {
         Transport::Stdio {
             command,
             args,
             environment,
         } => {
-            vec![
-                ("command", quoted(command)),
-                ("args", array(args)),
-                ("required_env", array(environment)),
-            ]
+            let mut pairs = vec![
+                ("command".to_owned(), quoted(command)),
+                ("args".to_owned(), array(args)),
+                ("required_env".to_owned(), array(environment)),
+            ];
+            /* TU, I WYŁĄCZNIE TU, WARTOŚĆ SEKRETU WOLNO POSTAWIĆ W ARGV.
+             *
+             * 2026-09-04 (Z-23) — wyjątek otwarty decyzją właściciela i zapisany w niezmienniku 9:
+             * „Wartość sekretu wolno podać w argv **wyłącznie** w nadpisaniu
+             * `-c mcp_servers.<nazwa>.env.<ZMIENNA>` przekazywanym Codeksowi, i wyłącznie po to,
+             * żeby doszła do procesu serwera MCP."
+             *
+             * Powód jest zmierzony, nie wyprowadzony (2026-09-04, `codex-cli 0.153.0`): serwer
+             * stdio pod Codeksem **nie dziedziczy środowiska rodzica** — dostaje zamkniętą listę
+             * kilkunastu zmiennych, w której nie ma ani jednego klucza API — więc wartość podana
+             * procesowi Codeksa nie dociera do serwera, którego dotyczy. Ten klucz jest jedyną
+             * drogą, jaką ten vendor daje.
+             *
+             * Cena, którą właściciel przyjął: przez czas życia procesu Codeksa wartość widzi każdy
+             * `ps` na tej maszynie. Wyjątek kończy się na tym kluczu — prompt i klucze vendora
+             * jadą dalej wyłącznie stdinem i jawną listą przepuszczaną.
+             *
+             * Nazwa idzie przez `toml_key`, ta sama funkcja co nazwa serwera wyżej: druga ścieżka
+             * kodowania rozjechałaby się przy pierwszym identyfikatorze z kropką (niezmiennik 23). */
+            for name in environment {
+                if let Some((_, value)) = values.iter().find(|(known, _)| known == name) {
+                    pairs.push((
+                        format!("env.{}", toml_key(name)),
+                        quoted(&value.to_string_lossy()),
+                    ));
+                }
+            }
+            pairs
         }
         Transport::Http {
             url,
             token_environment,
         } => {
-            let mut pairs = vec![("url", quoted(url))];
+            let mut pairs = vec![("url".to_owned(), quoted(url))];
             if let Some(name) = token_environment {
-                pairs.push(("bearer_token_env_var", quoted(name)));
+                pairs.push(("bearer_token_env_var".to_owned(), quoted(name)));
             }
             pairs
         }
@@ -133,11 +158,23 @@ fn codex_entry(connection: &Connection) -> Vec<(&'static str, String)> {
 /// stoi tu jako kod, a nie jako zdanie w komentarzu (2026-09, Z-23).
 const OURS_ALONE: &[&str] = &["required_env"];
 
+/// Czy brak wartości wolno przemilczeć, zamiast zatrzymać Start.
+///
+/// 2026-09-04 (Z-23) — WYŁĄCZNIE serwer stdio pod Codeksem, bo wyłącznie ten dostaje wartość
+/// nadpisaniem w argv: nierozwiązana nazwa nie tworzy wtedy nadpisania i nic poza tym się nie
+/// zmienia. Każda inna droga bierze wartość ze środowiska procesu, więc jej brak jest odmową
+/// najpóźniej przy Starcie (niezmiennik 12), a nie awarią w połowie biegu.
+fn the_server_can_say_it_itself(vendor: &str, transport: &Transport) -> bool {
+    vendor == "codex" && matches!(transport, Transport::Stdio { .. })
+}
+
 fn codex_config(connections: &[Connection]) -> String {
     let mut out = String::new();
     for connection in connections.iter().filter(|one| one.enabled) {
         let _ = writeln!(out, "[mcp_servers.{}]", toml_key(&connection.name));
-        for (key, value) in codex_entry(connection) {
+        // Bez wartości: ten dokument czyta CZŁOWIEK i idzie do wyniku importu, a nazwy wolno
+        // pokazać, wartości nigdy (2026-09, Z-23 — ten sam wzorzec ma `codex mcp get`).
+        for (key, value) in codex_entry(connection, &[]) {
             let _ = writeln!(out, "{key} = {value}");
         }
         out.push('\n');
@@ -261,13 +298,33 @@ where
             } => token_environment.iter().collect(),
         };
         for name in required {
-            if names.insert(name.clone()) {
-                let value = resolve(name).ok_or_else(|| RuntimeError::MissingEnvironment {
-                    connection: connection.name.clone(),
-                    name: name.clone(),
-                    read_from: secrets.where_loadout_reads_it_from(),
-                })?;
-                environment.push((name.clone(), value));
+            // Rozwiązana przy poprzednim Połączeniu jedzie raz. Sprawdzamy OBECNOŚĆ, nie wstawiamy:
+            // nazwa przemilczana niżej ma zostać zapytana ponownie przy Połączeniu, dla którego
+            // jej brak JEST odmową (2026-09, Z-23).
+            if names.contains(name) {
+                continue;
+            }
+            match resolve(name) {
+                Some(value) => {
+                    names.insert(name.clone());
+                    environment.push((name.clone(), value));
+                }
+                /* BRAK WARTOŚCI NIE ZATRZYMUJE SERWERA STDIO POD CODEKSEM (2026-09-04, Z-23,
+                 * decyzja właściciela). Ta jedna droga podaje wartość nadpisaniem `env` w argv,
+                 * więc jej brak znaczy tu dokładnie „nie ma czego nadpisać" — serwer wstaje
+                 * i sam mówi, czego mu brak, a to jest zdanie o JEGO wymaganiach, dokładniejsze
+                 * niż nasze. Do tego dnia była tu odmowa i zostaje wszędzie tam, gdzie brak
+                 * wartości naprawdę przesądza sprawę: u Claude'a, który czyta ją ze środowiska
+                 * procesu, i przy `bearer_token_env_var`, gdzie nazwa bez wartości jest nagłówkiem
+                 * bez tokena. */
+                None if the_server_can_say_it_itself(vendor, &connection.transport) => {}
+                None => {
+                    return Err(RuntimeError::MissingEnvironment {
+                        connection: connection.name.clone(),
+                        name: name.clone(),
+                        read_from: secrets.where_loadout_reads_it_from(),
+                    });
+                }
             }
         }
     }
@@ -281,7 +338,7 @@ where
             fs::write(&path, document)?;
             vec!["--mcp-config".to_owned(), path.display().to_string()]
         }
-        "codex" => codex_overrides(connections),
+        "codex" => codex_overrides(connections, &environment),
         _ => return Err(RuntimeError::UnsupportedVendor),
     };
     Ok(DriverConfiguration {
@@ -293,12 +350,12 @@ where
     })
 }
 
-fn codex_overrides(connections: &[Connection]) -> Vec<String> {
+fn codex_overrides(connections: &[Connection], values: &[(String, OsString)]) -> Vec<String> {
     let mut arguments = Vec::new();
     for connection in connections {
         let prefix = format!("mcp_servers.{}", toml_key(&connection.name));
-        for (key, value) in codex_entry(connection) {
-            if OURS_ALONE.contains(&key) {
+        for (key, value) in codex_entry(connection, values) {
+            if OURS_ALONE.contains(&key.as_str()) {
                 continue;
             }
             arguments.push("-c".to_owned());
