@@ -33,6 +33,7 @@
 mod a_blocked_way_out_takes_the_chosen_path;
 mod a_candidate_case_needs_a_reason;
 mod a_ceiling_is_shared_by_the_steps_that_run_together;
+mod a_ceiling_will_not_start_a_step_it_cannot_price;
 mod a_cell_needs_three_things_to_pass;
 mod a_closed_terminal_lets_its_pump_finish;
 mod a_connection_secret_comes_from_the_carrier;

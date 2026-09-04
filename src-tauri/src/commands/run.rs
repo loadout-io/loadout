@@ -209,10 +209,11 @@ use crate::engine::drivers::claude::tool_surface;
 use crate::engine::drivers::command::{
     CheckHow, CheckSpec, Checking, CommandDriver, GIVE_UP_AFTER,
 };
+use crate::engine::drivers::prices::{Prices, WHERE_PRICES_LIVE};
 use crate::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
     DriverSetupError, DriverSetupFailure, FinishReason, LoadedFromTheFolder,
-    Outcome as DriverOutcome, Policy, RunSpec,
+    Outcome as DriverOutcome, Policy, RunSpec, THE_MODEL_WITH_NO_NAME,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
@@ -3124,6 +3125,13 @@ struct Plan {
     /// narzędzi obok — biblioteka jest znana przed pierwszym procesem, a dwa kroki tego samego
     /// biegu mają pytać ten sam plik.
     secrets: crate::connections::secrets::Carrier,
+    /// Stawki, którymi ten bieg wycenia tury swoich kroków.
+    ///
+    /// 2026-09 (Z-44) — CZYTANE RAZ, TUTAJ, dokładnie z tego samego powodu, co nośnik wartości
+    /// wyżej: biblioteka jest znana przed pierwszym procesem, a dwa kroki tego samego biegu mają
+    /// pytać ten sam plik. Cennik poprawiony w połowie biegu nie ma prawa zmienić ceny kroku,
+    /// który już rusza — ani odpowiedzi na pytanie, czy wolno mu było ruszyć.
+    prices: Prices,
 }
 
 #[derive(Debug, Clone)]
@@ -3752,6 +3760,12 @@ fn plan_run_with_identity(
         return Err(RunError::Refused(refusal));
     }
 
+    /* CENNIK CZYTANY TU, PRZED KATALOGIEM BIEGU (2026-09, Z-44). Plik, którego nie da się
+     * przeczytać, jest odmową Startu, a nie cichym powrotem do tabeli wbudowanej: literówka
+     * w przecinku zmieniałaby wtedy cenę biegu i nikt by się o tym nie dowiedział. Odmowa pada
+     * ZANIM cokolwiek powstanie na dysku i zanim ruszy pierwszy proces (niezmiennik 12). */
+    let prices = the_prices_this_run_will_use(deps.home)?;
+
     let dir = run_directory(deps.project, &id, created_at);
 
     /* ROZWINIĘCIE PĘTLI, i to jest jedyne miejsce, w którym plik przestaje odpowiadać planowi
@@ -3877,6 +3891,24 @@ fn plan_run_with_identity(
         // i strażnik porównywałby wtedy coś z czymś innym.
         boot_id: crate::engine::supervisor::machine_booted_at(),
         secrets: crate::connections::secrets::Carrier::in_library(Some(deps.home)),
+        prices,
+    })
+}
+
+/// Stawki z biblioteki — albo odmowa Startu jednym zdaniem nazywającym plik do poprawienia.
+///
+/// Osobna funkcja, bo pytanie stawiają dwie drogi planowania (bieg z pliku i `/ask`), a odmowa
+/// ma brzmieć w obu tak samo (niezmiennik 13). Zdanie przychodzi gotowe z
+/// [`Prices::from_library`]: to ono wie, o który plik chodziło i co się w nim nie zgadzało.
+fn the_prices_this_run_will_use(library: &Path) -> Result<Prices, RunError> {
+    Prices::from_library(library).map_err(|why| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropki na kafelku nie ma: to nie jest wada żadnego kroku, tylko pliku obok biegu.
+            step_id: None,
+            message: why.to_string(),
+            fix: None,
+        })
     })
 }
 
@@ -4092,6 +4124,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
         boot_id: crate::engine::supervisor::machine_booted_at(),
         secrets: crate::connections::secrets::Carrier::in_library(Some(deps.home)),
+        // Ta sama bramka, co przy planie z pliku: cennik nie do przeczytania jest odmową Startu,
+        // także dla biegu z jednym kafelkiem (2026-09, Z-44).
+        prices: the_prices_this_run_will_use(deps.home)?,
     })
 }
 
@@ -7726,9 +7761,13 @@ struct Live {
     /// Ile wolno wydać na ten bieg — albo `None`, kiedy człowiek nie postawił sufitu.
     ///
     /// Liczy się suma `cost_usd` kroków, które SIĘ SKOŃCZYŁY: tylko one mają cenę, a krok
-    /// w połowie tury nie wie jeszcze, ile będzie kosztował. Krok, którego vendor ceny nie
-    /// podaje (Codex), liczy się jako zero — i to jest zapisane w zdaniu pomocy przy kontrolce,
-    /// bo inaczej sufit byłby obietnicą, której produkt nie może dotrzymać.
+    /// w połowie tury nie wie jeszcze, ile będzie kosztował.
+    ///
+    /// 2026-09 (Z-44) — AKAPIT MÓWIŁ „krok, którego vendor ceny nie podaje (Codex), liczy się
+    /// jako zero" i przestał być prawdą. Vendor, który ceny nie podaje, dostaje ją z tabeli
+    /// stawek ([`Plan::prices`]) — a krok, którego z niej wycenić się nie da, pod postawionym
+    /// sufitem **nie rusza wcale** ([`Live::no_way_to_price_this_one`]). Zero było tą trzecią
+    /// odpowiedzią, przy której sufit zostawał napisem.
     budget_usd: Option<f64>,
     /// Kroki, których nie ruszyliśmy, bo sufit był już przekroczony — dokładne zdanie na krok.
     ///
@@ -9218,6 +9257,21 @@ impl Live {
              * nie woła — trwa tyle, co `spawn`. Miejsce trzymane przez serwer, który żyje cały
              * bieg, wyjęłoby z puli jedno na stałe i zagłodziło kroki, które naprawdę pracują. */
             Job::Agent(_) | Job::Check(_) => {
+                /* TURA, KTÓREJ NIKT NIE UMIE WYCENIĆ, NIE RUSZA POD SUFITEM (2026-09, Z-44).
+                 *
+                 * PRZED pytaniem o resztę sufitu, bo to jest inne pytanie: tam chodzi o to, czy
+                 * zostało dość pieniędzy, a tu o to, czy w ogóle da się je policzyć. Krok, którego
+                 * cena nie wchodzi do sumy (Z-13b), przechodziłby każde pytanie o resztę — także
+                 * po przekroczeniu sufitu, bo sam do niego nie dokłada ani centa.
+                 *
+                 * PRZED miejscem z puli i przed sterownikiem, jak każda inna odmowa startu:
+                 * krok, który nie ruszy, nie ma prawa stać po zasób wart ~583 MB, a proces,
+                 * który już ruszył, jest opłacony niezależnie od tego, co zrobimy potem. */
+                if let Job::Agent(job) = &self.plan.steps[id].job
+                    && let Some(said) = self.no_way_to_price_this_one(job)
+                {
+                    return self.the_budget_stops_this_one(id, said).await;
+                }
                 /* SUFIT WYDATKU PYTANY DWA RAZY, i oba pytania są konieczne.
                  *
                  * Przed kolejką, żeby krok, dla którego pieniędzy już nie ma, nie stał po zasób
@@ -9693,6 +9747,54 @@ impl Live {
         self.not_a_cent_to_run_on(self.what_a_share_would_be(id)?)
     }
 
+    /// Zdanie o kroku, którego tury nie da się wycenić — albo `None`, kiedy da się albo kiedy
+    /// nikt sufitu nie postawił.
+    ///
+    /// # Dlaczego sufit rozstrzyga (2026-09, Z-44)
+    ///
+    /// Bo bez niego nie ma czego dotrzymać. Bieg bez sufitu jedzie z nieznanym modelem dokładnie
+    /// tak, jak jechał: liczniki wracają, a wiersz końcowy mówi człowiekowi, że ceny nie zna
+    /// (Z-12). Dopiero kwota postawiona w Settings jest obietnicą — a obietnica, której produkt
+    /// nie umie dotrzymać, jest gorsza od jej braku.
+    ///
+    /// PYTA STEROWNIK, NIE NAZWĘ VENDORA. Rdzeń wie, że sufit trzeba dotrzymać; czy dla tego
+    /// modelu da się to policzyć, wie wyłącznie adapter (niezmiennik 23). Warunek
+    /// `if driver.id() == "codex"` byłby tą samą wadą, którą T-92 opisało przy `with_settings`:
+    /// każdy dubel podający się za tego vendora dostawałby odmowę o szew, o którym nic nie wie.
+    ///
+    /// # Stożka `carry-on` ta bramka NIE pomija, choć sąsiednia pomija
+    ///
+    /// [`Live::a_share_of_what_is_left`] przepuszcza stożek, któremu człowiek jawnie kazał jechać
+    /// mimo sufitu (T-101), i to jest tam poprawne: tamto pytanie brzmi „czy zostało dość
+    /// pieniędzy", a odpowiedź człowieka brzmiała „wydaj więcej". Tu pytanie jest inne — „czy da
+    /// się je w ogóle policzyć" — i na nie `carry-on` nigdy nie odpowiedział. Jechać mimo KWOTY
+    /// to nie to samo, co przestać ją MIERZYĆ: po turze bez ceny sufit nie jest przekroczony,
+    /// tylko nieznany, i to do końca biegu.
+    ///
+    /// 2026-09 (Z-44, druga runda) — TA GAŁĄŹ TU BYŁA I BYŁA DZIURĄ, bo `carry-on` jest wartością
+    /// DOMYŚLNĄ (`workflow::WhenItFails`, decyzja właściciela 2026-08-23). Pierwsza odmowa robiła
+    /// więc ze swojego następnika stożek, a stożek omijał tę bramkę — czyli w każdym zwykłym
+    /// pliku o dwóch krokach na strzałce drugi krok uruchamiał CLI z modelem bez ceny, pod
+    /// postawionym sufitem. Zmierzone na `a_step_after_a_refused_one_is_refused_too…`:
+    /// `[Skipped, Succeeded]` zamiast `[Skipped, Skipped]`. Bramka nieznanej ceny pyta więc
+    /// wyłącznie o sufit i o sterownik, i nie ma ani jednego wyjątku.
+    fn no_way_to_price_this_one(&self, job: &AgentJob) -> Option<String> {
+        let budget = self.budget_usd?;
+        if job
+            .driver
+            .can_price_a_turn(job.model.as_deref(), &self.plan.prices)
+        {
+            return None;
+        }
+        // Ten sam zwrot, którym o modelu bez nazwy mówi uwaga po turze (`unknown_price_notice`):
+        // dwa zdania o tym samym braku, napisane osobno, rozjeżdżają się przy pierwszej zmianie.
+        let model = job.model.as_deref().unwrap_or(THE_MODEL_WITH_NO_NAME);
+        Some(format!(
+            "Loadout doesn't know what {model} costs, so it can't keep this run under \
+             ${budget:.2}. Set the price in {WHERE_PRICES_LIVE} or run without a ceiling."
+        ))
+    }
+
     /// Czy ten krok stoi w stożku, któremu człowiek jawnie kazał jechać mimo sufitu.
     ///
     /// 2026-08-25 (T-101) — WYJĄTEK JEST STOŻKIEM, NIE WYŁĄCZNIKIEM CAŁEGO BIEGU. Sam fakt
@@ -10108,10 +10210,19 @@ impl Live {
         leftovers: &Arc<StepLeftovers>,
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
         let configuration = self.vendor_arguments_for(id, job)?;
+        /* STAWKI IDĄ PIERWSZE, przed każdą inną nakładką (2026-09, Z-44), i to jest ta sama
+         * wymuszona kolejność, co niżej: każde z tych opakowań oddaje KLON sterownika, więc
+         * tabela założona później zginęłaby przy pierwszym opakowaniu klonującym sterownik
+         * sprzed niej. `None` nie odmawia startu — vendor, który cen nie liczy, nie ma czego
+         * przyjąć, a atrapy nie mają tego szwu wcale. */
+        let priced = job
+            .driver
+            .priced_from(&self.plan.prices)
+            .unwrap_or_else(|| Arc::clone(&job.driver));
         let driver = if configuration.arguments.is_empty() {
-            Arc::clone(&job.driver)
+            Arc::clone(&priced)
         } else {
-            match job.driver.configured(&configuration) {
+            match priced.configured(&configuration) {
                 Some(driver) => driver,
                 /* Zatwierdzone polaczenie jest zgoda czlowieka wyrazona w imporcie, wiec
                  * krok, ktory ich nie dostanie, NIE RUSZA. Sam szczebel tej wagi nie ma:
@@ -10122,7 +10233,7 @@ impl Live {
                         "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
                     ));
                 }
-                None => Arc::clone(&job.driver),
+                None => Arc::clone(&priced),
             }
         };
         let driver =
