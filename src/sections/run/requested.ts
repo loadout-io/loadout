@@ -25,6 +25,7 @@
  * (człowiek wraca do niego drugi raz), a wtedy sam `useEffect` przy montażu by tego nie zobaczył.
  */
 import { useSectionStore } from '../../ui/shell/section-store';
+import { learnFromRuns, subscribeToLearnFromRuns } from '../../state/settings';
 
 /** Co dokładnie poproszono uruchomić. */
 export interface RunRequest {
@@ -43,17 +44,36 @@ export interface RunRequest {
 
 let pending: RunRequest | null = null;
 let nonce = 0;
-let reflectionForNextRequest = true;
+let reflectionForNextRequest: boolean | undefined;
 const listeners = new Set<() => void>();
+const reflectionListeners = new Set<() => void>();
 
 /** Preserve the Run-owned choice only while a different screen carries the next request. */
 export function rememberReflectionChoice(enabled: boolean): void {
+  if (enabled === reflectionForNextRequest) return;
   reflectionForNextRequest = enabled;
+  for (const listener of reflectionListeners) listener();
 }
 
 /** Seed a remounted Run from the pending editor request, otherwise use the product default. */
 export function reflectionForRequestedRun(): boolean {
-  return pending?.reflectionEnabled ?? true;
+  return pending?.reflectionEnabled ?? reflectionForNextRequest ?? learnFromRuns();
+}
+
+/**
+ * Prenumerata wyboru widocznego na ekranie Run.
+ *
+ * Słucha OBU źródeł, bo odpowiedź wyżej składa nadpisanie biegu i Settings. 2026-09 — bez
+ * drugiej prenumeraty odpowiedź z pliku przyszłaby po pierwszym renderze, lecz ptaszek i Start
+ * zachowałyby wartość sprzed odczytu aż do przypadkowego renderu z innego powodu.
+ */
+export function subscribeToReflectionChoice(listener: () => void): () => void {
+  reflectionListeners.add(listener);
+  const stopWatchingTheDefault = subscribeToLearnFromRuns(listener);
+  return () => {
+    reflectionListeners.delete(listener);
+    stopWatchingTheDefault();
+  };
 }
 
 /**
@@ -65,7 +85,7 @@ export function reflectionForRequestedRun(): boolean {
  */
 export function requestRun(path: string): void {
   nonce += 1;
-  pending = { path, nonce, reflectionEnabled: reflectionForNextRequest };
+  pending = { path, nonce, reflectionEnabled: reflectionForNextRequest ?? learnFromRuns() };
   useSectionStore.getState().go('run');
   for (const listener of listeners) listener();
 }

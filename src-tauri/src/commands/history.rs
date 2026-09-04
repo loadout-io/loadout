@@ -155,6 +155,21 @@ pub struct PastRunWire {
     pub said: Option<String>,
 }
 
+/// Dlaczego prywatna tura nie została poproszona.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotAsked {
+    Stopped,
+    TurnedOff,
+    NoAgentWorked,
+    NothingWasLeft,
+    NothingCameBack,
+    /// 2026-09 (Z-18): nowy kod z przyszłego pliku nie może unieważnić całej historii
+    /// (niezmiennik 5), a ekran nie pokaże surowej wartości z drutu (niezmiennik 14).
+    #[serde(other)]
+    Unknown,
+}
+
 /// Rachunek prywatnej tury, tak jak leży w `run.json` i jak jedzie do okna.
 ///
 /// # Dlaczego to nie jest `commands::run::ReflectionReceipt`
@@ -186,6 +201,9 @@ pub struct ReflectionWire {
     /// Ile reguł przyszło bez uzasadnienia; takich nie zapisujemy [T6 §10.3].
     #[serde(default, alias = "dropped_without_reason")]
     pub dropped_without_reason: usize,
+    /// Dlaczego prywatna tura nie poszła. Brak znaczy, że starszy plik tego nie zapisał.
+    #[serde(default)]
+    pub why: Option<NotAsked>,
 }
 
 /// Jedna gałąź zostawiona przez bieg.

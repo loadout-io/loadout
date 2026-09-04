@@ -1,6 +1,6 @@
-//! Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś cztery pola: kto
-//! prowadzi rozmowę, ile wolno wydać na jeden bieg, czy boczne menu stoi zwinięte i ile
-//! ostatnich biegów zostaje w folderze projektu.
+//! Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś pięć pól: kto
+//! prowadzi rozmowę, ile wolno wydać na jeden bieg, czy boczne menu stoi zwinięte, ile
+//! ostatnich biegów zostaje w folderze projektu i czy bieg kończy się refleksją.
 //!
 //! **Ani jednego `use tauri::` i ani jednego `#[tauri::command]`** — jak w całym tym katalogu.
 //! Skorupy stoją w `src/ipc.rs` i mają po dwie linie (niezmiennik 1).
@@ -64,12 +64,18 @@ fn shipped_ceiling_usd() -> f64 {
     SHIPPED_CEILING_USD
 }
 
+/// Starszy plik nie ma tego klucza, a do 2026-09 każdy bieg uczył się domyślnie.
+fn learning_is_on() -> bool {
+    true
+}
+
 /// Co Loadout robi domyślnie, na drucie.
 ///
-/// Cztery pola, bo cztery wybory — i tak ma zostać, dopóki nie zajdzie potrzeba piątego.
+/// Pięć pól, bo pięć wyborów — i tak ma zostać, dopóki nie zajdzie potrzeba szóstego.
 /// Struktura „na przyszłość" jest tu tym samym długiem, co migracja schematu „na przyszłość"
 /// (AGENTS.md §4); trzecie pole doszło 2026-08-31, kiedy tryb bocznego menu naprawdę zaczął być
-/// wyborem, a czwarte 2026-09, kiedy katalogi biegów zaczęły zajmować gigabajty.
+/// wyborem, czwarte 2026-09, kiedy katalogi biegów zaczęły zajmować gigabajty, a piąte wtedy,
+/// kiedy refleksja dostała przełącznik.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsWire {
@@ -122,6 +128,12 @@ pub struct SettingsWire {
     /// niego arytmetyki na datach, żeby zgadnąć, co właśnie zniknie.
     #[serde(default)]
     pub keep_last_runs: u32,
+    /// Czy skończony bieg dostaje prywatną turę, która szuka lekcji na następny.
+    ///
+    /// 2026-09 (Z-18): funkcja zamiast gołego `serde(default)`, bo `bool::default()` wyłączyłby
+    /// refleksję każdemu istniejącemu plikowi — czyli zmienił wybór bez pytania człowieka.
+    #[serde(default = "learning_is_on")]
+    pub learn_from_runs: bool,
 }
 
 /// Świeża biblioteka: nikt nie prowadzi, a bieg ma sufit, którego nikt nie musiał wpisywać.
@@ -136,6 +148,7 @@ impl Default for SettingsWire {
             nav_collapsed: false,
             // Zero znaczy „trzymaj wszystkie" — powód w całości przy polu.
             keep_last_runs: 0,
+            learn_from_runs: true,
         }
     }
 }
@@ -196,7 +209,7 @@ pub fn read_settings_inner(home: &Path) -> Result<SettingsWire, SettingsError> {
     serde_json::from_str(&text).map_err(SettingsError::Malformed)
 }
 
-/// Zapisuje oba domyślne wybory i oddaje to, co ma teraz plik.
+/// Zapisuje wszystkie domyślne wybory i oddaje to, co ma teraz plik.
 ///
 /// Oddaje CAŁY wpis, nie samo `()`, i to jest ta sama decyzja, co przy workspace'ach: okno ma
 /// jedno źródło prawdy o tych wyborach i nie składa go sobie z argumentów, które wysłało. Stan
@@ -208,14 +221,15 @@ pub fn read_settings_inner(home: &Path) -> Result<SettingsWire, SettingsError> {
 ///
 /// **Kwota jest za to sądzona.** Sufit poniżej centa i sufit, który nie jest liczbą, to nie są
 /// wybory — to są pomyłki, po których każdy następny bieg albo nie ruszy wcale, albo poleci bez
-/// ograniczenia. Oba pola jadą jednym wywołaniem, bo plik jest jeden: zapis niosący połowę wpisu
-/// kasowałby drugą połowę przy każdym ruchu jednej kontrolki.
+/// ograniczenia. Wszystkie pola jadą jednym wywołaniem, bo plik jest jeden: zapis niosący część
+/// wpisu kasowałby resztę przy każdym ruchu jednej kontrolki.
 pub fn save_settings_inner(
     home: &Path,
     default_lead: &str,
     default_budget_usd: f64,
     nav_collapsed: bool,
     keep_last_runs: u32,
+    learn_from_runs: bool,
 ) -> Result<SettingsWire, SettingsError> {
     if !default_budget_usd.is_finite() || default_budget_usd < SMALLEST_CEILING_USD {
         return Err(SettingsError::NotAnAmount(default_budget_usd));
@@ -233,6 +247,7 @@ pub fn save_settings_inner(
         // kosztuje pieniadze; tu najgorsze, co moze sie stac, to menu w trybie, ktorego
         // czlowiek nie chcial — i naprawia to jeden klawisz.
         nav_collapsed,
+        learn_from_runs,
     };
     write(home, &settings)?;
     Ok(settings)

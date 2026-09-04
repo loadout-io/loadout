@@ -42,12 +42,17 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Choice } from '../choices';
 import type { PastReflection, PastRun, PastRunRow } from '../io';
 
-/** Cztery biegi, po jednym na każdy stan rachunku prywatnej tury. */
+/** Biegi po jednym na każdy stan rachunku prywatnej tury i każdy zapisany powód pominięcia. */
 const KEPT_TWO = '20260829-101500__0198a1f2-3b4c-7d5e-8f60-000000000101';
 const KEPT_ONE = '20260829-101501__0198a1f2-3b4c-7d5e-8f60-000000000102';
 const KEPT_NONE = '20260829-101502__0198a1f2-3b4c-7d5e-8f60-000000000103';
 const NEVER_ASKED = '20260829-101503__0198a1f2-3b4c-7d5e-8f60-000000000104';
 const BEFORE_THE_FIELD = '20260829-101504__0198a1f2-3b4c-7d5e-8f60-000000000105';
+const STOPPED = '20260904-101505__0198a1f2-3b4c-7d5e-8f60-000000000106';
+const TURNED_OFF = '20260904-101506__0198a1f2-3b4c-7d5e-8f60-000000000107';
+const NO_AGENT_WORKED = '20260904-101507__0198a1f2-3b4c-7d5e-8f60-000000000108';
+const NOTHING_WAS_LEFT = '20260904-101508__0198a1f2-3b4c-7d5e-8f60-000000000109';
+const NOTHING_CAME_BACK = '20260904-101509__0198a1f2-3b4c-7d5e-8f60-000000000110';
 
 function row(folder: string, title: string): PastRunRow {
   return {
@@ -68,6 +73,11 @@ const ROWS: readonly PastRunRow[] = [
   row(KEPT_NONE, 'Kept nothing'),
   row(NEVER_ASKED, 'Never asked'),
   row(BEFORE_THE_FIELD, 'Older than the field'),
+  row(STOPPED, 'Stopped'),
+  row(TURNED_OFF, 'Learning turned off'),
+  row(NO_AGENT_WORKED, 'No agent worked'),
+  row(NOTHING_WAS_LEFT, 'Nothing was left'),
+  row(NOTHING_CAME_BACK, 'Nothing came back'),
 ];
 
 /** Otwarty bieg w kształcie, w którym przyjeżdża z Rusta. `undefined` znaczy „opis tego nie ma". */
@@ -113,6 +123,41 @@ const KEPT: Readonly<Record<string, PastRun>> = {
     droppedWithoutReason: 0,
   }),
   [BEFORE_THE_FIELD]: opened(BEFORE_THE_FIELD, undefined),
+  [STOPPED]: opened(STOPPED, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'stopped',
+  }),
+  [TURNED_OFF]: opened(TURNED_OFF, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'turned-off',
+  }),
+  [NO_AGENT_WORKED]: opened(NO_AGENT_WORKED, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'no-agent-worked',
+  }),
+  [NOTHING_WAS_LEFT]: opened(NOTHING_WAS_LEFT, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'nothing-was-left',
+  }),
+  [NOTHING_CAME_BACK]: opened(NOTHING_CAME_BACK, {
+    ran: false,
+    kept: 0,
+    discardedAgain: 0,
+    droppedWithoutReason: 0,
+    why: 'nothing-came-back',
+  }),
 };
 
 /* Atrapa granicy oddaje `Promise<unknown>` JAWNIE, a nie z wnioskowania: bez adnotacji `vi.fn`
@@ -218,6 +263,11 @@ const withOne = await afterOpening(KEPT_ONE);
 const withNothing = await afterOpening(KEPT_NONE);
 const neverAsked = await afterOpening(NEVER_ASKED);
 const olderThanTheField = await afterOpening(BEFORE_THE_FIELD);
+const stopped = await afterOpening(STOPPED);
+const turnedOff = await afterOpening(TURNED_OFF);
+const noAgentWorked = await afterOpening(NO_AGENT_WORKED);
+const nothingWasLeft = await afterOpening(NOTHING_WAS_LEFT);
+const nothingCameBack = await afterOpening(NOTHING_CAME_BACK);
 
 closeHistory();
 
@@ -399,5 +449,23 @@ describe('says what it did with this run, and says it outright when it kept noth
       'a run recorded before this was ever written down knows nothing about it, and saying "did ' +
         'not look back" there would be inventing an answer out of a missing key (invariant 17)',
     ).toBe(NOT_IN_THE_RECORD);
+  });
+
+  it('says why it did not look back, in the run a person opened', () => {
+    expect(reflectionRow(stopped)).toBe(
+      'Loadout did not look back at this run because you stopped it.',
+    );
+    expect(reflectionRow(turnedOff)).toBe(
+      'Loadout did not look back at this run because learning from runs was turned off.',
+    );
+    expect(reflectionRow(noAgentWorked)).toBe(
+      'Loadout did not look back at this run because no agent finished any work.',
+    );
+    expect(reflectionRow(nothingWasLeft)).toBe(
+      'Loadout did not look back at this run because no agent left anything to learn from.',
+    );
+    expect(reflectionRow(nothingCameBack)).toBe(
+      'Loadout did not look back at this run because nothing came back from the learning turn.',
+    );
   });
 });

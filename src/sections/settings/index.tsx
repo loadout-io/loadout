@@ -1,6 +1,6 @@
 /* Ekran Settings: co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej.
  *
- * DZIŚ DWA WYBORY, I TO JEST CAŁA ZAWARTOŚĆ TEJ SEKCJI. Kto prowadzi rozmowę, był do
+ * DZIŚ CZTERY WYBORY, I TO JEST CAŁA ZAWARTOŚĆ TEJ SEKCJI. Kto prowadzi rozmowę, był do
  * 2026-08-29 decyzją podejmowaną PRZY KAŻDYM BIEGU: wskazanie żyło w oknie (`run/lead.ts`),
  * zaczynało się puste po każdym uruchomieniu i człowiek wybierał tę samą osobę od nowa. To ta
  * sama pomyłka, którą przy folderze pracy naprawił workspace.
@@ -10,6 +10,8 @@
  * ograniczenia i nic tego nie mówiło — a „nikt nie pomyślał" jest stanem domyślnym, nie
  * wyjątkiem. Zdjąć sufit z JEDNEGO biegu nadal wolno, na pasku Run, i wtedy ekran mówi to na
  * głos (`run/limits/budget.tsx`, `NO_CEILING_SAID`).
+ * Retencja biegów i domyślna refleksja doszły 2026-09, kiedy oba stały się wyborami człowieka
+ * zamiast bezterminowego wzrostu katalogu i zaszytego dodatkowego wywołania vendora.
  *
  * WYBÓR MIESZKA W `src/state/settings.ts`, NIE TUTAJ (niezmiennik 13). Ten ekran go pokazuje
  * i zmienia; Run pokazuje ten sam fakt i też go nie kopiuje. Stan zamknięty w `useState` tego
@@ -33,13 +35,16 @@ import {
   chooseDefaultBudgetUsd,
   chooseDefaultLead,
   chooseKeepLastRuns,
+  chooseLearnFromRuns,
   defaultBudgetUsd,
   defaultLead,
   keepLastRuns,
+  learnFromRuns,
   loadSettings,
   subscribeToDefaultBudget,
   subscribeToDefaultLead,
   subscribeToKeepLastRuns,
+  subscribeToLearnFromRuns,
 } from '../../state/settings';
 import { useSectionStore } from '../../ui/shell/section-store';
 import { list as savedAgents } from '../agents/io';
@@ -79,8 +84,19 @@ export const KEEP_EVERYTHING_SAID =
   'Zero keeps every run. Any other number clears the older ones out of the project folder the ' +
   'next time Loadout opens it.';
 
+/** Nazwa piątego wyboru pliku i czwartego wiersza tego ekranu. */
+export const LEARN_FROM_RUNS_LABEL = 'Learn from runs by default';
+
+/** Co ten wybór robi; osobny opis kontrolki, nie część jej dostępnej nazwy. */
+export const LEARN_FROM_RUNS_SAID =
+  'When this is on, Loadout keeps up to three notes from each finished run for you to approve ' +
+  'in Knowledge.';
+
 /* Pole retencji WSKAZUJE na swój opis po identyfikatorze — ta sama droga, co przy kwocie wyżej. */
 const WHAT_ZERO_DOES = 'keep-last-runs-what-zero-does';
+
+/** 2026-09 (Z-18): opis stoi poza etykietą i wraca do ptaszka tą krawędzią. */
+const WHAT_LEARNING_DOES = 'learn-from-runs-what-it-does';
 
 /** Ta sama podłoga, co po obu stronach granicy: kwota poniżej centa nie jest sufitem. */
 const SMALLEST = 0.01;
@@ -192,6 +208,7 @@ export default function SettingsScreen(): ReactElement {
    * pudełko zapadki, nie wspólne z kwotą: jedno wspólne zamykałoby drugie pole po pierwszym
    * zapisie, bo zapadką JEST wysłana wartość, a nie flaga „leci". */
   const runsKept = useSyncExternalStore(subscribeToKeepLastRuns, keepLastRuns, keepLastRuns);
+  const learns = useSyncExternalStore(subscribeToLearnFromRuns, learnFromRuns, learnFromRuns);
   const [typingRuns, setTypingRuns] = useState<string | null>(null);
   const lastRunsSent = useRef<string | null>(null);
 
@@ -267,6 +284,10 @@ export default function SettingsScreen(): ReactElement {
         setTypingRuns(null);
       },
     });
+  }
+
+  async function chooseLearning(enabled: boolean): Promise<void> {
+    setSaid(await chooseLearnFromRuns(enabled));
   }
 
   return (
@@ -497,6 +518,29 @@ export default function SettingsScreen(): ReactElement {
             </p>
           </div>
         )}
+
+        {/* CZWARTY WIERSZ: wybór dla przyszłych biegów, nie kopia ptaszka jednego biegu.
+            Ptaszek i etykieta są rodzeństwem, a opis stoi osobno i wraca przez
+            `aria-describedby`; tekst opisu wewnątrz `<label>` stałby się nazwą kontrolki. */}
+        <div className="card mt-3 grid max-w-200 gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] lg:items-center">
+          <div className="flex items-center gap-2">
+            <input
+              id="learn-from-runs"
+              type="checkbox"
+              checked={learns}
+              aria-describedby={WHAT_LEARNING_DOES}
+              onChange={(event) => {
+                void chooseLearning(event.target.checked);
+              }}
+            />
+            <label className="label" htmlFor="learn-from-runs">
+              {LEARN_FROM_RUNS_LABEL}
+            </label>
+          </div>
+          <p id={WHAT_LEARNING_DOES} data-learn-help className="lead">
+            {LEARN_FROM_RUNS_SAID}
+          </p>
+        </div>
       </div>
     </section>
   );

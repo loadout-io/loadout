@@ -153,6 +153,8 @@ const NAV_COLLAPSED = true;
 
 /** Ile ostatnich biegów zostaje w folderze projektu. NIE zero: zero jest tu domyślne. */
 const KEEP_LAST_RUNS = 20;
+/** Wyłączone, czyli nie domyślne: lustro wykryje zgubiony piąty klucz (2026-09, Z-18). */
+const LEARN_FROM_RUNS = false;
 
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
 const TRIGGER_DRAFT: triggers.TriggerDraft = {
@@ -746,6 +748,7 @@ const WIRES: readonly Wire[] = [
         defaultBudgetUsd: DEFAULT_BUDGET_USD,
         navCollapsed: NAV_COLLAPSED,
         keepLastRuns: KEEP_LAST_RUNS,
+        learnFromRuns: LEARN_FROM_RUNS,
       },
     ],
     call: () =>
@@ -754,6 +757,7 @@ const WIRES: readonly Wire[] = [
         defaultBudgetUsd: DEFAULT_BUDGET_USD,
         navCollapsed: NAV_COLLAPSED,
         keepLastRuns: KEEP_LAST_RUNS,
+        learnFromRuns: LEARN_FROM_RUNS,
       }),
   },
   /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.

@@ -34,6 +34,9 @@ const FOLDED: bool = true;
 /// wartością domyślną — przechodziłoby także dla zapisu, który tego argumentu nie czyta.
 const KEPT: u32 = 5;
 
+/// Wyłączone, czyli NIE domyślne: zapis ignorujący nowy argument nie przejdzie tego dowodu.
+const LEARNS: bool = false;
+
 #[test]
 fn a_fresh_library_has_nobody_leading_and_says_so_without_failing() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
@@ -70,7 +73,7 @@ fn a_fresh_library_has_nobody_leading_and_says_so_without_failing() -> Result<()
 fn the_chosen_lead_is_on_disk_and_a_later_read_finds_it() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
 
-    let saved = save_settings_inner(home.path(), LEAD, CEILING, FOLDED, KEPT)?;
+    let saved = save_settings_inner(home.path(), LEAD, CEILING, FOLDED, KEPT, LEARNS)?;
     assert_eq!(
         saved.default_lead, LEAD,
         "saving has to answer with what the file now holds, so the window has one source of \
@@ -105,6 +108,11 @@ fn the_chosen_lead_is_on_disk_and_a_later_read_finds_it() -> Result<(), Box<dyn 
         "the side nav mode a person chose has to reach the same file under the key the window \
          speaks. Without it the choice dies with the window. It reads:\n{text}"
     );
+    assert!(
+        text.contains("learnFromRuns") && text.contains("false"),
+        "whether Loadout learns from a run has to reach the file; otherwise the choice dies with \
+         the window. It reads:\n{text}"
+    );
 
     // Świeży odczyt tego samego katalogu — to jest wszystko, co ma następne otwarcie okna.
     let read_again = read_settings_inner(home.path())?;
@@ -118,6 +126,7 @@ fn the_chosen_lead_is_on_disk_and_a_later_read_finds_it() -> Result<(), Box<dyn 
         "a window opened later reads the library and nothing else, so the side nav has to open \
          in the mode the person left it in"
     );
+    assert_eq!(read_again.learn_from_runs, LEARNS);
     assert_eq!(
         read_again, saved,
         "the whole entry has to come back, not the half of it somebody happened to look at. A \
@@ -136,10 +145,10 @@ fn the_chosen_lead_is_on_disk_and_a_later_read_finds_it() -> Result<(), Box<dyn 
 fn an_amount_that_is_not_a_ceiling_is_refused_and_leaves_the_file_alone()
 -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
-    save_settings_inner(home.path(), LEAD, CEILING, FOLDED, KEPT)?;
+    save_settings_inner(home.path(), LEAD, CEILING, FOLDED, KEPT, LEARNS)?;
 
     for amount in [0.0, -1.0, f64::INFINITY, f64::NAN] {
-        let refused = save_settings_inner(home.path(), LEAD, amount, !FOLDED, KEPT + 1);
+        let refused = save_settings_inner(home.path(), LEAD, amount, !FOLDED, KEPT + 1, !LEARNS);
         assert!(
             refused.is_err(),
             "{amount} was accepted as how much a run may spend. A run allowed to spend nothing \
@@ -155,6 +164,7 @@ fn an_amount_that_is_not_a_ceiling_is_refused_and_leaves_the_file_alone()
             default_budget_usd: CEILING,
             nav_collapsed: FOLDED,
             keep_last_runs: KEPT,
+            learn_from_runs: LEARNS,
         },
         "a refused amount overwrote what was already in the file, so one mistyped key leaves the \
          person with a default they never chose"

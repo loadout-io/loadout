@@ -36,6 +36,25 @@ export const NOT_IN_THE_RECORD =
 export const DID_NOT_LOOK_BACK = 'Loadout did not look back at this run.';
 
 /**
+ * 2026-09 (Z-18): kod z pliku → słowa dla człowieka. Nieznanego kodu celowo tu nie ma:
+ * surowy enum z drutu nigdy nie trafia na ekran (niezmiennik 14), a gołe zdanie zachowuje
+ * czytelność (5).
+ */
+const WHY_NOT: Readonly<Record<string, string>> = {
+  stopped: 'you stopped it',
+  'turned-off': 'learning from runs was turned off',
+  'no-agent-worked': 'no agent finished any work',
+  'nothing-was-left': 'no agent left anything to learn from',
+  'nothing-came-back': 'nothing came back from the learning turn',
+};
+
+function didNotLookBack(reflection: PastReflection): string {
+  const because = reflection.why === null ? undefined : WHY_NOT[reflection.why ?? ''];
+  if (because === undefined) return DID_NOT_LOOK_BACK;
+  return DID_NOT_LOOK_BACK.slice(0, -1) + ' because ' + because + '.';
+}
+
+/**
  * Tura poszła i nie zostawiła nic.
  *
  * MÓWI TO WPROST i to jest cała przyczyna, dla której ten plik istnieje. Puste miejsce w tym
@@ -77,7 +96,7 @@ function alsoThrewOut(reflection: PastReflection): string {
  */
 export function reflectionText(reflection: PastReflection | null): string {
   if (reflection === null) return NOT_IN_THE_RECORD;
-  if (!reflection.ran) return DID_NOT_LOOK_BACK;
+  if (!reflection.ran) return didNotLookBack(reflection);
   if (reflection.kept === 0) return KEPT_NOTHING + alsoThrewOut(reflection);
   return (
     'Loadout looked back at this run and kept ' +

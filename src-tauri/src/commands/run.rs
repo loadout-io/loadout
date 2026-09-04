@@ -196,8 +196,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::fan_in;
+use super::history::NotAsked;
 use super::isolate;
 use super::processes;
+use super::settings;
 use super::triggers::{self, DeliveryState, TriggerClaim, TriggerDelivery, TriggerOrigin};
 use super::{Outcome, Part, RunControl, RunDeps, RunError, RunReport, RunRequest};
 use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError};
@@ -383,7 +385,7 @@ const TITLE_CAP: usize = 120;
 /// do promptów, których jeszcze nie ma.
 const REFLECTION_ASK: &str = "\
 This run has finished. Its directory is your working directory: handoffs/ holds what each step \
-passed on, run.json holds what happened, logs/ holds the raw streams.
+passed on, and run.json holds what happened.
 
 Name at most three things worth remembering for the next run in this project. Fewer is better, \
 and none at all is a good answer when nothing here was surprising.
@@ -1124,12 +1126,25 @@ pub async fn run_workflow_with_prestart_faults(
         slots,
         WorkflowRunOptions {
             budget_usd: None,
-            reflection_enabled: true,
+            reflection_enabled: learn_from_runs(deps),
             before_stamp: None,
             faults,
         },
     )
     .await
+}
+
+/// Ustawienie dla dróg, które nie mają żywego paska Run: `/ask`, trigger i szwy akceptacyjne.
+fn learn_from_runs(deps: &RunDeps<'_>) -> bool {
+    match settings::read_settings_inner(deps.home) {
+        Ok(settings) => settings.learn_from_runs,
+        Err(error) => {
+            // 2026-09 (Z-18): nieczytelny plik nie może po cichu zmienić wcześniejszego
+            // domyślnego `on` w `off`; zwykły ekran pokaże osobno odmowę odczytu.
+            tracing::error!(%error, "what Loadout learns from runs could not be read, so it stays on");
+            true
+        }
+    }
 }
 
 /// Jednorazowy obserwator tekstu zamrożonego w planie przed produkcyjnym stemplem pamięci.
@@ -1697,7 +1712,7 @@ async fn the_whole_triggered_run(
         PlannedRunOptions {
             acceptance: Some(acceptance),
             budget_usd,
-            reflection_enabled: true,
+            reflection_enabled: learn_from_runs(deps),
             before_stamp: None,
         },
         faults,
@@ -1734,7 +1749,7 @@ async fn the_whole_ask(
         PlannedRunOptions {
             acceptance: None,
             budget_usd,
-            reflection_enabled: true,
+            reflection_enabled: learn_from_runs(deps),
             before_stamp: None,
         },
     )
@@ -2096,13 +2111,17 @@ async fn finish_planned_run(
     deps.store.rebuild_from(&live.plan.dir).await?;
     // Auto-pamięć kroków i refleksja czytają skończony, posprzątany i już zindeksowany bieg.
     what_the_steps_wrote_down(deps, &live.plan);
-    let reflection = if reflection_enabled {
+    let cancelled_before_reflection = outcome.cancelled || cancel.is_cancelled();
+    let reflection = if cancelled_before_reflection {
+        ReflectionReceipt::not_asked(NotAsked::Stopped)
+    } else if reflection_enabled {
         what_this_run_taught_us(deps, &live.plan, &states).await?
     } else {
-        ReflectionReceipt::default()
+        ReflectionReceipt::not_asked(NotAsked::TurnedOff)
     };
-    // Stop po schedulerze nadal anuluje bieg, bo żyła wtedy prywatna grupa refleksji.
-    let cancelled = outcome.cancelled || cancel.is_cancelled();
+    // 2026-09 (Z-18): drugi odczyt zachowuje późny Stop, który padł dopiero na żywej grupie
+    // refleksji; pierwszy odczyt wyżej broni przed uruchomieniem jej po Stopie schedulera.
+    let cancelled = cancelled_before_reflection || cancel.is_cancelled();
     live.update(|book| {
         book.reflection = reflection;
         if cancelled {
@@ -2327,13 +2346,14 @@ async fn what_this_run_taught_us(
     plan: &Plan,
     states: &[StepState],
 ) -> Result<ReflectionReceipt, RunError> {
-    // Żaden model tu nie pracował, więc nie ma kogo pytać, czego się nauczył.
+    // 2026-09 (Z-18): „pracował" znaczy tu mocniej „skończył z sukcesem". Sam start po
+    // nieudanej albo anulowanej turze nie zostawia wyniku, na którym refleksja może się oprzeć.
     let a_model_worked =
         plan.steps.iter().zip(states).any(|(step, state)| {
             matches!(step.job, Job::Agent(_)) && *state == StepState::Succeeded
         });
     if !a_model_worked {
-        return Ok(ReflectionReceipt::default());
+        return Ok(ReflectionReceipt::not_asked(NotAsked::NoAgentWorked));
     }
 
     // Zero przekazań to zero powodów, żeby pytać. Czytamy tym samym skanerem, którym czyta je
@@ -2342,15 +2362,15 @@ async fn what_this_run_taught_us(
     let Ok(left) = handoff::scan_run_dir(&plan.dir) else {
         // Refleksja nie może twierdzić, że przeczytała wynik, którego skaner produktu nie umie
         // odczytać. Sam bieg pozostaje prawdziwy; prywatna tura po prostu się nie zaczyna.
-        return Ok(ReflectionReceipt::default());
+        return Ok(ReflectionReceipt::not_asked(NotAsked::NothingWasLeft));
     };
     if left.is_empty() || left.iter().all(handoff::Handoff::left_nothing) {
-        return Ok(ReflectionReceipt::default());
+        return Ok(ReflectionReceipt::not_asked(NotAsked::NothingWasLeft));
     }
 
     let (run, dir) = (plan.id.as_str(), plan.dir.as_path());
     let Some(turn) = a_short_turn_about(deps, dir).await? else {
-        return Ok(ReflectionReceipt::default());
+        return Ok(ReflectionReceipt::not_asked(NotAsked::NothingCameBack));
     };
 
     let (worth, without_reason) = worth_remembering(&turn.text);
@@ -2373,6 +2393,7 @@ async fn what_this_run_taught_us(
         discarded_again: kept.discarded_again,
         dropped_without_reason: without_reason,
         cost_usd: turn.cost_usd,
+        why: None,
     })
 }
 
@@ -7590,8 +7611,9 @@ fn refused_by_the_skills(refusal: &crate::skills::Error, tile_key: String) -> Ru
 /// Trwały rachunek prywatnej tury Loadouta.
 ///
 /// `ran` znaczy, że tura zakończyła się użyteczną odpowiedzią. Odmowa któregokolwiek twardego
-/// opakowania, anulowanie i porażka vendora zostawiają wartość domyślną; sam zamiar startu nie
-/// może udawać wykonanego, opłaconego biegu.
+/// opakowania, anulowanie i porażka vendora zostawiają `ran = false` oraz powód; sam zamiar
+/// startu nie może udawać wykonanego, opłaconego biegu. Powód doszedł 2026-09 (Z-18), bo pięć
+/// rozłącznych stanów czytało się w historii jak jeden.
 #[derive(Debug, Clone, Default, Serialize)]
 struct ReflectionReceipt {
     ran: bool,
@@ -7601,6 +7623,17 @@ struct ReflectionReceipt {
     dropped_without_reason: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<NotAsked>,
+}
+
+impl ReflectionReceipt {
+    fn not_asked(why: NotAsked) -> Self {
+        Self {
+            why: Some(why),
+            ..Self::default()
+        }
+    }
 }
 
 /// Bieg w trakcie: plan (niezmienny) plus księga (zmienna), plus to, czym mówi do świata.

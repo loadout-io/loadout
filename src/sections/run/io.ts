@@ -977,6 +977,8 @@ export interface PastBranch {
 export interface PastReflection {
   /** Czy tura naprawdę poszła i wróciła użyteczną odpowiedzią. `false` znaczy „nie pytano". */
   readonly ran: boolean;
+  /** Kod powodu, dla którego nie pytano. Brak zachowuje czytelność starszych plików. */
+  readonly why?: string | null;
   /** Ile notatek z niej powstało — te czekają w Memory na decyzję człowieka. */
   readonly kept: number;
   /** Ile wróciło takich, które człowiek już raz odrzucił. */
