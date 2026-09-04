@@ -816,6 +816,7 @@ fn claude_agent_from_fields(
         connections,
         write_results_to: String::new(),
         vendor_options: VendorOptions::new(),
+        extra: serde_json::Map::new(),
     };
     if choices.is_empty() {
         Ok((
@@ -896,6 +897,7 @@ fn codex_agent(
             connections: nested_toml_tables(&file.content, "mcp_servers"),
             write_results_to: String::new(),
             vendor_options: VendorOptions::new(),
+            extra: serde_json::Map::new(),
         },
         Compatibility::Exact,
         "This agent will become a native Loadout agent.".to_owned(),

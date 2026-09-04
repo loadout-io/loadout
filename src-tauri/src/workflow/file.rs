@@ -290,6 +290,9 @@ pub fn save(
             "a workflow path has no controlled parent",
         ))
     })?;
+    // 2026-09 (Z-32): odrzucony workflow nie zostawia pustej półki. Walidacja stoi wyżej,
+    // więc katalog jest pierwszym skutkiem ubocznym wyłącznie poprawnego pliku.
+    fs::create_dir_all(root).map_err(SaveError::Unwritable)?;
     DurableFilePublisher::new(root)
         .publish_definition(
             path,

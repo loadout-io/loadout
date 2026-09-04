@@ -40,6 +40,12 @@ use crate::library::agents::{Agent, FileAccess, Tools, policy_of, resolve};
 use super::check::{Level, Note};
 use super::{AgentStep, WorkflowFile};
 
+/// Nazwa umiejętności jest nazwą katalogu na macOS, więc wielkość liter nie tworzy drugiej.
+#[must_use]
+pub fn skill_name_matches(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
 /// Naprawa, którą Loadout umie wykonać sam.
 ///
 /// **Wariant istnieje wyłącznie wtedy, gdy naprawa jest jednoznaczna.** Nie ma tu wariantu
@@ -283,7 +289,7 @@ fn named_things_exist(
     }
 
     for wanted in &effective.skills {
-        if !skills.iter().any(|have| have == wanted) {
+        if !skills.iter().any(|have| skill_name_matches(have, wanted)) {
             notes.push(note(
                 step_id,
                 format!(

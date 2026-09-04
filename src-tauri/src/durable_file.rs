@@ -294,6 +294,34 @@ impl PublicationBatch<'_> {
         )
     }
 
+    /// Publikuje definicję wewnątrz już otwartej partii, aby caller mógł pod tym samym
+    /// uchwytem katalogu wykonać związane z nią odczyty i sprzątanie.
+    pub(crate) fn publish_definition(
+        &self,
+        target: &Path,
+        bytes: &[u8],
+        mode: ModePolicy,
+        expected: Option<&str>,
+    ) -> Result<(), PublishError> {
+        let relative = self.publisher.relative_target(target)?;
+        // Odczyt idzie przez utrzymany deskryptor tej publikacji, nie przez nazwę otwartą
+        // drugi raz: inaczej porównywalibyśmy bajty z innego inode'u niż późniejszy replace.
+        let on_disk = match self.root.read_regular(&relative, false) {
+            Ok(found) => Some(found),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(PublishError::Io(error)),
+        };
+        match (expected, on_disk) {
+            (_, None) => self.atomic_create_if_absent(target, bytes, mode),
+            (Some(expected), Some(found)) if revision_of(&found) == expected => {
+                self.atomic_replace(target, bytes, mode)
+            }
+            (_, Some(_found)) => Err(PublishError::Changed {
+                target: target.to_owned(),
+            }),
+        }
+    }
+
     fn publish<T>(
         &self,
         target: &Path,
@@ -360,26 +388,7 @@ impl DurableFilePublisher {
         mode: ModePolicy,
         expected: Option<&str>,
     ) -> Result<(), PublishError> {
-        let relative = self.relative_target(target)?;
-        self.with_publication(|batch| {
-            // Odczyt idzie przez utrzymany deskryptor tej publikacji, nie przez nazwę otwartą
-            // drugi raz: inaczej porównywalibyśmy bajty z innego inode'u niż ten, który za
-            // chwilę podmienia `rename`.
-            let on_disk = match batch.root().read_regular(&relative, false) {
-                Ok(found) => Some(found),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => return Err(PublishError::Io(error)),
-            };
-            match (expected, on_disk) {
-                (_, None) => batch.atomic_create_if_absent(target, bytes, mode),
-                (Some(expected), Some(found)) if revision_of(&found) == expected => {
-                    batch.atomic_replace(target, bytes, mode)
-                }
-                (_, Some(_found)) => Err(PublishError::Changed {
-                    target: target.to_owned(),
-                }),
-            }
-        })
+        self.with_publication(|batch| batch.publish_definition(target, bytes, mode, expected))
     }
 
     /// Trzyma jeden shared guard i jeden descriptor root przez cały callback. Handoff używa

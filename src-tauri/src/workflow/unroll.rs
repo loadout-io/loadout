@@ -233,7 +233,7 @@ pub fn unroll(file: &WorkflowFile) -> Unrolled {
         .links
         .iter()
         .filter_map(|link| {
-            let turns = link.max_turns?;
+            let turns = super::check::runtime_turns(link.max_turns?).unwrap_or(1);
             let (from, to) = ends(link.from.as_str(), link.to.as_str())?;
             Some((from, to, turns))
         })
@@ -378,7 +378,9 @@ fn every_copy(
 /// jedyną odpowiedzią, która nie kasuje kroku po cichu z grafu.
 fn copies_of(step: &super::Step) -> u8 {
     match step {
-        super::Step::Agent(one) => one.copies.max(1),
+        // `check` odmawia wartości spoza zakresu. Bezpośredni caller wadliwego pliku dostaje
+        // jedną kopię zamiast obciętej liczby albo nieograniczonej alokacji (2026-09, Z-32).
+        super::Step::Agent(one) => super::check::runtime_copies(one.copies).unwrap_or(1),
         super::Step::Checkpoint(_) | super::Step::Check(_) | super::Step::Serve(_) => 1,
     }
 }

@@ -447,6 +447,7 @@ mod worktree_leaves_the_work_reachable;
 mod z14_rebuilt_history_keeps_what_the_tools_did;
 mod z30_engine_small_leaks;
 mod z31_lab_fixes;
+mod z32_library_compat;
 mod z3_a_stop_gives_the_heavy_seat_back;
 mod z5_a_turn_starts_over_a_dead_group;
 mod z5_closing_a_step_has_a_ceiling;

@@ -172,7 +172,7 @@ pub struct AgentStep {
     /// Ile identycznych sesji naraz, 1–8 [T3 §4.4]. Osiem jednoczesnych sesji na prawdziwej
     /// maszynie to już dużo.
     #[serde(default = "one_copy")]
-    pub copies: u8,
+    pub copies: u32,
     /// Prompt, zwykły tekst. `{{copy}}` i `{{copies}}` podstawia silnik [T3 §4.3].
     #[serde(default)]
     pub instructions: String,
@@ -221,9 +221,9 @@ pub struct AgentStep {
     pub extra: Map<String, Value>,
 }
 
-/// Domyślna liczba kopii. Funkcja, bo `#[serde(default)]` dla `u8` dałoby zero, a zero kopii
+/// Domyślna liczba kopii. Funkcja, bo `#[serde(default)]` dla `u32` dałoby zero, a zero kopii
 /// to krok, który nigdy nie biegnie.
-fn one_copy() -> u8 {
+fn one_copy() -> u32 {
     1
 }
 
@@ -605,7 +605,7 @@ pub struct Link {
     /// `skip_serializing_if`: plik bez pętli ma wyglądać dokładnie tak, jak wyglądał, żeby
     /// dołożenie tej funkcji nie przepisało każdego workflow na dysku (T3 §8.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<u8>,
+    pub max_turns: Option<u32>,
 }
 
 impl Link {

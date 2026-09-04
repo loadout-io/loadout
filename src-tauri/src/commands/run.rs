@@ -4655,9 +4655,9 @@ const COPIES_MARK: &str = "{{copies}}";
 ///
 /// `{{copies}}` idzie pierwsze wyłącznie dla porządku czytania: dłuższy znacznik nie zawiera
 /// krótszego (`{{copy}}` wymaga `}}` zaraz po `copy`), więc kolejność nie zmienia wyniku.
-fn numbered(text: &str, copy: u8, copies: u8) -> String {
+fn numbered(text: &str, copy: u8, copies: u32) -> String {
     text.replace(COPIES_MARK, &copies.to_string())
-        .replace(COPY_MARK, &(copy + 1).to_string())
+        .replace(COPY_MARK, &(u32::from(copy) + 1).to_string())
 }
 
 /// Nagłówek nad zadaniem, kiedy plik nie wskazał miejsca sam.
@@ -4838,11 +4838,11 @@ pub(crate) fn tile_key_of(node_key: &str) -> &str {
 ///
 /// Krok biegnący raz zostaje pod swoją nazwą, co do bajtu: „(1 of 1)" byłoby dopiskiem na
 /// każdym kafelku każdego workflow na dysku.
-fn name_for(name: &str, copy: u8, copies: u8) -> String {
+fn name_for(name: &str, copy: u8, copies: u32) -> String {
     if copies <= 1 {
         return name.to_owned();
     }
-    format!("{name} ({} of {copies})", copy + 1)
+    format!("{name} ({} of {copies})", u32::from(copy) + 1)
 }
 
 /// Jeden węzeł rozwiniętego grafu → jeden krok planu.

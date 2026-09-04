@@ -131,7 +131,21 @@ pub fn save_agent_inner(
 ) -> Result<WrittenAgent, AgentError> {
     let agent = agent.borrow();
     let file_name = agent_file_name(agent);
-    if saved_definitions(home)?.iter().any(|definition| {
+    let definitions = saved_definitions(home)?;
+    if definitions.iter().any(|definition| {
+        matches!(
+            definition,
+            Definition::Healthy {
+                value: (_path, saved),
+                ..
+            } if saved.id != agent.id && saved.name.eq_ignore_ascii_case(&agent.name)
+        )
+    }) {
+        return Err(AgentError::NameTaken {
+            name: agent.name.clone(),
+        });
+    }
+    if definitions.iter().any(|definition| {
         // 2026-08-28: domyślny macOS traktuje te nazwy jako ten sam leaf. Guard musi robić
         // to samo także na case-sensitive CI, zanim writer otworzy kanoniczne `collision.md`.
         matches!(
@@ -147,8 +161,8 @@ pub fn save_agent_inner(
             "fix or delete this unreadable agent file before saving another agent here",
         ));
     }
-    // Cała droga bajtów — nazwa pliku, kolejność wierszy front-mattera, `create_dir_all` —
-    // jest w `write_agent_file` (T-11). Tutaj składa się wyłącznie katalog.
+    // Techniczna kolizja sluga i rename zostają w jednej publikacji `write_agent_file`; warstwa
+    // komend rozstrzyga wyłącznie zajętą nazwę widoczną dla człowieka (niezmiennik 23).
     write_agent_file(&home.join(AGENTS_DIR), agent, expected)
 }
 

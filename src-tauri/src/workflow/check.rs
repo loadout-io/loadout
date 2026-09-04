@@ -267,12 +267,26 @@ const CIRCLE: &str = "These steps point back at each other in a circle. Work wou
 
 /// Ile kopii jednego kroku naraz wolno zamówić [T3 §4.4]. Osiem jednoczesnych na prawdziwej
 /// maszynie to już dużo.
-const MOST_COPIES: u8 = 8;
+const MOST_COPIES: u32 = 8;
 
 /// Sufit rund pętli. Dziesięć rund dwóch agentów to już długa noc bez nadzoru i prawdziwy
 /// rachunek — ta liczba jest tym samym rodzajem zapory, co [`MOST_COPIES`], i z tego samego
 /// powodu stoi w schemacie, a nie w głowie użytkownika.
-const MOST_TURNS: u8 = 10;
+const MOST_TURNS: u32 = 10;
+
+/// Wąski typ runtime powstaje dopiero po pełnej walidacji wartości zapisanej jako `u32`.
+pub(super) fn runtime_copies(value: u32) -> Option<u8> {
+    u8::try_from(value)
+        .ok()
+        .filter(|_| (1..=MOST_COPIES).contains(&value))
+}
+
+/// Jak [`runtime_copies`], dla liczby rund pętli.
+pub(super) fn runtime_turns(value: u32) -> Option<u8> {
+    u8::try_from(value)
+        .ok()
+        .filter(|_| (1..=MOST_TURNS).contains(&value))
+}
 
 /// Klucz katalogu pracy jednej kopii kroku.
 ///
@@ -553,7 +567,7 @@ struct Facts<'a> {
     id: &'a str,
     /// Nazwa z kafelka. To ona pada w uwagach: `s_lonely` nie jest niczym, co użytkownik widzi.
     name: &'a str,
-    copies: u8,
+    copies: u32,
     folder: Option<&'a Folder>,
     passthrough: Option<&'a BTreeMap<String, BTreeMap<String, String>>>,
     /// Treść zadania kroku. `None` dla kafelka kontrolnego — on pyta człowieka, nie agenta.
@@ -1079,7 +1093,7 @@ fn turns_out_of_range(
         let Some(turns) = link.max_turns else {
             continue;
         };
-        if (1..=MOST_TURNS).contains(&turns) {
+        if runtime_turns(turns).is_some() {
             continue;
         }
         // Krok po nazwie, nie po identyfikatorze: `s_test` nie jest niczym, co użytkownik widzi.
@@ -1143,7 +1157,7 @@ fn copies_out_of_range(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                     step.name
                 ),
             ));
-        } else if step.copies > MOST_COPIES {
+        } else if runtime_copies(step.copies).is_none() {
             notes.push(problem(
                 Some(step.id),
                 format!(
@@ -1168,7 +1182,9 @@ fn colliding_work_branches(steps: &[Facts<'_>], when: When, notes: &mut Vec<Note
         if !step.folder.is_some_and(Folder::is_own_copy) {
             continue;
         }
-        for copy in 0..step.copies {
+        // 2026-09 (Z-32): wadliwe `u32` ma dostać uwagę, nie zamówić miliard iteracji zanim
+        // zapis zdąży odmówić. Dalsze obliczenia używają wyłącznie zwalidowanego `u8`.
+        for copy in 0..runtime_copies(step.copies).unwrap_or(1) {
             let branch = work_branch_tail(&work_key_for(step.id, copy));
             let Some(&other) = reserved.get(&branch) else {
                 reserved.insert(branch, index);

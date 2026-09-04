@@ -1474,7 +1474,7 @@ pub fn fixture(writer: &Agent, judge: &Agent) -> WorkflowFile {
         links: vec![
             link("s_plan", "s_work", None),
             link("s_work", "s_judge", None),
-            link("s_judge", "s_work", Some(MAX_TURNS)),
+            link("s_judge", "s_work", Some(u32::from(MAX_TURNS))),
             link("s_judge", "s_synthesis", None),
         ],
         extra: serde_json::Map::new(),
@@ -1500,7 +1500,7 @@ fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str) -> Step {
     })
 }
 
-fn link(from: &str, to: &str, max_turns: Option<u8>) -> Link {
+fn link(from: &str, to: &str, max_turns: Option<u32>) -> Link {
     Link {
         from: from.to_owned(),
         to: to.to_owned(),
