@@ -1037,6 +1037,13 @@ export interface PastRun {
   readonly steps: readonly PastStep[];
   readonly handoffs: readonly PastHandoff[];
   /**
+   * Dlaczego przekazań nie dało się przeczytać, albo `null`, kiedy pusta lista jest prawdziwa.
+   *
+   * Klucz opcjonalny jak `branches`: starszy Rust go nie wysyła, a historia z takiego builda
+   * nadal ma się otworzyć i zachować dotychczasowe znaczenie pustej listy (niezmiennik 5).
+   */
+  readonly handoffsSaid?: string | null;
+  /**
    * Gałęzie, które ten bieg zostawił w repozytorium projektu.
    *
    * KLUCZ OPCJONALNY, choć dzisiejszy Rust wysyła go zawsze, i to jest niezmiennik 5 postawiony

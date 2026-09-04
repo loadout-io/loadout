@@ -88,6 +88,16 @@ pub const BATCH_CAP: usize = 2_000;
 /// pamięci ma starczyć na trzech agentów po 583 MB [T7 §7.1].
 pub const QUEUE_CAP: usize = 256;
 
+/// Zdanie odmowy, kiedy system nie pozwala Loadoutowi czytać wybranego folderu.
+pub const CANNOT_READ_THIS_FOLDER: &str = concat!(
+    "Loadout can't read this folder. Allow it under System Settings › Privacy & Security › ",
+    "Files and Folders."
+);
+
+/// Zdanie odmowy dla folderu na woluminie, któremu ustawienia prywatności nie pomogą.
+const READ_ONLY_FOLDER: &str =
+    "Loadout can't write to this folder because the disk is read-only. Choose another folder.";
+
 /// Co się stało z linią oddaną pompie.
 ///
 /// Wartość, nie błąd: przepełniona kolejka do okna jest **normalnym** stanem szybkiego agenta,
@@ -1468,6 +1478,11 @@ impl AppState {
         // tam, gdzie aplikacja wstała. Sam FOLDER sprawdza [`project_folder`] i to jest jedyne
         // miejsce, w którym te trzy zdania odmowy mieszkają.
         let project = project_folder(folder)?.unwrap_or_else(|| self.project.clone());
+        // 2026-09 (Z-42) — BEZ ZAPADKI: zgodę TCC można cofnąć, kiedy okno nadal żyje. Sonda
+        // musi więc poprzedzać każde następne dotknięcie, a zwłaszcza następny Start.
+        if let Some(said) = folder_access_refusal(&project) {
+            return Err(said);
+        }
         self.settle_what_the_last_window_left(&project).await;
         Ok(project)
     }
@@ -1733,6 +1748,50 @@ pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
             "The folder \"{folder}\" is not there any more, so nothing was started. Open it \
              again from the tab bar."
         )),
+    }
+}
+
+/// Sprawdza, czy folder pozwoli odczytać to, co zapisze w nim bieg.
+///
+/// `create_dir`, nigdy `create_dir_all`: jeśli projekt zniknął między rozstrzygnięciem ścieżki
+/// a tą sondą, Loadout nie ma prawa odtworzyć całej jego ścieżki pustymi katalogami.
+#[must_use]
+pub fn folder_access_refusal(folder: &Path) -> Option<String> {
+    let loadout = folder.join(".loadout");
+    match fs::symlink_metadata(&loadout) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::create_dir(&loadout) {
+                Ok(()) => {}
+                // 2026-09 (Z-42) — dwie komendy mogą pierwszy raz dotknąć folderu naraz. Jedna
+                // utworzyła katalog, więc druga nadal musi sprawdzić plik zamiast uznać wyścig.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return folder_access_error(&error),
+            }
+        }
+        Err(error) => return folder_access_error(&error),
+    }
+
+    let marker = loadout.join(".probe");
+    if let Err(error) = fs::write(&marker, b"loadout folder access") {
+        return folder_access_error(&error);
+    }
+    if let Err(error) = fs::read(&marker) {
+        // 2026-09 (Z-42) — odczyt mógł odmówić po udanym zapisie, bo zgodę TCC da się cofnąć
+        // w trakcie działania. Usunięcie jest najlepszą próbą, nie drugim powodem odmowy.
+        let _ = fs::remove_file(&marker);
+        return folder_access_error(&error);
+    }
+    fs::remove_file(&marker)
+        .err()
+        .and_then(|error| folder_access_error(&error))
+}
+
+fn folder_access_error(error: &std::io::Error) -> Option<String> {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => Some(CANNOT_READ_THIS_FOLDER.to_owned()),
+        std::io::ErrorKind::ReadOnlyFilesystem => Some(READ_ONLY_FOLDER.to_owned()),
+        _ => None,
     }
 }
 

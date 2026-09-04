@@ -138,6 +138,8 @@ pub struct PastRunWire {
     pub steps: Vec<PastStepWire>,
     /// Co kroki oddały sobie nawzajem — te same pliki, które pokazuje sekcja przekazań.
     pub handoffs: Vec<HandoffWire>,
+    /// Zdanie, kiedy tych przekazań nie dało się przeczytać.
+    pub handoffs_said: Option<String>,
     /// Gałęzie, które ten bieg zostawił w repozytorium projektu.
     ///
     /// Pusta lista dla biegu, po którym nie została ani jedna — i to jest zwykły stan: krok,
@@ -440,6 +442,10 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     // przeczytać, oddaje tu `None` — i to jest ta sama odpowiedź, co dla pliku bez tego klucza:
     // w obu przypadkach po prostu nie wiemy, i tak ma to zabrzmieć na ekranie.
     let reflection = described.as_ref().and_then(|file| file.reflection);
+    let (handoffs, handoffs_said) = match handoffs_of_run(project, &dir) {
+        Ok(handed) => (handed, None),
+        Err(said) => (Vec::new(), Some(said)),
+    };
 
     Ok(PastRunWire {
         folder: head.folder,
@@ -450,7 +456,10 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         steps,
         // Przekazania są prawdziwe niezależnie od `run.json`: to osobne pliki z własnym
         // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
-        handoffs: handoffs_of_run(project, &dir),
+        handoffs,
+        // Osobne od `said`: tamto mówi wyłącznie o nieczytelnym `run.json`, a jedno pole na oba
+        // fakty złamałoby zasadę jednego miejsca dla jednego faktu (niezmiennik 13).
+        handoffs_said,
         branches,
         reflection,
         said: head.said,
