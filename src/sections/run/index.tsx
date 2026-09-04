@@ -75,8 +75,16 @@ import { Entry } from './entry/entry';
 import { PastRuns } from './past/panel';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
-import { openOneRun, theOneThatIsGoing } from './history-command';
-import { answerTheLead, listRuns, openChat, sayToAgent, sayToOrchestrator, stop } from './io';
+import { openOneRun, planOfPastRun, theOneThatIsGoing } from './history-command';
+import {
+  answerTheLead,
+  listRuns,
+  openChat,
+  readRun,
+  sayToAgent,
+  sayToOrchestrator,
+  stop,
+} from './io';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania. */
 import { lead } from './lead';
@@ -700,6 +708,19 @@ export default function Run(): ReactElement {
   const lastRun = lastRunIn(ready, folder);
   const namesToRun = useMemo<readonly Named[]>(() => workflowNames(choices), [choices]);
 
+  /* ZMIANA WYBORU KOŃCZY OGLĄDANIE OSTATNIEGO BIEGU. Porównujemy z poprzednią decyzją, nie
+   * tylko z plikiem biegu: przełączenie workspace zmienia `run`, ale nie jest wyborem człowieka
+   * i nie może skasować sesji, do której właśnie wrócił. */
+  const previousChoice = useRef(ready.chosen);
+  useEffect(() => {
+    const changed = previousChoice.current !== ready.chosen;
+    previousChoice.current = ready.chosen;
+    if (!changed || ready.chosen === null || run.ended === null || ready.chosen === run.fileName) {
+      return;
+    }
+    runFor(folder).getState().forgetTheLastRun();
+  }, [folder, ready.chosen, run.ended, run.fileName]);
+
   /* CO LEŻY W KATALOGACH NARZĘDZI AGENTOWYCH — nazwy, po których ukośnik w wierszu wejścia
    * przestaje być literówką (`./entry/entry.tsx`, `skillLine`).
    *
@@ -773,9 +794,11 @@ export default function Run(): ReactElement {
    */
   const plan = useMemo(() => {
     const live = planFor(run.steps, run.links, cards, view.now, view.pinned);
-    if (live.steps.length > 0 || nextUp === null) return live;
+    /* Flaga końca bije podgląd pliku także przy pustym planie: brak kroków zapisany w paragonie
+     * nie jest zgodą na narysowanie cudzych kroków z workflow, które ruszyłoby teraz. */
+    if (run.ended !== null || live.steps.length > 0 || nextUp === null) return live;
     return planFor(nextUp.steps, nextUp.links ?? null, [], NOBODY_IS_WORKING, null);
-  }, [run.steps, run.links, cards, view.now, view.pinned, nextUp]);
+  }, [run.steps, run.links, run.ended, cards, view.now, view.pinned, nextUp]);
   /**
    * CO NAGŁÓWEK EKRANU MÓWI O TYM BIEGU — jedno wyrażenie, policzone bez okna
    * (`./strip/headline.ts`), bo to repo nie ma jsdom i wszystko, co da się rozstrzygnąć modelem,
@@ -795,8 +818,9 @@ export default function Run(): ReactElement {
     () =>
       headlineFor({
         workflow: run.workflow,
+        ...(run.ended === null ? {} : { finished: run.ended.name, startedAt: run.ended.startedAt }),
         nextUp: nextUp?.name ?? '',
-        steps: run.steps.length > 0 ? run.steps : (nextUp?.steps ?? []),
+        steps: run.ended !== null || run.steps.length > 0 ? run.steps : (nextUp?.steps ?? []),
         lines: run.lines,
         droppedBefore: run.droppedBefore,
         workspace: (run.folder ?? folder) === null ? null : folderName(run.folder ?? folder ?? ''),
@@ -805,6 +829,7 @@ export default function Run(): ReactElement {
       }),
     [
       run.workflow,
+      run.ended,
       run.steps,
       run.lines,
       run.droppedBefore,
@@ -997,7 +1022,7 @@ export default function Run(): ReactElement {
     });
   }, [folder, onTop]);
 
-  /* BIEG, KTÓRY IDZIE, KIEDY TO OKNO DOPIERO WSTAJE.
+  /* OSTATNI BIEG TEGO FOLDERU, KIEDY TO OKNO DOPIERO WSTAJE.
    *
    * # Po co to istnieje
    *
@@ -1010,24 +1035,29 @@ export default function Run(): ReactElement {
    *
    * # Skąd bierzemy odpowiedź
    *
-   * Z historii tego zakresu, bez ani jednej nowej krawędzi: `list_runs` podaje `state`, a bieg
-   * ze słowem `running` w SWOIM katalogu jest tym, który idzie. Biegi porzucone przez zamknięte
-   * okno nie są tu pomyłką, bo sprzątanie przy starcie przepisuje je na `interrupted`, zanim
-   * to okno cokolwiek zamówi (`ipc::AppState::settle_everything_left_behind`).
+   * Z historii tego zakresu, bez nowej krawędzi: `list_runs` podaje `state`, a bieg ze słowem
+   * `running` w SWOIM katalogu jest tym, który idzie. Gdy żaden nie idzie, pierwszy wiersz jest
+   * ostatnim skończonym; jego kroki czyta ten sam `read_run`, którym panel otwiera historię.
+   * Biegi porzucone przez zamknięte okno nie są tu pomyłką, bo sprzątanie przy starcie
+   * przepisuje je na `interrupted`, zanim to okno cokolwiek zamówi
+   * (`ipc::AppState::settle_everything_left_behind`).
    *
    * # Czego to NIE robi i dlaczego
    *
-   * Nie podaje kroków. Strumień linii należy do wywołania, które ten bieg zaczęło, i po
-   * przeładowaniu nie da się do niego wrócić — pasek narysowany z migawki `run.json` stałby
-   * w miejscu i wyglądałby jak bieg, który utknął. Pusta lista kroków jest tu tą samą decyzją,
-   * co przy wznowieniu z historii (`io.ts`, `asARun`): lepiej nie rysować bloków, niż rysować
-   * takie, które nie mówią prawdy (niezmiennik 17).
+   * ŻYWEMU biegowi nie podaje kroków. Strumień linii należy do wywołania, które ten bieg
+   * zaczęło, i po przeładowaniu nie da się do niego wrócić — pasek narysowany z migawki
+   * `run.json` stałby w miejscu i wyglądałby jak bieg, który utknął. Pusta lista kroków jest tu
+   * tą samą decyzją, co przy wznowieniu z historii (`io.ts`, `asARun`): lepiej nie rysować
+   * bloków, niż rysować takie, które udają żywe (niezmiennik 17). Skończony bieg jest odwrotny:
+   * jego zapis już się nie poruszy i jest jedynym prawdziwym źródłem końcowych stanów.
    *
    * Zdanie w strumieniu mówi to wprost, bo bez niego brak linii nad pracującym biegiem czyta się
    * jak bieg, który nic nie robi. */
   useEffect(() => {
     let alive = true;
-    if (useRun.getState().workflow !== '') return undefined;
+    const session = runFor(folder);
+    const before = session.getState();
+    if (before.workflow !== '' || before.ended !== null) return undefined;
     listRuns(folder)
       .then((rows) => {
         if (!alive) return;
@@ -1037,15 +1067,38 @@ export default function Run(): ReactElement {
          * samym montażu dałoby dwie listy z dwóch chwil (niezmiennik 13). */
         rememberRuns(folder, rows);
         const going = theOneThatIsGoing(rows);
-        if (going === null) return;
-        if (runFor(folder).getState().workflow !== '') return;
-        runFor(folder).getState().nowRunning(going.title, [], folder, going.workflowFile);
-        showInStream(
-          saidOf(
-            `"${going.title}" was already going when this window opened, so the lines from ` +
-              'before are not here. Stop reaches it.',
-          ),
-        );
+        if (going !== null) {
+          const current = session.getState();
+          if (current.workflow !== '' || current.ended !== null) return;
+          session.getState().nowRunning(going.title, [], folder, going.workflowFile);
+          showInStream(
+            saidOf(
+              `"${going.title}" was already going when this window opened, so the lines from ` +
+                'before are not here. Stop reaches it.',
+            ),
+          );
+          return;
+        }
+
+        const latest = rows[0];
+        if (latest === undefined || session.getState().ended !== null) return;
+        /* 2026-09 (Z-37) — TEN SAM `read_run`, KTÓRY CZYTA HISTORIA. Dzisiejszy plik workflow
+         * mógł po biegu zmienić kroki albo zniknąć, więc nie jest paragonem tego, co zaszło
+         * (niezmienniki 4 i 17). */
+        return readRun(folder, latest.folder).then((past) => {
+          if (!alive) return;
+          const current = session.getState();
+          /* Odczyt dysku nie może nadpisać biegu wystartowanego, kiedy `read_run` było w locie. */
+          if (current.workflow !== '' || current.ended !== null) return;
+          current.finishedRun(
+            past.title,
+            planOfPastRun(past),
+            folder,
+            past.workflowFile,
+            null,
+            latest.when,
+          );
+        });
       })
       .catch(() => {
         /* Świadomie bez zdania na ekranie: nieczytelna historia mówi o sobie sama, kiedy

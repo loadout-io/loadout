@@ -23,8 +23,9 @@
  * (niezmiennik 16).
  */
 import { why } from '../../ipc/why';
+import { stepStateOf, type Step } from '../../state/run';
 import { activeWorkspace } from '../../state/workspaces';
-import type { PastRunRow } from './io';
+import type { PastRun, PastRunRow } from './io';
 import { listRuns, readRun } from './io';
 import { sayInHistory, showHistory, showPastRun } from './past/store';
 import type { AgentStatus } from './rail/card';
@@ -89,6 +90,30 @@ export function stateWord(state: string): HistoryState | '' {
     default:
       return '';
   }
+}
+
+/**
+ * Kroki zapisanego biegu jako ten sam plan, który czyta produkcyjny obraz biegu.
+ *
+ * 2026-09 (Z-37) — Z PLIKU BIEGU, nie z dzisiejszego workflow: człowiek mógł po biegu
+ * przepisać albo skasować jego plan. `not_run` jest słowem wyłącznie historii i odpowiada
+ * żywemu `skipped`; nieznane słowo znika w ciszy, zamiast wejść na ekran jako enum z drutu
+ * (niezmienniki 5 i 14).
+ */
+export function planOfPastRun(run: PastRun): readonly Step[] {
+  const plan: Step[] = [];
+  for (const past of run.steps) {
+    const state = past.state === 'not_run' ? 'skipped' : stepStateOf(past.state);
+    if (state === null) continue;
+    plan.push({
+      /* `tile` wskazuje kafelek; `id` jest tylko fizycznym UUID kroku tego biegu. Stary zapis
+       * bez `tile` nadal potrzebuje stabilnego klucza, więc wtedy zostaje jedyny dostępny. */
+      id: past.tile === '' ? past.id : past.tile,
+      name: past.name,
+      state,
+    });
+  }
+  return plan;
 }
 
 /**
