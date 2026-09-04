@@ -100,6 +100,10 @@ const MISSING_BROWSER: &str = "browserType.launch: Executable doesn't exist";
 fn kind(event: &AgentEvent) -> &'static str {
     match event {
         AgentEvent::Started { .. } => "Started",
+        // Ten vendor tego nie ogłasza i nie ma powodu, żeby zaczął: `LoadedFromTheFolder`
+        // powstaje wyłącznie z linii `system/init` Claude'a (2026-09, Z-16). Ramię jest tu po
+        // to, żeby sekwencja Codeksa dała się porównać w całości, także gdyby kiedyś zaczął.
+        AgentEvent::LoadedFromTheFolder(_) => "LoadedFromTheFolder",
         AgentEvent::Thinking => "Thinking",
         AgentEvent::Said { .. } => "Said",
         AgentEvent::ToolStart { .. } => "ToolStart",

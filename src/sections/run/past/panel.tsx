@@ -90,6 +90,44 @@ export function stepsText(steps: number): string {
   return steps === 1 ? '1 step' : String(steps) + ' steps';
 }
 
+/**
+ * Jedno zdanie o tym, co aplikacja agenta dobrała sobie z folderu — albo `null`, kiedy nie ma
+ * o czym mówić.
+ *
+ * DLACZEGO TO ZDANIE ISTNIEJE. Krok staje w cudzym repozytorium i bierze stamtąd rzeczy, których
+ * Loadout mu nie dał — umiejętności, polecenia z ukośnikiem, pluginy, katalog pamięci. Ile
+ * dokładnie, zależy od wersji aplikacji agenta i raz już zmieniło się po cichu: na 2.1.251 wchodził
+ * także plik instrukcji projektu i sześć kroków zapisało przez to pliki wyników wbrew temu, co
+ * kazał im Loadout; na 2.1.260 już nie wchodzi (zmierzone 2026-09-04). Człowiek czytający historię
+ * nie miał ani jednego miejsca, w którym mógłby zobaczyć którąkolwiek z tych dwóch sytuacji.
+ *
+ * NIE MA W NIM PLIKU INSTRUKCJI PROJEKTU i to jest rozstrzygnięcie, nie skrócenie. Do 2026-09-04
+ * zdanie brzmiało „this step also reads CLAUDE.md and N skills…", a nazwa pliku brała się z tego,
+ * że Rust znalazł go na dysku — czyli zrównywała „leży w folderze" z „agent to przeczytał". Sonda
+ * na 2.1.260 pokazała, że przy dzisiejszych flagach nie dociera, więc to zdanie wysyłało człowieka
+ * szukającego przyczyny pod zły plik. Wiarygodnego sygnału o wczytaniu granica nie niesie wcale.
+ *
+ * Zdanie mówi więc wyłącznie to, co aplikacja agenta SAMA O SOBIE OGŁOSIŁA
+ * (`commands::run::Live::also_loaded`).
+ *
+ * `null` NA DWA RÓŻNE STANY I TO JEST WYBÓR. Brak rekordu (Codex, kafelek „sprawdź", każdy bieg
+ * sprzed 2026-09) i rekord bez ani jednej umiejętności — dla patrzącego są jednym: z tego folderu
+ * nie przyszło nic, co warto nazwać. Zdanie „reads 0 skills" byłoby wierszem, który nic nie mówi,
+ * przy każdym kroku każdego biegu (niezmiennik 16).
+ */
+export function alsoLoadedText(step: PastStep): string | null {
+  const loaded = step.loadedByTheApp;
+  if (loaded === undefined || loaded === null) return null;
+  if (loaded.skills.length === 0) return null;
+
+  const what = loaded.skills.length === 1 ? '1 skill' : String(loaded.skills.length) + ' skills';
+  // Folder bez nazwy zdarza się tylko przy uszkodzonym rekordzie. Zdanie zostaje prawdziwe bez
+  // niego; „from " zakończone niczym wyglądałoby jak napis, który się nie dorysował.
+  return loaded.folder === ''
+    ? 'this step also reads ' + what
+    : 'this step also reads ' + what + ' from ' + loaded.folder;
+}
+
 /** Prawa kolumna wiersza listy: ile kroków i ile to kosztowało, kiedy ktokolwiek to zmierzył. */
 export function tallyText(row: PastRunRow): string {
   const cost = costText(row.costUsd);
@@ -357,7 +395,7 @@ function Step({
         )}
       </h4>
 
-      <StepMemory memory={step.memory ?? []} />
+      <StepMemory memory={step.memory ?? []} alsoLoaded={alsoLoadedText(step)} />
 
       {/* KROK JEST PUDEŁKIEM O SKOŃCZONEJ WYSOKOŚCI, i to jest cała naprawa tego ekranu.
           Zgłoszenie właściciela 2026-08-23: „ten UI od razu ogarnij bo mnie wkurwia".
@@ -405,11 +443,29 @@ function Step({
   );
 }
 
-/** Zamrożony receipt — wyłącznie z `PastStep`, nigdy z dzisiejszego katalogu pamięci. */
-function StepMemory({ memory }: { memory: readonly PastMemory[] }): ReactElement {
+/**
+ * Zamrożony receipt — wyłącznie z `PastStep`, nigdy z dzisiejszego katalogu pamięci.
+ *
+ * DWA ŹRÓDŁA, JEDEN NAGŁÓWEK, i to jest niezmiennik 13: „co ten krok wiedział" jest jednym
+ * pytaniem. Notatki to materiał, który Loadout do kroku WŁOŻYŁ; zdanie pod nimi to materiał,
+ * który aplikacja agenta dobrała sobie z folderu, w którym krok stanął. Drugi region gdzie
+ * indziej na karcie kazałby czytać dwa miejsca, żeby poznać jedną odpowiedź.
+ */
+function StepMemory({
+  memory,
+  alsoLoaded,
+}: {
+  memory: readonly PastMemory[];
+  alsoLoaded: string | null;
+}): ReactElement {
   return (
     <section data-step-memory className="border-b border-line px-[18px] py-[9px]">
       <h5 className="mb-1 font-mono text-eyebrow text-muted">{WHAT_THIS_STEP_KNEW}</h5>
+      {alsoLoaded === null ? null : (
+        <p data-also-loaded className="label">
+          {alsoLoaded}
+        </p>
+      )}
       {memory.length === 0 ? (
         <p className="lead">{NO_FROZEN_MEMORY}</p>
       ) : (

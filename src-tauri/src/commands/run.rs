@@ -209,7 +209,8 @@ use crate::engine::drivers::command::{
 };
 use crate::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
-    DriverSetupError, DriverSetupFailure, FinishReason, Outcome as DriverOutcome, Policy, RunSpec,
+    DriverSetupError, DriverSetupFailure, FinishReason, LoadedFromTheFolder,
+    Outcome as DriverOutcome, Policy, RunSpec,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
@@ -7821,6 +7822,42 @@ struct StepRun {
     repaired: Vec<String>,
     /// Czy odpowiedź nie zmieściła się w `BODY_CAP` i część leży w `attachments/`.
     truncated: bool,
+    /// Co aplikacja agenta wczytała z folderu sama z siebie, zanim krok powiedział słowo.
+    ///
+    /// `None` znaczy „ten krok o tym nic nie powiedział" i tak zostaje: kafelek „sprawdź" nie
+    /// woła agenta, Codex tego nie ogłasza, a krok zdjęty przed pierwszym zdarzeniem nie zdążył.
+    /// Pusty rekord wpisany na siłę mówiłby to samo jednym kluczem więcej w każdym kroku każdego
+    /// biegu w historii — ta sama decyzja, co przy [`StepRun::repaired`].
+    loaded_by_the_app: Option<LoadedByTheApp>,
+}
+
+/// Co aplikacja agenta dobrała sobie z folderu kroku — zapisywane do `run.json`.
+///
+/// # Dlaczego to jest własny typ, a nie [`crate::evidence::ContextSource`]
+///
+/// Tamten opisuje JEDNO źródło trzema polami (`kind`, `reference`, `bytes`) i tak ma zostać: on
+/// jedzie do prywatnego manifestu wejścia, gdzie liczy się rozmiar materiału, który wszedł do
+/// promptu. Tutaj rozmiaru nie znamy — CLI podaje nazwy, nie bajty — a pytanie jest inne: nie
+/// „ile tego było", tylko „co to było". Rodzaj bierzemy z tamtej zamkniętej listy
+/// ([`ContextKind::LoadedByTheApp`]), bo to jest jedno miejsce z odpowiedzią na pytanie „skąd
+/// wziął się kontekst tego kroku" (niezmiennik 13).
+///
+/// **Nazwy pól są `snake_case` i to jest kontrakt z `store::rebuild`**, dokładnie jak reszta
+/// [`StepEntry`]; `kind` serializuje się `camelCase`, bo to jest kształt [`ContextKind`], nie
+/// nasz schemat pliku.
+#[derive(Debug, Clone, Serialize)]
+struct LoadedByTheApp {
+    kind: ContextKind,
+    /// Sama nazwa katalogu, nigdy pełna ścieżka: bezwzględna ścieżka z katalogu domowego
+    /// człowieka w pliku, który zostaje po biegu, jest tym, czego `evidence::validate_manifest`
+    /// odmawia manifestowi wejścia (2026-09, Z-16).
+    folder: String,
+    plugins: Vec<String>,
+    slash_commands: Vec<String>,
+    skills: Vec<String>,
+    mcp_servers: Vec<String>,
+    memory_paths: Vec<String>,
+    agents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -8008,6 +8045,7 @@ impl Live {
                 error: None,
                 repaired: Vec::new(),
                 truncated: false,
+                loaded_by_the_app: None,
             })
             .collect();
         let stopped_by_the_budget = Mutex::new(vec![None; plan.steps.len()]);
@@ -8451,6 +8489,64 @@ impl Live {
         }
     }
 
+    /// Zapisuje, co aplikacja agenta wczytała temu krokowi z folderu (2026-09, Z-16).
+    ///
+    /// # Dlaczego to idzie do KSIĘGI, a nie obok niej
+    ///
+    /// Bo pytanie brzmi „co ten krok dostał", a odpowiedź ma przeżyć skasowanie `loadout.db`
+    /// (niezmiennik 4) — czyli musi być w `run.json`. Wpis powstaje w chwili, w której CLI się
+    /// przedstawia, i od tej chwili leży w księdze: koniec kroku tylko dopisuje do niej stan
+    /// końcowy, więc krok, który nie przeszedł, został zatrzymany przez człowieka albo trafił
+    /// w sufit czasu, ma ten sam rekord co krok udany. Zapis na końcu kroku miałby go
+    /// dokładnie tam, gdzie nikt go nie potrzebuje.
+    ///
+    /// **Pierwszy wpis wygrywa.** Vendor przysyła `init` raz na sesję, a nie raz na turę — ale
+    /// gdyby przysłał drugi, ten sam krok miałby dwa różne zdania o tym samym folderze, a widać
+    /// byłoby drugie.
+    ///
+    /// # WYŁĄCZNIE TO, CO CLI OGŁOSIŁO — nigdy to, co znaleźliśmy na dysku
+    ///
+    /// Listy niżej przepisujemy z `system/init` bez ani jednego wniosku: to CLI mówi, co wzięło.
+    /// `CLAUDE.md` w tym rekordzie **nie ma czego szukać** i to jest rozstrzygnięcie, nie
+    /// przeoczenie (2026-09-04, Z-16).
+    ///
+    /// Do tego dnia stało tu jedno `is_file()` na katalogu, który podało CLI, a jego wynik jechał
+    /// na ekran jako „this step also reads CLAUDE.md…". To zrównywało DWIE RÓŻNE RZECZY: że plik
+    /// tam leży, i że agent go przeczytał. Na 2.1.251 jedno wynikało z drugiego — i na tym stał
+    /// incydent, w którym sześć kroków biegu `20260823-145648` zapisało pliki wyników wbrew temu,
+    /// co kazał im Loadout. Sonda z 2026-09-04 na 2.1.260 (trzy przebiegi z kontrolą negatywną,
+    /// tabela przy `engine::drivers::claude::LEAN_CONTEXT`) pokazała, że przy dzisiejszym argv
+    /// Loadouta plik do kroku **nie dociera** — więc to zdanie wysyłało człowieka szukającego
+    /// przyczyny pod zły plik. Dokładnie ta klasa wady, dla której ten rekord powstał, o warstwę
+    /// wyżej.
+    ///
+    /// `system/init` nie ma pola, które mówiłoby o pliku instrukcji, więc wiarygodnego sygnału
+    /// nie ma wcale — a rekord bez zgadywania jest krótszy i prawdziwy. Kiedy taki sygnał się
+    /// pojawi, to jest miejsce, w którym ma go czytać.
+    fn also_loaded(&self, id: StepId, loaded: &LoadedFromTheFolder) {
+        let mut book = self.book();
+        let Some(step) = book.steps.get_mut(id) else {
+            return;
+        };
+        if step.loaded_by_the_app.is_some() {
+            return;
+        }
+        step.loaded_by_the_app = Some(LoadedByTheApp {
+            kind: ContextKind::LoadedByTheApp,
+            folder: loaded
+                .folder
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            plugins: loaded.plugins.clone(),
+            slash_commands: loaded.slash_commands.clone(),
+            skills: loaded.skills.clone(),
+            mcp_servers: loaded.mcp_servers.clone(),
+            memory_paths: loaded.memory_paths.clone(),
+            agents: loaded.agents.clone(),
+        });
+    }
+
     /// Pytanie, ktore staje na ekranie, kiedy krok nie przeszedl, a czlowiek chcial byc pytany.
     ///
     /// Niesie CZTERY rzeczy, bo bez ktorejkolwiek nie da sie odpowiedziec: ktory krok, co sie
@@ -8837,6 +8933,7 @@ impl Live {
                 },
                 repaired: &run.repaired,
                 truncated: run.truncated,
+                loaded_by_the_app: run.loaded_by_the_app.as_ref(),
             })
             .collect();
 
@@ -12181,6 +12278,13 @@ async fn forward(
         if let AgentEvent::Said { text } = &event {
             live.also_said(id, text);
         }
+        /* 2026-09 (Z-16) — CO FOLDER DAŁ TEMU KROKOWI, ZANIM POWIEDZIAŁ SŁOWO. Tutaj, bo tędy
+         * przechodzi KAŻDE zdarzenie kroku, i w tym samym miejscu co proza wyżej, bo obie te
+         * rzeczy są zapisem trwałym, a nie wierszem na ekran (kurator oddaje z tego zdarzenia
+         * `Vec::new()` z rozmysłu — powód stoi w `engine::line`). */
+        if let AgentEvent::LoadedFromTheFolder(loaded) = &event {
+            live.also_loaded(id, loaded);
+        }
         let at_ms = u64::try_from(live.began.elapsed().as_millis()).unwrap_or(u64::MAX);
         let seen = Seen {
             agent: &agent,
@@ -12525,6 +12629,28 @@ struct StepEntry<'a> {
     /// ucięta — następny krok nie zobaczy wtedy w pliku, na który go wskazano, całej odpowiedzi.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
+    /// Co aplikacja agenta wczytała z folderu tego kroku **sama z siebie** — nie Loadout.
+    ///
+    /// # 2026-09 (Z-16) — do tego dnia ten fakt nie istniał nigdzie
+    ///
+    /// Linia `system/init` wymienia z nazwy całą powierzchnię folderu, którą CLI wzięło —
+    /// pluginy, polecenia z ukośnikiem, umiejętności, serwery narzędzi, katalog pamięci,
+    /// podagentów — a sterownik czytał z niej cztery pola i sześć porzucał. Nie było więc gdzie
+    /// zobaczyć, co ten krok naprawdę dostał: ani w oknie, ani w pliku, który zostaje po biegu.
+    ///
+    /// **Dlaczego to jest ważniejsze, niż wyglądało.** Na 2.1.251 `CLAUDE.md` gospodarza docierał
+    /// do kroku mimo `--setting-sources ""` i sześć kroków biegu `20260823-145648` zapisało przez
+    /// to pliki wyników wbrew temu, co kazał im Loadout; na 2.1.260 (zmierzone 2026-09-04) już
+    /// nie dociera. Vendor odwrócił to bez słowa w changelogu, więc wniosek „izolacja działa" ma
+    /// termin ważności, a ten klucz go nie ma: niesie CYTAT z `system/init`, nie wniosek, i po
+    /// nim jednym da się rozpoznać następną taką zmianę po fakcie.
+    ///
+    /// BRAK KLUCZA, KIEDY KROK NIC O TYM NIE POWIEDZIAŁ. Kafelek kontrolny, krok „sprawdź",
+    /// Codex i każdy bieg zapisany przed tą zmianą są dokładnie w tej sytuacji — a klucz mówiący
+    /// „nic nie wczytano" przy każdym z nich jest długością zapłaconą za milczenie, i to gorszą
+    /// niż zwykle, bo czyta się jak odpowiedź. Ta sama decyzja, co przy `repaired` obok.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    loaded_by_the_app: Option<&'a LoadedByTheApp>,
 }
 
 #[derive(Debug, Serialize)]

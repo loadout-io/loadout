@@ -14,6 +14,23 @@
 //! grupę. Drugi wypadek tej samej klasy: podagent repo gospodarza wystartował jako osobny
 //! proces i spalił 38–41 tys. tokenów poza widokiem i rozliczeniem Loadouta.
 //!
+//! # Zdanie wyżej jest ZMIERZONE i przypięte do wersji CLI [2026-09, Z-16]
+//!
+//! Czyta się je jak obietnicę, że z cudzego repozytorium nie wchodzi do kroku nic poza tym, co
+//! ten katalog przepisał. **Dziś tak jest** — i to nie jest założenie, tylko pomiar, bo przez
+//! jedno wydanie tak NIE było. Na `claude` 2.1.251 (2026-08) `--setting-sources ""` gasiło haki,
+//! `env` i piaskownicę gospodarza, ale jego `CLAUDE.md` docierał do kroku mimo to; kosztowało to
+//! sześć kroków biegu `20260823-145648`, które zapisały pliki wyników wbrew temu, co kazał im
+//! Loadout, bo tak kazały im instrukcje gospodarza. Na 2.1.260 (zmierzone 2026-09-04, trzy
+//! przebiegi z kontrolą negatywną — tabela stoi przy `engine::drivers::claude::LEAN_CONTEXT`)
+//! plik projektu już nie dociera.
+//!
+//! Ten moduł zostaje więc jaki jest, ale wniosek „izolacja działa" ma krótki termin ważności:
+//! vendor odwrócił to raz, po cichu, i changelog o tym milczał. Dlatego bieg zapisuje odtąd nie
+//! wniosek, tylko to, co CLI **samo ogłosiło** w `system/init` — przez
+//! `engine::drivers::AgentEvent::LoadedFromTheFolder` do `run.json`. To jedyny zapis, po którym
+//! da się zauważyć następną taką zmianę po fakcie, a nie z rachunku.
+//!
 //! Ten plik trzyma **dane**: dwa typy i enum błędu. Zachowanie mieszka obok — czytanie
 //! gospodarza w [`scan`], pisanie do siebie w [`rewrite`]. Ten sam podział, co `skills/mod.rs`
 //! wobec `skills/place.rs`.

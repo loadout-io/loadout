@@ -14,6 +14,11 @@
 //! każdym kroku, na zawsze. `--tools ""` **nie wystarcza**: pierwszy bieg podał ją i `init`
 //! dalej wymieniał wszystkie narzędzia `mcp__`.
 //!
+//! To zdanie jest dziś prawdziwe **i jest przypięte do wersji CLI**, bo raz już przestało nią
+//! być i wróciło (2026-09, Z-16). Pełny pomiar — trzy przebiegi, dwie wersje — stoi przy
+//! [`LEAN_CONTEXT`]; to, co CLI o sobie ogłosiło, jedzie odtąd do `run.json` przez
+//! [`AgentEvent::LoadedFromTheFolder`], żeby następna cicha zmiana u vendora zostawiła ślad.
+//!
 //! **2. `--bare`.** Vendor sam ją poleca i zapowiada jako przyszłą domyślną dla `-p`
 //! [T1 §3.3, docs] — a ona **nigdy nie czyta OAuth ani keychaina** i tutaj wywaliła bieg na
 //! `Not logged in · Please run /login`, `terminal_reason:"api_error"` [T1 §3.3, ran].
@@ -86,8 +91,8 @@ use uuid::Uuid;
 
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
-    DriverSetupError, FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, StepSettings,
-    ToAgent, Tokens, ValidatedImages, Voice,
+    DriverSetupError, FinishReason, LoadedFromTheFolder, Outcome, Policy, Probe, RunSpec,
+    SessionRef, StepSettings, ToAgent, Tokens, ValidatedImages, Voice,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -169,6 +174,39 @@ const TRANSPORT: [&str; 6] = [
 ///
 /// Wartość `--setting-sources` ma **zero znaków** i to jest cała różnica: `"user,project"`
 /// w tym miejscu przechodzi każde sprawdzenie pytające o obecność flagi i nie izoluje niczego.
+///
+/// # Ile z tego jest prawdą, ZALEŻY OD WERSJI CLI. Zmierzone dwa razy, z różnym wynikiem
+///
+/// To nie jest ostrożnościowa uwaga, tylko pomiar, który raz już się odwrócił — i dlatego
+/// stoi tu z datami i numerami wersji, a nie jako założenie (niezmiennik 24).
+///
+/// **2.1.251, 2026-08:** `--setting-sources ""` odcinało `settings.json` gospodarza (haki,
+/// `env`, `permissions.allow`), ale `CLAUDE.md` i `.claude/rules/` **docierały** do każdego
+/// kroku, bo proces stoi w cudzym repozytorium. Kosztowało to sześć kroków biegu
+/// `20260823-145648`, które zapisały pliki wyników wbrew temu, co kazał im Loadout — bo tak
+/// kazały im instrukcje gospodarza.
+///
+/// **2.1.260, 2026-09-04:** już nie docierają. Sonda w katalogu tymczasowym z `CLAUDE.md`
+/// mówiącym „odpowiedz jednym słowem MARKER-FROM-PROJECT-FILE", pytanie `What is 2+2?`, trzy
+/// przebiegi na jednej maszynie:
+///
+/// | przebieg | flagi | odpowiedź |
+/// |---|---|---|
+/// | A | te dwie flagi, czyli argv Loadouta | `4` — plik projektu nie dociera |
+/// | B | bez flag, **kontrola negatywna** | `MARKER-FROM-PROJECT-FILE` — fikstura działa |
+/// | C | `--restricted` | `4` |
+///
+/// Przebieg B jest tu tym, co odróżnia „izolacja działa" od „fikstura była zepsuta", i bez
+/// niego dwa pozostałe nie znaczyłyby nic.
+///
+/// **Wniosek dla następnego czytelnika: dziś izolacja DZIAŁA, a vendor zmienił to po cichu
+/// między dwoma wydaniami.** Nie ma po czym poznać, że zmieni ją z powrotem — changelog o tym
+/// milczał. Dlatego bieg zapisuje odtąd nie ten wniosek, tylko to, co CLI **samo ogłosiło**
+/// w `system/init` ([`AgentEvent::LoadedFromTheFolder`] → `run.json`): jedyny zapis, który
+/// przeżyje kolejną taką zmianę i pozwoli ją zauważyć po fakcie, a nie z rachunku.
+///
+/// `--restricted` (przebieg C) **nie wchodzi do argv** i nie ma po co: przy tych flagach nie
+/// zmienia niczego, co dałoby się zmierzyć.
 const LEAN_CONTEXT: [&str; 3] = ["--strict-mcp-config", "--setting-sources", ""];
 
 /// Flaga, którą to CLI przyjmuje poziom wysiłku. Zmierzone 2026-08-23 na 2.1.241:
@@ -1435,7 +1473,11 @@ where
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClaudeLine {
     /// `init`, `thinking_tokens`, `api_retry`, haki — rozróżniane po `subtype`.
-    System(SystemLine),
+    ///
+    /// W pudełku od 2026-09 (Z-16), z tego samego powodu, co [`ClaudeLine::Result`] niżej:
+    /// `init` jest największą linią tego drutu, a enum bez pudełka jest tak duży jak jego
+    /// największy wariant — czyli KAŻDA linia strumienia płaciłaby jego rozmiarem.
+    System(Box<SystemLine>),
     /// Proza, myślenie i wywołania narzędzi.
     Assistant(TurnLine),
     /// Wyniki narzędzi wracające do modelu (i nasze koperty, gdyby ktoś włączył ich echo).
@@ -1451,6 +1493,20 @@ enum ClaudeLine {
 
 /// Linia `system/*`. Każde pole opcjonalne, bo `init` z 2.1.233 ma ich dwadzieścia kilka,
 /// a `hook_response` — pięć zupełnie innych [T1 §4.1, korekta 5].
+///
+/// # Sześć pól dołożonych 2026-09 (Z-16), i dlaczego akurat te
+///
+/// `init` mówi wprost, co CLI wczytało z folderu, w którym stanęło — i to jest jedyna droga do
+/// tego faktu, bo Loadout tych rzeczy nie podaje. Do tego dnia czytaliśmy z tej linii cztery
+/// pola i sześć porzucali; kosztowało to sześć kroków, które zapisały pliki wyników wbrew temu,
+/// co kazał im Loadout, bo tak kazały im instrukcje gospodarza.
+///
+/// **Trzy z nich to obiekty, nie napisy** [zmierzone na fiksturze `claude-stream.jsonl`]:
+/// `plugins` i `mcp_servers` są listami obiektów z `name`, a `memory_paths` jest obiektem,
+/// którego wartością jest bezwzględna ścieżka w katalogu domowym człowieka. `Value` tutaj
+/// i wybór nazw w [`ClaudeDecoder::system`] są tańsze niż trzy typy wire, których jedynym
+/// czytelnikiem byłoby to jedno miejsce — i niezmiennik 5 zostaje: kształt, którego nie znamy,
+/// nie kasuje pozostałych pól tej linii.
 #[derive(Debug, Deserialize)]
 struct SystemLine {
     subtype: Option<String>,
@@ -1462,6 +1518,21 @@ struct SystemLine {
     capabilities: Option<Vec<String>>,
     attempt: Option<u32>,
     max_retries: Option<u32>,
+    /// Katalog, w którym CLI się uruchomiło. To jest **jego własna** odpowiedź na pytanie
+    /// „skąd wczytałem", a nie nasze `RunSpec::cwd` odbite z powrotem.
+    cwd: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    plugins: Option<Vec<Value>>,
+    #[serde(default, deserialize_with = "lenient")]
+    slash_commands: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "lenient")]
+    skills: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "lenient")]
+    mcp_servers: Option<Vec<Value>>,
+    #[serde(default, deserialize_with = "lenient")]
+    memory_paths: Option<serde_json::Map<String, Value>>,
+    #[serde(default, deserialize_with = "lenient")]
+    agents: Option<Vec<String>>,
 }
 
 /// Linia `assistant` albo `user`: obie niosą wiadomość z blokami treści [T1 §4.2, §4.3].
@@ -1681,14 +1752,23 @@ impl ClaudeDecoder {
                 if let Some(id) = &line.session_id {
                     self.session = Some(id.clone());
                 }
-                vec![AgentEvent::Started {
+                let mut events = vec![AgentEvent::Started {
                     session: self.session_ref(line.session_id.as_deref()),
                     model: line.model.clone().unwrap_or_default(),
                     tools: line.tools.clone().unwrap_or_default(),
                     // Na TEJ liście, a nie na numerze wersji, feature-detektuje się przerwanie
                     // w paśmie [T1 §4.1, §4.6].
                     capabilities: line.capabilities.clone().unwrap_or_default(),
-                }]
+                }];
+                /* DRUGIE ZDARZENIE Z TEJ SAMEJ LINII, i tylko wtedy, gdy ona naprawdę coś
+                 * o folderze powiedziała (2026-09, Z-16). Linia `init` bez ani jednego z tych
+                 * sześciu pól — a taka przychodzi z każdego dublera i z każdego starego
+                 * transkryptu — jest ciszą, nie odpowiedzią „nic nie wczytano". */
+                let loaded = loaded_from_the_folder(line);
+                if loaded.says_anything() {
+                    events.push(AgentEvent::LoadedFromTheFolder(loaded));
+                }
+                events
             }
             // Nigdy nie niesie tekstu: to jest stały slot na dole ekranu, nie wpis w historii
             // [`docs/ARCHITECTURE.md` §6, reguła 5].
@@ -1929,6 +2009,41 @@ fn failure_sentence(line: &ResultLine) -> String {
         Some("timeout") => "The agent ran out of time.".to_owned(),
         _ => "The agent stopped before it finished.".to_owned(),
     }
+}
+
+/// Co ta linia `init` powiedziała o folderze, w którym CLI stanęło (2026-09, Z-16).
+///
+/// **Nazwy, nigdy ścieżki.** `plugins` i `mcp_servers` przychodzą jako obiekty ze ścieżką
+/// w katalogu domowym człowieka, a `memory_paths` jest obiektem, którego wartością jest taka
+/// ścieżka — więc bierzemy z nich `name` i klucz. Ścieżka gospodarza w pliku, który zostaje po
+/// biegu, jest tym samym, czego `evidence::validate_manifest` odmawia manifestowi wejścia.
+fn loaded_from_the_folder(line: &SystemLine) -> LoadedFromTheFolder {
+    LoadedFromTheFolder {
+        folder: line.cwd.clone().map(PathBuf::from).unwrap_or_default(),
+        plugins: named(line.plugins.as_deref()),
+        slash_commands: line.slash_commands.clone().unwrap_or_default(),
+        skills: line.skills.clone().unwrap_or_default(),
+        mcp_servers: named(line.mcp_servers.as_deref()),
+        memory_paths: line
+            .memory_paths
+            .as_ref()
+            .map(|paths| paths.keys().cloned().collect())
+            .unwrap_or_default(),
+        agents: line.agents.clone().unwrap_or_default(),
+    }
+}
+
+/// Pole `name` z każdej pozycji listy obiektów, w kolejności z drutu.
+///
+/// Pozycja bez nazwy wypada, a nie staje się pustym napisem: lista, na której człowiek widzi
+/// puste miejsce, mówi „coś tu jest i nie wiem co" o czymś, o czym vendor nie powiedział nic.
+fn named(items: Option<&[Value]>) -> Vec<String> {
+    items
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Zdanie o ponowieniu zapytania. Liczby wchodzą tylko wtedy, gdy vendor je podał.

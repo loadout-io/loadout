@@ -243,6 +243,13 @@ pub struct PastStepWire {
     /// Zamrożony receipt wyłącznie TEGO fizycznego kroku. Pusta lista jest jawna także dla
     /// starych biegów, żeby granica TypeScript nie musiała zgadywać, czy pole zaginęło.
     pub memory: Vec<PastMemoryWire>,
+    /// Co aplikacja agenta wczytała z folderu tego kroku sama z siebie.
+    ///
+    /// `None` — a nie pusty rekord — dla każdego kroku, który tego nie ogłosił: kafelka
+    /// kontrolnego, kroku „sprawdź", Codeksa i każdego biegu zapisanego przed 2026-09 (Z-16).
+    /// Ekran ma te dwa stany rozróżniać, bo „nic stąd nie wczytał" i „nie wiemy" to dwa różne
+    /// zdania (niezmiennik 17).
+    pub loaded_by_the_app: Option<LoadedByTheAppWire>,
     /// Zapisany strumień tego kroku, przepuszczony przez TĘ SAMĄ kurację, co żywy bieg.
     ///
     /// 2026-08-23 (T-95) — POPRAWIONY AKAPIT, BO POPRZEDNI BYŁ NIEPRAWDĄ. Stało tu, że
@@ -257,6 +264,37 @@ pub struct PastStepWire {
     /// odwrotne kosztowało tyle, ile kosztują wszystkie: uczyło następnego czytelnika szukać
     /// szwu, który już istnieje.
     pub lines: Vec<Line>,
+}
+
+/// Co aplikacja agenta dobrała sobie z folderu kroku — czytane z `run.json`, oddawane oknu.
+///
+/// # Jeden typ, dwie pisownie, i to nie jest sprytność
+///
+/// Na dysku klucze są `snake_case`, bo tak pisze je `commands::run::StepEntry` i tak czyta je
+/// `store::rebuild` — rozjazd znaczy bieg, którego po skasowaniu bazy nie da się odtworzyć
+/// (niezmiennik 4). Do okna jadą `camelCase`, jak cała reszta tego drutu. Drugi typ na tę samą
+/// treść byłby drugim miejscem, w którym trzeba dopisać pole — a to jest dokładnie ta para,
+/// która rozjeżdża się po cichu.
+///
+/// **Nazwy, nigdy ścieżki.** Powód w całości stoi przy `engine::drivers::LoadedFromTheFolder`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+pub struct LoadedByTheAppWire {
+    /// Nazwa katalogu, z którego to przyszło.
+    #[serde(default)]
+    pub folder: String,
+    #[serde(default)]
+    pub plugins: Vec<String>,
+    #[serde(default)]
+    pub slash_commands: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub memory_paths: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<String>,
 }
 
 /// Jedna zamrożona notatka przypięta do fizycznego kroku z `run.json`.
@@ -362,6 +400,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 error: step.error.clone().unwrap_or_default(),
                 cost_usd: step.cost_usd,
                 memory: memory_for_step(&file.memory, &step.id),
+                loaded_by_the_app: step.loaded_by_the_app.clone(),
                 lines: recorded_lines(
                     &dir,
                     &step.id,
@@ -638,6 +677,11 @@ struct StepDescription {
     /// plików sprzed wprowadzenia migawki. Oba znaczą „czytaj jak dotąd", czyli Claude'em.
     #[serde(default)]
     effective: Option<EffectiveAgent>,
+    /// Co aplikacja agenta wczytała z folderu tego kroku. Klucza nie ma w żadnym `run.json`
+    /// zapisanym przed 2026-09 (Z-16), więc `default` jest tu jedyną drogą do tego, żeby stare
+    /// biegi dalej dawały się otworzyć (niezmiennik 5 na granicy pliku).
+    #[serde(default)]
+    loaded_by_the_app: Option<LoadedByTheAppWire>,
 }
 
 /// To jedno pole migawki agenta, którego potrzebuje odczyt transkryptu.

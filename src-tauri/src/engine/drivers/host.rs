@@ -7,6 +7,16 @@
 //! do naszego biegu w ogóle, a jedynym sposobem, żeby tego dopilnować, jest **nie wczytać
 //! tamtego pliku** (`--setting-sources ""` w [`super::claude`]).
 //!
+//! **„Tamten plik" znaczy dokładnie `.claude/settings.json`, i to zdanie jest ZMIERZONE, nie
+//! założone** [2026-09, Z-16]. Ten moduł przepisuje jedno pole tamtego dokumentu i o resztę
+//! repozytorium gospodarza — `CLAUDE.md`, `.claude/rules/`, polecenia z ukośnikiem,
+//! umiejętności, podagentów — nie pyta. Przez jedno wydanie CLI była to luka: na 2.1.251 plik
+//! projektu docierał do kroku mimo `--setting-sources ""` i sześć kroków biegu `20260823-145648`
+//! zapisało przez to pliki wyników wbrew temu, co kazał im Loadout. Na 2.1.260 (zmierzone
+//! 2026-09-04, trzy przebiegi z kontrolą negatywną — tabela przy `super::claude::LEAN_CONTEXT`)
+//! już nie dociera. Ponieważ vendor odwrócił to po cichu, bieg zapisuje odtąd to, co CLI samo
+//! ogłosiło w `system/init`, przez [`super::AgentEvent::LoadedFromTheFolder`] do `run.json`.
+//!
 //! # Dlaczego akurat te cztery pola odrzucamy [zmierzone 2026-08-19]
 //!
 //! **`hooks`.** Hak `PreToolUse` gospodarza startuje proces we **własnej grupie procesów**;

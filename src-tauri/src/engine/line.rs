@@ -997,7 +997,15 @@ impl Curator {
             //   która się nie zmieni, stoi już w wierszu końca tury. Zdanie dla człowieka
             //   powstaje z tego zdarzenia tylko wtedy, gdy sufit naprawdę przerwie turę —
             //   i wtedy pisze je `commands::run`, jednym `Line::Problem`.
-            AgentEvent::Started { .. } | AgentEvent::Spending { .. } => Vec::new(),
+            //
+            // - `LoadedFromTheFolder` jest faktem O FOLDERZE, a nie czymś, co agent zrobił
+            //   (2026-09, Z-16). Strumień pracy odpowiada na pytanie „co się dzieje"; ten fakt
+            //   jest prawdziwy przez cały krok i stoi pod nagłówkiem „What this step knew",
+            //   jednym zdaniem, w jednym miejscu (niezmiennik 13). Wiersz obok tamtego zdania
+            //   byłby drugim żywym regionem na jeden fakt.
+            AgentEvent::Started { .. }
+            | AgentEvent::Spending { .. }
+            | AgentEvent::LoadedFromTheFolder(_) => Vec::new(),
             // `FileEdit` przychodzi od sterownika Claude **razem** z `ToolEnd` tego samego
             // wywołania, a wiersz `edit` powstał już na `ToolStart` (to on niesie pełną ścieżkę).
             // Drugi wiersz z tego samego faktu podwajałby KAŻDĄ zmianę pliku w widoku.
