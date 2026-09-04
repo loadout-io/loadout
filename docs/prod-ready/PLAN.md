@@ -383,7 +383,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
   zostało nietkniętych — pliki są prawdą (niezmiennik 4). Zmierzone przed i po:
   baza **71,7 MB → 0,004 MB**, dziennik **42,2 MB → 0,11 MB**. Indeks zapełnia się od nowa
   przy kolejnych biegach; historia i tak czyta pliki.
-- **po Z-25:** jeśli werdykt „wirtualizacja niepotrzebna" — `npm uninstall @tanstack/react-virtual`.
+- **po Z-25 — ZROBIONE.** Werdykt brzmi „nie" i stoi w całości w `src/sections/run/feed/feed.tsx` z trzema zmierzonymi powodami. Sama zależność wyszła już wcześniej, razem z `@base-ui/react`, `@tauri-apps/plugin-store` i `@tauri-apps/plugin-opener` (R-10, 2026-09-02): `package.json` nie ma dziś ani jednego z tych wpisów, `package-lock.json` nie zna `react-virtual`, a `rusqlite_migration` zniknęło z `src-tauri/Cargo.toml`. Do posprzątania został sam komentarz w `feed.tsx`, który wciąż mówi „leży w `package.json`".
 - **po Z-20:** otwórz workflow Urc w aplikacji — kafelek „Figma check" bez Problemu (zrzut do Dziennika).
 
 ---
