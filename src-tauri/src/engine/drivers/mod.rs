@@ -60,6 +60,11 @@ pub mod command;
 /// Sąsiad `claude.rs`, nie część rdzenia: `.claude/settings.json` to kształt jednego vendora,
 /// a ten plik nie zna ani jednego.
 pub mod host;
+/// Stawki modeli: tabela wbudowana i ta dopisana ręką w `~/.loadout/prices.json`.
+///
+/// Adres w `drivers/`, choć wczytuje ją bieg: to jest wiedza o vendorach, a nie o biegu, i to
+/// sterownik jest jedynym, kto potrafi powiedzieć, czy da się z niej wycenić jego turę.
+pub mod prices;
 
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
 ///
@@ -379,8 +384,15 @@ impl LoadedFromTheFolder {
 const UNKNOWN_PRICE_OPENS: &str = "The price for ";
 const UNKNOWN_PRICE_CLOSES: &str = " is not known.";
 
+/// Jak nazywa się model, kiedy krok nie powiedział, czym jedzie.
+///
+/// Stała, a nie literał w jednym miejscu (2026-09, Z-44): tym samym zwrotem posługuje się odmowa
+/// startu pod sufitem (`commands::run`), a dwa zdania o tym samym braku, napisane osobno,
+/// rozjeżdżają się przy pierwszej zmianie brzmienia jednego z nich (niezmiennik 13).
+pub(crate) const THE_MODEL_WITH_NO_NAME: &str = "the model this step used";
+
 pub(crate) fn unknown_price_notice(model: Option<&str>) -> String {
-    let model = model.unwrap_or("the model this step used");
+    let model = model.unwrap_or(THE_MODEL_WITH_NO_NAME);
     format!("{UNKNOWN_PRICE_OPENS}{model}{UNKNOWN_PRICE_CLOSES}")
 }
 
@@ -1017,6 +1029,36 @@ pub trait AgentDriver: Send + Sync {
     /// zamiast uruchomić płatną turę bez twardego limitu. Konkretna flaga pozostaje własnością
     /// adaptera (niezmiennik 23).
     fn with_budget(&self, _dollars: f64) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
+    /// Czy TEN vendor umie powiedzieć, ile kosztowała tura tego modelu — **zanim** ją zamówi.
+    ///
+    /// # Po co to istnieje (2026-09, Z-44)
+    ///
+    /// Bo sufit wydatku biegu jest wart tyle, ile wart jest najsłabszy krok pod nim. Krok, którego
+    /// tury nikt nie umie wycenić, nie dokłada do sumy ani centa (Z-13b) — więc bieg z sufitem
+    /// 275 USD potrafił go przekroczyć, nie łamiąc ani jednej linii kodu. Wołający pyta o to
+    /// PRZED startem, bo po turze jest już tylko rachunek.
+    ///
+    /// Domyślne `true`, i to jest wybór na korzyść vendora, który cenę tury oddaje sam: `claude`
+    /// podaje ją z drutu i zna ją zawsze, tak samo każda atrapa silnika. Domyślne `false`
+    /// zatrzymywałoby pod sufitem kroki, które nie mają z tym problemem — a to jest awaria
+    /// głośniejsza niż ta, przed którą ten szew stoi.
+    fn can_price_a_turn(&self, _model: Option<&str>, _prices: &prices::Prices) -> bool {
+        true
+    }
+
+    /// Ten sam sterownik z tabelą stawek, którą ten bieg wczytał — albo `None`, kiedy ten vendor
+    /// żadnej nie czyta.
+    ///
+    /// Metoda na TRAICIE z domyślnym `None`, dokładnie jak [`AgentDriver::with_evidence`]
+    /// i [`AgentDriver::for_step`] obok, i z tego samego zmierzonego powodu: bieg trzyma sterownik
+    /// jako `Arc<dyn AgentDriver>`, więc budowniczy żyjący na konkretnym typie jest z niego
+    /// nieosiągalny. `None` znaczy „ten vendor cen nie liczy" — tak odpowiada każda atrapa, która
+    /// o tym szwie nic nie wie, więc ani jeden dubel w tym drzewie nie zmienia się o linię
+    /// (niezmiennik 23).
+    fn priced_from(&self, _prices: &prices::Prices) -> Option<Arc<dyn AgentDriver>> {
         None
     }
 

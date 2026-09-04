@@ -61,6 +61,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use super::prices::Prices;
 use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
     FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
@@ -225,6 +226,10 @@ pub struct CodexDriver {
     /// (2026-09, Z-01d). `None` znaczy „ten proces nie należy do żadnego kroku" — tak startuje
     /// sonda wersji i tylko ona.
     tag: Option<supervisor::StepTag>,
+    /// Stawki, którymi ten sterownik wycenia swoje tury (2026-09, Z-44). Domyślnie sama tabela
+    /// wbudowana; bieg podmienia je na tę, którą wczytał z biblioteki
+    /// ([`AgentDriver::priced_from`]).
+    prices: Prices,
 }
 
 impl fmt::Debug for CodexDriver {
@@ -256,6 +261,7 @@ impl CodexDriver {
             configuration: DriverConfiguration::default(),
             leftovers: None,
             tag: None,
+            prices: Prices::default(),
         }
     }
 
@@ -269,6 +275,7 @@ impl CodexDriver {
             configuration: DriverConfiguration::default(),
             leftovers: None,
             tag: None,
+            prices: Prices::default(),
         }
     }
 
@@ -356,6 +363,8 @@ impl CodexDriver {
             // Ten sam znacznik dla KAŻDEJ tury tej sesji: Codex startuje nowy proces na turę,
             // więc znacznik podany raz przy pierwszej nie doszedłby do żadnej następnej.
             tag: self.tag.clone(),
+            // I z tego samego powodu ta sama tabela stawek: każda tura wycenia się sama.
+            prices: self.prices.clone(),
         };
         let started = turn.start();
         if started.is_err() {
@@ -394,6 +403,7 @@ impl CodexDriver {
             stderr_task: Some(stderr_task),
             configuration: self.configuration.clone(),
             tag: self.tag.clone(),
+            prices: self.prices.clone(),
         })
     }
 }
@@ -434,6 +444,9 @@ struct Turn {
     /// Znacznik biegu dla procesu tej tury (2026-09, Z-01d). Codex startuje **nowy proces na
     /// turę**, więc znacznik musi przyjechać tu, a nie tylko do pierwszego spawnu.
     tag: Option<supervisor::StepTag>,
+    /// Stawki, którymi wycenia się KONIEC tej tury. Ten sam powód, co przy [`Turn::tag`]:
+    /// tabela podana raz przy pierwszym procesie nie doszłaby do żadnego następnego.
+    prices: Prices,
 }
 
 type StartedTurn = (
@@ -448,6 +461,7 @@ struct PumpInput {
     events: mpsc::Sender<DecodedEvent>,
     outcome: oneshot::Sender<Outcome>,
     model: Option<String>,
+    prices: Prices,
     threads: Arc<Mutex<Vec<String>>>,
     number: u64,
     cancelled: Arc<AtomicU64>,
@@ -534,6 +548,7 @@ impl Turn {
             events: self.events,
             outcome: tell,
             model: self.model,
+            prices: self.prices,
             threads: self.threads,
             number: self.number,
             cancelled: self.cancelled,
@@ -759,9 +774,9 @@ impl fmt::Debug for AppServerState {
 }
 
 impl AppServerState {
-    fn new(model: Option<String>) -> Self {
+    fn new(model: Option<String>, prices: Prices) -> Self {
         Self {
-            decoder: CodexDecoder::for_model(model),
+            decoder: CodexDecoder::for_model(model, prices),
             active: false,
             cancelled: false,
             began: Instant::now(),
@@ -807,12 +822,11 @@ impl AppServerState {
                  *
                  * NIEZNANA CENA NIE WYPUSZCZA NIC, dokładnie jak w [`CodexDecoder::finish_tokens`]:
                  * zero wyglądałoby jak tura darmowa, czyli jak zgoda na dalsze wydawanie. */
+                let used = token_delta(self.cumulative, self.baseline);
                 self.decoder
                     .model
                     .as_deref()
-                    .and_then(|model| {
-                        estimated_cost(model, token_delta(self.cumulative, self.baseline))
-                    })
+                    .and_then(|model| self.decoder.prices.estimate(model, used))
                     .map(|estimate_usd| vec![AgentEvent::Spending { estimate_usd }])
                     .unwrap_or_default()
             }
@@ -1187,6 +1201,7 @@ struct AppServerInput<Output> {
     stdin: ChildStdin,
     stdout: Output,
     model: Option<String>,
+    prices: Prices,
     commands: mpsc::Receiver<AppCommand>,
     events: mpsc::Sender<DecodedEvent>,
     outcomes: mpsc::Sender<Outcome>,
@@ -1341,6 +1356,7 @@ where
         mut stdin,
         stdout,
         model,
+        prices,
         mut commands,
         events,
         outcomes,
@@ -1351,7 +1367,7 @@ where
     let mut reader = BufReader::new(stdout);
     let mut buffer = Vec::with_capacity(8 * 1024);
     let mut pending: HashMap<u64, PendingAppRequest> = HashMap::new();
-    let mut state = AppServerState::new(model);
+    let mut state = AppServerState::new(model, prices);
     let mut commands_open = true;
 
     loop {
@@ -1803,6 +1819,7 @@ impl CodexDriver {
             stdin,
             stdout,
             model: spec.model.clone(),
+            prices: self.prices.clone(),
             commands: commands_rx,
             events: tx,
             outcomes: outcomes_tx,
@@ -2311,54 +2328,6 @@ enum CodexLine {
     Unknown,
 }
 
-/// Jedyna tabela cen Codeksa. Stawki są w dolarach za milion tokenów i zachowują osobne
-/// kolumny wejścia, cache'u i wyjścia; zsumowana stawka zgubiłaby informację potrzebną do
-/// poprawnego policzenia prawdziwego użycia.
-const PRICES: &[CodexPrice] = &[
-    CodexPrice {
-        prefix: "gpt-5.6-sol",
-        input: 2.0,
-        cached: 0.4,
-        output: 21.0,
-    },
-    CodexPrice {
-        prefix: "gpt-5.6-terra",
-        input: 1.0,
-        cached: 0.2,
-        output: 12.5,
-    },
-    CodexPrice {
-        prefix: "gpt-5.6-luna",
-        input: 0.1,
-        cached: 0.02,
-        output: 1.25,
-    },
-];
-
-#[derive(Debug, Clone, Copy)]
-struct CodexPrice {
-    prefix: &'static str,
-    input: f64,
-    cached: f64,
-    output: f64,
-}
-
-fn estimated_cost(model: &str, tokens: Tokens) -> Option<f64> {
-    let price = PRICES
-        .iter()
-        .find(|price| model.starts_with(price.prefix))?;
-    // 2026-09 (Z-12): `input_tokens` Codeksa już zawiera `cached_input_tokens`. Liczenie obu
-    // kolumn jako osobnych wejść płaciło za cache dwa razy — w pamięci projektu pokazało
-    // 23,68 USD zamiast 5,53 USD — więc pełną stawkę dostają wyłącznie świeże tokeny.
-    let fresh_input = tokens.input.saturating_sub(tokens.cached);
-    // `From<u64> for f64` nie istnieje. Parsowanie dziesiętnego zapisu zachowuje pełny zakres
-    // licznika bez ryzykownego, wyciszanego rzutowania; dla każdego `u64` wynik jest skończony.
-    let input = fresh_input.to_string().parse::<f64>().ok()?;
-    let cached = tokens.cached.to_string().parse::<f64>().ok()?;
-    let output = tokens.output.to_string().parse::<f64>().ok()?;
-    Some((input * price.input + cached * price.cached + output * price.output) / 1_000_000.0)
-}
-
 /// Zużycie kontekstu z `turn.completed` [T1 §6.2].
 #[derive(Debug, Deserialize)]
 struct Usage {
@@ -2487,6 +2456,9 @@ pub struct CodexDecoder {
     said: String,
     /// Model pochodzi z zamówienia tury; linia końcowa niesie liczniki, ale go nie powtarza.
     model: Option<String>,
+    /// Stawki, którymi wycenia się koniec tury. Domyślnie sama tabela wbudowana — tak czyta
+    /// zapisany strumień historia biegu, która modelu i tak nie zna (`commands::history`).
+    prices: Prices,
 }
 
 impl CodexDecoder {
@@ -2496,9 +2468,10 @@ impl CodexDecoder {
         Self::default()
     }
 
-    fn for_model(model: Option<String>) -> Self {
+    fn for_model(model: Option<String>, prices: Prices) -> Self {
         Self {
             model,
+            prices,
             ..Self::default()
         }
     }
@@ -2728,7 +2701,7 @@ impl CodexDecoder {
         let cost_usd = self
             .model
             .as_deref()
-            .and_then(|model| estimated_cost(model, tokens));
+            .and_then(|model| self.prices.estimate(model, tokens));
         let mut events = Vec::with_capacity(2);
         if cost_usd.is_none() {
             events.push(AgentEvent::Notice {
@@ -3066,6 +3039,7 @@ async fn pump(input: PumpInput) {
         events,
         outcome,
         model,
+        prices,
         threads,
         number,
         cancelled,
@@ -3079,7 +3053,7 @@ async fn pump(input: PumpInput) {
     // na ekranie „0s" przy każdym kroku — to ta sama klasa kłamstwa co `$0.00` przy koszcie.
     let began = Instant::now();
     let mut reader = BufReader::new(stdout);
-    let mut decoder = CodexDecoder::for_model(model);
+    let mut decoder = CodexDecoder::for_model(model, prices);
     let mut buffer: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut told = Some(outcome);
     let mut seen: Option<String> = None;
@@ -3296,6 +3270,8 @@ pub struct CodexHandle {
     stderr_task: Option<JoinHandle<()>>,
     /// Te same Connections muszą wrócić w każdej świeżej turze `codex exec resume`.
     configuration: DriverConfiguration,
+    /// Te same stawki muszą wrócić w każdej świeżej turze — powód przy [`Turn::prices`].
+    prices: Prices,
     /// Znacznik biegu, który musi wrócić w każdej świeżej turze — powód przy [`Turn::tag`].
     tag: Option<supervisor::StepTag>,
 }
@@ -3471,6 +3447,8 @@ impl AgentHandle for CodexHandle {
             // Ten sam znacznik dla KAŻDEJ tury tej sesji: Codex startuje nowy proces na turę,
             // więc znacznik podany raz przy pierwszej nie doszedłby do żadnej następnej.
             tag: self.tag.clone(),
+            // I z tego samego powodu ta sama tabela stawek: każda tura wycenia się sama.
+            prices: self.prices.clone(),
         };
         let started = turn.start();
         if started.is_err() {
@@ -3645,6 +3623,24 @@ impl AgentDriver for CodexDriver {
         Some(Arc::new(configured))
     }
 
+    /// Ten vendor ceny tury **nie podaje** — liczy ją Loadout z tabeli stawek, więc modelu spoza
+    /// niej nie umie wycenić ani przed turą, ani po niej (2026-09, Z-44).
+    ///
+    /// Krok bez nazwy modelu jest tym samym przypadkiem i to nie jest ostrożność: nazwę oddaje
+    /// dopiero `thread/started` z drutu ([`CodexDecoder::learn_model_from_thread_start`]), czyli
+    /// już po starcie procesu — a wtedy tura jest zamówiona i za nią się płaci.
+    fn can_price_a_turn(&self, model: Option<&str>, prices: &Prices) -> bool {
+        prices.knows(model)
+    }
+
+    /// Stawki bierze, bo to on jedyny wycenia swoje tury. Klon, nie mutacja pola: tabela należy
+    /// do biegu, a sterownik bywa jeden na całą aplikację.
+    fn priced_from(&self, prices: &Prices) -> Option<Arc<dyn AgentDriver>> {
+        let mut configured = self.clone();
+        configured.prices = prices.clone();
+        Some(Arc::new(configured))
+    }
+
     /// Ten sterownik startuje własne procesy — turą `exec` i mostem App Servera — więc znacznik
     /// **bierze** (2026-09, Z-01d). Klon, nie mutacja pola: znacznik jest per krok, a sterownik
     /// bywa jeden na całą aplikację.
@@ -3682,7 +3678,9 @@ mod app_server_pricing_tests {
     use serde_json::json;
     use tokio::sync::oneshot;
 
-    use super::{AgentEvent, AppServerState, PendingAppRequest, Tokens, answer_app_server_request};
+    use super::{
+        AgentEvent, AppServerState, PendingAppRequest, Prices, Tokens, answer_app_server_request,
+    };
 
     const TOKENS: Tokens = Tokens {
         input: 10_000,
@@ -3691,7 +3689,7 @@ mod app_server_pricing_tests {
     };
 
     fn completed_turn(model: &str) -> Vec<AgentEvent> {
-        let mut state = AppServerState::new(Some(model.to_owned()));
+        let mut state = AppServerState::new(Some(model.to_owned()), Prices::default());
         state.begin_turn();
         state.notification(&json!({
             "method": "turn/completed",
@@ -3740,7 +3738,7 @@ mod app_server_pricing_tests {
 
     #[test]
     fn thread_start_response_supplies_the_model_when_the_person_did_not() -> Result<(), String> {
-        let mut state = AppServerState::new(None);
+        let mut state = AppServerState::new(None, Prices::default());
         let (reply, _answer) = oneshot::channel();
         let mut pending = HashMap::from([(
             7,
@@ -3790,13 +3788,13 @@ mod app_server_mcp_failure_tests {
     use crate::engine::drivers::{AgentEvent, DecodedEvent};
     use crate::engine::line::{Action, Tool};
 
-    use super::AppServerState;
+    use super::{AppServerState, Prices};
 
     const ERROR: &str = "browserType.launch: Executable doesn't exist";
 
     #[test]
     fn a_failed_app_server_mcp_item_reaches_forward_with_full_typed_facts() -> Result<(), String> {
-        let mut state = AppServerState::new(None);
+        let mut state = AppServerState::new(None, Prices::default());
         state.begin_turn();
         let mut decoded = state.decoded_notification(&json!({
             "method": "item/started",
@@ -3866,7 +3864,7 @@ mod stop_proof_tests {
 
     use super::{
         AgentHandle, AppClient, AppServerInput, AppServerState, CodexConversationHandle,
-        CodexDriver, CodexHandle, DriverConfiguration, GroupProof, Turn, app_server_actor,
+        CodexDriver, CodexHandle, DriverConfiguration, GroupProof, Prices, Turn, app_server_actor,
         proof_allows_cleanup, remember_thread, stop_startup_process,
     };
     use crate::engine::supervisor::{self, StdinPlan, Supervised};
@@ -3928,6 +3926,7 @@ mod stop_proof_tests {
             drained: None,
             stderr_task: None,
             tag: None,
+            prices: Prices::default(),
         }
     }
 
@@ -3967,7 +3966,7 @@ mod stop_proof_tests {
     -> anyhow::Result<()> {
         let directory = TempDir::new()?;
         let evidence = target(&directory, "app-alive-then-dead");
-        let state = Arc::new(Mutex::new(AppServerState::new(None)));
+        let state = Arc::new(Mutex::new(AppServerState::new(None, Prices::default())));
         state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -4081,6 +4080,7 @@ mod stop_proof_tests {
             stdin,
             stdout: FailingOutput,
             model: None,
+            prices: Prices::default(),
             commands: command_inbox,
             events,
             outcomes,
@@ -4276,6 +4276,7 @@ mod stop_proof_tests {
             evidence_target: None,
             configuration: DriverConfiguration::default(),
             tag: None,
+            prices: Prices::default(),
         };
         let turn_debug = format!("{turn:?}");
 
@@ -4294,6 +4295,7 @@ mod stop_proof_tests {
             stderr_task: None,
             configuration: DriverConfiguration::default(),
             tag: None,
+            prices: Prices::default(),
         };
         let handle_debug = format!("{handle:?}");
         let driver_debug = format!("{:?}", CodexDriver::with_binary(PathBuf::from(BINARY)));
