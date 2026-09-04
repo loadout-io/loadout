@@ -355,8 +355,9 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 
 ### Po wlaniu, poza biegiem (ręka orkiestratora, po konkretnym zadaniu)
 
-- **po Z-28:** allowlista plików `tests/*.rs` w `checks/tests-listed.sh` (python3, atomowo);
-  `checks.json` `rust-test.budget_s` z 3600 na 1500 (60 linków mniej).
+- **po Z-28 — ZROBIONE** (obie połowy weszły z Falą 0.4): allowlista `ALLOWED_TOP`
+  w `checks/tests-listed.sh` stoi i została sprawdzona zasadzoną naruszeniem;
+  `harness/checks.json` ma `rust-test.budget_s` 1500 z zapisanym powodem i pomiarem.
 - **po Z-06 — PRÓBOWANE 2026-09-03, WYMAGA CIEBIE.** Połowa indeksowa jest dowiedziona
   automatycznie i dobrze: `quitting_leaves_the_index_small` buduje sytuację (czytelnik trzyma
   migawkę, dziennik rośnie), ma **kontrolę negatywną** na to, że sytuacja naprawdę powstała,
