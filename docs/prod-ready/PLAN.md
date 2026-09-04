@@ -328,9 +328,9 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-20 | `z20-roster-same-copy-skill` | `prompts/Z-20.md` | R | X→C | | Z-19 | **LANDED** `2026-09-04` | dwie rundy |
 | Z-21 | `z21-borrow-review` | `prompts/Z-21.md` | R | C→X | | Z-20 | **LANDED** `2026-09-04` | jedna runda |
 | Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | **LANDED** `2026-09-04` | trzy rundy + ręka; planista Codeksa |
-| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | RUNNING | sonda `env_vars` Codeksa PRZED startem; wynik dopisz do promptu jako akapit „Wynik sondy" |
+| Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | **BLOCKED** `2026-09-04` | trzy czwarte pracy gotowe i zacommitowane na `h-z23-connection-secrets` (`2364944a`); ostatnie kryterium wymaga DECYZJI właściciela — pytanie niżej |
 | Z-34 | `z34-agent-app-preflight` | `prompts/Z-34.md` | R+TS | C→X | | — | TODO | z uratowanej gałęzi: sonda gotowości CLI zamiast bezwarunkowego „Claude · Codex ready" |
-| Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | Z-23 | TODO | |
+| Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | — | RUNNING | zależność od Z-23 zdjęta: Z-23 jest BLOCKED na decyzji, a te pliki się nie stykają |
 | Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | TODO | |
 | Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | TODO | |
 | Z-33 | `z33-record-truth` | `prompts/Z-33.md` | R | X→C | | Z-32 | TODO | |
