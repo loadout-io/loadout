@@ -467,9 +467,9 @@ właściciel zdecyduje inaczej przed startem (lista decyzji w audycie).
 | Z-42 | `z42-folder-access-preflight` | `prompts/Z-42.md` |R+TS |C→X ||— | **LANDED** `2026-09-05` | A-6; konflikt z Z-49 w `handoffs.rs` |
 | Z-43 | `z43-trigger-busy-per-folder` | `prompts/Z-43.md` | R | X→C | | Z-35 | TODO | A-3 |
 | Z-44 | `z44-codex-unknown-price` | `prompts/Z-44.md` |R |C→X ||decyzja 5 | **LANDED** `2026-09-05` | A-7; dwie rundy, 41,39 USD |
-| Z-45 | `z45-heavy-agent-steps` | `prompts/Z-45.md` | R+TS | X→C | | decyzja 4 | TODO | A-4: domyślnie pole `weight: heavy` na kroku (D6: pole, nie kafelek) |
+| Z-45 | `z45-heavy-agent-steps` | `prompts/Z-45.md` | R+TS | X→C | | decyzja 4 | **LANDED** `2026-09-05` | A-4; dwie rundy, 21,64 USD; pole `weight` na kroku, `waiting for the heavy seat` na karcie |
 | Z-46 | `z46-run-retention-branches` | `prompts/Z-46.md` |R+TS |C→X |duże |decyzja 6 | **LANDED** `2026-09-05` | C-1; trzy rundy, 72,63 USD; glob w prozie oslepil sedziego watku |
-| Z-47 | `z47-host-context-alert` | `prompts/Z-47.md` | R+TS | X→C | | — | TODO | B-1 |
+| Z-47 | `z47-host-context-alert` | `prompts/Z-47.md` | R+TS | X→C | | — | **LANDED** `2026-09-05` | B-1; jedna runda, 23,47 USD |
 | Z-48 | `z48-token-accounting` | `prompts/Z-48.md` |R+TS |C→X ||— | **LANDED** `2026-09-05` | L-6; trzy rundy, 33,08 USD |
 | Z-49 | `z49-handoffs-list-paged` | `prompts/Z-49.md` |R+TS |X→C ||— | **LANDED** `2026-09-05` | E-1; JEDNA runda, 17 min, 5,91 USD z Codeksem |
 | Z-50 | `z50-lead-powers-said` | `prompts/Z-50.md` |TS+R |C→X ||— | **LANDED** `2026-09-05` | L-5; jedna runda, 44,42 USD; wszedl z czerwonym dowodem watku — poprawione na main |
@@ -553,6 +553,7 @@ i powtarza `land`. Wzrost nad sufit = `BLOCKED`, bez negocjacji.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-05 01:30 · **FALA 6 ZAMKNIETA** · szesnascie z szesnastu `LANDED`, zero `BLOCKED`. Ksiega (`.git/h/ledger.jsonl`): **581,93 USD** za trzynascie rozliczonych zadan (trzy najwczesniejsze zamkniete przed naprawa ksiegi maja kwoty odtworzone recznie). Zegar: od 0b.1 do ostatniego `land` okolo szesciu godzin, z czego jedna na sekwencyjnym poczatku i piec na szesciu biegach naraz. Rundy: siedem zadan w jednej, cztery w dwoch, cztery w trzech, jedno w czterech. Codex jako wykonawca konczyl taniej i szybciej na kazdym zadaniu, ktore mu dalem (5,91-33,08 USD) niz Claude (21,64-97,84) · C→X i X→C
 - 2026-09-05 00:05 · KSIEGA · `h clean` kasowal `runs/<id>/cost.json` I stan, czyli OBA miejsca, w ktorych 0b.2 trzymalo koszt — po nocy z szesnastoma zadaniami nie zostalo ani jedno rozliczenie. Ksiega idzie teraz do `.git/h/ledger.jsonl` PRZED sprzatnieciem; wiersze tej nocy odtworzone recznie z pomiarow. Razem **536,82 USD** za jedenascie zamknietych zadan · ręka
 - 2026-09-05 00:00 · CENA ROWNOLEGLOSCI · cztery razy zawezona bramka zadania przepuscila to, co zlapalo dopiero pelne CI po scaleniu: dwa razy dowod watku okna (Z-50, Z-46), raz lustro komend (Z-38), raz `clippy --all-targets` (moja wlasna poprawka). Wszystkie te testy sadza CALY plik albo CALY zbior, wiec `cargo test --test it <modul>::` ich nie uruchamia. Przy jednym biegu naraz wychodzilo to natychmiast; przy szesciu wychodzi przy landowaniu · ręka
 - 2026-09-05 00:00 · KONFLIKTY · piec scalen wymagalo reki, wszystkie mechaniczne i wszystkie rozstrzygniete ZACHOWANIEM OBU stron: `handoffs.rs` (stronicowanie Z-49 + blad Z-42), `memory/io.ts` i `memory.test.ts` (Z-49 + Z-38), lista modulow `tests/it/main.rs` (Z-38 + Z-39), listy alfabetyczne komend (Z-50 + Z-46), stale w tescie historii (Z-42 + Z-48) · ręka
