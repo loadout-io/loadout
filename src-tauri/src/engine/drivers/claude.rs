@@ -3323,44 +3323,7 @@ impl AgentDriver for ClaudeDriver {
     /// to samo zdanie („zainstaluj to"), a `Err` z tego miejsca wywala Loadouta, zanim
     /// ktokolwiek zobaczy, co jest do naprawienia.
     async fn probe(&self) -> anyhow::Result<Probe> {
-        let mut command = Command::new(&self.binary);
-        command.arg("--version");
-
-        // Przez ten sam spawn co bieg, a nie własną komendą obok: `env_clear()` plus jawna lista
-        // przepuszczanych zmiennych mieszka w jednym rdzeniu (niezmiennik 23), a `/dev/null` na
-        // stdinie oszczędza tu 3 s ostrzeżenia `no stdin data received` [T1 §4.6].
-        //
-        // BEZ ZNACZNIKA, i to jest odpowiedź, nie pominięcie (2026-09, Z-01d): sonda wersji nie
-        // należy do żadnego biegu, więc nie ma czym się oznaczyć, a jej `pgid` nie trafia do
-        // żadnego `run.json`. Znacznik zgodny z jakimkolwiek biegiem kazałby odzyskiwaniu
-        // zabijać sondę, której nikt nie zamawiał w tym biegu.
-        let mut process = match supervisor::spawn_tagged(command, StdinPlan::Null, &[], None) {
-            Ok(process) => process,
-            Err(_error) => {
-                tracing::debug!(
-                    "the agent CLI could not be started, so the setup screen has its answer"
-                );
-                return Ok(Probe {
-                    found: false,
-                    version: None,
-                });
-            }
-        };
-
-        let mut version = None;
-        if let Some(stdout) = process.stdout() {
-            version = first_answer(stdout).await;
-        }
-
-        // Zebranie procesu jest częścią jego uruchomienia, nie sprzątaniem po nim: zombie nadal
-        // odpowiada na sygnał zerowy, więc niezebrany `--version` zostawiłby grupę, której nikt
-        // nigdy nie udowodni martwej (niezmiennik 6).
-        let _ = process.wait().await;
-
-        Ok(Probe {
-            found: true,
-            version,
-        })
+        super::probe_binary(&self.binary).await
     }
 
     /// Startuje sesję i zaczyna sypać zdarzeniami na `tx`.
@@ -3622,18 +3585,6 @@ impl ClaudeDriver {
             evidence: self.evidence.clone(),
         }))
     }
-}
-
-/// Pierwsza niepusta linia, jaką powiedziała binarka. Tyle wystarczy na pytanie o wersję.
-async fn first_answer(stdout: ChildStdout) -> Option<String> {
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim();
-        if !line.is_empty() {
-            return Some(line.to_owned());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

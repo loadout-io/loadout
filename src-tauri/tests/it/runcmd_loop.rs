@@ -13,8 +13,8 @@
 //!
 //! Licznik startów sterownika **per prompt**, bo `RunSpec` nie niesie numeru kroku — jego
 //! instrukcje są jedyną rzeczą, po której da się kroki rozróżnić (niezmiennik 9). Runda pominięta
-//! nie woła sterownika w ogóle, więc licznik jest jedynym miejscem, w którym różnica między
-//! „runda przeszła" i „rundy nie było" jest widoczna z zewnątrz.
+//! nie woła sterownika w ogóle, więc licznik dowodzi wykonania; `run.json` osobno nazywa każdą
+//! pominiętą próbę, żeby zapis nie zgadywał z braku procesu (2026-09, Z-33).
 //!
 //! **SŁABĄ WERSJĄ pierwszego kryterium** jest sprawdzenie, że krok za pętlą się wykonał.
 //! Przechodzi ją implementacja, która przepala WSZYSTKIE rundy i dopiero potem idzie dalej —
@@ -184,10 +184,11 @@ async fn the_loop_stops_at_the_first_pass() -> Result<(), Box<dyn Error>> {
         1,
         "and the step after the loop has to run exactly once — that is what passing IS for"
     );
-    /* Sześć węzłów: trzy rundy implementera i trzy testera, plus krok za pętlą. Wszystkie
-     * `Succeeded`, także te pominięte — planista zmniejsza stopień wejściowy dzieci WYŁĄCZNIE po
-     * tym stanie, więc gdyby pominięta runda wróciła czymkolwiek innym, `Ship` nie ruszyłby
-     * nigdy. Że runda nie biegła, widać po liczniku startów wyżej, nie po jej stanie. */
+    /* Sześć węzłów: trzy rundy implementera i trzy testera, plus krok za pętlą. W WEWNĘTRZNYM
+     * raporcie wszystkie są `Succeeded`, także pominięte — planista zmniejsza stopień wejściowy
+     * dzieci wyłącznie po tym stanie, więc inny zatrzymałby `Ship`. To nie jest już jednak
+     * zdanie dla człowieka: `run.json` niesie osobne `not_run_because`, a historia tłumaczy je
+     * na `not_run` (2026-09, Z-33; niezmiennik 29). */
     assert_eq!(
         report.steps.len(),
         7,
@@ -199,6 +200,80 @@ async fn the_loop_stops_at_the_first_pass() -> Result<(), Box<dyn Error>> {
         "a loop that passed leaves nothing failed behind; it left {:?}",
         report.steps
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_json_names_every_try_the_loop_did_not_need() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    bench.agent("hand", HAND_FILE)?;
+    let workflow = bench.workflow("loop", LOOP_FILE)?;
+    let store = Store::open(&bench.db())?;
+    let deps = RunDeps {
+        home: bench.home.path(),
+        project: bench.project.path(),
+        store: &store,
+        drivers: fake_drivers(Arc::new(Watch::passing_on_turn(1))),
+        processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
+        control: RunControl::new(),
+    };
+
+    let report = one_run(
+        &deps,
+        &RunRequest {
+            workflow,
+            how_many_at_once: 2,
+            task: None,
+            part: None,
+            handoffs_from: None,
+        },
+    )
+    .await??;
+    let text = std::fs::read_to_string(report.dir.join("run.json"))?;
+    let described: serde_json::Value = serde_json::from_str(&text)?;
+    let steps = described["steps"]
+        .as_array()
+        .ok_or("run.json has no steps")?;
+
+    let first_try: Vec<&serde_json::Value> = steps
+        .iter()
+        .filter(|step| matches!(step["node_key"].as_str(), Some("s_impl" | "s_test")))
+        .collect();
+    assert_eq!(first_try.len(), 2, "the fixture has no complete first try");
+    assert!(
+        first_try
+            .iter()
+            .all(|step| step.get("not_run_because").is_none()),
+        "the try that settled the loop did run and must not be named as omitted: {first_try:?}"
+    );
+
+    for which in [2, 3] {
+        // `workflow::unroll` zostawia pierwszy klucz bez sufiksu i numeruje kopie od `#1`;
+        // zdanie w pliku liczy próby po ludzku od jedynki (2026-09, Z-33).
+        let suffix = format!("#{}", which - 1);
+        let later: Vec<&serde_json::Value> = steps
+            .iter()
+            .filter(|step| {
+                step["node_key"]
+                    .as_str()
+                    .is_some_and(|key| key.ends_with(&suffix))
+            })
+            .collect();
+        assert_eq!(
+            later.len(),
+            2,
+            "the fixture has no complete try {which}: {steps:?}"
+        );
+        let every_node_is_named = later
+            .iter()
+            .all(|step| step["not_run_because"].as_str() == Some("loop settled at try 1"));
+        assert!(
+            every_node_is_named,
+            "every node in try {which} was omitted after the loop settled, but run.json did not \
+             say so: {later:?}"
+        );
+    }
+
     Ok(())
 }
 

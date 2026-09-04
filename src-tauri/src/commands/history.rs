@@ -412,7 +412,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 tile: crate::commands::run::tile_key_of(&step.node_key).to_owned(),
                 name: step.name.clone(),
                 agent: step.agent.clone(),
-                state: step.status.clone(),
+                state: history_state(step),
                 executed: step.executed,
                 summary: step.summary.clone().unwrap_or_default(),
                 error: step.error.clone().unwrap_or_default(),
@@ -681,6 +681,13 @@ struct StepDescription {
     agent: String,
     #[serde(default)]
     status: String,
+    /// Addytywny fakt Z-33. Brak zachowuje znaczenie każdego pliku sprzed tego pola.
+    #[serde(default)]
+    not_run_because: Option<String>,
+    /// Werdykt rundy jest osobnym faktem od stanu potrzebnego planiście. Napis, nie enum:
+    /// przyszła wartość z drutu nie może unieważnić całej historii (niezmiennik 5).
+    #[serde(default)]
+    round_outcome: Option<String>,
     #[serde(default)]
     executed: Option<bool>,
     #[serde(default)]
@@ -700,6 +707,21 @@ struct StepDescription {
     /// biegi dalej dawały się otworzyć (niezmiennik 5 na granicy pliku).
     #[serde(default)]
     loaded_by_the_app: Option<LoadedByTheAppWire>,
+}
+
+/// Stan jednego fizycznego kroku, który ma przeczytać człowiek.
+///
+/// 2026-09 (Z-33) — `Succeeded` nieostatniej rundy jest wyłącznie sygnałem dla planisty, żeby
+/// odblokował powrót pętli. Historia najpierw pyta o trwałe fakty rundy; bez nich starszy plik
+/// zachowuje dokładnie dotychczasowe znaczenie.
+fn history_state(step: &StepDescription) -> String {
+    if step.not_run_because.is_some() {
+        return "not_run".to_owned();
+    }
+    if step.round_outcome.as_deref() == Some("fail") {
+        return "failed".to_owned();
+    }
+    step.status.clone()
 }
 
 /// To jedno pole migawki agenta, którego potrzebuje odczyt transkryptu.

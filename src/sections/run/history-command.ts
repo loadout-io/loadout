@@ -68,7 +68,9 @@ export const COULD_NOT_OPEN = 'Loadout could not open that run.';
  * nigdy nie trafia na ekran, więc wartość, której nie umiemy przełożyć, nie ma prawa przejść
  * przez tę funkcję jako ona sama. Wiersz pokazuje wtedy resztę tego, co wie.
  */
-export function stateWord(state: string): AgentStatus | '' {
+type HistoryState = AgentStatus | 'not run';
+
+export function stateWord(state: string): HistoryState | '' {
   switch (state) {
     case 'running':
       return 'working';
@@ -80,6 +82,10 @@ export function stateWord(state: string): AgentStatus | '' {
       return 'failed';
     case 'cancelled':
       return 'stopped';
+    case 'not_run':
+      // 2026-09 (Z-33) — to stan wyłącznie zapisanego kroku, nie żywego agenta. Dodanie go do
+      // `AgentStatus` rozszerzyłoby maszynę stanu paska o wartość, której runtime nie produkuje.
+      return 'not run';
     default:
       return '';
   }
