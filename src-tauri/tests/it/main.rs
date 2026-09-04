@@ -49,6 +49,7 @@ mod a_long_command_is_one_line_that_keeps_its_time;
 mod a_long_complaint_says_where_the_rest_is;
 mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;
+mod a_published_handoff_is_read_only;
 mod a_round_sees_its_own_past;
 mod a_run_always_settles;
 mod a_run_leaves_its_groups_where_recovery_can_find_them;

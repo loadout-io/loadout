@@ -8061,11 +8061,34 @@ struct Handed {
     /// Nie trafia do trwałego pliku: prompt składa bezwzględny adres z kopii bieżącego biegu,
     /// więc przeniesienie lub wznowienie nie zostawia w nim starego katalogu.
     attachment: Option<PathBuf>,
+    /// 2026-09 (Z-41) — długość pełnej kopii zmierzona przez TEN bieg przy publikacji. Przejęty
+    /// plik ma `None`, bo bieżący bieg nie widział jego zapisu i nie może zgadywać kotwicy.
+    attachment_bytes: Option<usize>,
     /// Udany poprzednik zapisał poprawne przekazanie, ale żadna jego sekcja nie niesie treści.
     left_nothing: bool,
     /// Czym ten plik jest dla kroku, który go czyta. Powód całego pola stoi przy
     /// [`IS_WHAT_THE_STEP_BEFORE_LEFT`].
     what: WhatItIs,
+}
+
+/// Konkretna odmowa budowy indeksu, którą wolno pokazać człowiekowi słowo w słowo.
+#[derive(Debug, thiserror::Error)]
+#[error("Handoff {name} was changed after {from} published it.")]
+struct HandoffChangedAfterPublication {
+    name: String,
+    from: String,
+}
+
+impl HandoffChangedAfterPublication {
+    fn for_handed(hand: &Handed) -> Self {
+        Self {
+            name: hand.path.file_name().map_or_else(
+                || hand.path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            from: hand.from.clone(),
+        }
+    }
 }
 
 /// Czym jest plik wymieniony w indeksie — z punktu widzenia kroku, który ten indeks czyta.
@@ -10348,8 +10371,10 @@ impl Live {
             extra_dirs,
         } = match self.prompt_for(id, &job.prompt, &job.context, job.minutes) {
             Ok(told) => told,
-            Err(_error) => {
-                let text = CONTEXT_NOT_PROVEN.to_owned();
+            Err(error) => {
+                let text = error
+                    .downcast_ref::<HandoffChangedAfterPublication>()
+                    .map_or_else(|| CONTEXT_NOT_PROVEN.to_owned(), ToString::to_string);
                 // 2026-08-25 (T-101) — TEN SAM POWÓD, ALE JEDNE DRZWI PORAŻKI. Zapis przed
                 // `never_started` zachowuje dokładny tekst odmowy; wspólne domknięcie dopiero
                 // potem pyta `whenItFails`, więc `carry-on` i `ask-me` nie są tu martwe.
@@ -11578,6 +11603,7 @@ impl Live {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_OPENS);
         for hand in handed {
+            let handoff_bytes = Self::published_handoff_bytes(hand)?;
             // `write!` do `String`, nie `push_str(&format!(…))`: ten drugi alokuje bufor
             // pośredni tylko po to, żeby go zaraz skopiować i wyrzucić (clippy
             // `format_push_string`). Zapis do `String` jest nieomylny — `fmt::Error` może
@@ -11593,10 +11619,6 @@ impl Live {
                 label.push_str("; left nothing");
             }
             if let Some(full) = &hand.attachment {
-                let metadata = fs::symlink_metadata(full)?;
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    anyhow::bail!("a full handoff context source is not a real regular file");
-                }
                 // Dopisek jest chwilową pomocą promptu, nie częścią przenośnego przekazania.
                 // Stoi wewnątrz tej samej etykiety relacji, żeby zwykły następnik i wznowienie
                 // zachowały swoje prawdziwe, różne pochodzenie (T-114, 2026-08-24).
@@ -11609,10 +11631,6 @@ impl Live {
                 hand.path.display()
             );
             told.reads.push(self.filed_as(&hand.path));
-            let metadata = fs::symlink_metadata(&hand.path)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                anyhow::bail!("a handoff context source is not a real regular file");
-            }
             told.context.push(ContextSource {
                 kind: ContextKind::Handoff,
                 reference: told
@@ -11620,7 +11638,7 @@ impl Live {
                     .last()
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("a handoff lost its safe reference"))?,
-                bytes: usize::try_from(metadata.len())?,
+                bytes: handoff_bytes,
             });
             // Jeden katalog na cały bieg, więc pętla dopisuje go raz — ale bierze go ze ścieżki,
             // a nie ze stałej: druga kopia nazwy `handoffs` byłaby drugim miejscem do poprawienia
@@ -11655,6 +11673,36 @@ impl Live {
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
         Ok(())
+    }
+
+    /// Sprawdza pliki, które Loadout sam wystawił jako wejście kroku, zanim powstanie ich wiersz.
+    ///
+    /// 2026-09 (Z-41) — front-matter kotwiczy długość ciała przekazania, a `Written` długość
+    /// pełnej kopii. Awaria odczytu znaczy dla kroku to samo: nie dostaje już bajtów, które
+    /// poprzednik opublikował, więc nie wolno uruchomić go nad innym kontekstem.
+    fn published_handoff_bytes(hand: &Handed) -> anyhow::Result<usize> {
+        let changed = || HandoffChangedAfterPublication::for_handed(hand);
+        let metadata = fs::symlink_metadata(&hand.path).map_err(|_| changed())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(changed().into());
+        }
+        let published = handoff::read_handoff(&hand.path).map_err(|_| changed())?;
+        if published.bytes_mismatch() {
+            return Err(changed().into());
+        }
+
+        if let Some(full) = &hand.attachment {
+            let full_metadata = fs::symlink_metadata(full).map_err(|_| changed())?;
+            if full_metadata.file_type().is_symlink() || !full_metadata.is_file() {
+                return Err(changed().into());
+            }
+            if let Some(expected) = hand.attachment_bytes
+                && usize::try_from(full_metadata.len()).ok() != Some(expected)
+            {
+                return Err(changed().into());
+            }
+        }
+        usize::try_from(metadata.len()).map_err(|_| changed().into())
     }
 
     /// Dokłada zdanie o wyniku — **tylko sędziemu pętli**.
@@ -11746,6 +11794,7 @@ impl Live {
                 from: one.from.clone(),
                 path: one.path.clone(),
                 attachment: one.attachment.clone(),
+                attachment_bytes: None,
                 // `run.json` starszego biegu nie jest tu wczytany ze stanem każdego kroku.
                 // Bez dowodu sukcesu nie nazywamy przejętej pustki udanym wynikiem.
                 left_nothing: false,
@@ -11759,6 +11808,7 @@ impl Live {
                 from: self.plan.steps.get(step)?.name.clone(),
                 path: written.path.clone(),
                 attachment: written.attachment.clone(),
+                attachment_bytes: written.attachment_bytes,
                 left_nothing: succeeded && written.left_nothing,
                 what: self.what_it_is(id, step, &unpassed),
             })

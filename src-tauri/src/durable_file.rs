@@ -21,8 +21,12 @@ use crate::engine::supervisor::{
 /// Jawny tryb nowych plików definicji. Istniejący cel zachowuje swój tryb przy replace.
 pub const DEFINITION_FILE_MODE: u32 = 0o644;
 
-/// Prywatne handoffy, attachmenty i evidence nie dostają praw grupy ani innych użytkowników.
+/// Prywatne evidence nie dostaje praw grupy ani innych użytkowników.
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// 2026-09 (Z-41) — przekazanie jest niezmienne od publikacji; korekta pisze nowy plik.
+/// Katalog biegu ma `0700`, więc bity odczytu grupy i innych nie otwierają go poza właścicielem.
+pub const PUBLISHED_HANDOFF_MODE: u32 = 0o444;
 
 /// Rewizja pliku definicji: **dokładne bajty**, zakodowane base64.
 ///
