@@ -78,8 +78,8 @@ fn the_tool_list_reply_has_the_shape_the_vendor_reads() {
 
     assert_eq!(
         listed.len(),
-        4,
-        "the four verbs the app greeted with, and nothing invented on the way"
+        5,
+        "the five verbs the app greeted with, and nothing invented on the way"
     );
     assert_eq!(
         listed

@@ -109,6 +109,36 @@ pub fn for_role(role: Role) -> Vec<Verb> {
                     "required": ["workflow"],
                 }),
             },
+            /* STOI OSTATNI, bo jest ruchem, po którym nic już nie biegnie — a kolejność tej listy
+             * jest kolejnością, w której model ją czyta. Powstał 2026-09 (Z-39) z biegu meetnotes
+             * `20260901-150035`: lider zapytał człowieka, czy ubić bieg, dostał zgodę i **nie miał
+             * czym** — więc przeczytał `pgid` z `run.json` i wykonał `kill -TERM -38475 -38476`
+             * ręcznie, narzędziem Bash. Loadout nie wiedział o tym nic: zapisał to jako porażkę
+             * kroku i pojechał dalej z `carry-on`. */
+            Verb {
+                name: "stop_run",
+                describe: "Stop the run going in this person's folder. This is the ONLY way to \
+                           stop a run: never send a signal to a process yourself, and never use \
+                           kill — Loadout brings the whole run down and proves that everything it \
+                           started is gone, and nothing you do by hand can do that. Ask this \
+                           person first with ask_the_person, and pass confirmed only after they \
+                           have said yes.",
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "confirmed": {
+                            "type": "boolean",
+                            "description": "True only after this person answered that they want \
+                                            the run stopped. Never decide this by yourself.",
+                        },
+                    },
+                    /* WYMAGANE, i to jest ta połowa umowy, którą da się egzekwować (niezmiennik
+                     * 28). Prompt umie powiedzieć „dopiero po odpowiedzi człowieka" i nikt nie
+                     * sprawdzi, czy model to zrobił; schemat umie odmówić wywołania, w którym
+                     * tego klucza nie ma, i odmawia go zawsze. */
+                    "required": ["confirmed"],
+                }),
+            },
         ],
     }
 }

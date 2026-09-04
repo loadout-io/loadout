@@ -427,6 +427,21 @@ function Step({
             {step.error}
           </p>
         )}
+        {/* CZEGO TEN KROK NIE DOSTAŁ, choć pojechał (2026-09, Z-39). Osobno od powodu wyżej i
+            CICHYM tonem, nie `text-fail`: ten krok nie padł — pojechał bez cudzego wyniku, bo
+            człowiek tak ustawił „co, kiedy nie przejdzie". Czerwień mówiłaby, że to on zawiódł,
+            a wtedy szuka się wady u niego zamiast u poprzednika. */}
+        {/* Klucz z indeksem, ta sama decyzja co przy `Handed` niżej: dwie rundy pętli noszą tę
+            samą nazwę kafelka, więc dwa zdania o nich są co do znaku identyczne. */}
+        {(step.ranWithout ?? []).map((said, index) => (
+          <p
+            key={said + String(index)}
+            data-step-ran-without
+            className="px-[18px] py-[3px] text-body text-muted"
+          >
+            {said}
+          </p>
+        ))}
         {rows.length === 0 ? (
           <p data-empty className="lead px-[18px] py-[3px]">
             {NOTHING_KEPT_FOR_THIS_STEP}

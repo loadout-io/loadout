@@ -26,10 +26,24 @@
  * `startFromLine`, a druga ich kopia rozjeżdża się po cichu — liczba jest wczytywana, logowana
  * i inna. Jedyne zdanie, które powstaje TUTAJ, dotyczy linii, która komendą nie jest.
  */
+import { whatStopSaid } from '../entry/entry';
+import { folderName, whereTheRunIs } from '../folders';
+import { stop } from '../io';
 import { startFromLine } from '../run-command';
 
 /** Komenda, którą zaczyna się bieg — to samo słowo, co po stronie Rusta i w wierszu wejścia. */
 const RUN = '/run';
+
+/**
+ * Komenda, którą bieg się kończy — to samo słowo, co w wierszu wejścia.
+ *
+ * 2026-09 (Z-39) — DOSZŁA, BO LIDER DOSTAŁ CZASOWNIK `stop_run`. Do tego dnia most nie miał ani
+ * jednej drogi do zatrzymania biegu, więc lider zatrzymywał go tak, jak potrafił: czytał `pgid`
+ * z `run.json` i wołał `kill` narzędziem Bash (bieg meetnotes `20260901-150035`). Wiersz z mostu
+ * przychodzi tą samą krawędzią, co start — bez tej gałęzi odbiłby się od `runSuggestion` zdaniem
+ * „That line does not name a workflow".
+ */
+const STOP = '/stop';
 
 /**
  * Co powiedzieć, kiedy w komendzie nie da się znaleźć nazwy workflow.
@@ -102,8 +116,25 @@ export function suggestion(command: string): Suggestion | null {
  * Oddaje zdanie odmowy albo `null`, kiedy bieg poszedł — kształt `startFromLine`, znak w znak,
  * bo to jest ta sama odpowiedź i ma być pokazana w ten sam sposób. Odmowa porzucona po drodze
  * jest gorsza niż brak przycisku: człowiek klika i nie dzieje się nic, o czym da się przeczytać.
+ *
+ * @param folder katalog rozmowy, z której ta propozycja przyszła, albo `null`. Jedzie tylko do
+ *   `/stop`, bo tylko on ADRESUJE bieg — start pyta o folder politykę (`startFromLine`), tak jak
+ *   pyta ją o wszystko inne (niezmiennik 23). Wartość domyślna zostaje, bo przycisk pod wierszem
+ *   woła tę funkcję jednym argumentem i nie ma czym tego folderu podać.
  */
-export async function runSuggestion(command: string): Promise<string | null> {
+export async function runSuggestion(
+  command: string,
+  folder: string | null = null,
+): Promise<string | null> {
+  /* PRZED `suggestion`, bo tamta zna wyłącznie `/run` i każde inne słowo oddaje jako `null`,
+   * czyli jako „to nie jest komenda". Rozbioru `/stop` nie ma, bo nie ma czego rozbierać:
+   * cała jego treść to adres, a adres przychodzi argumentem. */
+  if (command.trim() === STOP) {
+    const where = whereTheRunIs(folder);
+    /* JEDNO ŹRÓDŁO ZDANIA O STOPIE (niezmiennik 13): to samo, którym odpowiada wiersz wejścia
+     * i przycisk Stop. `null` znaczy „zeszło" i wtedy nie ma czego pokazywać. */
+    return whatStopSaid(await stop(where), where === null ? null : folderName(where));
+  }
   const proposal = suggestion(command);
   if (proposal === null) return NAMES_NO_WORKFLOW;
   /* JEDNO WYWOŁANIE I ANI JEDNEJ GAŁĘZI OBOK NIEGO. Wszystko, co jeszcze trzeba rozstrzygnąć —

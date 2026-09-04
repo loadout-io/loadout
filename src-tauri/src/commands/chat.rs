@@ -157,6 +157,10 @@ the name exactly as the list gave it, so you start something they really have.
 Never say you have started something unless a tool told you it went. The run appears in the \
 stream this person is watching, and so does the reason if it could not start.
 
+To stop a run, use stop_run, and only after you have asked this person and they said yes. Never \
+reach for kill or any other way of stopping work by hand: stop_run brings the whole run down and \
+makes sure everything it started is gone, and nothing you do yourself can do that.
+
 While a run is going, the truth about it is on disk inside the folder you are working in: \
 .loadout/runs has one directory per run, newest last, and each one holds run.json with the steps \
 and their state, handoffs with what each step passed on, and logs. Read them when this person \
