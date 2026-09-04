@@ -333,8 +333,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-30 | `z30-engine-small-leaks` | `prompts/Z-30.md` | R | C→X | | — | **PRZYWRÓCONE** `2026-09-04` (`392c58c4`) | werdykt DZIALA, ale pełne CI po merge'u złapało regresję; `git revert -m 1` = `4778c4af`; gałąź zostaje materiałem |
 | Z-30b | `z30b-death-proof-keeps-the-status` | `prompts/Z-30b.md` | R | C→X | | — | **LANDED** `2026-09-04` | jedna runda; pełna suita w checku (197 s) zamiast zawężonej |
 | Z-31 | `z31-lab-fixes` | `prompts/Z-31.md` | R | X→C | | Z-30 | **LANDED** `2026-09-04` | |
-| Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | RUNNING | |
-| Z-33 | `z33-record-truth` | `prompts/Z-33.md` | R | X→C | | Z-32 | TODO | |
+| Z-32 | `z32-library-compat` | `prompts/Z-32.md` | R | C→X | | Z-31 | **LANDED** `2026-09-04` | |
+| Z-33 | `z33-record-truth` | `prompts/Z-33.md` | R | X→C | | Z-32 | RUNNING | |
 
 > **Kolumna „zależy od" jest KOLEJNOŚCIĄ STARTU, nie zależnością logiczną** (poza Z-28 → Z-01,
 > gdzie chodziło o żywe testy procesowe z pakietu 0.4). Zadania silnika dotykają rozłącznych
@@ -423,6 +423,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-04 20:45 · Z-32 · LANDED, dwie rundy, CI 329 s. Biblioteka przestaje ufać temu, czego nie sprawdziła: APFS nie robi dwóch katalogów z samej różnicy wielkości liter, więc przemianowanie leafu i publikacja idą pod jednym zamkiem, wadliwe `u32` dostaje uwagę zamiast zamawiać miliard iteracji, odrzucony workflow nie zostawia pustej półki, a okno wie, którą rewizję naprawdę przeczytało · C→X
 - 2026-09-04 20:10 · Z-34 · werdykt DZIALA w jednej rundzie, **merge cofnięty** (`2328b3a2`) i czeka na jedno zdanie od właściciela. Nie ma tu wady: bramka stanęła na zapadce gęstości — `textElements` 52 przy bazie 49, **przy suficie 60**, czyli ekran nie jest za gęsty, tylko gęstszy niż przy ostatnim pomiarze. Nowa stopka mówi po zdaniu o KAŻDEJ aplikacji zamiast jednego nieprawdziwego „Claude · Codex ready", więc trzy elementy więcej to koszt prawdy, nie bałaganu. `--update-baseline` umie tylko obniżać (niezmiennik 18), a `checks/` jest zamknięte i dla pętli, i dla mnie · C→X
 - 2026-09-04 19:00 · Z-31 · LANDED, dwie rundy, CI 334 s. Lab przestaje płacić za turę bez obiecanego sufitu: brak kwoty jest odmową PRZED `start`, nie cichym zejściem do sterownika bazowego. Tura już opłacona czyta stan ponownie i honoruje Accept albo Discard wykonany w jej trakcie, zamiast pisać po nim; agent i jego rewizja pochodzą z JEDNEGO odczytu · X→C
 - 2026-09-04 18:35 · **RÓWNOLEGŁOŚĆ WŁĄCZONA decyzją właściciela.** Od tej chwili dwa zadania naraz, z buforem: drugi startuje, gdy pierwszy ma checki za sobą, i nie ląduję nic, gdy drugi jest w checkach. Reguła „nigdy dwa ciężkie cargo naraz" zostaje jako intencja — dwa dzisiejsze flaki pokazały, że obciążona maszyna udaje regresję, a każdy fałszywy alarm kosztuje pełny przebieg bramki. Flak z obciążenia = powrót do szeregu · ręka
