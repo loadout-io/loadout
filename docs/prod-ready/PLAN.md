@@ -457,7 +457,7 @@ właściciel zdecyduje inaczej przed startem (lista decyzji w audycie).
 
 | ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
 |---|---|---|---|---|---|---|---|---|
-| Z-35 | `z35-stop-per-folder` | `prompts/Z-35.md` | R+TS | C→X | duże | 0b | TODO | A-1, A-2: Stop/Continue/Say/zamknięcie karty adresowane folderem |
+| Z-35 | `z35-stop-per-folder` | `prompts/Z-35.md` | R+TS | C→X | duże | 0b | **LANDED** `2026-09-04` | A-1, A-2; trzy rundy, 73,35 USD, CI 305 s |
 | Z-36 | `z36-tool-in-flight` | `prompts/Z-36.md` | R+TS | X→C | | — | TODO | L-1: `tool_progress` → jedna aktualizowana linia; wiadomość w kolejce mówi, że czeka |
 | Z-37 | `z37-finished-run-keeps-its-tiles` | `prompts/Z-37.md` | TS | X→C | | — | TODO | L-3: po końcu biegu kafelki i nagłówek trzymają stan; może iść obok biegu R |
 | Z-38 | `z38-reflection-budget` | `prompts/Z-38.md` | R | C→X | | — | TODO | L-4: `REFLECTION_BUDGET_USD = 0.08`, `context: []`, cichy `nothing-came-back` |
@@ -553,6 +553,7 @@ i powtarza `land`. Wzrost nad sufit = `BLOCKED`, bez negocjacji.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-04 22:25 · Z-35 · **LANDED**, trzy rundy, 63 min, CI 305 s. Pierwsza pelna cena zadania w historii tego repo, faza po fazie: plan 5,62 + 0,76 (wznowiony), implementacja 35,12 / 15,23 / 12,30, weryfikacje Codeksa 1,27 / 1,06 / 1,98 — razem **73,35 USD**. Dwie pierwsze rundy odrzucil weryfikator za to samo: `None` mialo zostac wylacznie dla zamykania okna, a `stopRunOf` dalej wolal `stop(null)`, wiec zwykla droga z okna nadal mogla nie podac folderu. Zielone testy tego nie widzialy, bo sadzily tylko wariant z folderem — cross-vendor zlapal luke wyroczni, nie kodu. `h clean` zabral 9,5 MB transkryptow · C→X
 - 2026-09-04 21:10 · Z-35 · plan zjadl sufit 60 tur (kod 3) po 60 komendach Bash — sonda z protokolu pokazala szerokie czytanie, nie krecenie sie w kolko (max 8 odczytow `ipc.rs`, 13 140 linii), wiec ponowienie z `LOADOUT_PLAN_TURNS=150`. **H-24 zaplacil sie przy PIERWSZYM uzyciu: wznowiona sesja planu kosztowala 0,76 USD zamiast 5,62 od zera.** Plan poprawil dwa zalozenia mojego promptu: `close_at`/`stop_watching` JEST juz adresowane folderem (rejestr rozmow kluczowany `terminal`, karta ma `id === folder`), a wada siedzi w `stopRunOf(tab)` w oknie; `commands.golden.txt` NIE dostaje wiersza, bo trzyma same nazwy komend — lustrem kluczy jest `commands-wired.test.ts` i `checks/invoke-args.sh` · C→X
 - 2026-09-04 20:05 · 0b.5/0b.6 · `85baab6b`; `h clean` zabiera transkrypty, nowe `h sweep` zdejmuje martwe stany — i ODMOWILO wszystkim pieciu, bo kazdy ma zywa galaz z praca (audyt mylil sie, nazywajac je martwymi). Recznie: `cargo clean` 110 617 plikow i 28,7 GiB, kopia bazy 71 MB, 22 katalogi transkryptow sprzed fali Z; wolne 345 → 365 GiB. Dokumentacja: ARCHITECTURE §8, STATUS.md, README, harness/README.md, build.md · ręka
 - 2026-09-04 19:40 · 0b.1 · `93fc9091`; straznik `bash-guard` zaswiecil sie przy PIERWSZYM uruchomieniu — zapis przez plik tymczasowy zgubil bit +x, a zdanie checka twierdzilo przy okazji nieprawde o skutku: settings.json wola hak przez `bash`, wiec bit nie byl nosny. Poprawione oba; straznicy 10/10 · ręka
