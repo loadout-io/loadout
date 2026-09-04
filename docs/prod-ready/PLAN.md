@@ -480,6 +480,42 @@ stronie Claude plus Codex; po 0b.2 kwoty będą w `runs/<id>/cost.json`, nie z g
 > **Zależności są kolejnością startu**, jak w sekcji 3: `BLOCKED` na jednym zadaniu nie przenosi
 > się na następne, poza parami nazwanymi wprost (Z-35 → Z-39, Z-43; Z-36 → Z-40).
 
+### Harmonogram slotów (zapisany 2026-09-04 wieczorem, przed startem pętli)
+
+Jeden bieg dotykający Rusta naraz; obok niego najwyżej jeden czysto TS, i tylko gdy pliki są
+rozłączne (Z-37 zmienia `io.ts` — NIE obok Z-35, które też). `h land` wyłącznie, gdy nic nie
+biegnie. Po każdym `LANDED`: wiersz w Dzienniku, commit PLAN.md, `/compact` gdy kontekst ciężki.
+
+| slot | bieg R | obok (TS) | uwagi |
+|---|---|---|---|
+| 0 | — | — | Fala 0b ręką: 0b.1 → 0b.6 (≈ 3 h z bramkami; po `cargo clean` pierwsza bramka zimna, ~10 min) |
+| 1 | Z-35 | — | duże, `LOADOUT_BUDGET_DEV=70`; sam, bo dotyka `io.ts` i luster |
+| 2 | Z-38 | Z-37 | rozłączne: `run.rs` vs `io.ts`/`index.tsx`/`headline.ts` |
+| 3 | Z-36 | — | `line.rs` + pompa + karty; sam |
+| 4 | Z-39 | — | po Z-35 |
+| 5 | Z-40 | — | po Z-36 |
+| 6 | Z-41 | — | |
+| 7 | Z-42 | — | |
+| 8 | Z-43 | — | po Z-35 |
+| 9 | Z-44 | — | wariant domyślny A (odmowa) |
+| 10 | Z-45 | — | wariant domyślny: pole `weight` |
+| 11 | Z-46 | — | duże; test na kopii urc w `$TMPDIR` |
+| 12 | Z-47 | — | |
+| 13 | Z-48 | — | |
+| 14 | Z-49 | — | |
+| 15 | Z-50 | — | |
+
+Zegar: 15 slotów × (60–90 min biegu + ~6 min `land`) ≈ 17–24 h plus 3 h Fali 0b. Koszt:
+300–550 USD po stronie Claude plus Codex (po 0b.2 z `cost.json`).
+
+**Zapadka gęstości a zadania TS (Z-36, Z-37, Z-40, Z-45, Z-46, Z-50 dodają zdania na ekran):**
+`checks/density.sh` czyta bazę przy każdym biegu i czerwieni każdy wzrost nad bazę, choćby sufit
+z DESIGN §7 trzymał — na tym utknęło Z-34 (52 przy bazie 49, suficie 60). Reguła na Falę 6
+(decyzja właściciela z 2026-09-04): gdy JEDYNĄ czerwienią bramki jest zapadka, a sufit trzyma,
+orkiestrator podnosi bazę w `checks/density-baseline.json` do zmierzonej liczby ręką (`python3`,
+zapis atomowy), z wierszem w Dzienniku „baza gęstości N → M, powód: <zadanie>, sufit 60 trzyma",
+i powtarza `land`. Wzrost nad sufit = `BLOCKED`, bez negocjacji.
+
 ---
 
 ## 4. Sondy przed konkretnym zadaniem (tanie, kilka minut, wynik do Dziennika)
