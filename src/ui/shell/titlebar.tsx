@@ -71,6 +71,7 @@ import { useRun } from '../../state/run';
 import { collapseNav, navIsCollapsed, subscribeToNavCollapsed } from '../../state/settings';
 import { useWorkspaces } from '../../state/workspaces';
 import { Mark } from '../brand/mark';
+import { AgentAppsStatus } from './agent-apps-status';
 import { LockGlyph, NavIcon, PanelGlyph, SearchGlyph } from './nav-icons';
 import { askForSearch } from './search-asked';
 import { FIRST_SECTION, useSectionStore } from './section-store';
@@ -133,19 +134,6 @@ export const NAV_NARROW = 64;
  * leżała pod światłami przez trzy dni w repo źródłowym [T8 §11, 2026-08-15].
  */
 export const CHROME_INSET_TOP = 36;
-
-/**
- * Zdanie w stopce. Mówi o tym, czym ta aplikacja NAPRAWDĘ umie uruchomić krok.
- *
- * ZMIERZONE 2026-08-21: fabryka w `src-tauri/src/lib.rs` daje obu dostawcom ich prawdziwe
- * adaptery. `nav-furniture.test.tsx` czyta unię dostawców i mapowanie `Absent` w tym samym
- * biegu, więc kolejna rozbieżność między stopką a runtime'em przewróci test.
- *
- * DLACZEGO NAPIS, A NIE ODCZYT. `src-tauri/commands.golden.txt` nie ma dziś ANI JEDNEJ komendy,
- * która pyta o stan dostawców — `probe` istnieje na sterowniku i nie jest wystawiony na granicę.
- * Kiedy taki odczyt powstanie, ta stała zniknie razem z zaszytą wiedzą o vendorach.
- */
-const READY = 'Claude · Codex ready';
 
 /** Napis na kontrolce zwijania, w obu kierunkach. Wprost z domu (wiersz „Collapse sidebar"). */
 const FOLD = 'Collapse sidebar';
@@ -245,27 +233,23 @@ export function SideNav({ section = FIRST_SECTION }: SideNavProps): ReactElement
 
       <FoldControl collapsed={collapsed} />
 
-      {/* Stopka przypięta do dołu (`margin-top:auto` z makiety). Kropka żywotności i jedno
-       * zdanie o otoczeniu — to jedyne miejsce, w którym aplikacja mówi, czym umie uruchomić
-       * krok. Stopień `text-meta` to mono 11 bez rozstrzelenia, prosto z reguły `.foot`; do
-       * 2026-08-18 stało tu `text-label tracking-normal`, czyli token etykiety z ręcznie
-       * zniesioną połową jego własnej definicji, bo tego stopnia w drabince nie było.
+      {/* Stopka przypięta do dołu (`margin-top:auto` z makiety). Kropka i zdanie o otoczeniu —
+       * to jedyne miejsce, w którym aplikacja mówi, czym umie uruchomić krok. Stopień
+       * `text-meta` to mono 11 bez rozstrzelenia, prosto z reguły `.foot`; do 2026-08-18 stało
+       * tu `text-label tracking-normal`, czyli token etykiety z ręcznie zniesioną połową jego
+       * własnej definicji, bo tego stopnia w drabince nie było.
        *
-       * W trybie zwiniętym zostaje sama kropka, a zdanie przenosi się do podpowiedzi: lista
-       * dostawców ucięta do dwóch znaków obiecywałaby gotowość kogoś, kogo nie widać. */}
+       * CO STOI W ŚRODKU, RYSUJE ODCZYT, NIE TEN PLIK (2026-09, Z-34). Zdanie powstaje z tego,
+       * co odpowiedziały obie lokalne aplikacje (`./agent-apps-status.tsx`), razem z decyzją,
+       * co z niego zostaje po zwinięciu kolumny. Tutaj zostaje sama rama: krawędź, odstęp
+       * i tryb — bo to jest ta część, którą ta kartka naprawdę wie. */}
       <div
-        title={READY}
         className={
           'mt-auto flex items-center border-t border-line pt-[10px] font-mono text-meta text-muted' +
-          (collapsed ? ' w-full justify-center' : ' gap-[7px] px-[10px]')
+          (collapsed ? ' w-full justify-center' : ' px-[10px]')
         }
       >
-        {/* Kropka gotowości jest PRZYGASZONA od 2026-08-19. Akcent znaczy „to jest
-            interaktywne", a dostępność dostawcy nie jest ani interakcją, ani „teraz"
-            (DESIGN §3). Nie pulsuje też: pulsuje wyłącznie kropka pracującego agenta,
-            a sufit z ARCHITECTURE §7 daje dwa regiony animujące się od jednego zdarzenia. */}
-        <span aria-hidden className="size-[7px] rounded-full bg-muted" />
-        {collapsed ? null : <span>{READY}</span>}
+        <AgentAppsStatus collapsed={collapsed} />
       </div>
     </nav>
   );

@@ -2787,10 +2787,53 @@ pub fn spawn_with_environment(
 ///   samej nazwie cicho go nadpisywało. Dlatego stoi **za** wszystkim innym: to ostatni zapis
 ///   wygrywa, a odzyskiwanie porównuje tę wartość z `run.json`.
 pub fn spawn_tagged(
+    command: Command,
+    stdin: StdinPlan,
+    environment: &[(String, OsString)],
+    tag: Option<&StepTag>,
+) -> io::Result<Supervised> {
+    spawn_inner(command, stdin, environment, tag, Inherited::WholeTurn)
+}
+
+/// Nieoznaczona droga **taniej sondy wersji**: ta sama grupa procesów, ta sama eskalacja
+/// zabijania i to samo sprzątanie, co każdy krok — ale ze środowiska okna dziecko dostaje
+/// wyłącznie `PATH`, i to podany tutaj, nie odczytany po drodze (niezmienniki 3, 6, 23).
+///
+/// 2026-09 (Z-34) — **BEZ ZNACZNIKA, i to jest odpowiedź, nie pominięcie.** Sonda wersji nie
+/// należy do żadnego biegu, więc nie ma czym się oznaczyć, a jej `pgid` nie trafia do żadnego
+/// `run.json`. Znacznik zgodny z jakimkolwiek biegiem kazałby odzyskiwaniu zabijać sondę,
+/// której nikt nie zamawiał. Dlatego to osobna droga zamiast `spawn_tagged(…, None)`: `None`
+/// da się dopisać, a nazwę tej funkcji trzeba napisać.
+///
+/// **JEDNA NAZWA W ARGUMENCIE, NIE LISTA**, bo tego akurat pilnuje typ: sonda pyta o wersję
+/// programu, który sam wywoła kolejne (`node`), i to jest cała jej potrzeba. Poświadczenia
+/// z [`VENDOR_AUTH_PASSTHROUGH`] i `HOME` z [`PASSTHROUGH`] są tu zbędne, a slice par
+/// wpuściłby je z powrotem jednym wierszem, którego nikt by w diffie nie zauważył.
+pub fn spawn_probe(command: Command, path: &OsStr) -> io::Result<Supervised> {
+    spawn_inner(
+        command,
+        StdinPlan::Null,
+        &[(String::from("PATH"), path.to_os_string())],
+        None,
+        Inherited::PathOnly,
+    )
+}
+
+/// Ile ze środowiska okna dziecko w ogóle dziedziczy. Dwie odpowiedzi, obie w rdzeniu.
+#[derive(Clone, Copy)]
+enum Inherited {
+    /// Pełna tura agenta: [`PASSTHROUGH`] plus [`VENDOR_AUTH_PASSTHROUGH`].
+    WholeTurn,
+    /// Sonda wersji: sam `PATH`. Powód w całości przy [`spawn_probe`].
+    PathOnly,
+}
+
+fn spawn_inner(
     mut command: Command,
     stdin: StdinPlan,
     environment: &[(String, OsString)],
     tag: Option<&StepTag>,
+    inherited: Inherited,
 ) -> io::Result<Supervised> {
     let program = command.as_std().get_program().to_os_string();
     let current_dir = command.as_std().get_current_dir().map(Path::to_path_buf);
@@ -2813,6 +2856,11 @@ pub fn spawn_tagged(
     // stałych, bo dopisanie nazwy do drugiej jest decyzją innej wagi niż do pierwszej
     // (2026-09, Z-23 — powód w całości przy [`VENDOR_AUTH_PASSTHROUGH`]).
     for &name in PASSTHROUGH.iter().chain(VENDOR_AUTH_PASSTHROUGH) {
+        // 2026-09 (Z-34) — sonda wersji przechodzi tą samą pętlą i wychodzi z niej z jedną
+        // nazwą. Osobna pętla obok byłaby drugą kopią tej samej polityki (niezmiennik 23).
+        if matches!(inherited, Inherited::PathOnly) && name != "PATH" {
+            continue;
+        }
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
