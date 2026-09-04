@@ -12,7 +12,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { Handoff, Note, NoteAddress } from '../../state/memory';
+import type { Handoff, HandoffPage, Note, NoteAddress } from '../../state/memory';
 
 export interface CatalogRequest {
   catalogFolder: string | null;
@@ -111,6 +111,19 @@ export function moveToProject(args: AddressRequest): Promise<Note[]> {
  * Przełącznika „This project / Everywhere" z makiety dalej NIE BUDUJEMY: nie ma za nim danych
  * po tamtej stronie granicy, a kontrolka bez skutku jest gorsza niż jej brak (niezmiennik 16).
  */
-export function listHandoffs(folder: string | null): Promise<Handoff[]> {
-  return invoke<Handoff[]>('list_handoffs', { folder });
+export async function listHandoffs(
+  folder: string | null,
+  afterRuns: number,
+  howManyRuns: number,
+): Promise<HandoffPage> {
+  const answer = await invoke<HandoffPage | Handoff[]>('list_handoffs', {
+    folder,
+    afterRuns,
+    howManyRuns,
+  });
+  /* 2026-09 (Z-49): atrapy starszych ścieżek e2e oddają `[]` na każde `list_*`. Surowa
+   * tablica ma więc znaczyć pustą stronę, zamiast wywracać pięć niezależnych ekranów
+   * podczas odczytu pola `handoffs` (niezmiennik 5). */
+  if (Array.isArray(answer)) return { handoffs: answer, runsRead: 0, moreRuns: 0 };
+  return answer;
 }

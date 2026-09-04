@@ -374,9 +374,11 @@ const WIRES: readonly Wire[] = [
     command: 'list_handoffs',
     /* 2026-08-23 — ZAKRES, którego ta krawędź do dziś nie miała. Bez niego Rust czytał katalog
      * ustawiany raz przy starcie i nieistniejący na dysku, więc trzecia strefa sekcji Pamięć
-     * była pusta nad folderem pełnym prawdziwych plików. */
-    given: [FOLDER],
-    call: () => memory.listHandoffs(FOLDER),
+     * była pusta nad folderem pełnym prawdziwych plików.
+     * 2026-09 (Z-49): obie dziesiątki są celowo niezerowe — lustro ma dowieść, że okno
+     * niesie zarówno początek strony, jak i jej szerokość, zamiast przepuścić brak jednego. */
+    given: [FOLDER, 10, 10],
+    call: () => memory.listHandoffs(FOLDER, 10, 10),
   },
   /* 2026-08-19 (T-42) — DRUGA DROGA WEJŚCIA DO UMIEJĘTNOŚCI, dopisana, nic nie usunięte.
    * `authorSkill` jest krawędzią do komendy, która przyjmuje TREŚĆ umiejętności, a nie adres —

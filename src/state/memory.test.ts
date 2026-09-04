@@ -99,7 +99,7 @@ beforeEach(() => {
   useMemory.setState(BLANK, true);
   vi.resetAllMocks();
   listNotes.mockResolvedValue([]);
-  listHandoffs.mockResolvedValue([]);
+  listHandoffs.mockResolvedValue({ handoffs: [], runsRead: 0, moreRuns: 0 });
   useMemory.setState({ notes: [note(TENANT, 'suggested'), note(INDEX, 'in-use')] });
 });
 
@@ -250,7 +250,7 @@ const PASSED: Handoff = {
 describe('entering the section reads both folders, and one failing does not empty the other', () => {
   it('fills both zones from disk and says nothing when nothing went wrong', async () => {
     listNotes.mockResolvedValue([note(FLAKY, 'in-use')]);
-    listHandoffs.mockResolvedValue([PASSED]);
+    listHandoffs.mockResolvedValue({ handoffs: [PASSED], runsRead: 1, moreRuns: 0 });
 
     await useMemory.getState().load();
 
@@ -266,7 +266,7 @@ describe('entering the section reads both folders, and one failing does not empt
 
   it('keeps the files agents passed on screen when the notes folder will not be read', async () => {
     listNotes.mockRejectedValue('Loadout could not read the notes on this machine.');
-    listHandoffs.mockResolvedValue([PASSED]);
+    listHandoffs.mockResolvedValue({ handoffs: [PASSED], runsRead: 1, moreRuns: 0 });
 
     await useMemory.getState().load();
 

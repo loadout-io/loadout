@@ -72,11 +72,12 @@ fn the_list_answers_about_the_folder_it_was_given() -> Result<(), Box<dyn Error>
     a_project_with_one_handoff(one.path(), "20260823-010000__01a00000-aaaa", "Planner")?;
     a_project_with_one_handoff(two.path(), "20260823-020000__01a00000-bbbb", "Reviewer")?;
 
-    let first = list_handoffs_inner(one.path())?;
-    let second = list_handoffs_inner(two.path())?;
+    let first = list_handoffs_inner(one.path(), 0, 10)?;
+    let second = list_handoffs_inner(two.path(), 0, 10)?;
 
     assert_eq!(
         first
+            .handoffs
             .iter()
             .map(|one| one.from.as_str())
             .collect::<Vec<_>>(),
@@ -88,6 +89,7 @@ fn the_list_answers_about_the_folder_it_was_given() -> Result<(), Box<dyn Error>
      * plików. Dwa foldery, dwie odpowiedzi, albo zakres jest ozdobą. */
     assert_eq!(
         second
+            .handoffs
             .iter()
             .map(|one| one.from.as_str())
             .collect::<Vec<_>>(),
@@ -96,7 +98,9 @@ fn the_list_answers_about_the_folder_it_was_given() -> Result<(), Box<dyn Error>
          in the side menu is the only thing this list is about. It answered {second:?}"
     );
     assert!(
-        list_handoffs_inner(empty.path())?.is_empty(),
+        list_handoffs_inner(empty.path(), 0, 10)?
+            .handoffs
+            .is_empty(),
         "a folder that has run nothing yet has to come back empty, not refused: an empty list \
          is what the invitation on the screen is for, and a refusal there reads as a fault"
     );

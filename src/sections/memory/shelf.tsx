@@ -192,6 +192,9 @@ export default function NotesShelf({
   const moveToProject = (address: NoteAddress): void => {
     void store.getState().moveToProject(address);
   };
+  const loadMorePassed = (): void => {
+    void store.getState().loadMorePassed();
+  };
 
   /** Czy pytanie o odrzucenie stoi przy TEJ notatce. Jedno pytanie, jedno miejsce. */
   const askingAbout = (note: Note): boolean =>
@@ -324,6 +327,20 @@ export default function NotesShelf({
       <section data-zone="passed" data-gap="2" className="stack">
         <h2 className={ZONE_TITLE}>What agents passed to each other</h2>
         <p className={ZONE_LEAD}>These are plain files on disk — open them anywhere.</p>
+
+        {/* 2026-09 (Z-49): licznik stoi w tej samej strefie co ograniczona lista. Sam przycisk
+            bez zdania wyglądałby jak filtr, a licznik w innym miejscu byłby drugim regionem
+            pokazującym ten sam fakt (niezmiennik 13). */}
+        {state.passedMoreRuns > 0 ? (
+          <div className="flex flex-wrap items-baseline gap-2">
+            <p
+              className={ZONE_LEAD}
+            >{`Showing the last ${String(state.passedRunsRead)} runs · ${String(state.passedMoreRuns)} more`}</p>
+            <button type="button" className="btn-quiet" onClick={loadMorePassed}>
+              Show 10 more
+            </button>
+          </div>
+        ) : null}
 
         {/* Odmowa odczytu TEJ strefy stoi w TEJ strefie. Wyżej, obok zdania o notatkach,
             człowiek nie miałby jak zgadnąć, o który z dwóch katalogów chodzi. */}

@@ -90,6 +90,15 @@ pub struct HandoffWire {
     pub bytes: usize,
 }
 
+/// Jedna strona przekazań oraz liczba biegów, które zostały do doczytania.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HandoffPageWire {
+    pub handoffs: Vec<HandoffWire>,
+    pub runs_read: usize,
+    pub more_runs: usize,
+}
+
 impl HandoffWire {
     /// Przekazanie z dysku → kształt dla okna, ze ścieżką liczoną od katalogu projektu.
     ///
@@ -129,18 +138,33 @@ impl HandoffWire {
     }
 }
 
-/// Wszystkie przekazania wszystkich biegów tego projektu, od najnowszego biegu.
-///
-/// Bez argumentu zakresu: okno pyta „co ten projekt przekazywał", a nie „co przekazał bieg
-/// numer trzy". Filtrowanie po biegu jest wyborem widoku i mieszka po tamtej stronie granicy —
-/// drugi argument tutaj byłby drugim miejscem, w którym mieszka odpowiedź na pytanie, które
-/// przekazania pokazać.
-pub fn list_handoffs_inner(project: &Path) -> Result<Vec<HandoffWire>> {
+/// Przekazania wskazanej paczki biegów tego projektu, od najnowszego biegu.
+pub fn list_handoffs_inner(
+    project: &Path,
+    after_runs: usize,
+    how_many_runs: usize,
+) -> Result<HandoffPageWire> {
+    let dirs = run_dirs(project);
+    let total = dirs.len();
+    /* 2026-09 (Z-49): wycinek powstaje PRZED skanowaniem przekazań. Ucięcie samej odpowiedzi
+     * dalej otwierałoby każdy katalog w archiwum, czyli zachowałoby koszt, który naprawiamy.
+     * Długość wycinka liczy też nieczytelny katalog (Z-42): zajmuje on swoje miejsce, zamiast
+     * po cichu wciągać jedenasty bieg do dziesięciobiegowej paczki. */
+    let dirs: Vec<PathBuf> = dirs
+        .into_iter()
+        .skip(after_runs)
+        .take(how_many_runs)
+        .collect();
+    let runs_read = dirs.len();
     let mut out = Vec::new();
-    for dir in run_dirs(project) {
+    for dir in dirs {
         out.extend(handoffs_of_run(project, &dir));
     }
-    Ok(out)
+    Ok(HandoffPageWire {
+        handoffs: out,
+        runs_read,
+        more_runs: total.saturating_sub(after_runs.saturating_add(runs_read)),
+    })
 }
 
 /// Przekazania **jednego** biegu, w kolejności numerów kroków. Nieczytelny katalog daje pusto.

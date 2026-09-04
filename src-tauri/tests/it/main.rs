@@ -151,6 +151,7 @@ mod handoff_index_for_fan_in;
 mod handoff_reaches_next_prompt;
 mod handoff_written_after_step;
 mod handoffs_are_scoped_to_one_folder;
+mod handoffs_read_only_the_last_runs;
 mod harness_workflow_chain;
 mod harness_workflow_findings_match_doc;
 mod harness_workflow_sequential;
