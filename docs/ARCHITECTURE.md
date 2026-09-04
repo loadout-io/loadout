@@ -186,7 +186,7 @@ Siedem stanów. `paused` jest stanem **biegu**, nigdy kroku — to usuwa całą 
 | `pending` | stopień wejściowy spadł do 0 | `ready` | do zbioru gotowych |
 | `pending` | krok wyżej `failed` | `skipped` | końcowy; przejście po stożku w dół |
 | `pending` | krok wyżej `cancelled` | `cancelled` | końcowy — **nie `skipped`**, bo UI kłamałby o powodzie |
-| `ready` | permit semafora | `running` | spawn w grupie procesów, zapis `pid`, `pgid` |
+| `ready` | krok **naprawdę rusza** — miejsce w puli aplikacji, a przy kafelkach, które miejsca nie biorą, chwila startu | `running` | spawn w grupie procesów, zapis `pid`, `pgid` |
 | `running` | wyjście 0 **i** `result.is_error == false` | `succeeded` | koszt, podsumowanie, dekrementacja stopni potomków |
 | `running` | niezerowe wyjście **albo** `result.is_error` | `failed` | zapis powodu, pominięcie stożka |
 | `running` | limit czasu | `failed` | SIGTERM grupy → łaska → SIGKILL |
@@ -215,8 +215,17 @@ dotyczy więc responsywności przycisku Stop, nie pozwolenia na porzucenie proce
   ustawienie „co, kiedy ten nie przejdzie" z D7, a nie ósmy stan.
 - **Trasa zablokowana** — krok, który zameldował sukces, dostaje `Failed`, kiedy żaden warunek
   krawędzi wychodzącej nie pasuje (`Route::Blocked`). Tabela nie zna tego wyzwalacza.
-- **`settle_leftovers`** — po pętli planisty każdy krok wciąż `ready`/`running` schodzi jako
-  `failed`, a `pending` jako `skipped` albo `cancelled`. To domknięcie, nie przejście.
+- **`settle_leftovers`** — po pętli planisty krok wciąż `running` schodzi jako `failed`, a krok
+  wciąż `ready` — czyli taki, który nigdy nie potwierdził startu — jako `skipped` albo
+  `cancelled`, tak samo jak `pending`. To domknięcie, nie przejście.
+
+  Rozróżnienie `ready` / `running` jest tu całą treścią (poprawione 2026-09, Z-30). Do tego dnia
+  `running` wpisywał permit **semafora planisty**, a `commands::run` woła planistę z permitem na
+  każdy krok grafu — prawdziwe miejsce daje dopiero pula aplikacji
+  (`Live::a_slot_for_this_step`). Krok stojący w tej kolejce czytał się więc jako działający,
+  a po panice zadania kończył jako `failed`: jako coś, co pracowało i nie przeszło, choć nie
+  zrobiło nic. Dziś `ready → running` wpisuje sam krok, w chwili, w której naprawdę rusza
+  (`scheduler::Started`), i to jest ta sama różnica, na której stoi niezmiennik 11.
 - **Sufit budżetu** (T-94) — krok zatrzymany sufitem czyta się jako `skipped`, nigdy `cancelled`:
   na ekranie „cancelled" znaczy „nacisnąłeś Stop".
 - **Sufit jest DZIELONY między kroki, które biegną razem** (poprawione 2026-09-03, Z-13b).
