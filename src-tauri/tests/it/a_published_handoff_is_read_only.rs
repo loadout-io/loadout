@@ -111,9 +111,17 @@ async fn a_truncated_handoff_stops_the_step_that_reads_it() -> Result<(), Box<dy
     assert_changed_run(Tamper::TruncateBody).await
 }
 
+/// ZNIKNIETY PLIK TO NIE ZMIENIONY PLIK (2026-09-05, przy landowaniu Z-41).
+///
+/// Ten test zadal pierwotnie zdania „Handoff … was changed after Scout published it." takze dla
+/// USUNIECIA — a to nieprawda o tym, co sie stalo, i klocilo sie z T-101
+/// (`context_failures_take_the_chosen_path`), gdzie sabotazysta usuwa wynik poprzednika i karta
+/// mowi zdanie ogolne. Sila asercji zostaje ta sama: krok MA padac przed startem sterownika,
+/// zdanie MA stac na ekranie jako `Problem` pod Readerem i MA wrocic z `read_run_inner`.
+/// Zmienia sie wylacznie to, ktore zdanie jest prawdziwe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_handoff_stops_the_step_that_reads_it() -> Result<(), Box<dyn Error>> {
-    assert_changed_run(Tamper::RemoveHandoff).await
+    assert_refused_run(Tamper::RemoveHandoff, CONTEXT_NOT_PROVEN).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -174,8 +182,27 @@ async fn an_untouched_handoff_from_an_earlier_run_starts_normally() -> Result<()
     Ok(())
 }
 
+const CONTEXT_NOT_PROVEN: &str =
+    "Loadout could not prove the context files for this agent, so it did not start the step.";
+
 async fn assert_changed_run(tamper: Tamper) -> Result<(), Box<dyn Error>> {
     let (report, mut lines, seen, bench) = run_with(tamper).await?;
+    let changed = seen.changed_sentence()?;
+    judge_refusal(report, &mut lines, &bench, &changed)
+}
+
+/// Ten sam sedzia, ale zdanie podaje wolajacy — bo nie kazda awaria kontekstu jest zmiana.
+async fn assert_refused_run(tamper: Tamper, sentence: &str) -> Result<(), Box<dyn Error>> {
+    let (report, mut lines, _seen, bench) = run_with(tamper).await?;
+    judge_refusal(report, &mut lines, &bench, sentence)
+}
+
+fn judge_refusal(
+    report: RunReport,
+    lines: &mut LineSource,
+    bench: &Bench,
+    sentence: &str,
+) -> Result<(), Box<dyn Error>> {
     assert_eq!(
         report.steps,
         vec![
@@ -187,17 +214,18 @@ async fn assert_changed_run(tamper: Tamper) -> Result<(), Box<dyn Error>> {
         report.steps
     );
 
-    let changed = seen.changed_sentence()?;
     let mut visible = false;
     while let Some(line) = lines.try_next() {
-        if line.kind() == LineKind::Problem && line.agent() == READER_NAME && line.text() == changed
+        if line.kind() == LineKind::Problem
+            && line.agent() == READER_NAME
+            && line.text() == sentence
         {
             visible = true;
         }
     }
     assert!(
         visible,
-        "the changed handoff was not a Problem line under Reader with the sentence {changed:?}"
+        "the tampered handoff was not a Problem line under Reader with the sentence {sentence:?}"
     );
 
     let folder = report
@@ -212,9 +240,7 @@ async fn assert_changed_run(tamper: Tamper) -> Result<(), Box<dyn Error>> {
         .find(|step| step.name == READER_NAME)
         .ok_or("Reader is absent from the run history")?;
     assert!(
-        reader
-            .error
-            .contains("was changed after Scout published it"),
+        reader.error.contains(sentence),
         "read_run_inner did not carry the visible refusal into Reader.error: {:?}",
         reader.error
     );

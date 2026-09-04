@@ -12272,8 +12272,14 @@ impl Live {
     /// pełnej kopii. Awaria odczytu znaczy dla kroku to samo: nie dostaje już bajtów, które
     /// poprzednik opublikował, więc nie wolno uruchomić go nad innym kontekstem.
     fn published_handoff_bytes(hand: &Handed) -> anyhow::Result<usize> {
+        // ZNIKNIETY PLIK TO NIE ZMIENIONY PLIK (2026-09-05). Pierwsza wersja tej funkcji mapowala
+        // KAZDA awarie na zdanie „Handoff … was changed after … published it", wiec krok, ktoremu
+        // poprzednik USUNAL wynik, czytal na karcie nieprawde o tym, co sie stalo — a lawka
+        // `context_failures_take_the_chosen_path` robi dokladnie to (sabotazysta „remove Source's
+        // result") i przypina ogolne zdanie z T-101. Konkretne zdanie nalezy sie wylacznie
+        // przypadkowi, w ktorym plik JEST, a jego tresc nie zgadza sie z tym, co opublikowano.
         let changed = || HandoffChangedAfterPublication::for_handed(hand);
-        let metadata = fs::symlink_metadata(&hand.path).map_err(|_| changed())?;
+        let metadata = fs::symlink_metadata(&hand.path)?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(changed().into());
         }
@@ -12283,7 +12289,7 @@ impl Live {
         }
 
         if let Some(full) = &hand.attachment {
-            let full_metadata = fs::symlink_metadata(full).map_err(|_| changed())?;
+            let full_metadata = fs::symlink_metadata(full)?;
             if full_metadata.file_type().is_symlink() || !full_metadata.is_file() {
                 return Err(changed().into());
             }
