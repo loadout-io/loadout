@@ -292,7 +292,7 @@ Ta sama zasada co w Fali 0: pliki pod `harness/`, `checks/`, `scripts/`, `.claud
 `python3` z zapisem atomowym, po każdym pakiecie `bash scripts/ci.sh full` (gdy nic nie biegnie),
 commit `chore(prod-ready): 0b.N …`, status tutaj. Źródło: `docs/prod-ready/AUDIT-2026-09-04.md`.
 
-### 0b.1 Hak `PreToolUse` na Bash w biegu harnessu — TODO (D-1, D-5)
+### 0b.1 Hak `PreToolUse` na Bash w biegu harnessu — LANDED `2026-09-04` (`45240708`, `93fc9091`)
 
 Nowy `.claude/hooks/pre-bash.sh`, wpięty w `.claude/settings.json` jako `PreToolUse` dla `Bash`,
 AKTYWNY TYLKO, gdy `LOADOUT_HARNESS=1` (ustawia `harness/h.py` w środowisku każdej fazy) —
@@ -308,7 +308,7 @@ NIE zdejmuj reguł `Write(…)` z `settings.json`: `checks/quick-permissions.sh`
 Edit/Write (pamięć projektu, incydent N-05); szum startowy CLI nie kosztuje.
 Miara po pętli Fali 6: liczba `cargo clippy` w `runs/z*/build-*.jsonl` = 0.
 
-### 0b.2 Księga kosztów w `harness/h.py` — TODO (D-2)
+### 0b.2 Księga kosztów w `harness/h.py` — LANDED `2026-09-04` (`45240708`)
 
 Po każdej fazie `cost_usd` do `.git/h/<id>.json` (`costs: {plan, implement[], verify[]}`) i do
 `runs/<id>/cost.json`; Claude z `result.total_cost_usd` (także przy `--json-schema` — jeśli pole
@@ -317,18 +317,18 @@ Codex z `usage` × tabela. `h list`/`h status` pokazują sumę; `h run` odmawia 
 gdy suma zadania przekroczy `LOADOUT_BUDGET_TASK` (domyślnie 90 USD). Dziennik bierze kwotę
 z `cost.json`, nie z grepa.
 
-### 0b.3 H-24 i H-25 — TODO (D-3, D-4)
+### 0b.3 H-24 i H-25 — LANDED `2026-09-04` (`45240708`)
 
 `phase_plan`: zapisz `sid` w stanie przed wołaniem, `--resume` przy ponowieniu (kształt jak
 w `phase_implement`). `ORACLE` += `docs/ARCHITECTURE.md`, `docs/design/DESIGN.md`. Test: sonda
 z `harness/README.md` (parser bramki, bez biegu).
 
-### 0b.4 Hak Stop tylko w worktree harnessu — TODO (D-7)
+### 0b.4 Hak Stop tylko w worktree harnessu — LANDED `2026-09-04` (`45240708`)
 
 `stop-gate.sh` liczy wyłącznie, gdy `LOADOUT_HARNESS=1` albo `cwd` ma stan w `.git/h/`; w sesji
 właściciela wychodzi zerem natychmiast.
 
-### 0b.5 Sprzątanie — TODO (C-2, C-3)
+### 0b.5 Sprzątanie — LANDED `2026-09-04` (`85baab6b`)
 
 `cargo clean` (83 149 plików w `target/debug/deps`); `h clean` usuwa `runs/<id>` zadań `LANDED`
 starszych niż 14 dni (dopisz do `h clean --landed`); 5 martwych stanów w `.git/h/`
@@ -336,7 +336,7 @@ starszych niż 14 dni (dopisz do `h clean --landed`); 5 martwych stanów w `.git
 `~/.loadout/loadout.db.bak-2026-09-04` (71 MB) do kosza po potwierdzeniu, że `loadout.db` żyje;
 `.loadout/scratch/t22`; `$TMPDIR/loadout-z01d-*`.
 
-### 0b.6 Dokumentacja jedną przecinką — TODO (B-2, E-2, E-3, D-9)
+### 0b.6 Dokumentacja jedną przecinką — LANDED `2026-09-04` (`85baab6b`)
 
 ARCHITECTURE §8: `agents/<slug>.md`; STATUS.md: jedno zdanie „od 2026-09-02 postęp mieszka
 w `prod-ready/PLAN.md`" i zdjęcie obowiązku ze `.claude/commands/build.md`; README: opis
@@ -553,6 +553,10 @@ i powtarza `land`. Wzrost nad sufit = `BLOCKED`, bez negocjacji.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-04 20:05 · 0b.5/0b.6 · `85baab6b`; `h clean` zabiera transkrypty, nowe `h sweep` zdejmuje martwe stany — i ODMOWILO wszystkim pieciu, bo kazdy ma zywa galaz z praca (audyt mylil sie, nazywajac je martwymi). Recznie: `cargo clean` 110 617 plikow i 28,7 GiB, kopia bazy 71 MB, 22 katalogi transkryptow sprzed fali Z; wolne 345 → 365 GiB. Dokumentacja: ARCHITECTURE §8, STATUS.md, README, harness/README.md, build.md · ręka
+- 2026-09-04 19:40 · 0b.1 · `93fc9091`; straznik `bash-guard` zaswiecil sie przy PIERWSZYM uruchomieniu — zapis przez plik tymczasowy zgubil bit +x, a zdanie checka twierdzilo przy okazji nieprawde o skutku: settings.json wola hak przez `bash`, wiec bit nie byl nosny. Poprawione oba; straznicy 10/10 · ręka
+- 2026-09-04 19:20 · 0b.1–0b.4 · `45240708`; hak `pre-bash` odmawia w biegu tego, co bramka odpala po agencie. Sonda nad korpusem 1 475 komend fali Z: odmawia 105 (7,1 %), zero falszywych alarmow — ale pierwsza wersja miala TRZY i zlapala je dopiero ta sonda (`grep clippy scripts/ci.sh`, `cargo test --test it -- <slowa>` bez `::`, `vitest run e2e`). `cargo check` zostaje legalne swiadomie: 44 wywolania, wszystkie tanie, a bieg bez dowodu kompilacji produkuje czerwien nie do odroznienia od prawdziwej. Plus ksiega kosztow (`runs/<id>/cost.json`, `LOADOUT_BUDGET_TASK`), sesja fazy planu (H-24), ORACLE += ARCHITECTURE i DESIGN (H-25), hak Stop tylko w biegu (D-7) · ręka
+- 2026-09-04 19:00 · maszyna · osierocony `cargo test --lib` z cudzej sesji (pid 79657, 6 h przy 0 % CPU) zabity z dowodem ESRCH; pelna bramka po Fali 0b: zielona, 403 s na zimno, straznicy 10/10 · ręka
 - 2026-09-04 18:40 · audyt · drugi audyt po pętli Z (`AUDIT-2026-09-04.md`, artefakt w pliku): 27 znalezisk + 6 z eksportu diagnostyki i dwóch zrzutów właściciela; Fala 0b (6 pakietów ręką) i Fala 6 (Z-35…Z-50, 16 promptów) dopisane; pętla Z kosztowała ≈ 844 USD po stronie Claude (z grepa po `runs/`, bo księgi nie ma — 0b.2) · ręka (Fable)
 - 2026-09-04 21:35 · Z-33 · LANDED, trzy rundy, CI 321 s. `run.json` zapisuje ten sam werdykt, którym pętla naprawdę steruje: `Succeeded` nieostatniej rundy jest sygnałem dla planisty, żeby odblokować graf, a nie zdaniem „krok się udał", i historia mówi to człowiekowi wprost — bez ósmego stanu w bazie · X→C
 - 2026-09-04 20:45 · Z-32 · LANDED, dwie rundy, CI 329 s. Biblioteka przestaje ufać temu, czego nie sprawdziła: APFS nie robi dwóch katalogów z samej różnicy wielkości liter, więc przemianowanie leafu i publikacja idą pod jednym zamkiem, wadliwe `u32` dostaje uwagę zamiast zamawiać miliard iteracji, odrzucony workflow nie zostawia pustej półki, a okno wie, którą rewizję naprawdę przeczytało · C→X

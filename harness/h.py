@@ -534,7 +534,7 @@ CODEX_PRICES = {
 }
 
 
-def cost_of(vendor, out):
+def cost_of(vendor, out, model=None):
     """(USD, czy oszacowane) z transkryptu fazy, albo (None, False), gdy nie da sie policzyc.
 
     D-2 (audyt 2026-09-04): pole „koszt" w Dzienniku planu bylo puste we WSZYSTKICH 60
@@ -556,53 +556,47 @@ def cost_of(vendor, out):
             if isinstance(ev.get("total_cost_usd"), (int, float)):
                 return float(ev["total_cost_usd"]), False
             break
+        # Faza weryfikacji Claude'a idzie ze `--json-schema` i BEZ `--output-format stream-json`
+        # (inaczej odpowiedz przestaje pasowac do schematu), wiec jej transkrypt to sam werdykt
+        # -- nie ma tam wiersza `result` i nie ma czego policzyc. Ksiega mowi wtedy "nieznany"
+        # zamiast zgadywac; to jedyna faza, ktorej cena zostaje poza suma.
         return None, False
     if vendor == "codex":
-        model, usage = None, None
+        # MODEL BIERZEMY Z KONFIGURACJI, NIE ZE STRUMIENIA. Zmierzone 2026-09-04 na
+        # `runs/z33-record-truth/build-*.jsonl`: `codex exec --json` nie wypisuje nazwy modelu
+        # ANI RAZU -- sa `thread.started`, `item.*` i `turn.completed` z `usage`, i tyle.
+        # Szukanie go w zdarzeniach dawalo cene `None` na KAZDYM biegu Codeksa, czyli ksiege,
+        # ktora milczy dokladnie tam, gdzie miala mowic.
+        model = model or os.environ.get("LOADOUT_CODEX_MODEL", "gpt-5.6-sol")
+        price = None
+        for prefix, tariff in CODEX_PRICES.items():
+            if model.startswith(prefix):
+                price = tariff
+                break
+        if price is None:
+            return None, False
+        fresh = cached = outp = 0.0
         for line in out.splitlines():
-            if '"usage"' not in line and '"model"' not in line:
+            if '"turn.completed"' not in line:
                 continue
             try:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            model = _dig(ev, "model") or model
-            u = _dig(ev, "usage")
-            if isinstance(u, dict):
-                usage = u
-        if not usage:
+            u = ev.get("usage")
+            if not isinstance(u, dict):
+                continue
+            c = float(u.get("cached_input_tokens") or 0)
+            # `input_tokens` u Codeksa ZAWIERA cache (13,6 mln wejscia przy 13,4 mln z cache'u
+            # na z33), inaczej niz u Claude'a, gdzie sa to dwie rozlaczne liczby.
+            fresh += max(0.0, float(u.get("input_tokens") or 0) - c)
+            cached += c
+            outp += float(u.get("output_tokens") or 0)
+        if fresh == 0 and cached == 0 and outp == 0:
             return None, False
-        price = None
-        for prefix, p in CODEX_PRICES.items():
-            if (model or "").startswith(prefix):
-                price = p
-                break
-        if price is None:
-            return None, False
-        cached = float(usage.get("cached_input_tokens") or 0)
-        fresh = max(0.0, float(usage.get("input_tokens") or 0) - cached)
-        outp = float(usage.get("output_tokens") or 0)
         usd = (fresh * price[0] + cached * price[1] + outp * price[2]) / 1_000_000
         return usd, True
     return None, False
-
-
-def _dig(node, key):
-    """Pierwsza wartosc pod `key`, na dowolnej glebokosci. Codex zmienial ksztalt zdarzen
-    trzy razy w sierpniu; sciezka po nazwach pol zestarzalaby sie razem z nim."""
-    if isinstance(node, dict):
-        if key in node:
-            return node[key]
-        for v in node.values():
-            got = _dig(v, key)
-            if got is not None:
-                return got
-    elif isinstance(node, list):
-        for v in node:
-            got = _dig(v, key)
-            if got is not None:
-                return got
-    return None
 
 
 def record_cost(task_id, phase, vendor, out):
