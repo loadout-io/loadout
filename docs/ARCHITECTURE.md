@@ -272,12 +272,20 @@ lądują w tym samym enumie `AgentEvent`, więc reguły zwijania niżej są wsp�
 | `tool_use` Read/Grep/Glob | `Przeczytał 6 plików` — sklejone w oknie 2 s |
 | `tool_use` Edit/Write | `Zmienił src/auth.rs  +12 −4` → klik otwiera panel zmian |
 | `tool_use` Bash | `Uruchomił testy` — z pola `description`, które model sam pisze `[ran]` |
+| `tool_progress` | ten sam wiersz komendy z nowym czasem — `Working: … · 7m 30s`, nigdy wiersz obok `[ran, 2026-09-04]` |
+| `system/task_started` z `is_backgrounded` | `Started in the background: …` — jeden wiersz, który nie tyka |
 | `tool_result` | jednolinijkowe podsumowanie; pełne wyjście za kliknięciem |
 | `rate_limit_event` | `Limit Claude wyczerpany — wraca o 5:30` |
 | `result` | `Gotowe · 2 tury · 12 s · $0,012` |
 
 Wszystko inne jest **odrzucane**. Pole `description` w `tool_use.input` to prezent: model sam pisze
 czytelną etykietę własnego działania, więc dostajemy ludzkie linie za darmo [T1 §8.6].
+
+Wiersz komendy powstaje w chwili, w której ona **rusza**, a nie dopiero z jej wyniku (2026-09,
+Z-36): długa komenda była do tego dnia na ekranie nieodróżnialna od ciszy — zmierzone na liderze,
+siedem minut w jednym wywołaniu Basha i ani jednego znaku. `tool_use`, każdy `tool_progress`
+i `tool_result` niosą ten sam `call_id`, więc na ekranie jest to **jeden** wiersz, przepisywany
+w miejscu — reguła 1 niżej zostaje w mocy co do słowa.
 
 ### Pięć reguł zwijania — to jest produkt [T2 §7.3]
 
