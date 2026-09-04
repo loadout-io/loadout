@@ -6,6 +6,11 @@ co już stoi w trunku, co stanęło i dlaczego.
 
 > **2026-09-02:** wpisy starsze niż te niżej stoją w [`STATUS-ARCHIVE.md`](STATUS-ARCHIVE.md).
 > Ten plik ma zostać krótki: co stoi w trunku, co otwarte, ostatnie sprostowania.
+
+> **2026-09-04:** od pętli „prod-ready" postęp mieszka w
+> [`docs/prod-ready/PLAN.md`](prod-ready/PLAN.md) — tabela „Stan" i „Dziennik" są tam jedynym
+> źródłem prawdy, a ten plik nie jest już aktualizowany po każdym lądowaniu. Zostaje jako
+> obraz tego, co stało w trunku przed pętlą.
 > Bieżąca pętla i jej postęp: [`prod-ready/PLAN.md`](prod-ready/PLAN.md).
 
 ## 2026-08-30 — SPROSTOWANIE: chrome mieści się w suficie; 137 px było pomiarem pierwszego startu

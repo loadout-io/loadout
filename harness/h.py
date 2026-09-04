@@ -925,8 +925,46 @@ def cmd_clean(a):
                 % (wt, a.task_id))
         log("usunieto worktree %s" % wt)
     git("branch", "-D", "h-%s" % a.task_id, check=False)
+    # 0b.5 (audyt 2026-09-04, C-2): transkrypty zostawaly po KAZDYM zamknietym zadaniu --
+    # 165 katalogow i 547 MB w `runs/`, z czego 22 starsze niz dwa tygodnie. Ida razem
+    # z zadaniem, chyba ze ktos poprosi o zachowanie: `--keep-runs`.
+    rd = ROOT / "runs" / a.task_id
+    if rd.exists() and not getattr(a, "keep_runs", False):
+        size = sum(f.stat().st_size for f in rd.rglob("*") if f.is_file())
+        shutil.rmtree(rd, ignore_errors=True)
+        log("usunieto transkrypty runs/%s (%.1f MB)" % (a.task_id, size / 1e6))
     state_path(a.task_id).unlink(missing_ok=True)
     log("task %s zamkniety" % a.task_id)
+
+
+def cmd_sweep(a):
+    """Stany bez worktree i bez galezi. `h list` pokazywal je jako otwarte zadania.
+
+    Zmierzone 2026-09-04: piec z szesciu stanow w `.git/h/` wskazywalo na worktree, ktorych
+    nie ma od przepisania historii -- czyli `h list` klamal o piatce z szostki.
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    gone = []
+    for p in sorted(STATE_DIR.glob("*.json")):
+        task_id = p.stem
+        s = json.loads(p.read_text(encoding="utf-8"))
+        wt = s.get("worktree")
+        if wt and Path(wt).exists():
+            continue
+        if git("rev-parse", "--verify", "-q", "h-%s" % task_id, check=False):
+            log("%s: worktree nie ma, ale galaz h-%s ZOSTAJE -- praca jest, zostawiam"
+                % (task_id, task_id))
+            continue
+        gone.append(task_id)
+    if not gone:
+        print("nic do sprzatniecia: kazdy stan ma worktree albo galaz")
+        return
+    for task_id in gone:
+        if a.dry_run:
+            print("zdjalbym: %s" % task_id)
+            continue
+        state_path(task_id).unlink(missing_ok=True)
+        log("zdjety martwy stan %s" % task_id)
 
 
 def cmd_list(a):
@@ -957,6 +995,13 @@ def main():
     r.add_argument("--no-plan", action="store_true", help="pomin planiste, zadanie idzie wprost")
     r.set_defaults(fn=cmd_run)
 
+    sw = sub.add_parser("sweep", help="zdejmij stany bez worktree i bez galezi")
+
+    sw.add_argument("--dry-run", action="store_true")
+
+    sw.set_defaults(fn=cmd_sweep)
+
+
     c = sub.add_parser("check", help="odpal checki (albo jeden po nazwie)")
     c.add_argument("check_id", nargs="?", default="")
     c.add_argument("--task-id", default="")
@@ -970,6 +1015,8 @@ def main():
         if name == "clean":
             s.add_argument("--force", action="store_true")
         if name == "land":
+            s.add_argument("--keep-runs", action="store_true",
+                           help="zostaw transkrypty w runs/<id>")
             s.add_argument("--keep", action="store_true",
                            help="nie sprzataj worktree po zielonym CI")
         s.set_defaults(fn=fn)

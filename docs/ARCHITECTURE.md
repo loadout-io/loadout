@@ -529,7 +529,7 @@ usunięcia którejś z tych dwóch.
 
 ```
 ~/.loadout/                          # globalne, między projektami
-  agents/<slug>.json                 # definicja agenta — 11 pól, 9 widocznych [T4 §3]
+  agents/<slug>.md                   # definicja agenta — front-matter + proza [T4 §3]
   workflows/<slug>.json              # graf; pozycje przyciągane do 24 px [T3 §8]
   skills/<slug>/SKILL.md             # kanoniczna umiejętność
   triggers/<slug>.json               # konfiguracja; sekret nie przekracza granicy IPC

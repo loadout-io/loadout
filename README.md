@@ -155,7 +155,7 @@ gate is linked from the release notes.
 | [`src-tauri/src/store/`](src-tauri/src/store/) | file-backed state and the rebuildable SQLite index |
 | [`e2e/`](e2e/) | browser-level interaction and visible-behavior checks |
 | [`checks/`](checks/) | deterministic repository checks discovered by the gate |
-| [`harness/`](harness/) | task-contract runner, review, bounded repair, and receipts |
+| [`harness/`](harness/) | prompt → plan → code → scoped checks → a second vendor's verdict |
 | [`docs/FOUNDATIONS.md`](docs/FOUNDATIONS.md) | the product's binding vocabulary, the Rust conventions, and the review checklist |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | current system shape and invariants |
 | [`docs/DECISIONS-LOCKED.md`](docs/DECISIONS-LOCKED.md) | owner decisions that constrain the implementation |

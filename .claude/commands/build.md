@@ -157,5 +157,5 @@ Zatrzymujesz się i piszesz dłużej, kiedy:
 - koszt jednego biegu przekroczył **$25** — to sygnał, że coś się zapętla, nie że rzecz jest trudna.
 
 Prognozy podawaj z **realnych liczb** — koszty z transkryptów w `runs/<id>/*.jsonl` — nie
-z przeczucia. I aktualizuj `docs/STATUS.md` po każdym lądowaniu: to jedyny plik, z którego
+z przeczucia. I aktualizuj `docs/prod-ready/PLAN.md` po każdym lądowaniu: to jedyny plik, z którego
 następna sesja dowie się, gdzie jesteś.
