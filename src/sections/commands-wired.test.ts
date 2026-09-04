@@ -380,6 +380,18 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER, 10, 10],
     call: () => memory.listHandoffs(FOLDER, 10, 10),
   },
+  /* 2026-09-05 (Z-38) — KRAWEDZ REFLEKSJI JEST CUDZA KOMENDA, i wlasnie dlatego ma tu wiersz.
+   * `whatTheLastRunLearned` nie wola wlasnego `invoke`: bierze `list_runs` z `sections/run/io.ts`,
+   * bo „co ten folder uruchomil" ma w calej aplikacji jedna odpowiedz (niezmiennik 13). Bez tego
+   * wiersza byłaby funkcja, ktorej nikt nigdy nie zobaczyl docierajacej do Rusta — a lustro
+   * porownuje ZBIOR eksportow, wiec milczy dopiero w pelnym CI. */
+  {
+    where: 'memory',
+    what: 'whatTheLastRunLearned',
+    command: 'list_runs',
+    given: [FOLDER],
+    call: () => memory.whatTheLastRunLearned(FOLDER),
+  },
   /* 2026-08-19 (T-42) — DRUGA DROGA WEJŚCIA DO UMIEJĘTNOŚCI, dopisana, nic nie usunięte.
    * `authorSkill` jest krawędzią do komendy, która przyjmuje TREŚĆ umiejętności, a nie adres —
    * czyli do jedynej rzeczy, której `commands.golden.txt` nie miał, choć pusty ekran obiecywał
