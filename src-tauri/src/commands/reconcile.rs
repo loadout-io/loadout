@@ -141,7 +141,7 @@ pub fn reconcile_runs(project: &Path) -> Reconciled {
 /// pominęłoby dokładnie ten jeden przypadek, dla którego to sprzątanie istnieje.
 #[must_use]
 pub fn reconcile_runs_keeping(project: &Path, keep: &Keep) -> Reconciled {
-    let mut done = with_reaper(project, &mut reap_if_it_is_ours);
+    let mut done = with_reaper(project, reap_if_it_is_ours);
     done.closed = close_what_the_runs_left(project);
     // PO domknięciu, nie przed: `worktree remove` zdejmuje swój wpis sam, a `prune` sprząta po
     // katalogach, które zniknęły cudzą ręką — po przerwanym biegu, po `rm -rf` człowieka, po
@@ -351,16 +351,86 @@ fn reap_if_it_is_ours(target: &recovery::ReapTarget) -> recovery::ReapOutcome {
     }
 }
 
-/// Ta sama polityka, wystawiona odzyskiwaniu z biblioteki (`lib::recover_from_last_time`).
+/// Ta sama polityka, wystawiona odzyskiwaniu z biblioteki (`lib::recover_from_last_time`) —
+/// tylko że grupy czekają na swoje okna łaski **obok siebie**.
 ///
 /// 2026-09 (Z-01d) — istnieje, bo do tego dnia tamta droga miała **własną kopię** decyzji o tym,
 /// kiedy wolno strzelić do grupy: dwa ramiona `match` nad `reap_group`, bez pytania o znacznik.
 /// Polityka mieszka w jednym rdzeniu, a adaptery mają po pięć linii (niezmiennik 23) — dwie
 /// kopie znaczyłyby, że sprzątanie po awarii zabija cudze grupy dokładnie wtedy, gdy biegi
 /// mieszkają w bibliotece, a nie w folderze.
+///
+/// 2026-09 (Z-30) — DROGA STARTOWA BYŁA SYNCHRONICZNA I SZŁA PO KOLEI. Jedna sierota ignorująca
+/// SIGTERM kosztuje pełne okno łaski plus dowód po dziewiątce (`DEFAULT_GRACE` +
+/// `PROOF_AFTER_KILL`), a pięć takich grup kosztowało pięć takich okien jedno po drugim — i to
+/// w środku startu aplikacji, w wątku, który miał zaraz pokazać okno. Sekwencyjny bliźniak tej
+/// funkcji zszedł razem z tą poprawką: po przepięciu obu dróg nie miał już ani jednego wołającego,
+/// a martwa funkcja publiczna gnije na zielono (powód w całości w `checks/quick-wired.sh`).
+///
+/// Adapter, nie druga polityka (niezmiennik 23): pięć wątków siedzi w [`reap_each_group_apart`],
+/// a jedyne, co dokłada ta funkcja, to **jedno** `spawn_blocking` na całość — żeby wątek
+/// wykonawczy startu nie czekał na żaden z nich (niezmiennik 8 mówi to samo o zamkach).
 #[must_use]
-pub fn reap_what_is_ours(plan: &recovery::RecoveryPlan) -> recovery::RecoveryReport {
-    recovery::apply(plan, &mut reap_if_it_is_ours)
+pub async fn reap_what_is_ours_concurrently(
+    plan: &recovery::RecoveryPlan,
+) -> recovery::RecoveryReport {
+    let planned: Vec<i32> = plan.reap.iter().map(|target| target.pgid).collect();
+    let plan = plan.clone();
+    tokio::task::spawn_blocking(move || reap_each_group_apart(&plan, reap_if_it_is_ours))
+        .await
+        .unwrap_or_else(|_| recovery::RecoveryReport {
+            // Sprzątanie, które nie doszło do końca, nie jest dowodem śmierci: bez `ESRCH` grupa
+            // jest ŻYWA (niezmiennik 6). Pusty raport czytałby się jak „nie było czego sprzątać".
+            unproven: planned,
+            ..recovery::RecoveryReport::default()
+        })
+}
+
+/// Sprząta KAŻDĄ grupę z planu obok pozostałych i składa z odpowiedzi jeden raport.
+///
+/// 2026-09 (Z-30) — RDZEŃ, NIE ADAPTER: tędy chodzą OBIE produkcyjne drogi odzyskiwania —
+/// biblioteka (`lib::recover_from_last_time` przez [`reap_what_is_ours_concurrently`]) i pliki
+/// folderu (`reconcile_runs_keeping` przez [`with_reaper`]). Pierwsza wersja tej poprawki
+/// przyspieszyła wyłącznie bibliotekę, a folder — czyli droga, którą sprząta się po zamkniętym
+/// oknie — dalej czekał na pięć okien łaski jedno po drugim.
+///
+/// Wątki z zakresu (`std::thread::scope`), nie zadania tokio, i to jest wybór na jedno konkretne
+/// ograniczenie: pętla dowodowa `supervisor::reap_group` czeka na jądro **synchronicznie**
+/// (`std::thread::sleep`), a droga folderu jest w całości synchroniczna — biegnie już wewnątrz
+/// `spawn_blocking` w `ipc::AppState::settle_what_the_last_window_left`. Zakres pozwala przy tym
+/// domykaczowi pożyczyć stan wołającego, więc kryterium nie musi kupować `Arc` na barierę.
+///
+/// Polityka się nie zmienia ANI O SŁOWO (niezmiennik 23): kto jest nasz, rozstrzyga ten sam
+/// [`reap_if_it_is_ours`], a trzy odpowiedzi na trzy listy rozkłada ten sam [`recovery::apply`].
+/// Równoległe jest wyłącznie CZEKANIE.
+#[must_use]
+pub fn reap_each_group_apart<F>(plan: &recovery::RecoveryPlan, reap: F) -> recovery::RecoveryReport
+where
+    F: Fn(&recovery::ReapTarget) -> recovery::ReapOutcome + Clone + Send,
+{
+    let answers: Vec<recovery::ReapOutcome> = std::thread::scope(|apart| {
+        let waiting: Vec<_> = plan
+            .reap
+            .iter()
+            .map(|target| {
+                let reap = reap.clone();
+                apart.spawn(move || reap(target))
+            })
+            .collect();
+        waiting
+            .into_iter()
+            // Domykacz, który padł, nie jest dowodem śmierci — zameldowanie posprzątanej grupy,
+            // której nikt nie sprzątnął, jest tu jedynym naprawdę drogim błędem.
+            .map(|one| one.join().unwrap_or(recovery::ReapOutcome::StillAlive))
+            .collect()
+    });
+
+    // Trzy odpowiedzi na trzy listy rozkłada TEN SAM rdzeń, co przy sprzątaniu po kolei
+    // (niezmiennik 23): `apply` chodzi po `plan.reap` w kolejności, a my odpowiadamy w tej samej.
+    let mut answers = answers.into_iter();
+    recovery::apply(plan, &mut |_| {
+        answers.next().unwrap_or(recovery::ReapOutcome::StillAlive)
+    })
 }
 
 /// To samo, z **wstrzykniętym** domykaczem grup procesów.
@@ -370,11 +440,16 @@ pub fn reap_what_is_ours(plan: &recovery::RecoveryPlan) -> recovery::RecoveryRep
 /// zabite, bez zabijania czegokolwiek na prawdziwej maszynie. Test wołający wersję z prawdziwym
 /// `killpg` strzelałby do grupy o numerze wpisanym w fikstrze — a numery procesów przewijają się
 /// w godzinach.
+///
+/// 2026-09 (Z-30) — domykacz wjeżdża tu **wartością**, a nie przez `&mut dyn FnMut`, i to jest
+/// cena za jedno konkretne zachowanie: grupy tej drogi czekają obok siebie ([`reap_each_group_apart`]),
+/// a domknięcia pożyczonego na wyłączność nie da się dać pięciu wątkom naraz. Kryterium, które
+/// chce policzyć pytania, trzyma swój licznik za zamkiem — tak samo, jak trzyma go produkcja.
 #[must_use]
-pub fn with_reaper(
-    project: &Path,
-    reap: &mut dyn FnMut(&recovery::ReapTarget) -> recovery::ReapOutcome,
-) -> Reconciled {
+pub fn with_reaper<F>(project: &Path, reap: F) -> Reconciled
+where
+    F: Fn(&recovery::ReapTarget) -> recovery::ReapOutcome + Clone + Send,
+{
     let (rows, where_they_live) = rows_from_files(project);
     /* PUSTA LISTA NIE KOŃCZY TEGO PRZEBIEGU, i kryterium złapało tu prawdziwy błąd. „Nie ma
      * czego dobijać" nie znaczy „nie ma czego sprzątać": folder, w którym stoi wyłącznie bieg
@@ -397,7 +472,10 @@ pub fn with_reaper(
         own_pgid: supervisor::own_process_group(),
     };
     let plan = recovery::decide(&rows, &machine);
-    let report = recovery::apply(&plan, reap);
+    // TEN SAM rdzeń, co przy odzyskiwaniu biblioteki (2026-09, Z-30): pięć sierot ignorujących
+    // SIGTERM czeka tu obok siebie, a nie pięć okien łaski jedno po drugim — cała ta droga biegnie
+    // w `spawn_blocking`, na wątku, na którym okno czeka na odpowiedź.
+    let report = reap_each_group_apart(&plan, reap);
     // 2026-08-27: sam licznik `unproven` ukrywał finansowo istotną sierotę przed człowiekiem.
     // Łączymy wynik domykacza z oryginalnym wierszem, bo tylko plik niesie oba identyfikatory,
     // które pozwalają rozpoznać ocalały proces bez zgadywania po samym PGID.
