@@ -56,6 +56,7 @@ mod a_set_refuses_what_it_could_not_measure;
 mod a_set_runs_as_an_ordinary_workflow;
 mod a_skill_is_frozen_for_the_run;
 mod a_skill_list_says_what_each_one_is_for;
+mod a_skill_may_ride_the_copy_before_it;
 mod a_step_borrows_from_the_host;
 mod a_step_says_what_the_folder_gave_it;
 mod a_step_that_commits_its_own_work;
