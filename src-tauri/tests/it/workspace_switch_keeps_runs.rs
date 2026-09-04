@@ -73,11 +73,16 @@ fn a_run(id: &str) -> NewRun {
 }
 
 /// Linia numer `n`. Numer jest w treści, bo to on, a nie długość listy, jest tu dowodem.
+///
+/// `headline`, nie `detail`, od 2026-09 (Z-15): tyle i tylko tyle przyjmuje indeks, a resztę
+/// zostawia plikom (powód stoi przy tabeli `events` w `store::schema`). To kryterium jest o tym,
+/// że przełączenie karty nie gubi ani jednej linii — poziom jest w nim szczegółem fikstury,
+/// a nie tematem, więc bierzemy ten, którym karta ma dokąd je donieść.
 fn numbered(n: u32) -> RunLine {
     RunLine {
         ts: 1_755_300_002_000 + i64::from(n),
         kind: "assistant".to_owned(),
-        level: "detail".to_owned(),
+        level: "headline".to_owned(),
         body: format!("line {n}"),
     }
 }

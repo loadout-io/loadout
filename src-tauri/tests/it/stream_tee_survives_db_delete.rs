@@ -6,21 +6,26 @@
 //! niezależnie od tego, czy prawdziwy bieg zostawia po sobie cokolwiek. Tutaj plik pisze
 //! **żywy krok**, i dopiero to zamyka zdanie „`loadout.db` wolno skasować".
 //!
-//! **Słaba wersja tego kryterium to porównanie licznika zdarzeń przed i po.** Przechodzi ją
+//! **Słaba wersja tego kryterium to porównanie licznika linii przed i po.** Przechodzi ją
 //! odbudowa, która gubi treść i zostawia puste wiersze — dwa razy tyle samo `NULL`i to nadal
-//! równość. Rozróżnia porównanie **treści każdego zdarzenia**, i to nie z drugim zrzutem, tylko
-//! z **linią pliku**: plik jest prawdą, a zrzut zrzutowi bywa równy także wtedy, gdy oba są
-//! puste.
+//! równość. Rozróżnia je pytanie zadane **tam, gdzie linie czyta człowiek**
+//! (`history::read_run_inner`, niezmiennik 29), o zdanie, które agent naprawdę powiedział.
+//!
+//! 2026-09 (Z-15) — GDZIE TE LINIE MIESZKAJĄ. Do tej zmiany transkrypt wchodził przy odbudowie
+//! także do tabeli `events`, i to tamtą kopię sprawdzał ten plik. Kopii już nie ma: 27 362 wiersze
+//! `raw` były 86 % żywej biblioteki i nie czytał ich ani jeden `SELECT`. Pytanie zostaje to samo
+//! — „co kosztuje skasowanie `loadout.db`" — tylko zadane jedynej stronie, która na nie odpowiada.
 //!
 //! Dlatego asercje idą w tej kolejności:
 //!
 //! 1. krok zostawił transkrypt i jest w nim tyle linii, ile wypluł proces — bez tego wszystko
 //!    poniżej porównuje pustkę z pustką;
-//! 2. pierwsze indeksowanie niesie te linie **co do treści**, w kolejności `seq`, każda pod
-//!    swoim krokiem;
+//! 2. po pierwszym zaindeksowaniu bieg otwarty komendą okna niesie te linie razem z prozą agenta,
+//!    a indeks nie niesie ani jednej;
 //! 3. plik bazy znika razem z `-wal` i `-shm` — zostawienie tamtych dwóch nie jest skasowaniem
 //!    bazy, tylko skasowaniem jednego z jej trzech plików;
-//! 4. odbudowa oddaje **te same wiersze**, kolumna po kolumnie.
+//! 4. odbudowa oddaje **te same wiersze** biegu, kroków i wskazań na pliki, kolumna po kolumnie,
+//!    a człowiek czyta dokładnie to samo, co przed skasowaniem.
 //!
 //! `run.json` jest tu napisany ręcznie, a nie wyprodukowany naszym serializatorem, i to jest
 //! cała jego wartość: fikstura zbudowana naszym kodem definiuje kształt, zamiast go sprawdzać
@@ -33,10 +38,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use loadout_lib::commands::history::read_run_inner;
 use loadout_lib::engine::drivers::claude::{ClaudeDriver, Transcript};
 use loadout_lib::engine::drivers::{AgentDriver, AgentHandle, Policy, RunSpec};
 use loadout_lib::store::Store;
 use rusqlite::Connection;
+use rusqlite::types::Value;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -60,6 +67,9 @@ const RUN_DIR: &str = "2026-08-16T09-00-00Z__01996500";
 
 /// Agent, którego strumień to jest.
 const AGENT: &str = "builder";
+
+/// Jedyne zdanie, które agent naprawdę powiedział w tym strumieniu. Reszta linii to jego praca.
+const PROSE: &str = "It splits on every comma, including the ones inside quotes.";
 
 /// `run.json` — bieg i jego jeden krok. Pisany ręcznie, bo to jest kontrakt na dysku.
 ///
@@ -204,105 +214,82 @@ fn remove_database(db: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Wszystkie zdarzenia, kolumna po kolumnie, w kolejności `seq`.
+/// Wszystko, co po tym biegu zostaje w indeksie: bieg, jego kroki i wskazania na pliki.
 ///
-/// `ts`, `kind` i `level` są w zrzucie celowo: to są kolumny, które najłatwiej zapisać zegarem
-/// zamiast plikiem, a wtedy odbudowa oddaje coś innego, niż skasowano — i widać to wyłącznie
-/// przy porównaniu obu stron.
-fn dump_events(conn: &Connection) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut stmt = conn
-        .prepare("SELECT seq, run_id, step_id, ts, kind, level, body FROM events ORDER BY seq")?;
-    let rows = stmt.query_map([], |row| {
-        let seq: i64 = row.get(0)?;
-        let run_id: String = row.get(1)?;
-        let step: Option<String> = row.get(2)?;
-        let ts: i64 = row.get(3)?;
-        let kind: String = row.get(4)?;
-        let level: String = row.get(5)?;
-        let body: Option<String> = row.get(6)?;
-        Ok(format!(
-            "{seq} · {run_id} · {step:?} · {ts} · {kind} · {level} · {body:?}"
-        ))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+/// Kolumny bierzemy gwiazdką, więc do porównania wchodzi także ta, którą ktoś doda jutro — a `ts`
+/// i `created_at` są w nim celowo: to je najłatwiej zapisać zegarem zamiast plikiem, i wtedy
+/// odbudowa oddaje coś innego, niż skasowano.
+fn dump_index(conn: &Connection) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut dump = Vec::new();
+    for table in ["runs", "steps", "artifacts"] {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\" ORDER BY 1"))?;
+        let width = stmt.column_count();
+        let rows = stmt.query_map([], move |row| {
+            let mut cells = Vec::with_capacity(width);
+            for index in 0..width {
+                cells.push(format!("{:?}", row.get::<_, Value>(index)?));
+            }
+            Ok(cells.join(" | "))
+        })?;
+        for row in rows {
+            dump.push(format!("{table} == {}", row?));
+        }
+    }
+    Ok(dump)
 }
 
-/// Same treści zdarzeń, w kolejności `seq`. To jest ta lista, która ma być równa liniom pliku.
-fn bodies(conn: &Connection) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut stmt = conn.prepare("SELECT body FROM events ORDER BY seq")?;
-    let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
-    Ok(rows
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .map(Option::unwrap_or_default)
-        .collect())
-}
-
-/// Kroki, do których zdarzenia się przyznają. Zdarzenie bez kroku nie ma jak trafić na ekran.
-fn steps_named(conn: &Connection) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT step_id FROM events WHERE step_id IS NOT NULL ORDER BY step_id",
-    )?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-/// Sprawdza, że indeks niesie **te linie**, co plik — i mówi, którą zgubił.
-fn assert_events_match_the_file(
+/// Sprawdza, że linie tego kroku dochodzą **do człowieka** — i że nie ma ich w indeksie.
+///
+/// `read_run_inner` jest komendą, którą woła okno, a nie skrótem do plików: gdyby transkrypt
+/// zniknął z dysku, ta droga oddałaby krok bez ani jednego wiersza i to jest jedyny sposób, żeby
+/// zobaczyć różnicę między „indeks przestał kopiować" a „transkrypt zginął".
+fn assert_the_lines_reach_the_person(
+    project: &Path,
     conn: &Connection,
     raw: &str,
     when: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let wanted: Vec<String> = raw.lines().map(str::to_owned).collect();
-    let landed = bodies(conn)?;
-
     assert_eq!(
-        landed.len(),
-        wanted.len(),
-        "{when}: the transcript holds {} lines and the index holds {} events. Zero means the \
-         raw stream was never opened, and then the transcript is a thing that exists only \
-         while loadout.db does",
-        wanted.len(),
-        landed.len(),
+        raw.lines().count(),
+        STREAM.lines().count(),
+        "{when}: the transcript on disk holds {} lines and the process wrote {}. Indexing is not \
+         allowed to touch the file it reads",
+        raw.lines().count(),
+        STREAM.lines().count(),
     );
-    let divergence = landed
+
+    let past = read_run_inner(project, RUN_DIR)?;
+    let step = past
+        .steps
         .iter()
-        .zip(&wanted)
-        .position(|(after, before)| after != before);
+        .find(|one| one.id == STEP)
+        .ok_or("the run read back off disk has no step, though run.json describes one")?;
     assert!(
-        divergence.is_none(),
-        "{when}: event {divergence:?} is not the line the file carries. The index holds {:?} \
-         and the file reads {:?}. Comparing counts would not see this: a rebuild that drops \
-         the content and leaves empty rows keeps the count exactly right",
-        divergence.and_then(|at| landed.get(at)),
-        divergence.and_then(|at| wanted.get(at)),
+        !step.lines.is_empty(),
+        "{when}: the step whose stream was recorded reads back with no rows at all. The lines are \
+         in logs/agent-{STEP}.jsonl and this is the command the window asks with"
+    );
+    assert!(
+        step.lines.iter().any(|line| line.text() == PROSE),
+        "{when}: the one thing the agent actually said is missing from the run read back off \
+         disk. A count of rows would not see this: curation can hand back the right number of \
+         empty ones"
     );
 
-    let (lowest, highest): (i64, i64) =
-        conn.query_row("SELECT min(seq), max(seq) FROM events", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
-    let count = i64::try_from(landed.len())?;
+    // Kontrola przeciw pustej asercji: dwa zrzuty pustego indeksu też są sobie równe.
+    let runs: i64 = conn.query_row("SELECT count(*) FROM runs WHERE id = ?1", [RUN_ID], |row| {
+        row.get(0)
+    })?;
     assert_eq!(
-        (lowest, highest),
-        (1, count),
-        "{when}: seq should run 1..{count} with no gaps. seq IS the order of the transcript, so \
-         a gap is a line a reopened run will never show"
+        runs, 1,
+        "{when}: run.json describes one run and the index holds {runs} of them"
     );
-    let stray: i64 = conn.query_row(
-        "SELECT count(*) FROM events WHERE run_id <> ?1",
-        [RUN_ID],
-        |row| row.get(0),
-    )?;
+
+    let lines: i64 = conn.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?;
     assert_eq!(
-        stray, 0,
-        "{when}: {stray} events belong to a run that run.json does not describe"
-    );
-    assert_eq!(
-        steps_named(conn)?,
-        vec![STEP.to_owned()],
-        "{when}: the events have to name the step they came from - one transcript file per \
-         step, and the rail opens one agent at a time"
+        lines, 0,
+        "{when}: the index holds {lines} lines of a transcript that is already on disk. Each of \
+         those rows is the same line written twice, and nothing ever read them from there"
     );
     Ok(())
 }
@@ -336,8 +323,8 @@ async fn deleting_the_database_costs_nothing_because_the_step_wrote_its_transcri
     let store = Store::open(&db)?;
     store.rebuild_from(&run_dir).await?;
     let reader = store.reader()?;
-    assert_events_match_the_file(&reader, &raw, "after the first index")?;
-    let indexed = dump_events(&reader)?;
+    assert_the_lines_reach_the_person(home.path(), &reader, &raw, "after the first index")?;
+    let indexed = dump_index(&reader)?;
     drop(reader);
     store.close().await?;
 
@@ -352,8 +339,9 @@ async fn deleting_the_database_costs_nothing_because_the_step_wrote_its_transcri
     let store = Store::open(&db)?;
     store.rebuild_from(&run_dir).await?;
     let reader = store.reader()?;
-    assert_events_match_the_file(&reader, &raw, "after the rebuild")?;
-    let rebuilt = dump_events(&reader)?;
+    let raw = fs::read_to_string(&tee).unwrap_or_default();
+    assert_the_lines_reach_the_person(home.path(), &reader, &raw, "after the rebuild")?;
+    let rebuilt = dump_index(&reader)?;
 
     let divergence = rebuilt
         .iter()
@@ -361,7 +349,7 @@ async fn deleting_the_database_costs_nothing_because_the_step_wrote_its_transcri
         .position(|(after, before)| after != before);
     assert!(
         divergence.is_none(),
-        "the rebuilt events are not the events that were there before the database went away. \
+        "the rebuilt index is not the index that was there before the database went away. \
          They part company at row {divergence:?}: after the rebuild {:?}, before it {:?}. Every \
          column has to be a function of the files on disk - a value stamped with the current \
          time or a fresh key during the rebuild lands here",
@@ -371,7 +359,7 @@ async fn deleting_the_database_costs_nothing_because_the_step_wrote_its_transcri
     assert_eq!(
         rebuilt.len(),
         indexed.len(),
-        "the rebuilt index holds a different number of events than the one that was deleted. \
+        "the rebuilt index holds a different number of rows than the one that was deleted. \
          The shorter side is the answer to 'what does deleting loadout.db cost'"
     );
 

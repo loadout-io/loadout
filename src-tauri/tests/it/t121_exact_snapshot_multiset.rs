@@ -23,6 +23,9 @@ const OLD_LOG: &str = concat!(
     "\n",
 );
 // 2026-08-25: the repeated full line makes multiplicity observable, not just row identity.
+// 2026-09 (Z-15): the lines no longer reach the index at all, so what this file now decides is
+// the size in artifacts.bytes - and a rebuild that indexed even one of them would be caught by
+// expected_events() below.
 const NEW_LOG: &str = concat!(
     r#"{"type":"zulu","message":"new-last"}"#,
     "\n",
@@ -227,26 +230,14 @@ fn expected_steps() -> TestResult<Vec<String>> {
     canonical_rows(&rows)
 }
 
+/// Zdarzenia, których odbudowa **nie oddaje** (2026-09, Z-15).
+///
+/// Pusto, i to jest asercja, a nie jej brak: `read_snapshot` czyta tabelę `events` po drugiej
+/// stronie porównania, więc jedna linia przepisana z `NEW_LOG` do indeksu pali ten test. Linie
+/// leżą w `logs/agent-<krok>.jsonl` i stamtąd czyta je `history::read_run_inner`; kopia w bazie
+/// ważyła 86 % żywej biblioteki i nie miała ani jednego czytelnika.
 fn expected_events() -> TestResult<Vec<String>> {
-    let rows: Vec<Vec<Value>> = NEW_LOG
-        .lines()
-        .map(|body| {
-            let kind = if body.contains(r#""type":"zulu""#) {
-                "zulu"
-            } else {
-                "alpha"
-            };
-            vec![
-                Value::Text(RUN_ID.to_owned()),
-                Value::Text(STEP_ID.to_owned()),
-                Value::Integer(2400),
-                Value::Text(kind.to_owned()),
-                Value::Text("raw".to_owned()),
-                Value::Text(body.to_owned()),
-            ]
-        })
-        .collect();
-    canonical_rows(&rows)
+    canonical_rows(&[])
 }
 
 fn expected_artifacts(run_dir: &Path) -> TestResult<Vec<String>> {

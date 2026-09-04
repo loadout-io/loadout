@@ -549,22 +549,33 @@ fn trigger_delivery(home: &Path) -> Result<triggers::TriggerDelivery, Box<dyn Er
     }
 }
 
-fn dump_events(conn: &Connection) -> Result<Vec<String>, Box<dyn Error>> {
-    let mut statement = conn
-        .prepare("SELECT seq, run_id, step_id, ts, kind, level, body FROM events ORDER BY seq")?;
-    let rows = statement.query_map([], |row| {
-        let seq: i64 = row.get(0)?;
-        let run_id: String = row.get(1)?;
-        let step: Option<String> = row.get(2)?;
-        let ts: i64 = row.get(3)?;
-        let kind: String = row.get(4)?;
-        let level: String = row.get(5)?;
-        let body: Option<String> = row.get(6)?;
-        Ok(format!(
-            "{seq} · {run_id} · {step:?} · {ts} · {kind} · {level} · {body:?}"
-        ))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+/// Wszystko, co po biegu zostaje w indeksie: bieg, jego kroki i wskazania na pliki.
+///
+/// 2026-09 (Z-15) — DLACZEGO NIE `events`. Bo od tej zmiany produkt nie zapisuje tam ani jednej
+/// linii: transkrypt leży w `logs/agent-<krok>.jsonl`, a jego kopia w bazie była 86 % żywej
+/// biblioteki i nie miała ani jednego czytelnika. Pytanie zostaje to samo — „czy skasowanie
+/// `loadout.db` zmienia to, co wiadomo o biegu" — tylko zadane wierszom, które tam naprawdę są.
+/// Że zdarzeń nie ma, mówi osobna asercja: dwa puste zrzuty są sobie równe.
+fn dump_index(conn: &Connection) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut dump = Vec::new();
+    for table in ["runs", "steps", "artifacts"] {
+        let mut statement = conn.prepare(&format!("SELECT * FROM \"{table}\" ORDER BY 1"))?;
+        let width = statement.column_count();
+        let rows = statement.query_map([], move |row| {
+            let mut cells = Vec::with_capacity(width);
+            for index in 0..width {
+                cells.push(format!(
+                    "{:?}",
+                    row.get::<_, rusqlite::types::Value>(index)?
+                ));
+            }
+            Ok(cells.join(" | "))
+        })?;
+        for row in rows {
+            dump.push(format!("{table} == {}", row?));
+        }
+    }
+    Ok(dump)
 }
 
 fn remove_database(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -994,11 +1005,21 @@ async fn rebuild_matches_live_index(
     database: &Path,
     reports: &[RunReport; 3],
 ) -> Result<(), Box<dyn Error>> {
-    let before = dump_events(&store.reader()?)?;
+    let reader = store.reader()?;
+    let before = dump_index(&reader)?;
     assert!(
         !before.is_empty(),
-        "the live product index contained no vendor events"
+        "the live product index held no rows at all about the run that just went through it"
     );
+    // Kryterium Z-15 zadane na drodze produktowej: po prawdziwym biegu obu vendorów indeks rośnie
+    // o bieg, kroki i wskazania na pliki — i o ani jedną linię transkryptu.
+    let lines: i64 = reader.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?;
+    assert_eq!(
+        lines, 0,
+        "a real run left {lines} lines of transcript in the index. They are already in \
+         logs/agent-<step>.jsonl, which is where the screen reads them from"
+    );
+    drop(reader);
     store.close().await?;
     remove_database(database)?;
     assert!(
@@ -1009,7 +1030,7 @@ async fn rebuild_matches_live_index(
     for report in reports {
         rebuilt.rebuild_from(&report.dir).await?;
     }
-    let after = dump_events(&rebuilt.reader()?)?;
+    let after = dump_index(&rebuilt.reader()?)?;
     assert_eq!(
         after, before,
         "deleting loadout.db changed the order or content reconstructed from private evidence"

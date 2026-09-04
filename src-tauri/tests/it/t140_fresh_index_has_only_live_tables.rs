@@ -19,6 +19,14 @@ const LOG_LINE: &str = r#"{"type":"assistant","message":"The index can be rebuil
 const LIVE_TABLES: [&str; 4] = ["artifacts", "events", "runs", "steps"];
 const LEGACY_TABLES: [&str; 5] = ["artifacts", "events", "memory", "runs", "steps"];
 
+/// Tabele, których wiersze odbudowa ma oddać CO DO JEDNEGO.
+///
+/// `events` wypadło z tej trójki 2026-09 (Z-15) i jest to jedyna zmiana tego pliku: od tamtej pory
+/// odbudowa nie kopiuje linii transkryptu do indeksu, więc wiersz `raw` posadzony niżej znika
+/// razem ze starym biegiem i ma zniknąć. Że go nie ma, mówi osobna asercja — porównanie zrzutów
+/// nie umie odróżnić „wiersz wypadł" od „tabela zniknęła".
+const REBUILT_TABLES: [&str; 3] = ["artifacts", "runs", "steps"];
+
 const RUN_JSON: &str = r#"{
   "id": "019b0000-0000-7000-8000-000000000140",
   "workflow_id": "prove-the-index-is-disposable",
@@ -273,7 +281,7 @@ fn plant_legacy_index(db: &Path, run_dir: &Path) -> anyhow::Result<(Vec<String>,
 
     assert_legacy_rows_are_planted(&conn)?;
 
-    Ok((legacy_snapshot(&conn)?, dump_rows(&conn, &LIVE_TABLES)?))
+    Ok((legacy_snapshot(&conn)?, dump_rows(&conn, &REBUILT_TABLES)?))
 }
 
 async fn snapshot_after_real_open(db: &Path) -> anyhow::Result<Vec<String>> {
@@ -340,7 +348,9 @@ async fn fresh_and_rebuilt_indexes_have_only_live_tables_while_old_memory_is_lef
         user_tables(&rebuilt_reader)?,
         object_exists(&rebuilt_reader, "index", "idx_memory_scope")?,
     );
-    let live_after = dump_rows(&rebuilt_reader, &LIVE_TABLES)?;
+    let live_after = dump_rows(&rebuilt_reader, &REBUILT_TABLES)?;
+    let lines_after: i64 =
+        rebuilt_reader.query_row("SELECT count(*) FROM events", [], |row| row.get(0))?;
     drop(rebuilt_reader);
     rebuilt_store.close().await?;
 
@@ -352,6 +362,11 @@ async fn fresh_and_rebuilt_indexes_have_only_live_tables_while_old_memory_is_lef
     assert_eq!(
         live_after, live_before,
         "deleting the index changed live run facts even though run.json and its log remained"
+    );
+    assert_eq!(
+        lines_after, 0,
+        "the rebuild put {lines_after} lines of the transcript back into the index. Since 2026-09 \
+         they stay in logs/agent-<step>.jsonl, which is where the only reader of them looks"
     );
 
     Ok(())

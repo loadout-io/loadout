@@ -151,8 +151,28 @@ pub const STATEMENTS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, status);
     ",
     // ── events ─────────────────────────────────────────────────────────────────────────────
-    // Transkrypt. `seq` nadaje SQLite, bo kolejność jest globalna i monotoniczna — nie ma jej
-    // kto nadać po stronie ośmiu równoległych producentów.
+    // Nagłówki i nic więcej. `seq` nadaje SQLite, bo kolejność jest globalna i monotoniczna —
+    // nie ma jej kto nadać po stronie ośmiu równoległych producentów.
+    //
+    // # 2026-09 (Z-15) — CO TA TABELA TRZYMA OD DZIŚ, I DLACZEGO TAK MAŁO
+    //
+    // Do tego dnia trzymała pełny surowy strumień agentów: 27 362 wiersze `raw`, 86 % z 72 MB
+    // żywej biblioteki, każda linia zapisana obok pliku, z którego przyszła. Nie czytał ich
+    // ani jeden SELECT w produkcie — transkrypt na ekran składa `history::read_run_inner`
+    // wprost z `logs/agent-<krok>.jsonl`. To jest niezmiennik 4 postawiony na głowie: indeks
+    // przepisywał prawdę, która i tak leży w plikach, i płacił za to dziennikiem wielkości biegu.
+    //
+    // Od dziś wchodzi tu WYŁĄCZNIE `headline` i tylko z pompy karty (`workspace::pump`), bo to
+    // jedyna droga, która zna poziom linii z góry — nadaje go kuracja zdarzenie→linia z T-05.
+    // Odbudowa (`store::rebuild`) nie oddaje ani jednego zdarzenia: nie kuruje, więc musiałaby
+    // przepisać tę politykę u siebie (niezmiennik 23), a nazwanie wszystkiego `raw` jest
+    // dokładnie tym, co ten wiersz zabiera. Po strumieniu zostaje wiersz `artifacts` ze ścieżką.
+    //
+    // Tabela, `CHECK` z trójką poziomów i oba wyzwalacze ZOSTAJĄ NIETKNIĘTE. Migracja jest
+    // addytywna i idempotentna (niezmiennik 25): `DROP` i przepisywanie wierszy są zakazane,
+    // więc `raw` zapisane przed tą zmianą stoi w bibliotekach ludzi i ma się dać przeczytać.
+    // `CHECK` bez `raw` odmówiłby ich pierwszej odbudowie i zamienił starą bibliotekę w bazę,
+    // której nie da się otworzyć.
     //
     // Indeks CZĘŚCIOWY na `level = 'headline'` nie jest mikrooptymalizacją: szyna czyta
     // wyłącznie nagłówki, więc indeks, który zawiera także `raw`, każe jej przeglądać cały

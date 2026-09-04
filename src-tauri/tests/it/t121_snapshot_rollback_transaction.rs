@@ -208,15 +208,18 @@ async fn fresh_snapshot(database: &Path, run_dir: &Path) -> TestResult<Snapshot>
     Ok(snapshot)
 }
 
-fn assert_all_four_collections_changed(old: &Snapshot, new: &Snapshot) -> TestResult {
+/// Fikstura musi się różnić w każdej kolekcji, którą odbudowa wypełnia — inaczej „stary zrzut
+/// przetrwał" jest zdaniem o dwóch identycznych stronach.
+///
+/// `events` NIE JEST wśród nich od 2026-09 (Z-15): odbudowa nie kopiuje już linii transkryptu do
+/// indeksu, więc obie strony są puste i „nie zmieniło się" znaczy tu „i nie miało prawa". Że pusta
+/// jest naprawdę, mówi porównanie całych zrzutów niżej — `Snapshot::events` dalej w nich stoi.
+fn assert_every_rebuilt_collection_changed(old: &Snapshot, new: &Snapshot) -> TestResult {
     if old.runs == new.runs {
         return Err("the run fixture did not change".into());
     }
     if old.steps == new.steps {
         return Err("the step fixture did not change".into());
-    }
-    if old.events == new.events {
-        return Err("the event fixture did not change".into());
     }
     if old.artifacts == new.artifacts {
         return Err("the artifact fixture did not change".into());
@@ -275,7 +278,7 @@ async fn late_artifact_failure_keeps_the_whole_old_snapshot_until_retry() -> Tes
     )?;
     let source_files = source_snapshot(&run_dir)?;
     let expected_snapshot = fresh_snapshot(&expected_database, &run_dir).await?;
-    assert_all_four_collections_changed(&old_snapshot, &expected_snapshot)?;
+    assert_every_rebuilt_collection_changed(&old_snapshot, &expected_snapshot)?;
     install_late_artifact_trigger(&database)?;
 
     let rebuild_store = Arc::clone(&store);
