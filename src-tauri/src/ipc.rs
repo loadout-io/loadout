@@ -3659,11 +3659,17 @@ pub async fn what_the_lead_can_do(
     state: State<'_, AppState>,
     lead: Option<String>,
 ) -> Result<commands::chat::WhatTheLeadCanDo, String> {
-    commands::chat::what_the_lead_can_do_inner(
-        state.home.as_path(),
-        &state.drivers,
-        lead.as_deref(),
-    )
+    // PULA BLOKUJACA, NIE WATEK OKNA (2026-09-05). `what_the_lead_can_do_inner` czyta agenta
+    // z biblioteki i pyta fabryke o sterownik, czyli dotyka dysku — a `no_command_freezes_the_window`
+    // sadzi KAZDA skorupe po tym, czy oddaje taka prace `spawn_blocking`. Ten sam watek niesie Stop,
+    // linie biegu w drodze na ekran i kazdy zapis do indeksu (Z-10).
+    let home = state.home.clone();
+    let drivers = Arc::clone(&state.drivers);
+    tokio::task::spawn_blocking(move || {
+        commands::chat::what_the_lead_can_do_inner(home.as_path(), &drivers, lead.as_deref())
+    })
+    .await
+    .map_err(|error| did_not_finish("asking what this lead can do", &error))?
     .map_err(|error| {
         let said = error.to_string();
         refused(&said);
