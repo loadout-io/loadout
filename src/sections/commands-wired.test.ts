@@ -25,7 +25,6 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import * as agentApps from '../state/agent-apps-io';
 import * as settings from '../state/settings-io';
 import * as workspaces from '../state/workspaces-io';
 import * as agents from './agents/io';
@@ -73,7 +72,6 @@ const rust = ipcSource();
 
 /** Gdzie leży dana krawędź. W komunikacie ma stać prawdziwa ścieżka, nie zgadnięta. */
 const WHERE_PATH: Readonly<Record<string, string>> = {
-  'agent-apps': 'src/state/agent-apps-io.ts',
   agents: 'src/sections/agents/io.ts',
   lab: 'src/sections/lab/io.ts',
   memory: 'src/sections/memory/io.ts',
@@ -189,16 +187,6 @@ interface Wire {
 }
 
 const WIRES: readonly Wire[] = [
-  /* 2026-09 (Z-34) — MIGAWKA LOKALNYCH APLIKACJI AGENTÓW. Bez argumentów, bo stan Tauri jest
-   * jedynym parametrem skorupy: `check_agent_apps` pyta obie aplikacje naraz i to jest cała
-   * jego treść. Wiersz stoi tu, bo tabela pokrywa CAŁY eksport krawędzi. */
-  {
-    where: 'agent-apps',
-    what: 'checkAgentApps',
-    command: 'check_agent_apps',
-    given: [],
-    call: () => agentApps.checkAgentApps(),
-  },
   { where: 'agents', what: 'list', command: 'list_agents', given: [], call: () => agents.list() },
   {
     where: 'agents',
@@ -904,7 +892,6 @@ const WIRES: readonly Wire[] = [
 ];
 
 const EDGES: ReadonlyArray<readonly [string, object]> = [
-  ['agent-apps', agentApps],
   ['agents', agents],
   ['memory', memory],
   ['run', run],

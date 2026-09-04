@@ -57,9 +57,6 @@ pub mod command;
 /// Sąsiad `claude.rs`, nie część rdzenia: `.claude/settings.json` to kształt jednego vendora,
 /// a ten plik nie zna ani jednego.
 pub mod host;
-/// Jeden rdzeń taniej sondy `--version` dla obu vendorów (niezmiennik 23). Prywatny, bo pytają
-/// o wersję wyłącznie sterowniki, a granicę IPC obsługuje `commands::agent_apps`.
-mod probe;
 
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
 ///

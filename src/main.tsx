@@ -6,7 +6,6 @@ import { useEffect } from 'react';
 import type { ReactElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { useAgentApps } from './state/agent-apps';
 import { useTriggers } from './state/triggers';
 import { useSectionStore } from './ui/shell/section-store';
 import './styles/global.css';
@@ -22,14 +21,6 @@ function Root(): ReactElement {
     return () => {
       useTriggers.getState().stopWatching();
     };
-  }, []);
-
-  /* Migawka lokalnych aplikacji agentów startuje razem z oknem i NIC nie blokuje: pierwsza
-   * klatka rysuje się na stanie „sprawdzamy", a odpowiedź podmienia zdanie w stopce, kiedy
-   * przyjdzie. Bez sprzątania, bo `check` współdzieli trwający odczyt — ponowny montaż roota
-   * i Retry na trwającym odczycie nie uruchamiają drugiej pary procesów. */
-  useEffect(() => {
-    void useAgentApps.getState().check();
   }, []);
 
   return <App section={section} />;

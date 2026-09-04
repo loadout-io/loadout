@@ -1640,21 +1640,6 @@ pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Lokalna migawka obu CLI. Stan Tauri jest jedynym argumentem, więc okno woła bez payloadu.
-///
-/// 2026-09 (Z-34) — pierwsza komenda w tym pliku, która pyta o stan aplikacji agentów, i jedyny
-/// powód, dla którego stopka bocznego menu przestała być NAPISEM. Nie odmawia niczego: `Result`
-/// z jednostkowym błędem, bo droga nie ma stanu, w którym nie ma co powiedzieć — trzy odpowiedzi
-/// per vendor są w środku wartości.
-#[tauri::command]
-pub async fn check_agent_apps(
-    state: State<'_, AppState>,
-) -> Result<Vec<commands::agent_apps::AgentAppWire>, ()> {
-    // Klon zamyka pożyczkę `State` przed `await`; Tauri wymaga od przyszłości komendy `'static`.
-    let drivers = Arc::clone(&state.drivers);
-    Ok(commands::agent_apps::check_agent_apps_inner(&drivers).await)
-}
-
 /// Nazwa pliku z okna → żądanie biegu, liczone tą samą regułą, którą liczy lista.
 ///
 /// 2026-08-17 — do 2026-08-29 stała tu **druga kopia** `commands::workflows::in_library`,
@@ -3997,7 +3982,6 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         apply_eval_fix,
         apply_setup,
         author_skill,
-        check_agent_apps,
         check_trigger,
         check_workflow,
         close_terminal,
