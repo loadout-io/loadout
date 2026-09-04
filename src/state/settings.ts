@@ -1,6 +1,6 @@
-/* JEDYNY dom tego, co Loadout robi domyślnie, po stronie okna (niezmiennik 13). Cztery fakty:
+/* JEDYNY dom tego, co Loadout robi domyślnie, po stronie okna (niezmiennik 13). Pięć faktów:
  * kto prowadzi rozmowę, ile wolno wydać na jeden bieg, czy boczne menu stoi zwinięte i ile
- * ostatnich biegów zostaje w folderze projektu.
+ * ostatnich biegów zostaje w folderze projektu, oraz czy skończony bieg dostaje refleksję.
  *
  * CZYM TO JEST, A CZYM NIE JEST. „Domyślny lider" to jeden globalny wybór, który Run bierze,
  * kiedy człowiek nie powiedział inaczej w pasku. Run go POKAZUJE i nie trzyma drugiej kopii:
@@ -68,6 +68,34 @@ const navListeners = new Set<() => void>();
 let kept = 0;
 const keptListeners = new Set<() => void>();
 
+/**
+ * Czy skończony bieg dostaje prywatną turę refleksji. Piąty wybór pliku, od 2026-09 (Z-18).
+ *
+ * `true` przed odpowiedzią dysku zachowuje dotychczasowe zachowanie także dla starych plików;
+ * gołe `false` wyłączyłoby uczenie bez decyzji człowieka.
+ */
+let learning = true;
+const learningListeners = new Set<() => void>();
+
+/** Czy skończony bieg dostaje prywatną turę szukającą lekcji na następny. */
+export function learnFromRuns(): boolean {
+  return learning;
+}
+
+/** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
+export function subscribeToLearnFromRuns(listener: () => void): () => void {
+  learningListeners.add(listener);
+  return () => {
+    learningListeners.delete(listener);
+  };
+}
+
+function rememberLearning(enabled: boolean): void {
+  if (enabled === learning) return;
+  learning = enabled;
+  for (const listener of learningListeners) listener();
+}
+
 /** Ile ostatnich biegów zostaje w folderze projektu. `0` znaczy „wszystkie". */
 export function keepLastRuns(): number {
   return kept;
@@ -131,6 +159,7 @@ export function collapseNav(collapsed: boolean): Promise<string | null> {
     defaultBudgetUsd: ceiling,
     navCollapsed: collapsed,
     keepLastRuns: kept,
+    learnFromRuns: learning,
   })
     .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not remember the side nav mode.'));
@@ -223,6 +252,14 @@ function keptIn(answer: unknown): number {
   return typeof said === 'number' && Number.isInteger(said) && said >= 0 ? said : kept;
 }
 
+/* Wybór refleksji z odpowiedzi granicy. Brak klucza zachowuje dotychczasową wartość `on`, bo
+ * każdy plik sprzed Z-18 go nie ma; `bool::default()` po cichu wyłączyłby uczenie wszystkim. */
+function learnIn(answer: unknown): boolean {
+  if (typeof answer !== 'object' || answer === null) return learning;
+  const said = (answer as { learnFromRuns?: unknown }).learnFromRuns;
+  return typeof said === 'boolean' ? said : learning;
+}
+
 /** Jedno pytanie do dysku na okno; następni wołający dostają tę samą obietnicę. */
 let asked: Promise<string | null> | null = null;
 
@@ -239,6 +276,7 @@ export function loadSettings(): Promise<string | null> {
       rememberCeiling(ceilingIn(settings));
       rememberNav(navIn(settings));
       rememberKept(keptIn(settings));
+      rememberLearning(learnIn(settings));
       return null;
     })
     .catch((error: unknown) => why(error, 'Loadout could not read what it does by default.'));
@@ -262,6 +300,7 @@ export function chooseDefaultLead(id: string): Promise<string | null> {
     defaultBudgetUsd: ceiling,
     navCollapsed: narrow,
     keepLastRuns: kept,
+    learnFromRuns: learning,
   })
     .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not save who leads by default.'));
@@ -285,6 +324,7 @@ export function chooseDefaultBudgetUsd(dollars: number): Promise<string | null> 
     defaultBudgetUsd: dollars,
     navCollapsed: narrow,
     keepLastRuns: kept,
+    learnFromRuns: learning,
   })
     .then(saved)
     .catch((error: unknown) =>
@@ -312,11 +352,30 @@ export function chooseKeepLastRuns(runs: number): Promise<string | null> {
     defaultBudgetUsd: ceiling,
     navCollapsed: narrow,
     keepLastRuns: runs,
+    learnFromRuns: learning,
   })
     .then(saved)
     .catch((error: unknown) =>
       why(error, 'Loadout could not save how many past runs to keep in a project folder.'),
     );
+}
+
+/**
+ * Zapisuje, czy przyszłe biegi dostają prywatną turę refleksji. Oddaje zdanie odmowy albo `null`.
+ *
+ * DYSK PIERWSZY: zaznaczony ptaszek obiecuje dodatkowe wywołanie vendora przy następnym biegu,
+ * więc nie może zmienić się w oknie, jeśli plik tego wyboru nie przyjął.
+ */
+export function chooseLearnFromRuns(enabled: boolean): Promise<string | null> {
+  return saveSettings({
+    defaultLead: chosen,
+    defaultBudgetUsd: ceiling,
+    navCollapsed: narrow,
+    keepLastRuns: kept,
+    learnFromRuns: enabled,
+  })
+    .then(saved)
+    .catch((error: unknown) => why(error, 'Loadout could not save whether it learns from runs.'));
 }
 
 /** Co robimy z potwierdzonym wpisem — jedno miejsce dla wszystkich zapisów wyżej. */
@@ -325,6 +384,7 @@ function saved(settings: Settings): null {
   rememberCeiling(ceilingIn(settings));
   rememberNav(navIn(settings));
   rememberKept(keptIn(settings));
+  rememberLearning(learnIn(settings));
   /* Zapisane wybory są od tej chwili tym, co odda `loadSettings()` następnemu ekranowi:
    * bez tego powrót na Run czytałby dysk odpowiedzią zapamiętaną przed zapisem. */
   asked = Promise.resolve(null);

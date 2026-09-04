@@ -133,7 +133,11 @@ import {
 } from './whats-ready';
 import { Start } from './start';
 import { ReflectionToggle } from './reflection/toggle';
-import { reflectionForRequestedRun, rememberReflectionChoice } from './requested';
+import {
+  reflectionForRequestedRun,
+  rememberReflectionChoice,
+  subscribeToReflectionChoice,
+} from './requested';
 import { headlineFor } from './strip/headline';
 import { RunHead } from './strip/head';
 import { Strip } from './strip/strip';
@@ -639,17 +643,15 @@ export default function Run(): ReactElement {
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
   const [said, setSaid] = useState<string | null>(null);
 
-  /* Wybór jest stanem TEGO zamontowanego ekranu. Krótkie przekazanie przy odmontowaniu jest
-   * potrzebne wyłącznie zielonemu Run w edytorze: tamten klik wraca do świeżej instancji tego
-   * komponentu, a pending request zamraża wartość widoczną przed wyjściem z ekranu. */
-  const [reflectionEnabled, setReflectionEnabled] = useState(reflectionForRequestedRun);
-  const reflectionAtUnmount = useRef(reflectionEnabled);
-  reflectionAtUnmount.current = reflectionEnabled;
-  useEffect(() => {
-    return () => {
-      rememberReflectionChoice(reflectionAtUnmount.current);
-    };
-  }, []);
+  /* Wybór czytamy przy KAŻDEJ zmianie źródła, nie tylko przy montażu. 2026-09 — Run jest
+   * pierwszą sekcją świeżego okna, więc odpowiedź z pliku przychodzi dopiero po pierwszym
+   * renderze; stan Reacta zamroziłby wcześniejsze `true` i wysłał płatną refleksję mimo
+   * odznaczonego Settings. Nadpisanie człowieka nadal bije wartość domyślną. */
+  const reflectionEnabled = useSyncExternalStore(
+    subscribeToReflectionChoice,
+    reflectionForRequestedRun,
+    reflectionForRequestedRun,
+  );
 
   /* Uchwyt do pola wiersza wejścia — po to, żeby kliknięcie w strumień mogło mu ODDAĆ kursor.
    * Powód w całości przy `caretBackToTheField`. */
@@ -1606,7 +1608,7 @@ export default function Run(): ReactElement {
               <ReflectionToggle
                 enabled={reflectionEnabled}
                 disabled={running}
-                onChange={setReflectionEnabled}
+                onChange={rememberReflectionChoice}
               />
             </div>
           )}

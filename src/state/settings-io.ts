@@ -15,7 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 /**
  * Co Loadout robi domyślnie — lustro `commands::settings::SettingsWire`.
  *
- * Trzy pola, bo trzy wybory. Przy liderze: wskazanie, nie opis agenta — vendor, model i dial
+ * Pięć pól, bo pięć wyborów. Przy liderze: wskazanie, nie opis agenta — vendor, model i dial
  * bezpieczeństwa czyta Rust z pliku definicji, a kopia któregokolwiek z nich trzymana obok
  * identyfikatora byłaby pierwszą rzeczą, która się rozjedzie (niezmiennik 13).
  */
@@ -60,6 +60,8 @@ export interface Settings {
    * to, co scena wymieniła.
    */
   readonly keepLastRuns?: number;
+  /** Czy skończony bieg dostaje prywatną turę szukającą lekcji na następny. */
+  readonly learnFromRuns?: boolean;
 }
 
 /**
@@ -71,12 +73,12 @@ export function readSettings(): Promise<Settings> {
 }
 
 /**
- * Zapisuje oba domyślne wybory i oddaje to, co ma teraz plik.
+ * Zapisuje wszystkie domyślne wybory i oddaje to, co ma teraz plik.
  *
  * Nazwy pól są częścią kontraktu, nie ozdobą: Tauri dopasowuje argumenty `invoke` PO NAZWIE,
- * więc `{ defaultLead, defaultBudgetUsd }` musi odpowiadać parametrom `default_lead`
- * i `default_budget_usd` skorupy w `src-tauri/src/ipc.rs`. Podmiana klucza nie jest błędem
- * kompilacji po żadnej ze stron — jest wywołaniem ODRZUCONYM, o którym nikt się nie dowie.
+ * więc pięć kluczy argumentu musi odpowiadać pięciu parametrom skorupy w `src-tauri/src/ipc.rs`.
+ * Podmiana klucza nie jest błędem kompilacji po żadnej ze stron — jest wywołaniem ODRZUCONYM,
+ * o którym nikt się nie dowie.
  *
  * WSZYSTKIE POLA W KAŻDYM ZAPISIE, bo plik jest jeden. Wywołanie niosące sam sufit nadpisałoby
  * lidera tym, co akurat trzymało okno, i odwrotnie — a to jest ta klasa rozjazdu, którą
@@ -87,6 +89,7 @@ export function saveSettings(args: {
   defaultBudgetUsd: number;
   navCollapsed: boolean;
   keepLastRuns: number;
+  learnFromRuns: boolean;
 }): Promise<Settings> {
   return invoke<Settings>('save_settings', args);
 }

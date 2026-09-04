@@ -93,7 +93,14 @@ async fn the_lead_runs_with_its_own_settings_and_a_ceiling() -> Result<(), Box<d
         ..Agent::example()
     };
     save_agent_inner(library.path(), &agent, None)?;
-    save_settings_inner(library.path(), &agent.id.to_string(), CEILING, false, 0)?;
+    save_settings_inner(
+        library.path(),
+        &agent.id.to_string(),
+        CEILING,
+        false,
+        0,
+        true,
+    )?;
     let lead = Lead::pointed_at(library.path(), Some(&agent.id.to_string()))
         .map_err(|error| error.to_string())?;
 

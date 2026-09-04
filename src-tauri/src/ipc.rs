@@ -3041,7 +3041,7 @@ pub async fn read_settings() -> Result<commands::settings::SettingsWire, String>
         .map_err(|error| error.to_string())
 }
 
-/// Zapisuje wszystkie cztery domyślne wybory i oddaje to, co ma teraz plik.
+/// Zapisuje wszystkie pięć domyślnych wyborów i oddaje to, co ma teraz plik.
 ///
 /// 2026-08-29 — DWA ARGUMENTY, JEDNO WYWOŁANIE, bo plik jest jeden. Zapis niosący samo wskazanie
 /// lidera nadpisywałby sufit tym, co akurat miało okno, a zapis niosący samą kwotę robiłby to
@@ -3052,12 +3052,14 @@ pub async fn read_settings() -> Result<commands::settings::SettingsWire, String>
 /// wywołaniem.
 ///
 /// 2026-09 (Z-9) — CZWARTY ARGUMENT: ile ostatnich biegów zostaje w folderze projektu.
+/// 2026-09 (Z-18) — PIĄTY ARGUMENT: czy skończony bieg dostaje prywatną turę refleksji.
 #[tauri::command]
 pub async fn save_settings(
     default_lead: &str,
     default_budget_usd: f64,
     nav_collapsed: bool,
     keep_last_runs: u32,
+    learn_from_runs: bool,
 ) -> Result<commands::settings::SettingsWire, String> {
     let default_lead = default_lead.to_owned();
     tokio::task::spawn_blocking(move || {
@@ -3067,6 +3069,7 @@ pub async fn save_settings(
             default_budget_usd,
             nav_collapsed,
             keep_last_runs,
+            learn_from_runs,
         )
     })
     .await
