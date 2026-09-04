@@ -348,11 +348,26 @@ pub const REFLECTION_MODEL: &str = "haiku";
 /// minut nad tym, czego się nauczyła, kosztuje więcej niż krok, który to zrobił.
 pub const REFLECTION_MINUTES: u64 = 2;
 
-/// Twardy sufit jednej prywatnej tury Loadouta.
+/// PODŁOGA sufitu jednej prywatnej tury Loadouta.
 ///
-/// Stała, nie pochodna budżetu workflow: refleksja jest osobnym, krótkim pytaniem Loadouta,
-/// więc nie może odziedziczyć ani braku limitu, ani reszty limitu ustawionego dla kroków.
+/// Nie pochodna budżetu workflow: refleksja jest osobnym, krótkim pytaniem Loadouta, więc nie
+/// dziedziczy ani braku limitu, ani reszty limitu ustawionego dla kroków. Tyle dostaje bieg,
+/// który sam nic nie kosztował — i tyle wystarczy na przeczytanie jednego przekazania.
+///
+/// 2026-09 (Z-38) — DO TEGO DNIA BYŁA TO CAŁA ODPOWIEDŹ, ta sama dla każdego biegu. Zmierzone
+/// na biegu meetnotes z 2026-09-04: dwie godziny, 57,52 USD, dziewięć przekazań, a tura dostała
+/// osiem centów i zeszła na nich po 22 sekundach z `Reached maximum budget ($0.08)`. Sufit
+/// liczy dziś [`what_this_run_taught_us`] jako jeden procent tego, co kosztowały kroki —
+/// nigdy mniej niż ta liczba i nigdy więcej niż [`REFLECTION_BUDGET_CAP_USD`].
 pub const REFLECTION_BUDGET_USD: f64 = 0.08;
+
+/// I twardy sufit tego samego, ile by bieg nie kosztował.
+///
+/// 2026-09 (Z-38) — SUFIT JEST TU DLATEGO, ŻE PROCENT NIE MA GÓRNEJ GRANICY. Jeden procent
+/// z biegu za tysiąc dolarów to dziesięć dolarów na jedno pytanie o to, czego się nauczył —
+/// czyli tura droższa niż większość kroków, które streszcza. Refleksja ma zostać tania
+/// [T6 §5.3], a „tania" przestaje być prawdą po cichu: widać to wyłącznie na fakturze.
+pub const REFLECTION_BUDGET_CAP_USD: f64 = 1.00;
 
 /// Ile kandydatek wolno zostawić po jednym biegu [T6 §5.3: „najwyżej trzy"].
 ///
@@ -384,9 +399,14 @@ const TITLE_CAP: usize = 120;
 /// Prośba mówi też, czego NIE chcemy: podsumowania biegu. Refleksja, która streszcza to, co się
 /// przed chwilą stało, produkuje zdania prawdziwe wyłącznie o tym jednym biegu — a notatka jedzie
 /// do promptów, których jeszcze nie ma.
+///
+/// 2026-09 (Z-38) — ZESZŁO STĄD ZDANIE „handoffs/ holds what each step passed on". Kazało
+/// modelowi SZUKAĆ tego, co Loadout ma wprost pod ręką: listę zbudował potem
+/// [`what_this_run_left_behind`] i dokleja ją tuż za tym akapitem, tym samym otwarciem, którym
+/// dostaje ją każdy krok ([`HANDOFF_INDEX_OPENS`]). Zmierzone na biegu z 2026-09-04: sześć tur
+/// spędzonych na chodzeniu po katalogu i budżet wydany przed odpowiedzią.
 const REFLECTION_ASK: &str = "\
-This run has finished. Its directory is your working directory: handoffs/ holds what each step \
-passed on, and run.json holds what happened.
+This run has finished. Its directory is your working directory, and run.json holds what happened.
 
 Name at most three things worth remembering for the next run in this project. Fewer is better, \
 and none at all is a good answer when nothing here was surprising.
@@ -398,6 +418,19 @@ because: <where you saw it in this run>
 
 A rule without a `because:` line is dropped, so leave out anything you cannot ground. Do not \
 summarise the run, do not describe the workflow, and do not change any file.";
+
+/// Początek zdania o turze, która nie doszła do odpowiedzi.
+///
+/// 2026-09 (Z-38) — TYMI SAMYMI SŁOWAMI NAZYWA SIĘ KONTROLKA, którą człowiek to włączył
+/// (`src/sections/run/reflection/toggle.tsx`, `REFLECTION_LABEL`). Zdanie zaczynające się
+/// inaczej — „the private turn", „reflection" — opisuje coś, czego na żadnym ekranie nie ma
+/// (niezmiennik 14), a człowiek ma poznać rzecz, którą sam zaznaczył.
+///
+/// Napis jest po obu stronach granicy: tutaj składa go bieg, który właśnie zszedł, a w panelu
+/// historii ten sam bieg otwarty tydzień później (`said.ts`). To nie są dwa żywe regiony jednego
+/// faktu (niezmiennik 13) — to jedno zdanie o jednym biegu, którego nigdy nie widać dwa razy
+/// naraz: strumień znika razem z biegiem, panel istnieje dopiero po nim.
+const REFLECTION_DID_NOT_FINISH: &str = "Learn from this run didn't finish";
 
 /// Trwałe granice kompletności kopii, poza samymi worktree i ich roboczym diffem.
 const ISOLATION_MARKERS_DIR: &str = ".isolation";
@@ -428,6 +461,18 @@ const HANDOFF_INDEX_OPENS: &str = "Steps before this one left what they found in
 /// nie otworzy pliku, uzna brak cytatu za brak materiału.
 const HANDOFF_INDEX_CLOSES: &str =
     "Read the ones you need; their contents were not copied into this prompt.";
+
+/// Zdanie, po którym w prompcie **refleksji** zaczyna się to, co kroki powiedziały na koniec.
+///
+/// 2026-09 (Z-38) — INNA RZECZ NIŻ INDEKS WYŻEJ, i dlatego osobny nagłówek. Tamten wymienia
+/// PLIKI i mówi, o co dany krok był poproszony (tytuł przekazania to instrukcja z pliku
+/// workflow, `title_of`); ten wymienia jedną linię, którą krok zostawił po sobie, kiedy
+/// skończył — czyli to, co naprawdę się stało. Refleksja pytana o naukę z biegu bez tej drugiej
+/// listy zna wyłącznie zlecenia i musi otworzyć każdy plik, żeby dowiedzieć się wyniku.
+///
+/// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak [`HANDOFF_INDEX_OPENS`] (decyzja D5,
+/// niezmiennik 14).
+const WHAT_THE_STEPS_SAID_OPENS: &str = "This is what each step said when it finished:";
 
 /// Dopowiedzenie wyłącznie dla sterownika, który nie potrafi przenieść dodatkowego katalogu.
 const HANDOFF_PATHS_ARE_OUTSIDE: &str =
@@ -2121,10 +2166,21 @@ async fn finish_planned_run(
     let reflection = if cancelled_before_reflection {
         ReflectionReceipt::not_asked(NotAsked::Stopped)
     } else if reflection_enabled {
-        what_this_run_taught_us(deps, &live.plan, &states).await?
+        // Sufit tury liczy się z tego, co bieg NAPRAWDĘ wydał na kroki, a materiał — z tego, co
+        // kroki po sobie zostawiły; jedno i drugie jest znane dopiero tutaj, po
+        // `close_the_book` (2026-09, Z-38).
+        what_this_run_taught_us(
+            deps,
+            &live.plan,
+            &states,
+            live.spent_so_far(),
+            &live.what_the_steps_said(),
+        )
+        .await?
     } else {
         ReflectionReceipt::not_asked(NotAsked::TurnedOff)
     };
+    say_if_the_reflection_ran_out(&live.lines, &live.plan, &reflection);
     // 2026-09 (Z-18): drugi odczyt zachowuje późny Stop, który padł dopiero na żywej grupie
     // refleksji; pierwszy odczyt wyżej broni przed uruchomieniem jej po Stopie schedulera.
     let cancelled = cancelled_before_reflection || cancel.is_cancelled();
@@ -2347,10 +2403,22 @@ struct AgentNote {
 ///    tury, o którą nie prosił żaden kafelek — a to jest jedyny powód, dla którego dołożenie tej
 ///    tury nie przestawiło ani jednej z 26 specyfikacji liczących wywołania sterownika. Cała
 ///    cena tej decyzji stoi przy tamtej metodzie.
+/// 6. **Płaci za pytanie NA MIARĘ BIEGU, o który pyta** (2026-09, Z-38). Sufit `spent` procent
+///    ([`a_ceiling_for`]) zamiast jednej stałej: bieg, który kosztował 57 USD i zostawił
+///    dziewięć przekazań, ma ich do przeczytania dziewięć, a ośmiocentowa tura schodzi na
+///    suficie po 22 sekundach — zapłacona i bez odpowiedzi. Argument, a nie odczyt księgi
+///    w środku: ta funkcja nie zna `Live` i nie ma powodu poznać.
+/// 7. **Daje turze MATERIAŁ, zamiast kazać go szukać** (2026-09, Z-38): indeks przekazań
+///    ([`what_this_run_left_behind`]) i po jednej linii na krok z tym, co powiedział na koniec
+///    ([`how_each_step_ended`]). Bez tej drugiej listy refleksja zna wyłącznie ZLECENIA — tytuł
+///    przekazania jest instrukcją z pliku workflow ([`title_of`]) — i żeby dowiedzieć się, co
+///    z nich wyszło, musi otworzyć każdy plik po kolei. Za to płaci się jej budżetem.
 async fn what_this_run_taught_us(
     deps: &RunDeps<'_>,
     plan: &Plan,
     states: &[StepState],
+    spent: f64,
+    said: &[SaidByAStep],
 ) -> Result<ReflectionReceipt, RunError> {
     // 2026-09 (Z-18): „pracował" znaczy tu mocniej „skończył z sukcesem". Sam start po
     // nieudanej albo anulowanej turze nie zostawia wyniku, na którym refleksja może się oprzeć.
@@ -2375,11 +2443,38 @@ async fn what_this_run_taught_us(
     }
 
     let (run, dir) = (plan.id.as_str(), plan.dir.as_path());
-    let Some(turn) = a_short_turn_about(deps, dir).await? else {
-        return Ok(ReflectionReceipt::not_asked(NotAsked::NothingCameBack));
-    };
+    /* MATERIAŁ SKŁADAMY PRZED TURĄ I DAJEMY JEJ W PROMPCIE (2026-09, Z-38): tura, która zna
+     * listę, nie płaci za chodzenie po katalogu, żeby ją zbudować. Dwie listy, bo to są dwa
+     * różne fakty o tym samym biegu: indeks mówi, jakie pliki zostały i o co był poproszony
+     * krok, który je zostawił, a druga lista mówi, co ten krok NAPRAWDĘ powiedział, kiedy
+     * skończył. Sam indeks zostawia refleksję z samymi zleceniami. */
+    let (index, context) = what_this_run_left_behind(&left, dir);
+    let mut told = index;
+    if let Some(block) = how_each_step_ended(said) {
+        told.push_str("\n\n");
+        told.push_str(&block);
+    }
+    let ceiling = a_ceiling_for(spent);
+    let ended = a_short_turn_about(deps, dir, &told, context, ceiling).await?;
 
-    let (worth, without_reason) = worth_remembering(&turn.text);
+    /* RACHUNEK WYPEŁNIA SIĘ NA KAŻDEJ DRODZE, także tej bez odpowiedzi (2026-09, Z-38). Cena
+     * jest tu jedyną drogą, którą tura wchodzi do wydatku biegu ([`final_spend_in`]), a tura,
+     * która zeszła na sufcie, wydała dokładnie tyle, ile jej dano — do tego dnia ta kwota
+     * ginęła razem z `Ok(None)`. Sufit zostaje przy rachunku, bo bez niego zdanie o zejściu na
+     * nim nie ma czym się skończyć, a odtworzyć go ze stałej już się nie da. */
+    let paid = ReflectionReceipt {
+        cost_usd: ended.cost_usd,
+        budget_usd: Some(ceiling),
+        ..ReflectionReceipt::default()
+    };
+    if let Some(why) = ended.why {
+        return Ok(ReflectionReceipt {
+            why: Some(why),
+            ..paid
+        });
+    }
+
+    let (worth, without_reason) = worth_remembering(&ended.text);
     if without_reason > 0 {
         // Policzona, nie zapisana [T6 §10.3]. Para bez uzasadnienia nie staje się plikiem, bo
         // instrukcja bez uzasadnienia jest nieusuwalna: skasowanie kosztuje `O(2^|D|)`, trzeba
@@ -2398,9 +2493,176 @@ async fn what_this_run_taught_us(
         kept: kept.kept,
         discarded_again: kept.discarded_again,
         dropped_without_reason: without_reason,
-        cost_usd: turn.cost_usd,
-        why: None,
+        ..paid
     })
+}
+
+/// Mówi w strumieniu biegu, że prywatna tura nie doszła do odpowiedzi — jednym wierszem.
+///
+/// # Dlaczego akurat te dwie drogi, a nie każdy powód (2026-09, Z-38)
+///
+/// Bo tylko po nich człowiek ZAPŁACIŁ i nie dostał nic, i tylko one zostawiają pytanie „to co
+/// teraz". Pozostałe powody są odpowiedzią same w sobie: Stop nacisnął on, wyłączone w
+/// ustawieniach wybrał on, brak przekazań widzi na ekranie, a tura, która poszła i nie znalazła
+/// nic, ma swoje zdanie w panelu historii. Wiersz na ekranie za każdy z nich byłby raportem
+/// z pracy, której nikt nie zlecił.
+///
+/// PODPIS TO TYTUŁ BIEGU, nie nazwa kroku, i to nie jest szczegół: refleksja nie jest krokiem
+/// (niezmiennik 27), a wiersz podpisany kafelkiem kazałby szukać wady w kroku, który zrobił
+/// swoje. Ta sama droga, co [`say_the_folder_is_inside_a_repo`].
+fn say_if_the_reflection_ran_out(lines: &LineSink, plan: &Plan, receipt: &ReflectionReceipt) {
+    let Some(text) = ran_out_sentence(receipt) else {
+        return;
+    };
+    // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem (`ipc::Sent`),
+    // a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+    let _ = lines.send(Line::Problem {
+        agent: plan.title.clone(),
+        text,
+        resets_at: None,
+    });
+}
+
+/// Zdanie o turze, która zeszła na swoim sufcie — albo `None`, kiedy zeszła inaczej.
+///
+/// KWOTA JEST WYMAGANA, a nie zastąpiona podłogą: sufit skaluje się z biegiem, więc liczba
+/// wzięta ze stałej byłaby zdaniem prawdziwym tylko dla najtańszego biegu, a fałszywa kwota na
+/// ekranie jest gorsza niż jej brak. Rachunek niesie ją na każdej drodze, na której ta tura
+/// w ogóle ruszyła ([`what_this_run_taught_us`]).
+fn ran_out_sentence(receipt: &ReflectionReceipt) -> Option<String> {
+    match receipt.why? {
+        NotAsked::RanOutOfBudget => Some(format!(
+            "{REFLECTION_DID_NOT_FINISH}: the note-taker used its ${:.2} before answering.",
+            receipt.budget_usd?
+        )),
+        // BEZ LICZBY MINUT, choć zna ją [`REFLECTION_MINUTES`] tuż obok: to samo zdanie składa
+        // panel historii, a tamta strona granicy tej stałej nie zna i nigdy nie pozna — wiersz
+        // z drutu jej nie niesie. Dwa zdania o jednym fakcie, różniące się jednym słowem,
+        // czytałyby się jak dwa różne fakty (2026-09, Z-38).
+        NotAsked::RanOutOfTime => Some(format!(
+            "{REFLECTION_DID_NOT_FINISH}: the note-taker ran out of time before answering."
+        )),
+        _ => None,
+    }
+}
+
+/// Ile wolno wydać na jedno pytanie o bieg, który kosztował `spent`.
+///
+/// # Jeden procent, z podłogą i sufitem (2026-09, Z-38)
+///
+/// Procent, bo pytanie jest **proporcjonalne do biegu**: bieg z dziewięcioma przekazaniami ma
+/// dziewięć rzeczy do przeczytania, a bieg z jednym ma jedną. Podłoga [`REFLECTION_BUDGET_USD`],
+/// bo bieg tani albo darmowy (same kafelki „sprawdź") nadal ma prawo do jednego pytania. Sufit
+/// [`REFLECTION_BUDGET_CAP_USD`], bo procent bez górnej granicy zamienia refleksję po drogim
+/// biegu w najdroższą turę tego biegu.
+///
+/// `is_finite`, a nie samo [`f64::clamp`]: cena przychodzi od vendora, `clamp` na `NaN` PANIKUJE,
+/// a panika w silniku zabiera cały bieg (`AGENTS.md` §4). Wartość, której nie da się porównać,
+/// dostaje podłogę — tyle, co bieg bez ceny.
+///
+/// # PEŁNE CENTY, ZAOKRĄGLANE W GÓRĘ, i to jest poprawka z 2026-09-05
+///
+/// Sufit jedzie stąd w trzy miejsca i wszystkie trzy muszą mówić tę samą kwotę: do argv
+/// vendora ([`crate::engine::drivers::claude::budget_argv`]), do rachunku w `run.json`
+/// i do zdania na ekranie, które składa `{:.2}`. Bez tej linii bieg z audytu (57,52 USD) dawał
+/// sufit `0.5752`: ekran zaokrąglał go do **najbliższego** centa i obiecywał `$0.58`, a vendor
+/// dostawał kwotę zaokrągloną w **dół**, czyli 0,57. Człowiek czytał wtedy o cencie, którego
+/// proces nigdy nie zobaczył.
+///
+/// W GÓRĘ, nie do najbliższego: ta kwota jest sufitem, który Loadout sam sobie stawia, więc
+/// nadmiarowe pół centa jest ceną za to, że proces nigdy nie dostaje MNIEJ, niż obiecuje ekran.
+/// Odwrotny wybór ma [`crate::engine::drivers::claude::budget_argv`] i z odwrotnego powodu:
+/// tam kwotą jest reszta budżetu POSTAWIONEGO PRZEZ CZŁOWIEKA i nie wolno jej przekroczyć.
+fn a_ceiling_for(spent: f64) -> f64 {
+    let one_percent = spent / 100.0;
+    if one_percent.is_finite() {
+        let whole_cents = (one_percent * 100.0).ceil() / 100.0;
+        whole_cents.clamp(REFLECTION_BUDGET_USD, REFLECTION_BUDGET_CAP_USD)
+    } else {
+        REFLECTION_BUDGET_USD
+    }
+}
+
+/// Indeks tego, co ten bieg zostawił — i ta sama lista jako źródła kontekstu tury.
+///
+/// # Tą samą drogą, którą przekazania dostaje krok (2026-09, Z-38)
+///
+/// To samo otwarcie ([`HANDOFF_INDEX_OPENS`]), ten sam kształt wiersza — **etykieta i ścieżka
+/// w jednym wierszu**, bo odnośnik i to, czym on jest, czytane z dwóch osobnych list są dwiema
+/// listami do zestawienia w głowie — i to samo zamknięcie ([`HANDOFF_INDEX_CLOSES`]), które mówi
+/// wprost, że treści w prompcie nie ma. Powody stoją w całości przy
+/// [`Live::index_of_what_came_before`]; tutaj różni się jedno: krok dostaje przekazania swoich
+/// poprzedników, a ta tura dostaje **wszystkie**, bo pyta się jej o cały bieg.
+///
+/// Ścieżki są WZGLĘDNE wobec katalogu biegu, bo katalog biegu jest katalogiem roboczym tej tury
+/// — adres bezwzględny byłby tu dłuższy i prawdziwy do pierwszego przeniesienia katalogu.
+///
+/// Druga zwrócona lista jedzie do `logs/reflection.input.json` jako to, co Loadout naprawdę
+/// wstrzyknął (`SafeInputManifest`). Do 2026-09-04 stało tam `context: []` przy turze, której
+/// kazano te pliki znaleźć samodzielnie — czyli zapis mówiący prawdę o tym, że nie dostała nic.
+/// Jedna linia, którą krok po sobie zostawił: podpis kafelka i to, co powiedział na koniec.
+///
+/// 2026-09 (Z-38) — DWA POLA Z DWÓCH RÓŻNYCH MIEJSC, i to jest cały powód, dla którego ten typ
+/// istnieje. Nazwa jest z planu (niezmienna od startu biegu), a zdanie z księgi (powstaje przy
+/// zejściu kroku) — złożone razem dopiero tam, gdzie obie strony są znane ([`Live`]).
+struct SaidByAStep {
+    name: String,
+    said: String,
+}
+
+/// Blok promptu z tym, co kroki powiedziały — albo `None`, kiedy nie powiedział nic żaden.
+///
+/// `None`, A NIE PUSTY NAGŁÓWEK: zdanie „oto co powiedziały kroki" nad zerem wierszy jest
+/// zdaniem o niczym i kosztuje dokładnie tyle samo tokenów, co prawdziwa lista (ten sam powód
+/// stoi przy [`Live::prompt_for`] dla indeksu przekazań).
+fn how_each_step_ended(said: &[SaidByAStep]) -> Option<String> {
+    if said.is_empty() {
+        return None;
+    }
+    let mut block = String::from(WHAT_THE_STEPS_SAID_OPENS);
+    for one in said {
+        // `write!` do `String`, nie `push_str(&format!(…))` — powód przy indeksie przekazań
+        // (clippy `format_push_string`), i to samo `let _`.
+        let _ = write!(block, "\n- {}: {}", one.name, one.said);
+    }
+    Some(block)
+}
+
+fn what_this_run_left_behind(
+    left: &[handoff::Handoff],
+    dir: &Path,
+) -> (String, Vec<ContextSource>) {
+    let mut index = String::from(HANDOFF_INDEX_OPENS);
+    let mut context = Vec::with_capacity(left.len());
+    for one in left {
+        let filed = one
+            .path
+            .strip_prefix(dir)
+            .unwrap_or(&one.path)
+            .display()
+            .to_string();
+        // `write!` do `String`, nie `push_str(&format!(…))`: ten sam powód, co przy indeksie
+        // kroku (clippy `format_push_string`), i to samo `let _` — zapis do `String` nie ma jak
+        // zawieść.
+        let title = one.meta.title.trim();
+        if title.is_empty() {
+            // Tytuł bywa pusty w cudzym pliku; dwukropek nad niczym czyta się jak plik ucięty
+            // przy zapisie, a krok, który to zostawił, jest wtedy jedyną prawdą, którą mamy.
+            let _ = write!(index, "\n- {filed} — {}", one.meta.from);
+        } else {
+            let _ = write!(index, "\n- {filed} — {}: {title}", one.meta.from);
+        }
+        context.push(ContextSource {
+            kind: ContextKind::Handoff,
+            reference: filed,
+            // Długość POLICZONA przy odczycie, nie zadeklarowana w pliku: `meta.bytes` jest
+            // deklaracją, a te dwie liczby mają prawo się różnić (`Handoff::bytes_mismatch`).
+            bytes: one.actual_bytes,
+        });
+    }
+    index.push_str("\n\n");
+    index.push_str(HANDOFF_INDEX_CLOSES);
+    (index, context)
 }
 
 fn keep_reflection_notes(
@@ -2483,9 +2745,30 @@ struct KeptReflectionNotes {
     discarded_again: usize,
 }
 
-struct ReflectionTurn {
+/// Czym skończyła się prywatna tura: powodem, tekstem i ceną, którą zdążyła nabić.
+///
+/// 2026-09 (Z-38) — ZASTĄPIŁO `Option<ReflectionTurn>`, i to jest cała treść tej zmiany.
+/// `Ok(None)` zlewało cztery rozłączne drogi — nie ma aplikacji agenta, tura padła, zeszła na
+/// cenie, zeszła na czasie — w jedno „nic nie wróciło", a po drodze wyrzucało cenę tury, która
+/// padła. Bieg meetnotes z 2026-09-04 zapłacił za turę zabitą sufitem i zapisał o niej, że nic
+/// nie wróciło.
+struct ReflectionEnded {
+    /// `None` znaczy „tura odpowiedziała". Każdy inny wariant jest osobnym zdaniem na ekranie.
+    why: Option<NotAsked>,
     text: String,
     cost_usd: Option<f64>,
+}
+
+impl ReflectionEnded {
+    /// Droga bez odpowiedzi i bez ceny: tura, która nigdy nie ruszyła albo nie zdążyła nic
+    /// powiedzieć.
+    fn nothing(why: NotAsked) -> Self {
+        Self {
+            why: Some(why),
+            text: String::new(),
+            cost_usd: None,
+        }
+    }
 }
 
 enum ReflectionEnd {
@@ -2497,7 +2780,7 @@ enum ReflectionEnd {
 async fn wait_for_reflection(
     handle: &mut dyn AgentHandle,
     cancel: CancellationToken,
-) -> Result<Option<ReflectionTurn>, RunError> {
+) -> Result<ReflectionEnded, RunError> {
     let limit = Duration::from_secs(REFLECTION_MINUTES * 60);
     let end = {
         let waiting = handle.wait();
@@ -2509,51 +2792,86 @@ async fn wait_for_reflection(
         }
     };
     match end {
-        ReflectionEnd::Finished(Ok(outcome)) if outcome.ok => Ok(Some(ReflectionTurn {
+        ReflectionEnd::Finished(Ok(outcome)) if outcome.ok => Ok(ReflectionEnded {
+            why: None,
             text: outcome.text,
             cost_usd: outcome.cost_usd,
-        })),
+        }),
         ReflectionEnd::Finished(Ok(outcome)) => {
             tracing::debug!(reason = ?outcome.reason, "the reflection turn did not finish");
-            Ok(None)
+            /* 2026-09 (Z-38) — SUFIT, W KTÓRY TA TURA MOŻE UDERZYĆ, JEST DOKŁADNIE JEDEN.
+             * [`FinishReason::LimitReached`] niesie u tego vendora dwa zdarzenia: sufit tur
+             * (`--max-turns`) i sufit ceny (`error_max_budget_usd`). Tura Loadouta nie dostaje
+             * sufitu tur ani jedną flagą ([`a_short_turn_about`]), więc pozostaje cena — i to
+             * jest ten kod, który 2026-09-04 przyszedł z prawdziwego biegu.
+             * Cena jedzie dalej także stąd: tura, która zeszła na sufcie, wydała swoje. */
+            let why = if outcome.reason == FinishReason::LimitReached {
+                NotAsked::RanOutOfBudget
+            } else {
+                NotAsked::NothingCameBack
+            };
+            Ok(ReflectionEnded {
+                why: Some(why),
+                text: outcome.text,
+                cost_usd: outcome.cost_usd,
+            })
         }
         ReflectionEnd::Finished(Err(error)) => {
             tracing::debug!(%error, "the reflection turn fell over");
-            Ok(None)
+            Ok(ReflectionEnded::nothing(NotAsked::NothingCameBack))
         }
-        ReflectionEnd::Stopped | ReflectionEnd::TimedOut => {
-            // Obie ścieżki przechodzą przez dowód śmierci prawdziwej grupy procesu. Samo
-            // porzucenie `wait` anulowałoby tylko future Rusta (niezmienniki 6 i 10).
-            match handle.cancel().await {
-                GroupProof::Dead { .. } => {
-                    tracing::debug!("the reflection turn was stopped and proven dead");
-                    Ok(None)
-                }
-                GroupProof::Alive { .. } => {
-                    tracing::error!(
-                        "the reflection group is still alive after escalation; this run cannot \
-                         report a successful Stop"
-                    );
-                    Err(RunError::Io(io::Error::other(
-                        "Loadout could not make sure the agent stopped after learning from this \
-                         run, so it may still be running.",
-                    )))
-                }
-            }
+        // Obie ścieżki przechodzą przez dowód śmierci prawdziwej grupy procesu. Samo porzucenie
+        // `wait` anulowałoby tylko future Rusta (niezmienniki 6 i 10). Różni je jedno: powód,
+        // z którym tura schodzi — Stop człowieka i limit czasu są dla niego dwiema różnymi
+        // wiadomościami (2026-09, Z-38).
+        ReflectionEnd::Stopped => after_proving_it_is_dead(handle, NotAsked::Stopped).await,
+        ReflectionEnd::TimedOut => after_proving_it_is_dead(handle, NotAsked::RanOutOfTime).await,
+    }
+}
+
+/// Kończy turę dowodem śmierci jej grupy i dopiero wtedy oddaje powód.
+///
+/// Brak dowodu jest jedynym błędem tej ścieżki i nie wolno go spłaszczyć do braku odpowiedzi:
+/// proces może nadal pracować i naliczać koszt (niezmiennik 6).
+async fn after_proving_it_is_dead(
+    handle: &mut dyn AgentHandle,
+    why: NotAsked,
+) -> Result<ReflectionEnded, RunError> {
+    match handle.cancel().await {
+        GroupProof::Dead { .. } => {
+            tracing::debug!(?why, "the reflection turn was ended and proven dead");
+            Ok(ReflectionEnded::nothing(why))
+        }
+        GroupProof::Alive { .. } => {
+            tracing::error!(
+                "the reflection group is still alive after escalation; this run cannot report a \
+                 successful Stop"
+            );
+            Err(RunError::Io(io::Error::other(
+                "Loadout could not make sure the agent stopped after learning from this run, so \
+                 it may still be running.",
+            )))
         }
     }
 }
 
 /// Ta jedna tura: własny szew sterownika, polityka tylko-do-odczytu, katalog biegu, jeden model.
 ///
-/// `Ok(None)` znaczy „nie ma odpowiedzi" i obejmuje zwykłe drogi, na których jej nie ma:
-/// ten vendor tury Loadouta nie bierze, vendor nie wstał, tura padła, tura nie zmieściła się
-/// w limicie. Jedyny błąd to brak dowodu śmierci po Stopie: tego nie wolno spłaszczyć do braku
-/// odpowiedzi, bo proces może nadal pracować i naliczać koszt (niezmiennik 6).
+/// Każda droga bez odpowiedzi wraca WŁASNYM powodem (2026-09, Z-38): brak aplikacji agenta —
+/// czyli vendor, który tury Loadouta nie bierze, i vendor, który nie wstał — jest innym faktem
+/// niż tura, która poszła i wróciła z niczym, i innym niż tura zabita sufitem. Jedyny błąd to
+/// brak dowodu śmierci po Stopie: tego nie wolno spłaszczyć do braku odpowiedzi, bo proces może
+/// nadal pracować i naliczać koszt (niezmiennik 6).
+///
+/// `index` dokleja się za prośbą i jest tym, co ten bieg zostawił ([`what_this_run_left_behind`]);
+/// `context` jest tą samą listą dla dowodu, a `ceiling` sufitem tej jednej tury.
 async fn a_short_turn_about(
     deps: &RunDeps<'_>,
     dir: &Path,
-) -> Result<Option<ReflectionTurn>, RunError> {
+    index: &str,
+    context: Vec<ContextSource>,
+    ceiling: f64,
+) -> Result<ReflectionEnded, RunError> {
     /* WŁASNYM SZWEM, NIE STEROWNIKIEM KROKÓW ([`AgentDriver::reflecting`], gdzie stoi cała cena
      * tej decyzji). Vendor jest jeden i wybrany: refleksja jest turą LOADOUTA, nie żadnego agenta
      * z grafu, więc vendor wzięty z ostatniego kroku dawałby dwa różne rachunki i dwa różne
@@ -2563,15 +2881,16 @@ async fn a_short_turn_about(
      * Fabryka mówi tu WYŁĄCZNIE, który to vendor; czy on tę turę bierze i czym ją weźmie,
      * rozstrzyga szew. Sterownik, który go nie podaje — a nie podaje go żadna atrapa — nie ma
      * jak zobaczyć tury, o którą nie prosił żaden krok. */
-    let Some(driver) = reflection_driver(deps, dir) else {
-        return Ok(None);
+    let prompt = format!("{REFLECTION_ASK}\n\n{index}");
+    let Some(driver) = reflection_driver(deps, dir, &prompt, context, ceiling) else {
+        return Ok(ReflectionEnded::nothing(NotAsked::NoAgentApp));
     };
     let spec = RunSpec {
         run_id: Uuid::now_v7(),
         // Katalog biegu: to o niego pytamy. Gdziekolwiek indziej jest to tura poproszona
         // o streszczenie czegoś, czego nie widzi.
         cwd: dir.to_path_buf(),
-        prompt: REFLECTION_ASK.to_owned(),
+        prompt,
         model: Some(REFLECTION_MODEL.to_owned()),
         system_append: None,
         // Pyta, czego ten bieg nauczył, a nie o zmianę czegokolwiek: tura, której wolno pisać,
@@ -2602,7 +2921,7 @@ async fn a_short_turn_about(
         }
         Err(error) => {
             tracing::debug!(%error, "no reflection turn could be started after this run");
-            Ok(None)
+            Ok(ReflectionEnded::nothing(NotAsked::NoAgentApp))
         }
     };
 
@@ -2617,7 +2936,18 @@ async fn a_short_turn_about(
     turn
 }
 
-fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriver>> {
+/// Sterownik tej jednej tury: prywatne ustawienia, własny dowód i sufit ceny.
+///
+/// `prompt` i `context` idą do manifestu dowodu, bo to jest jedyny zapis tego, co Loadout
+/// naprawdę wstrzyknął (2026-09, Z-38): długość PRAWDZIWEGO promptu, nie samej prośby, i lista
+/// przekazań, która do 2026-09-04 była pusta.
+fn reflection_driver(
+    deps: &RunDeps<'_>,
+    dir: &Path,
+    prompt: &str,
+    context: Vec<ContextSource>,
+    ceiling: f64,
+) -> Option<Arc<dyn AgentDriver>> {
     let driver = (deps.drivers)(crate::library::agents::Vendor::ClaudeCode).reflecting()?;
     let settings = crate::engine::drivers::StepSettings {
         dir: dir.to_path_buf(),
@@ -2643,8 +2973,8 @@ fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriv
     let target = EvidenceTarget::reflection(
         dir.to_path_buf(),
         SafeInputManifest {
-            prompt_bytes: REFLECTION_ASK.len(),
-            context: Vec::new(),
+            prompt_bytes: prompt.len(),
+            context,
             images: Vec::new(),
         },
     );
@@ -2652,7 +2982,7 @@ fn reflection_driver(deps: &RunDeps<'_>, dir: &Path) -> Option<Arc<dyn AgentDriv
         tracing::debug!("the reflection turn has no private evidence wrapper");
         return None;
     };
-    let Some(driver) = driver.with_budget(REFLECTION_BUDGET_USD) else {
+    let Some(driver) = driver.with_budget(ceiling) else {
         tracing::debug!("the reflection turn has no price ceiling wrapper");
         return None;
     };
@@ -7724,6 +8054,17 @@ struct ReflectionReceipt {
     dropped_without_reason: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
+    /// Sufit ceny, który tę turę obowiązywał.
+    ///
+    /// `None` znaczy, że sufit nigdy nie powstał, bo nie było o co pytać: Stop, wyłączone
+    /// w ustawieniach, żaden agent nie skończył, nic nie zostało. Każda droga, na której
+    /// Loadout poprosił o sterownik, niesie tu liczbę — także ta, na której go nie dostał.
+    ///
+    /// 2026-09 (Z-38) — TRWAŁY, BO ZDANIE O ZEJŚCIU NA SUFICIE PODAJE TĘ KWOTĘ. Sufit skaluje
+    /// się z ceną kroków ([`REFLECTION_BUDGET_USD`] jest podłogą), więc okno nie ma jak go
+    /// odtworzyć ze stałej, a bieg odczytany z historii miesiąc później tym bardziej.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     why: Option<NotAsked>,
 }
@@ -9138,12 +9479,22 @@ impl Live {
              * w trakcie biegu nie ma prawa go ruszyć — inaczej `run.json` opisywałby bibliotekę
              * taką, jaka jest PO biegu. */
             skills: &self.plan.skills,
-            /* SUFIT I WYDATEK IDĄ PARĄ ALBO NIE IDĄ WCALE. Bieg, którego nikt nie ograniczył,
-             * nie ma o sufcie nic do powiedzenia, a klucz mówiący „bez sufitu" przy każdym biegu
-             * w historii jest długością zapłaconą za milczenie — ta sama decyzja, co przy
-             * `death_proof` i `repaired` obok. */
+            /* SUFIT MILCZY, KIEDY GO NIE MA. Bieg, którego nikt nie ograniczył, nie ma o sufcie
+             * nic do powiedzenia, a klucz mówiący „bez sufitu" przy każdym biegu w historii jest
+             * długością zapłaconą za milczenie — ta sama decyzja, co przy `death_proof`
+             * i `repaired` obok. */
             budget_usd: self.budget_usd,
-            spent_usd: self.budget_usd.map(|_| final_spend_in(book)),
+            /* WYDATEK JUŻ NIE IDZIE Z NIM W PARZE (2026-09, Z-38). Do tego dnia było tu
+             * `self.budget_usd.map(...)`, czyli: bieg bez sufitu nie zapisywał swojej ceny
+             * wcale. Cena biegu jest faktem o biegu, a nie o sufcie — i to jedyne miejsce, do
+             * którego wchodzi cena prywatnej tury ([`final_spend_in`]), więc przy tamtym
+             * warunku tura, która wydała 58 centów na darmowym biegu, nie zostawiała po sobie
+             * ani jednej liczby. Pliki są prawdą (niezmiennik 4).
+             *
+             * Warunkiem jest dziś POMIAR, nie sufit: `None` zostaje dla biegu, w którym nikt
+             * ceny nie podał, bo „nie wiadomo" i „nic nie kosztowało" to dwa różne zdania
+             * (niezmiennik 17), a `history::summary` czyta je osobno po stronie kroków. */
+            spent_usd: anything_was_priced(book).then(|| final_spend_in(book)),
             reflection: &book.reflection,
             steps,
         }
@@ -9551,6 +9902,34 @@ impl Live {
     /// bo obie są widoczne dla człowieka jako różnica między rachunkiem a tą liczbą.
     fn spent_so_far(&self) -> f64 {
         step_spend_in(&self.book.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Co każdy krok powiedział na koniec — po jednej linii, w kolejności z grafu.
+    ///
+    /// 2026-09 (Z-38) — TA SAMA LINIA, KTÓRĄ CZŁOWIEK CZYTA PRZY KAFELKU, nie druga jej wersja:
+    /// `summary` powstaje raz, z ostatniej wypowiedzi agenta ([`summary_of`]), i stąd jedzie do
+    /// `run.json`, na szynę agentów i — od tego zadania — do promptu refleksji. Refleksja bez
+    /// tego zna wyłącznie ZLECENIA (tytuł przekazania jest instrukcją z pliku workflow) i musi
+    /// otworzyć każdy plik, żeby dowiedzieć się, co z nich wyszło.
+    ///
+    /// Krok, który nic nie powiedział — kafelek „sprawdź", tura zdjęta przed pierwszym słowem —
+    /// wypada z listy. Wiersz z pustym zdaniem jest tokenami wydanymi na myślnik.
+    ///
+    /// Zamek na księdze powstaje i ginie w tym jednym wywołaniu, bez `await` (niezmiennik 8).
+    fn what_the_steps_said(&self) -> Vec<SaidByAStep> {
+        let book = self.book();
+        self.plan
+            .steps
+            .iter()
+            .zip(&book.steps)
+            .filter_map(|(step, run)| {
+                let said = run.summary.as_deref().map(str::trim).unwrap_or_default();
+                (!said.is_empty()).then(|| SaidByAStep {
+                    name: step.name.clone(),
+                    said: said.to_owned(),
+                })
+            })
+            .collect()
     }
 
     /// Ile z sufitu jest już ROZDYSPONOWANE: każda zaksięgowana cena plus udziały odłożone dla
@@ -12711,11 +13090,22 @@ fn has_settled(state: StepState) -> bool {
     }
 }
 
-/// Końcowy rachunek obejmuje również udaną prywatną refleksję. Scheduler celowo nie używa
-/// tej funkcji: refleksja zaczyna się dopiero po zakończeniu grafu, więc nie może wpływać na
-/// decyzję, czy wolno rozpocząć następny krok.
+/// Końcowy rachunek obejmuje również prywatną refleksję — także tę, która nie odpowiedziała.
+///
+/// Scheduler celowo nie używa tej funkcji: refleksja zaczyna się dopiero po zakończeniu grafu,
+/// więc nie może wpływać na decyzję, czy wolno rozpocząć następny krok.
 fn final_spend_in(book: &Book) -> f64 {
     step_spend_in(book) + book.reflection.cost_usd.unwrap_or(0.0)
+}
+
+/// Czy ktokolwiek w tym biegu podał cenę: którykolwiek krok albo prywatna tura.
+///
+/// 2026-09 (Z-38) — TO JEST WARUNEK ZAPISU `spent_usd`, i pyta o POMIAR, nie o sufit. Bieg,
+/// w którym żaden vendor ceny nie podał, nie ma prawa zapisać zera: „nikt nie zmierzył" i „nie
+/// kosztowało nic" to dwa różne zdania (niezmiennik 17), a zero widziane w historii jest tym
+/// drugim.
+fn anything_was_priced(book: &Book) -> bool {
+    book.steps.iter().any(|step| step.cost_usd.is_some()) || book.reflection.cost_usd.is_some()
 }
 
 /// Ile miejsca bierze krok tego rodzaju.
@@ -12803,10 +13193,12 @@ struct RunFile<'a> {
     /// razem z oknem, nie umie wyjaśnić po fakcie, dlaczego trzy kroki zostały pominięte.
     #[serde(skip_serializing_if = "Option::is_none")]
     budget_usd: Option<f64>,
-    /// Ile ten bieg naprawdę wydał — suma cen tur, które się skończyły.
+    /// Ile ten bieg naprawdę wydał — suma cen tur, które się skończyły, **plus prywatna tura**.
     ///
-    /// Idzie w parze z polem wyżej i tylko z nim: bez sufitu nie ma z czym tej liczby zestawić,
-    /// a chip na pasku biegu liczy sobie tę samą sumę z linii, które sam dostał.
+    /// 2026-09 (Z-38) — NIE IDZIE JUŻ W PARZE Z SUFITEM. Do tego dnia zapisywał się wyłącznie
+    /// biegowi z sufitem, więc jedyne miejsce, w którym w ogóle istnieje cena refleksji,
+    /// znikało dla każdego biegu, którego nikt nie ograniczył. Brak klucza znaczy dziś dokładnie
+    /// jedno: nikt w tym biegu nie podał ceny ([`anything_was_priced`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     spent_usd: Option<f64>,
     reflection: &'a ReflectionReceipt,

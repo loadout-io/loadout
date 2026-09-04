@@ -111,6 +111,19 @@ pub struct RunWire {
     pub cost_usd: Option<f64>,
     /// Uczciwe zdanie, kiedy opisu biegu nie dało się przeczytać. `None` znaczy „przeczytany".
     pub said: Option<String>,
+    /// Co prywatna tura Loadouta zrobiła z tym biegiem — ten sam rachunek, co w [`PastRunWire`].
+    ///
+    /// 2026-09 (Z-38) — POLE W WIERSZU LISTY, nie tylko w otwartym biegu, i to jest DROGA DANYCH
+    /// DO SEKCJI KNOWLEDGE. Kolejka decyzji w Knowledge zapełnia się notatkami, które pisze tura
+    /// po biegu; kiedy ta tura zeszła na cenie albo na czasie, kolejka jest pusta z POWODU,
+    /// a jedyne miejsce, w którym ten powód istnieje, to `run.json` ostatniego biegu. Bez tego
+    /// pola Knowledge musiałoby otworzyć każdy bieg z osobna (`read_run`), żeby dowiedzieć się
+    /// czegoś o jednym.
+    ///
+    /// `None` dla biegu sprzed tego pola i dla biegu, którego opisu nie dało się przeczytać —
+    /// tak samo jak w otwartym biegu, i z tego samego powodu (niezmiennik 17: nasza niewiedza
+    /// nie jest faktem o biegu).
+    pub reflection: Option<ReflectionWire>,
 }
 
 /// Otwarty bieg: to samo, co w wierszu listy, plus wszystko, co po nim zostało na dysku.
@@ -166,6 +179,22 @@ pub enum NotAsked {
     NoAgentWorked,
     NothingWasLeft,
     NothingCameBack,
+    /// Tura poszła i zeszła na SWOIM suficie ceny, zanim zdążyła odpowiedzieć.
+    ///
+    /// 2026-09 (Z-38) — DO DZIŚ CZYTAŁO SIĘ JAK [`NotAsked::NothingCameBack`], czyli jak cisza
+    /// modelu. Zmierzone na biegu meetnotes z 2026-09-04: dwie godziny, 57,52 USD, dziewięć
+    /// przekazań, transkrypt refleksji kończy się `Reached maximum budget ($0.08)` po 22 s —
+    /// a `run.json` mówił „nic nie wróciło". Te dwa fakty mają na ekranie osobne zdania, bo
+    /// wymagają od człowieka czego innego: przy jednym nie ma czego szukać, przy drugim
+    /// odpowiedź była w drodze i skończyły się pieniądze.
+    RanOutOfBudget,
+    /// To samo, tylko sufitem był czas ([`crate::commands::run::REFLECTION_MINUTES`]).
+    RanOutOfTime,
+    /// Aplikacji agenta nie było, nie wstała, albo nie wzięła tury Loadouta.
+    ///
+    /// 2026-09 (Z-38) — osobno od „nic nie wróciło", bo to jest jedyny z tych kodów, który
+    /// mówi o TEJ MASZYNIE, a nie o biegu: nic w katalogu biegu tego nie naprawi.
+    NoAgentApp,
     /// 2026-09 (Z-18): nowy kod z przyszłego pliku nie może unieważnić całej historii
     /// (niezmiennik 5), a ekran nie pokaże surowej wartości z drutu (niezmiennik 14).
     #[serde(other)]
@@ -188,7 +217,10 @@ pub enum NotAsked {
 /// czytelnika, i uczyniłaby nieczytelnym każdy `run.json` zapisany do dziś. Czytelnik przyjmuje
 /// więc OBIE pisownie: `camelCase` z `rename_all` dla drutu do okna i `alias` na tę jedną
 /// pisownię, którą pisarz naprawdę wypisuje.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 2026-09 (Z-38) — `Eq` ZESZŁO Z TEJ LISTY razem z `budget_usd`: kwota jest `f64`, a `f64`
+/// nie jest `Eq`. Nikt tego typu nie porównywał na równość poza asercjami testów, którym
+/// `PartialEq` wystarcza.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReflectionWire {
     /// Czy tura naprawdę poszła i wróciła użyteczną odpowiedzią.
@@ -206,6 +238,15 @@ pub struct ReflectionWire {
     /// Dlaczego prywatna tura nie poszła. Brak znaczy, że starszy plik tego nie zapisał.
     #[serde(default)]
     pub why: Option<NotAsked>,
+    /// Sufit ceny, który tę turę obowiązywał — w dolarach.
+    ///
+    /// 2026-09 (Z-38) — BEZ TEJ LICZBY ZDANIE O ZEJŚCIU NA SUFICIE NIE MA CZYM SIĘ SKOŃCZYĆ.
+    /// Sufit nie jest już stałą: skaluje się z tym, co bieg wydał na kroki
+    /// ([`crate::commands::run::REFLECTION_BUDGET_USD`] jest jego podłogą), więc kwota
+    /// przepisana do okna z jednej stałej byłaby prawdą wyłącznie dla najtańszego biegu.
+    /// `alias`, bo pisarz wypisuje ten klucz w `snake_case` (powód wyżej, przy `run.json`).
+    #[serde(default, alias = "budget_usd")]
+    pub budget_usd: Option<f64>,
 }
 
 /// Jedna gałąź zostawiona przez bieg.
@@ -768,6 +809,9 @@ fn summary(dir: &Path, workflows: &HashMap<String, String>) -> RunWire {
                 }
                 .to_owned(),
             ),
+            // Biegu, którego opisu nie dało się przeczytać, nie pytamy o prywatną turę: to nie
+            // jest „tury nie było", tylko „nie wiemy" (niezmiennik 17).
+            reflection: None,
         };
     };
 
@@ -793,6 +837,7 @@ fn summary(dir: &Path, workflows: &HashMap<String, String>) -> RunWire {
         steps: file.steps.len(),
         cost_usd,
         said: None,
+        reflection: file.reflection,
     }
 }
 

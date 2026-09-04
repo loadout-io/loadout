@@ -26,7 +26,9 @@ import {
   moveToProject,
   putToUse,
   stopUsing as stopUsingOnDisk,
+  whatTheLastRunLearned,
 } from '../sections/memory/io';
+import type { PastReflection } from '../sections/run/io';
 import { why } from '../ipc/why';
 /* Zakres, w którym pracujemy — jedna odpowiedź na całą aplikację (niezmiennik 13). */
 import { activeWorkspace } from './workspaces';
@@ -175,6 +177,16 @@ export interface MemoryState {
    * pole, drugie nadpisuje pierwsze i jedna z dwóch odmów ginie w każdym wejściu w sekcję.
    */
   passedProblem: string | null;
+  /**
+   * Co prywatna tura Loadouta zrobiła z NAJNOWSZYM biegiem tego projektu. `null` znaczy „nie ma
+   * o czym mówić": nie było biegu, jego opis tego nie niesie, albo tura zrobiła swoje.
+   *
+   * 2026-09 (Z-38) — TRZECI ODCZYT TEJ SEKCJI i jedyna droga, którą powód pustej kolejki
+   * decyzji dociera na ekran Knowledge. Notatki w tej kolejce pisze właśnie ta tura; kiedy
+   * zeszła na cenie albo na czasie, kolejka jest pusta Z POWODU, a powód mieszka w `run.json`
+   * ostatniego biegu i nigdzie indziej.
+   */
+  lastLearning: PastReflection | null;
   choice: Choice | null;
   /**
    * Czy pierwszy odczyt tej sekcji już się skończył — obojętne, czym.
@@ -273,6 +285,7 @@ export const useMemory = create<MemoryState>()((set, get) => ({
   passedMoreRuns: 0,
   message: null,
   passedProblem: null,
+  lastLearning: null,
   choice: null,
   read: false,
   pendingDiscard: null,
@@ -332,7 +345,22 @@ export const useMemory = create<MemoryState>()((set, get) => ({
       }
     })();
 
-    await Promise.all([notesRead, passedRead]);
+    /* TRZECI ODCZYT, TRZECIE PYTANIE (2026-09, Z-38): co ostatni bieg tego projektu zostawił po
+     * swojej prywatnej turze. Osobny `try`, jak dwa wyżej i z tego samego powodu — ale BEZ
+     * własnego zdania odmowy, i to jest wybór: ta odpowiedź tylko TŁUMACZY pustą kolejkę, nie
+     * jest nią. Projekt, którego biegów nie da się wypisać, ma dalej pokazać swoje notatki,
+     * a zdanie o nieczytelnej historii ma już swoje miejsce w sekcji Run (niezmiennik 13).
+     * Cisza tutaj znaczy dokładnie tyle, ile na ekranie: nie ma czego dopowiedzieć. */
+    const learningRead = (async () => {
+      try {
+        const lastLearning = await whatTheLastRunLearned(frozenFolder);
+        if (get().generation === generation) set({ lastLearning });
+      } catch {
+        if (get().generation === generation) set({ lastLearning: null });
+      }
+    })();
+
+    await Promise.all([notesRead, passedRead, learningRead]);
 
     /* DOPIERO TERAZ wolno powiedzieć „nie ma nic". Obojętne, czym się skończyło: po odmowie
      * ekran mówi o odmowie, a nie o pustce — ale jedno i drugie jest odpowiedzią, a „jeszcze

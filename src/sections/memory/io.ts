@@ -13,6 +13,8 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type { Handoff, HandoffPage, Note, NoteAddress } from '../../state/memory';
+import type { PastReflection } from '../run/io';
+import { listRuns } from '../run/io';
 
 export interface CatalogRequest {
   catalogFolder: string | null;
@@ -126,4 +128,27 @@ export async function listHandoffs(
    * podczas odczytu pola `handoffs` (niezmiennik 5). */
   if (Array.isArray(answer)) return { handoffs: answer, runsRead: 0, moreRuns: 0 };
   return answer;
+}
+
+/**
+ * Co prywatna tura Loadouta zrobiła z NAJNOWSZYM biegiem tego folderu.
+ *
+ * # Po co sekcji Knowledge fakt o biegu (2026-09, Z-38)
+ *
+ * Bo kolejka decyzji na tym ekranie zapełnia się notatkami, które pisze właśnie ta tura — a bieg
+ * z 2026-09-04 pokazał, że potrafi ona zejść na cenie po 22 sekundach i nie zostawić ani jednej.
+ * Pusta kolejka wygląda wtedy dokładnie tak samo, jak kolejka po biegu, z którego nie było się
+ * czego nauczyć. Ten odczyt jest jedyną drogą, którą powód tej pustki dociera na ten ekran.
+ *
+ * NAJNOWSZY BIEG I TYLKO ON. `list_runs` oddaje wiersze od najnowszego (`history::run_dirs`),
+ * więc bierzemy pierwszy: zdanie o turze sprzed tygodnia stałoby nad kolejką, którą zapełnił
+ * wczorajszy bieg, i mówiłoby nieprawdę o tym, na co człowiek właśnie patrzy.
+ *
+ * TA SAMA KOMENDA, CO W HISTORII, i celowo nie druga: „co ten folder uruchomił" ma w całej
+ * aplikacji jedną odpowiedź (niezmiennik 13). Stąd import z `sections/run/io.ts`, zamiast
+ * drugiego `invoke('list_runs')` pod inną nazwą — argumenty tej komendy mają jedno miejsce.
+ */
+export async function whatTheLastRunLearned(folder: string | null): Promise<PastReflection | null> {
+  const runs = await listRuns(folder);
+  return runs[0]?.reflection ?? null;
 }

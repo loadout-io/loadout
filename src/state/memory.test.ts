@@ -20,9 +20,9 @@ import * as io from '../sections/memory/io';
 import type { Handoff, MemoryFull, Note } from './memory';
 import { useMemory } from './memory';
 
-/* Atrapa pokrywa CAŁĄ krawędź, także dwa odczyty, których większość testów w tym pliku nie
- * dotyka: `load` woła oba, więc funkcja pominięta tutaj byłaby `undefined` i test przewracałby
- * się na `TypeError` zamiast powiedzieć, co jest nie tak. */
+/* Atrapa pokrywa CAŁĄ krawędź, także trzy odczyty, których większość testów w tym pliku nie
+ * dotyka: `load` woła wszystkie, więc funkcja pominięta tutaj byłaby `undefined` i test
+ * przewracałby się na `TypeError` zamiast powiedzieć, co jest nie tak. */
 vi.mock('../sections/memory/io', () => ({
   putToUse: vi.fn(),
   stopUsing: vi.fn(),
@@ -30,12 +30,14 @@ vi.mock('../sections/memory/io', () => ({
   moveToProject: vi.fn(),
   listNotes: vi.fn(),
   listHandoffs: vi.fn(),
+  whatTheLastRunLearned: vi.fn(),
 }));
 
 const putToUse = vi.mocked(io.putToUse);
 const stopUsing = vi.mocked(io.stopUsing);
 const listNotes = vi.mocked(io.listNotes);
 const listHandoffs = vi.mocked(io.listHandoffs);
+const whatTheLastRunLearned = vi.mocked(io.whatTheLastRunLearned);
 
 const TENANT = 'tenant-before-guard';
 const INDEX = 'the-index-is-disposable';
@@ -100,6 +102,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   listNotes.mockResolvedValue([]);
   listHandoffs.mockResolvedValue({ handoffs: [], runsRead: 0, moreRuns: 0 });
+  whatTheLastRunLearned.mockResolvedValue(null);
   useMemory.setState({ notes: [note(TENANT, 'suggested'), note(INDEX, 'in-use')] });
 });
 
@@ -298,6 +301,60 @@ describe('entering the section reads both folders, and one failing does not empt
     expect(
       useMemory.getState().message,
       'and the notes zone says nothing, because nothing about the notes went wrong',
+    ).toBeNull();
+  });
+
+  /* TRZECI ODCZYT, DOPISANY 2026-09-04 (Z-38) — i to jest DROGA DANYCH, nie kosmetyka.
+   *
+   * Sekcja Knowledge tłumaczy pustą kolejkę decyzji zdaniem o ostatniej turze po biegu. Zdanie
+   * składa się po tamtej stronie z tego pola; bez tego wiersza pole zostawało `null` na zawsze
+   * i ekran mówiłby to samo, co przed poprawką — czyli nic. To jest ta klasa wady, którą łapie
+   * niezmiennik 29 od strony wejścia: markup jest, funkcja go składa, nikt nigdy nic do niej
+   * nie wpisał. */
+  it('reads what the last run learned, through the same edge as everything else', async () => {
+    whatTheLastRunLearned.mockResolvedValue({
+      ran: false,
+      kept: 0,
+      discardedAgain: 0,
+      droppedWithoutReason: 0,
+      why: 'ran-out-of-budget',
+      budgetUsd: 0.58,
+    });
+
+    await useMemory.getState().load('/Users/x/ledger-ui');
+
+    expect(
+      whatTheLastRunLearned,
+      'the store went to Rust some other way for this fact. The names of commands live in one ' +
+        'file (invariant 23), and a second road to them is the one that goes stale',
+    ).toHaveBeenCalledWith('/Users/x/ledger-ui');
+    expect(
+      useMemory.getState().lastLearning?.why,
+      'the reason the last run left no notes did not reach the section that shows them. The ' +
+        'queue is then empty with no explanation, which reads exactly like a run nobody could ' +
+        'learn anything from',
+    ).toBe('ran-out-of-budget');
+    expect(
+      useMemory.getState().lastLearning?.budgetUsd,
+      'and without the amount the sentence on that screen has nothing to end with',
+    ).toBe(0.58);
+  });
+
+  it('says nothing about the last run when that read fails, and keeps the notes', async () => {
+    listNotes.mockResolvedValue([note(FLAKY, 'in-use')]);
+    whatTheLastRunLearned.mockRejectedValue('runs is not a folder Loadout may read.');
+
+    await useMemory.getState().load();
+
+    expect(
+      useMemory.getState().notes.map((one) => one.id),
+      'a project whose runs cannot be listed still has notes, and they are what this section is ' +
+        'about. One try around three reads is how a working zone disappears with a broken one',
+    ).toEqual([FLAKY]);
+    expect(
+      useMemory.getState().lastLearning,
+      'a read that failed has to leave this empty rather than keep a sentence about a run ' +
+        'nobody could look at',
     ).toBeNull();
   });
 
