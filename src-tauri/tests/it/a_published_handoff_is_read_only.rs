@@ -188,17 +188,17 @@ const CONTEXT_NOT_PROVEN: &str =
 async fn assert_changed_run(tamper: Tamper) -> Result<(), Box<dyn Error>> {
     let (report, mut lines, seen, bench) = run_with(tamper).await?;
     let changed = seen.changed_sentence()?;
-    judge_refusal(report, &mut lines, &bench, &changed)
+    judge_refusal(&report, &mut lines, &bench, &changed)
 }
 
 /// Ten sam sedzia, ale zdanie podaje wolajacy — bo nie kazda awaria kontekstu jest zmiana.
 async fn assert_refused_run(tamper: Tamper, sentence: &str) -> Result<(), Box<dyn Error>> {
     let (report, mut lines, _seen, bench) = run_with(tamper).await?;
-    judge_refusal(report, &mut lines, &bench, sentence)
+    judge_refusal(&report, &mut lines, &bench, sentence)
 }
 
 fn judge_refusal(
-    report: RunReport,
+    report: &RunReport,
     lines: &mut LineSource,
     bench: &Bench,
     sentence: &str,
