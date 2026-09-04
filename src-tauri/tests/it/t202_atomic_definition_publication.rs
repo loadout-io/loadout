@@ -14,8 +14,8 @@ use std::thread;
 
 use loadout_lib::durable_file::{
     DEFINITION_FILE_MODE, DurableFilePublisher, FaultAction, FaultInjector, FaultPoint, ModePolicy,
-    PRIVATE_FILE_MODE, PublicationEvent, PublicationOperation, PublishError, revision_of,
-    scoped_faults,
+    PRIVATE_FILE_MODE, PUBLISHED_HANDOFF_MODE, PublicationEvent, PublicationOperation,
+    PublishError, revision_of, scoped_faults,
 };
 use loadout_lib::evidence::{EvidenceTarget, SafeInputManifest};
 use loadout_lib::library::agents::{Agent, read_agent_file, write_agent_file};
@@ -425,11 +425,11 @@ async fn every_production_caller_enters_the_same_instrumented_core() -> Result<(
     );
 
     assert_eq!(mode(&evidence.input_path())?, PRIVATE_FILE_MODE);
-    assert_eq!(mode(&handoff.path)?, PRIVATE_FILE_MODE);
+    assert_eq!(mode(&handoff.path)?, PUBLISHED_HANDOFF_MODE);
     let attachment = handoff
         .attachment
         .ok_or("the oversized production handoff did not publish an attachment")?;
-    assert_eq!(mode(&attachment)?, PRIVATE_FILE_MODE);
+    assert_eq!(mode(&attachment)?, PUBLISHED_HANDOFF_MODE);
     Ok(())
 }
 

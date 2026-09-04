@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::durable_file::{
-    DurableFilePublisher, ModePolicy, PRIVATE_FILE_MODE, PublicationBatch, PublishError,
+    DurableFilePublisher, ModePolicy, PUBLISHED_HANDOFF_MODE, PublicationBatch, PublishError,
     recover_owned_temps_in, revision_of,
 };
 use crate::engine::supervisor::{PublicationEntry, PublicationEntryKind, PublicationRoot};
@@ -420,6 +420,9 @@ pub struct Written {
     /// (niezmiennik 21). Pełny tekst „na wszelki wypadek" przy ciele, którego nikt nie uciął,
     /// to artefakt, którego żaden skrypt nie czyta.
     pub attachment: Option<PathBuf>,
+    /// 2026-09 (Z-41) — pełna kopia nie ma front-mattera, więc jej długość w chwili publikacji
+    /// jest jedyną kotwicą rozjazdu. `None`, kiedy kopia nie powstała.
+    pub attachment_bytes: Option<usize>,
     /// Sekcje, których agent nie napisał, a Loadout je wstawił. Pusta lista znaczy, że ciało
     /// przyszło w umówionym kształcie — i to jest licznik, który warto oglądać [T6 §11.1].
     pub repaired: Vec<Section>,
@@ -807,7 +810,7 @@ fn publish_handoff_batch(
         batch.atomic_create_if_absent(
             &at,
             normalized.as_bytes(),
-            ModePolicy::Exact(PRIVATE_FILE_MODE),
+            ModePolicy::Exact(PUBLISHED_HANDOFF_MODE),
         )?;
         Some(at)
     } else {
@@ -817,10 +820,15 @@ fn publish_handoff_batch(
     let mut out = front_matter(draft, supersedes, body.len()).render();
     out.push('\n');
     out.push_str(&body);
-    batch.atomic_create_if_absent(&path, out.as_bytes(), ModePolicy::Exact(PRIVATE_FILE_MODE))?;
+    batch.atomic_create_if_absent(
+        &path,
+        out.as_bytes(),
+        ModePolicy::Exact(PUBLISHED_HANDOFF_MODE),
+    )?;
 
     Ok(Written {
         path,
+        attachment_bytes: attachment.as_ref().map(|_| normalized.len()),
         attachment,
         repaired,
         truncated,
@@ -985,13 +993,13 @@ fn flip_status(run_dir: &Path, path: &Path) -> Result<()> {
     }
     out.push_str(&text[body_at..]);
 
-    // `Exact`, nie `PreserveExistingOr`: przekazanie jest prywatne od chwili powstania
-    // (`publish_handoff_batch`) i korekta nie ma prawa go rozszerzyć na grupę.
+    // `Exact`, nie `PreserveExistingOr`: korekta nie może przywrócić prawa zapisu plikowi,
+    // który od publikacji jest niezmienny (2026-09, Z-41).
     DurableFilePublisher::new(run_dir)
         .publish_definition(
             path,
             out.as_bytes(),
-            ModePolicy::Exact(PRIVATE_FILE_MODE),
+            ModePolicy::Exact(PUBLISHED_HANDOFF_MODE),
             Some(&expected),
         )
         .map_err(|error| match error {

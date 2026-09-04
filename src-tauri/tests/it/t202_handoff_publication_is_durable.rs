@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use loadout_lib::durable_file::{
-    FaultAction, FaultInjector, FaultPoint, PRIVATE_FILE_MODE, PublicationEvent, scoped_faults,
+    FaultAction, FaultInjector, FaultPoint, PUBLISHED_HANDOFF_MODE, PublicationEvent, scoped_faults,
 };
 use loadout_lib::memory::Error as MemoryError;
 use loadout_lib::memory::handoff::{
@@ -108,7 +108,7 @@ fn a_small_handoff_is_complete_private_and_claimed_without_an_empty_reservation(
 
     assert!(fs::read_to_string(&written.path)?.ends_with(body));
     assert_eq!(read_handoff(&written.path)?.body, body);
-    assert_eq!(mode(&written.path)?, PRIVATE_FILE_MODE);
+    assert_eq!(mode(&written.path)?, PUBLISHED_HANDOFF_MODE);
     assert!(written.attachment.is_none());
     assert_no_transient_artifacts(run.path())?;
     Ok(())
@@ -313,7 +313,7 @@ fn concurrent_same_name_claims_leave_one_readable_handoff_and_one_conflict()
         "the winner contains neither complete body: {:?}",
         visible[0].body
     );
-    assert_eq!(mode(&visible[0].path)?, PRIVATE_FILE_MODE);
+    assert_eq!(mode(&visible[0].path)?, PUBLISHED_HANDOFF_MODE);
     assert_no_transient_artifacts(run.path())?;
     Ok(())
 }
@@ -358,8 +358,8 @@ fn assert_complete_attachment(handoff: &Handoff, original: &str) -> Result<(), B
         .attachment()
         .ok_or("a visible truncated handoff has no production attachment pointer")?;
     assert_eq!(fs::read_to_string(&attachment)?, original);
-    assert_eq!(mode(&handoff.path)?, PRIVATE_FILE_MODE);
-    assert_eq!(mode(&attachment)?, PRIVATE_FILE_MODE);
+    assert_eq!(mode(&handoff.path)?, PUBLISHED_HANDOFF_MODE);
+    assert_eq!(mode(&attachment)?, PUBLISHED_HANDOFF_MODE);
     Ok(())
 }
 
