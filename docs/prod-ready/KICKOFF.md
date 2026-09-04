@@ -40,3 +40,15 @@ Zacznij tak:
 
 Pierwsze polecenie po przeczytaniu planu: pakiet 0.1 (sprzątanie maszyny) — od zabicia
 osieroconego procesu, którego pid i ścieżka są w planie, po potwierdzeniu `ps`, że to nadal on.
+
+---
+
+## Stan na 2026-09-04 (przeczytaj przed punktem 1)
+
+Fala 0 i fale 1–5 są zamknięte (33 z 34 LANDED; Z-34 czeka na zdanie właściciela). Drugi audyt
+(`docs/prod-ready/AUDIT-2026-09-04.md`) dopisał do planu **Falę 0b** (sekcja 2b — sześć pakietów
+ręką, przez `python3` z zapisem atomowym, jak Fala 0) i **Falę 6** (sekcja 3b — Z-35…Z-50 przez
+`scripts/h run`). Kolejność: 0b.1 → 0b.6, potem Z-35 i dalej po numerach, według tabeli 3b.
+Zadania z „decyzją" w kolumnie „zależy od" mają w prompcie wariant domyślny i NIE czekają.
+Pierwsze polecenie po przeczytaniu planu: pakiet 0b.1 (hak `PreToolUse`), bo obniża koszt
+każdego następnego biegu.

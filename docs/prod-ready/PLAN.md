@@ -23,6 +23,7 @@ zadania, które od niego zależą (te dostają `BLOCKED-DEP`).
 ### Wybór następnego zadania
 
 1. Fala 0 w całości przed jakimkolwiek `scripts/h run` — pakiety 0.1 → 0.5, po kolei.
+   Od 2026-09-04: Fala 0b (sekcja 2b) w całości przed Z-35 — pakiety 0b.1 → 0b.6, po kolei.
 2. Potem: najniższa fala, w niej najniższy numer, którego wszystkie zależności są `LANDED`.
 3. Równoległość: najwyżej **jeden** bieg dotykający Rusta (`src-tauri/**`) naraz; obok niego
    może iść najwyżej **jeden** bieg czysto TS (`src/**`, oznaczone `TS` w tabeli). Niezmiennik 26
@@ -285,6 +286,65 @@ Kryterium: `grep -rn 'verify.sh\|ship.sh\|review.sh\|tasks/\|snapshot.sh\|quick-
 
 ---
 
+## 2b. Fala 0b — ręka orkiestratora, przed Falą 6 (z audytu 2026-09-04)
+
+Ta sama zasada co w Fali 0: pliki pod `harness/`, `checks/`, `scripts/`, `.claude/` piszesz przez
+`python3` z zapisem atomowym, po każdym pakiecie `bash scripts/ci.sh full` (gdy nic nie biegnie),
+commit `chore(prod-ready): 0b.N …`, status tutaj. Źródło: `docs/prod-ready/AUDIT-2026-09-04.md`.
+
+### 0b.1 Hak `PreToolUse` na Bash w biegu harnessu — TODO (D-1, D-5)
+
+Nowy `.claude/hooks/pre-bash.sh`, wpięty w `.claude/settings.json` jako `PreToolUse` dla `Bash`,
+AKTYWNY TYLKO, gdy `LOADOUT_HARNESS=1` (ustawia `harness/h.py` w środowisku każdej fazy) —
+sesja właściciela nie ma go czuć. Odmawia (kod 2, jedno zdanie „the gate runs this after you —
+`scripts/h check` is the only heavy command allowed here"): `cargo clippy`, `cargo test` bez
+`--test it <moduł>::`, `cargo build`, `cargo check`, `vitest run` bez ścieżki pliku, `rm -rf`
+ze ścieżką poza `$PWD`, `git branch -D`, oraz każdą komendę, w której ścieżka z krotki `ORACLE`
+stoi obok `>`/`>>`/`sed -i`/`tee`/`python3` (odczyt `cat`/`grep`/`sed -n`/`head`/`tail`
+przechodzi). Potem: zdejmij odpowiedni akapit z `harness/prompts/implement.md` (niezmiennik 28:
+skrypt zamiast zdania), dopisz strażnika w `harness/guards.sh` (hak istnieje, jest wykonywalny,
+odmawia `cargo clippy` w próbie i przepuszcza `cargo test --test it foo::`), kontrola negatywna.
+NIE zdejmuj reguł `Write(…)` z `settings.json`: `checks/quick-permissions.sh` wymaga par
+Edit/Write (pamięć projektu, incydent N-05); szum startowy CLI nie kosztuje.
+Miara po pętli Fali 6: liczba `cargo clippy` w `runs/z*/build-*.jsonl` = 0.
+
+### 0b.2 Księga kosztów w `harness/h.py` — TODO (D-2)
+
+Po każdej fazie `cost_usd` do `.git/h/<id>.json` (`costs: {plan, implement[], verify[]}`) i do
+`runs/<id>/cost.json`; Claude z `result.total_cost_usd` (także przy `--json-schema` — jeśli pole
+nie przychodzi, licz z `usage` × tabela cen z `codex.rs`/stała w h.py i oznacz `estimated: true`),
+Codex z `usage` × tabela. `h list`/`h status` pokazują sumę; `h run` odmawia startu kolejnej fazy,
+gdy suma zadania przekroczy `LOADOUT_BUDGET_TASK` (domyślnie 90 USD). Dziennik bierze kwotę
+z `cost.json`, nie z grepa.
+
+### 0b.3 H-24 i H-25 — TODO (D-3, D-4)
+
+`phase_plan`: zapisz `sid` w stanie przed wołaniem, `--resume` przy ponowieniu (kształt jak
+w `phase_implement`). `ORACLE` += `docs/ARCHITECTURE.md`, `docs/design/DESIGN.md`. Test: sonda
+z `harness/README.md` (parser bramki, bez biegu).
+
+### 0b.4 Hak Stop tylko w worktree harnessu — TODO (D-7)
+
+`stop-gate.sh` liczy wyłącznie, gdy `LOADOUT_HARNESS=1` albo `cwd` ma stan w `.git/h/`; w sesji
+właściciela wychodzi zerem natychmiast.
+
+### 0b.5 Sprzątanie — TODO (C-2, C-3)
+
+`cargo clean` (83 149 plików w `target/debug/deps`); `h clean` usuwa `runs/<id>` zadań `LANDED`
+starszych niż 14 dni (dopisz do `h clean --landed`); 5 martwych stanów w `.git/h/`
+(`repair-*`, `z01`, `z01b`) → `h clean` po sprawdzeniu, że worktree nie istnieje;
+`~/.loadout/loadout.db.bak-2026-09-04` (71 MB) do kosza po potwierdzeniu, że `loadout.db` żyje;
+`.loadout/scratch/t22`; `$TMPDIR/loadout-z01d-*`.
+
+### 0b.6 Dokumentacja jedną przecinką — TODO (B-2, E-2, E-3, D-9)
+
+ARCHITECTURE §8: `agents/<slug>.md`; STATUS.md: jedno zdanie „od 2026-09-02 postęp mieszka
+w `prod-ready/PLAN.md`" i zdjęcie obowiązku ze `.claude/commands/build.md`; README: opis
+`harness/` = prompt → plan → kod → checki + weryfikacja; `harness/README.md` i docstring `h.py`:
+liczby albo podniesiona granica z datą.
+
+---
+
 ## 3. Fale 1–5 — zadania w pętli
 
 Kolumny: **ID** (numer z audytu) · **id biegu** (argument `scripts/h run`) · **prompt** ·
@@ -388,6 +448,40 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 
 ---
 
+## 3b. Fala 6 — zadania w pętli z audytu 2026-09-04
+
+Kolumny jak w sekcji 3. Kolejność w tabeli = kolejność startu (numer = priorytet). Fala 0b
+w całości przed Z-35. Vendorzy naprzemiennie, żeby oba robiły całość (D3). Zadania z „decyzją"
+w kolumnie „zależy od" mają w prompcie WARIANT DOMYŚLNY — startują bez czekania, chyba że
+właściciel zdecyduje inaczej przed startem (lista decyzji w audycie).
+
+| ID | id biegu | prompt | tryb | vendorzy | rozmiar | zależy od | status | uwagi |
+|---|---|---|---|---|---|---|---|---|
+| Z-35 | `z35-stop-per-folder` | `prompts/Z-35.md` | R+TS | C→X | duże | 0b | TODO | A-1, A-2: Stop/Continue/Say/zamknięcie karty adresowane folderem |
+| Z-36 | `z36-tool-in-flight` | `prompts/Z-36.md` | R+TS | X→C | | — | TODO | L-1: `tool_progress` → jedna aktualizowana linia; wiadomość w kolejce mówi, że czeka |
+| Z-37 | `z37-finished-run-keeps-its-tiles` | `prompts/Z-37.md` | TS | X→C | | — | TODO | L-3: po końcu biegu kafelki i nagłówek trzymają stan; może iść obok biegu R |
+| Z-38 | `z38-reflection-budget` | `prompts/Z-38.md` | R | C→X | | — | TODO | L-4: `REFLECTION_BUDGET_USD = 0.08`, `context: []`, cichy `nothing-came-back` |
+| Z-39 | `z39-lead-can-stop-a-run` | `prompts/Z-39.md` | R | X→C | | Z-35 | TODO | L-2: czasownik `stop_run` w moście; krok ubity obcym sygnałem mówi to na karcie |
+| Z-40 | `z40-interrupt-the-lead` | `prompts/Z-40.md` | R+TS | C→X | | Z-36 | TODO | L-1: kontrolka „Interrupt" przez istniejący `control_request` |
+| Z-41 | `z41-handoffs-read-only` | `prompts/Z-41.md` | R | X→C | | — | TODO | A-5: `0444` po publikacji, rozjazd = `Problem` na ekranie |
+| Z-42 | `z42-folder-access-preflight` | `prompts/Z-42.md` | R+TS | C→X | | — | TODO | A-6: sonda `.loadout/`, odmowa Startu zdaniem o Privacy & Security |
+| Z-43 | `z43-trigger-busy-per-folder` | `prompts/Z-43.md` | R | X→C | | Z-35 | TODO | A-3 |
+| Z-44 | `z44-codex-unknown-price` | `prompts/Z-44.md` | R | C→X | | decyzja 5 | TODO | A-7: domyślnie odmowa z nazwą modelu; ceny z `~/.loadout/prices.json` |
+| Z-45 | `z45-heavy-agent-steps` | `prompts/Z-45.md` | R+TS | X→C | | decyzja 4 | TODO | A-4: domyślnie pole `weight: heavy` na kroku (D6: pole, nie kafelek) |
+| Z-46 | `z46-run-retention-branches` | `prompts/Z-46.md` | R+TS | C→X | duże | decyzja 6 | TODO | C-1: zamiatacz melduje drzewa i gałęzie; retencja obejmuje gałęzie; nic bez kliknięcia |
+| Z-47 | `z47-host-context-alert` | `prompts/Z-47.md` | R+TS | X→C | | — | TODO | B-1 |
+| Z-48 | `z48-token-accounting` | `prompts/Z-48.md` | R+TS | C→X | | — | TODO | L-6: jeden słownik tokenów u obu vendorów; „tokens per turn" na karcie; eksport v3 |
+| Z-49 | `z49-handoffs-list-paged` | `prompts/Z-49.md` | R+TS | X→C | | — | TODO | E-1 |
+| Z-50 | `z50-lead-powers-said` | `prompts/Z-50.md` | TS+R | C→X | | — | TODO | L-5: zdanie pod polem rozmowy z prawdziwej listy narzędzi lidera; bez nowego wiersza ustawień |
+
+Szacunek z pomiaru pętli Z (mediana ≈ 10 USD, duże 40–70 USD): 16 zadań ≈ 300–550 USD po
+stronie Claude plus Codex; po 0b.2 kwoty będą w `runs/<id>/cost.json`, nie z grepa.
+
+> **Zależności są kolejnością startu**, jak w sekcji 3: `BLOCKED` na jednym zadaniu nie przenosi
+> się na następne, poza parami nazwanymi wprost (Z-35 → Z-39, Z-43; Z-36 → Z-40).
+
+---
+
 ## 4. Sondy przed konkretnym zadaniem (tanie, kilka minut, wynik do Dziennika)
 
 | przed | pytanie | jak | co zmienia |
@@ -423,6 +517,7 @@ podniesienie sufitu jest decyzją człowieka, nie orkiestratora.
 Format wiersza: `- 2026-09-DD HH:MM · <ID albo pakiet> · <co się stało> · koszt <USD z runs/<id>/> · <kto: C→X / X→C / ręka>`.
 Najnowsze na górze. Zdania krótkie; powód `BLOCKED` w jednym zdaniu z cytatem werdyktu.
 
+- 2026-09-04 18:40 · audyt · drugi audyt po pętli Z (`AUDIT-2026-09-04.md`, artefakt w pliku): 27 znalezisk + 6 z eksportu diagnostyki i dwóch zrzutów właściciela; Fala 0b (6 pakietów ręką) i Fala 6 (Z-35…Z-50, 16 promptów) dopisane; pętla Z kosztowała ≈ 844 USD po stronie Claude (z grepa po `runs/`, bo księgi nie ma — 0b.2) · ręka (Fable)
 - 2026-09-04 21:35 · Z-33 · LANDED, trzy rundy, CI 321 s. `run.json` zapisuje ten sam werdykt, którym pętla naprawdę steruje: `Succeeded` nieostatniej rundy jest sygnałem dla planisty, żeby odblokować graf, a nie zdaniem „krok się udał", i historia mówi to człowiekowi wprost — bez ósmego stanu w bazie · X→C
 - 2026-09-04 20:45 · Z-32 · LANDED, dwie rundy, CI 329 s. Biblioteka przestaje ufać temu, czego nie sprawdziła: APFS nie robi dwóch katalogów z samej różnicy wielkości liter, więc przemianowanie leafu i publikacja idą pod jednym zamkiem, wadliwe `u32` dostaje uwagę zamiast zamawiać miliard iteracji, odrzucony workflow nie zostawia pustej półki, a okno wie, którą rewizję naprawdę przeczytało · C→X
 - 2026-09-04 20:10 · Z-34 · werdykt DZIALA w jednej rundzie, **merge cofnięty** (`2328b3a2`) i czeka na jedno zdanie od właściciela. Nie ma tu wady: bramka stanęła na zapadce gęstości — `textElements` 52 przy bazie 49, **przy suficie 60**, czyli ekran nie jest za gęsty, tylko gęstszy niż przy ostatnim pomiarze. Nowa stopka mówi po zdaniu o KAŻDEJ aplikacji zamiast jednego nieprawdziwego „Claude · Codex ready", więc trzy elementy więcej to koszt prawdy, nie bałaganu. `--update-baseline` umie tylko obniżać (niezmiennik 18), a `checks/` jest zamknięte i dla pętli, i dla mnie · C→X
