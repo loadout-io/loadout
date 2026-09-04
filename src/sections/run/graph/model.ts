@@ -53,6 +53,8 @@ export interface GraphStep {
    * z żywego stanu potomka: oba mogą opisywać równoległą pracę, nie decyzję o tej porażce.
    */
   readonly carriedOn?: boolean;
+  /** Jawny fakt planu: ten gotowy krok stoi po jedyne miejsce ciężkie. */
+  readonly waitingForHeavy?: true;
   /**
    * Pytanie bez odpowiedzi, na którym stoi TEN krok — albo brak pola, kiedy stoi na żadnym.
    *
@@ -234,11 +236,13 @@ export function measureOf(step: GraphStep, plan: Plan): Measure {
   const incoming = plan.links.filter((link) => link.to === step.id);
   const first = incoming[0];
   const waits =
-    first === undefined
-      ? 'first step'
-      : incoming.length === 1
-        ? `after ${nameOf(plan, first.from)}`
-        : `reads ${String(incoming.length)} handoffs`;
+    step.waitingForHeavy === true
+      ? 'waiting for the heavy seat'
+      : first === undefined
+        ? 'first step'
+        : incoming.length === 1
+          ? `after ${nameOf(plan, first.from)}`
+          : `reads ${String(incoming.length)} handoffs`;
 
   return { waits, handsOn: plan.links.some((link) => link.from === step.id) };
 }

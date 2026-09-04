@@ -186,6 +186,7 @@ fn work_step(case: &Case, variant: &Variant, id: String, at: Point) -> AgentStep
         overrides: variant.overrides.clone(),
         vendor_options: BTreeMap::new(),
         copies: 1,
+        weight: crate::workflow::Weight::Ordinary,
         instructions: case.task.clone(),
         skills: Skills::default(),
         borrow: crate::workflow::Borrow::default(),

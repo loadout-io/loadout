@@ -25,7 +25,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{Condition, ConditionalLink, Folder, Handover, Link, Step, WorkflowFile};
+use super::{Condition, ConditionalLink, Folder, Handover, Link, Step, Weight, WorkflowFile};
 use crate::engine::dag::{Dag, DagError};
 
 /// Flagi, które Loadout ustawia sam dla `claude` — przelotka nie ma prawa ich podać.
@@ -415,6 +415,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     one_id_two_steps(&steps, &mut notes);
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
+    heavy_copies_run_in_line(&steps, &mut notes);
     colliding_work_branches(&steps, when, &mut notes);
     turns_out_of_range(&workflow.links, &steps, &position, &mut notes);
     loop_judges_run_once(&workflow.links, &steps, &position, &mut notes);
@@ -568,6 +569,7 @@ struct Facts<'a> {
     /// Nazwa z kafelka. To ona pada w uwagach: `s_lonely` nie jest niczym, co użytkownik widzi.
     name: &'a str,
     copies: u32,
+    weight: Weight,
     folder: Option<&'a Folder>,
     passthrough: Option<&'a BTreeMap<String, BTreeMap<String, String>>>,
     /// Treść zadania kroku. `None` dla kafelka kontrolnego — on pyta człowieka, nie agenta.
@@ -610,6 +612,7 @@ fn facts(step: &Step) -> Facts<'_> {
             id: &agent.id,
             name: &agent.name,
             copies: agent.copies,
+            weight: agent.weight,
             folder: Some(&agent.folder),
             passthrough: Some(&agent.vendor_options),
             instructions: Some(&agent.instructions),
@@ -622,6 +625,7 @@ fn facts(step: &Step) -> Facts<'_> {
             id: &checkpoint.id,
             name: &checkpoint.name,
             copies: 1,
+            weight: Weight::Ordinary,
             folder: None,
             passthrough: None,
             instructions: None,
@@ -644,6 +648,7 @@ fn facts(step: &Step) -> Facts<'_> {
             id: &check.id,
             name: &check.name,
             copies: 1,
+            weight: Weight::Ordinary,
             folder: Some(&check.folder),
             passthrough: None,
             instructions: None,
@@ -660,6 +665,7 @@ fn facts(step: &Step) -> Facts<'_> {
             id: &serve.id,
             name: &serve.name,
             copies: 1,
+            weight: Weight::Ordinary,
             folder: Some(&serve.folder),
             passthrough: None,
             instructions: None,
@@ -1163,6 +1169,25 @@ fn copies_out_of_range(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
                 format!(
                     "\"{}\" would run {} copies at the same time. Pick a number from 1 to \
                      {MOST_COPIES}.",
+                    step.name, step.copies
+                ),
+            ));
+        }
+    }
+}
+
+/// Kilka kopii ciężkiego kroku nie może spełnić obietnicy „naraz" przy jednym miejscu ciężkim.
+fn heavy_copies_run_in_line(steps: &[Facts<'_>], notes: &mut Vec<Note>) {
+    for step in steps {
+        if step.weight == Weight::Heavy && step.copies > 1 {
+            // 2026-09 (Z-45) — ostrzeżenie, nie odmowa: plik jest wykonalny, ale liczba kopii
+            // nie znaczy już równoległości, więc człowiek ma to wiedzieć przed płatnym biegiem.
+            notes.push(warning(
+                Some(step.id),
+                format!(
+                    "\"{}\" takes the heavy seat, and only one step holds it at a time, so its \
+                     {} copies would run one after another. Turn the heavy seat off, or set it \
+                     to one copy.",
                     step.name, step.copies
                 ),
             ));

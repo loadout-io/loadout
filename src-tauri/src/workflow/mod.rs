@@ -173,6 +173,13 @@ pub struct AgentStep {
     /// maszynie to już dużo.
     #[serde(default = "one_copy")]
     pub copies: u32,
+    /// Czy tura bierze jedyne miejsce dla pracy obciążającej całą maszynę.
+    ///
+    /// 2026-09 (Z-45) — PRZY ZAPISIE DOMYŚLNA WARTOŚĆ ZNIKA. Dopisanie `ordinary` do każdego
+    /// istniejącego kroku przepisałoby wszystkie workflow przy pierwszym zapisie, mimo że ich
+    /// zachowanie się nie zmienia. Brak klucza ma dalej znaczyć dokładnie to, co przed Z-45.
+    #[serde(default, skip_serializing_if = "Weight::is_the_default")]
+    pub weight: Weight,
     /// Prompt, zwykły tekst. `{{copy}}` i `{{copies}}` podstawia silnik [T3 §4.3].
     #[serde(default)]
     pub instructions: String,
@@ -225,6 +232,25 @@ pub struct AgentStep {
 /// to krok, który nigdy nie biegnie.
 fn one_copy() -> u32 {
     1
+}
+
+/// Ile miejsca na maszynie bierze tura agenta.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Weight {
+    /// Zwykła tura; ogranicza ją tylko wspólna liczba agentów.
+    #[default]
+    Ordinary,
+    /// Build, pełna suita albo przeglądarka; dodatkowo bierze jedno miejsce ciężkie.
+    Heavy,
+}
+
+impl Weight {
+    /// Czy to wartość, której nie zapisujemy do istniejących plików.
+    #[must_use]
+    pub const fn is_the_default(&self) -> bool {
+        matches!(self, Self::Ordinary)
+    }
 }
 
 /// Co ten kafelek bierze z repozytorium, w którym pracuje bieg.

@@ -54,6 +54,7 @@ fn agent_step() -> loadout_lib::workflow::AgentStep {
         overrides: serde_json::Map::new(),
         vendor_options: std::collections::BTreeMap::new(),
         copies: 1,
+        weight: loadout_lib::workflow::Weight::Ordinary,
         instructions: "Find the one shell line that starts this app in dev.".to_owned(),
         skills: loadout_lib::workflow::Skills::default(),
         borrow: loadout_lib::workflow::Borrow::default(),

@@ -177,6 +177,9 @@ export type Overrides = Partial<Pick<Agent, OverridableField>>;
  * plik zapisany po tej zmianie nie nosi `"carry-on"` w każdym kroku. */
 export type WhenItFails = 'stop' | 'carry-on' | 'ask-me';
 
+/** Ile miejsca na maszynie bierze tura agenta. Brak pola znaczy zwykłą turę. */
+export type Weight = 'ordinary' | 'heavy';
+
 /** Krok, który uruchamia agenta.
  *
  * Vendora ani modelu tu nie ma: krok nazywa AGENTA, a vendor, model i narzędzia mieszkają
@@ -192,6 +195,8 @@ export interface AgentStep {
   vendorOptions?: Record<string, Record<string, string>>;
   /** Ile identycznych kopii naraz, 1–8 [T3 §4.4]. */
   copies: number;
+  /** Ciężka tura bierze dodatkowo jedyne miejsce dla buildów, pełnych suit i przeglądarek. */
+  weight?: Weight | undefined;
   /** Prompt kroku, zwykły tekst. To NIE jest `Overrides.instructions`, które dotyczy agenta. */
   instructions: string;
   skills: Skills;

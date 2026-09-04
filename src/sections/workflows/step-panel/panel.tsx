@@ -4,10 +4,11 @@
  *   Name · Who does this · What to do · Where it works · How many at once
  *
  * To jest odpowiedź na pytanie „co ten krok robi": kto, co, gdzie i ile naraz. Wszystko poza
- * tą piątką ma działającą wartość dziedziczoną z agenta, więc stoi za ujawnieniem
+ * tą piątką ma działającą wartość domyślną albo dziedziczoną z agenta, więc stoi za ujawnieniem
  * (`./more-settings.tsx`) i jest tam wymienione co do sztuki:
  *   Can it change files · Give up after · Write results to · Try again up to ·
- *   If this step does not pass · What it hands over · Skills · Borrow from this project
+ *   If this step does not pass · Takes the heavy seat · What it hands over · Skills ·
+ *   Borrow from this project
  *
  * 2026-08-31 — POWÓD, ZMIERZONY. Ten nagłówek mówił „siedem etykiet, w tej kolejności, i ani
  * jednej ósmej" i był o SZEŚĆ bloków nieaktualny. Panel montował 21 kontrolek stałych,
@@ -81,6 +82,7 @@ import type {
   SkillChoice,
   Step,
   WhenItFails,
+  Weight,
 } from '../../../state/workflows';
 import { SKILL_SUBSETTING } from './capabilities';
 import type { CheckFields } from './check-panel';
@@ -98,7 +100,7 @@ import { WhereItWorks } from './where-it-works';
 export type AgentStepFields = Partial<
   Pick<
     AgentStep,
-    'name' | 'instructions' | 'copies' | 'folder' | 'whenItFails' | 'borrow' | 'handover'
+    'name' | 'instructions' | 'copies' | 'weight' | 'folder' | 'whenItFails' | 'borrow' | 'handover'
   >
 >;
 
@@ -704,6 +706,31 @@ function WhenItFailsRow({
   );
 }
 
+/** Czy tura bierze jedyne miejsce dla buildów i przeglądarek na tej maszynie. */
+function HeavyRow({
+  value,
+  onEditStep,
+}: {
+  value: Weight | undefined;
+  onEditStep: (fields: AgentStepFields) => void;
+}): ReactElement {
+  return (
+    <label data-row="heavy" className="flex items-baseline gap-2 text-body text-ink">
+      <input
+        type="checkbox"
+        aria-label="Takes the heavy seat"
+        checked={value === 'heavy'}
+        onChange={(event) => {
+          // 2026-09 (Z-45) — odznaczenie usuwa klucz. `ordinary` zapisane jawnie
+          // przepisałoby istniejący workflow mimo zachowania identycznego jak przed zmianą.
+          onEditStep({ weight: event.target.checked ? 'heavy' : undefined });
+        }}
+      />
+      Takes the heavy seat — builds, full test suites, browsers
+    </label>
+  );
+}
+
 function TriesRow({
   value,
   onEditWayBack,
@@ -818,9 +845,9 @@ export function StepPanel({
 
       <CopiesRow value={step.copies} onEditStep={onEditStep} />
 
-      {/* WSZYSTKO PONIŻEJ MA DZIAŁAJĄCĄ WARTOŚĆ DZIEDZICZONĄ Z AGENTA, więc krok, którego nikt
-          tu nie tknął, biegnie poprawnie. To jest cały warunek, pod którym wolno to schować:
-          za pokrywą nie stoi ani jedno pole, które trzeba wypełnić, żeby ruszyć. */}
+      {/* WSZYSTKO PONIŻEJ MA DZIAŁAJĄCĄ WARTOŚĆ DOMYŚLNĄ ALBO DZIEDZICZONĄ Z AGENTA, więc krok,
+          którego nikt tu nie tknął, biegnie poprawnie. To jest cały warunek, pod którym wolno
+          to schować: za pokrywą nie stoi ani jedno pole, które trzeba wypełnić, żeby ruszyć. */}
       <MoreSettings inside={3 + grey.length + brought.length} changed={changed.length}>
         <div data-row="can-it-change-files" className="stack">
           <div className="flex items-baseline gap-2">
@@ -1197,6 +1224,8 @@ function AgentPanel({
   more.push(
     <WhenItFailsRow key="when-it-fails" value={step.whenItFails} onEditStep={onEditStep} />,
   );
+
+  more.push(<HeavyRow key="heavy" value={step.weight} onEditStep={onEditStep} />);
 
   /* CO TEN KROK PŁACI NASTĘPNEMU. Stoi zaraz za „co, gdy nie przejdzie", bo obie odpowiedzi
      dotyczą tego samego: co wychodzi z tego kafelka i co dostaje ten za nim. Powód, dla którego

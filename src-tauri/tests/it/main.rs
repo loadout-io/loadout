@@ -437,6 +437,7 @@ mod trigger_run_is_accepted_once;
 mod trigger_waits_only_for_its_own_folder;
 mod trigger_workspace_is_authority;
 mod two_folders_share_one_pool;
+mod two_heavy_steps_wait_for_each_other;
 mod typable_names_match_the_window;
 mod vendor_args_keep_their_filtering;
 mod vendor_options_reach_the_argv;
