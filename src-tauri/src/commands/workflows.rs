@@ -211,15 +211,8 @@ pub fn save_workflow_inner(
     let path = where_it_lives(home, project, file_name)
         .map_err(SaveError::Unwritable)?
         .path;
-    // Katalog powstaje tutaj, bo `file::save` (T-12) pisze plik i nie zakłada katalogów —
-    // celowo, bo tam jego brak jest awarią, a tutaj jest normalnym stanem biblioteki, w której
-    // nikt jeszcze niczego nie zapisał.
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(SaveError::Unwritable)?;
-    }
-
-    // Odmowa walidatora, kolejność „sprawdź, potem dotknij dysku" i deterministyczny tekst
-    // mieszkają w `file::save`. Ta funkcja nie powtarza ani jednej z tych decyzji.
+    // Odmowa walidatora, utworzenie katalogu dopiero po niej i deterministyczny tekst mieszkają
+    // w `file::save`. Ta funkcja nie powtarza ani jednej z tych decyzji.
     let revision = crate::workflow::file::save(workflow.borrow(), &path, expected)?;
     Ok(Saved { path, revision })
 }
@@ -487,11 +480,20 @@ fn saved_skill_names(home: &Path) -> Vec<String> {
     let Ok(listing) = std::fs::read_dir(home.join("skills")) else {
         return Vec::new();
     };
-    listing
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            entry.file_type().ok()?.is_dir().then_some(())?;
-            entry.file_name().into_string().ok()
-        })
-        .collect()
+    let mut names: Vec<String> = Vec::new();
+    for name in listing.filter_map(|entry| {
+        let entry = entry.ok()?;
+        entry.file_type().ok()?.is_dir().then_some(())?;
+        entry.file_name().into_string().ok()
+    }) {
+        // 2026-09 (Z-32): APFS nie tworzy dwóch katalogów z samej różnicy wielkości liter;
+        // walidator obsady ma więc dostać tę samą odpowiedź także na case-sensitive CI.
+        if !names
+            .iter()
+            .any(|known| crate::workflow::roster::skill_name_matches(known, &name))
+        {
+            names.push(name);
+        }
+    }
+    names
 }

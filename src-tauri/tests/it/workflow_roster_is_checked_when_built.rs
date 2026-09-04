@@ -45,6 +45,7 @@ fn agent(id: Uuid, name: &str, access: FileAccess, tools: Tools) -> Agent {
         connections: Vec::new(),
         write_results_to: String::new(),
         vendor_options: loadout_lib::library::agents::VendorOptions::new(),
+        extra: serde_json::Map::new(),
     }
 }
 

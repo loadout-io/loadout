@@ -65,10 +65,13 @@ pub fn healthy_only<T>(definitions: Vec<Definition<T>>) -> Vec<T> {
 #[must_use]
 pub const fn agent_problem(error: &AgentError) -> DefinitionProblemKind {
     match error {
-        // `Changed` powstaje wyłącznie przy ZAPISIE i nigdy nie przyjeżdża z listowania —
-        // ramię jest tu po to, żeby wyczerpać typ, a nie żeby opisywać stan półki. Ekran
-        // dostaje wtedy najbliższą prawdę: tego pliku nie udało się użyć.
-        AgentError::Unreadable { .. } | AgentError::Changed => DefinitionProblemKind::Unreadable,
+        // `Changed` i `NameTaken` powstają wyłącznie przy ZAPISIE i nigdy nie przyjeżdżają
+        // z listowania — ramiona są tu po to, żeby wyczerpać typ, a nie opisywać stan półki.
+        // Ekran dostaje wtedy najbliższą prawdę: tego pliku nie udało się użyć.
+        AgentError::Unreadable { .. } | AgentError::Changed | AgentError::NameTaken { .. } => {
+            DefinitionProblemKind::Unreadable
+        }
+        AgentError::NewerFormat { .. } => DefinitionProblemKind::NewerFormat,
         // `CarriesASecret` powstaje — jak `Changed` wyżej — WYŁĄCZNIE przy zapisie i nigdy nie
         // przyjeżdża z listowania półki: plik z sekretem nie ma jak na niej wylądować, bo brama
         // stoi przed pierwszym bajtem. Ramię jest tu po to, żeby wyczerpać typ.

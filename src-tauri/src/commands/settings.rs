@@ -33,6 +33,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::durable_file::{
+    DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy, PublishError, revision_of,
+};
+
 /// Nazwa pliku. Jeden plik, nie katalog: to jest garść wyborów, a nie biblioteka.
 const FILE: &str = "settings.json";
 
@@ -153,9 +157,18 @@ impl Default for SettingsWire {
     }
 }
 
+/// Ustawienia razem z rewizją dokładnie tych bajtów, które zobaczyło okno.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSnapshot {
+    #[serde(flatten)]
+    pub settings: SettingsWire,
+    pub revision: Option<String>,
+}
+
 /// Dlaczego nie dało się przeczytać albo zapisać tego pliku.
 ///
-/// Trzy warianty, trzy różne zdania dla człowieka, bo naprawia się je inaczej (niezmiennik 14:
+/// Cztery warianty, cztery różne zdania dla człowieka, bo naprawia się je inaczej (niezmiennik 14:
 /// „os error 2" nie mówi, co zrobić).
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {
@@ -168,6 +181,12 @@ pub enum SettingsError {
          left it alone rather than overwrite it."
     )]
     Malformed(#[source] serde_json::Error),
+    /// Spóźnione okno próbowało zastąpić nowsze ustawienia.
+    #[error(
+        "These settings were not saved: the file changed on disk after you opened it, so \
+         nothing was overwritten."
+    )]
+    Changed,
     /// Kwota, która nie jest sufitem.
     ///
     /// ODMOWA, A NIE CICHE PODSTAWIENIE LICZBY, KTÓRA MA SENS. Kwota poprawiona po cichu wygląda
@@ -196,17 +215,44 @@ pub fn settings_path(home: &Path) -> PathBuf {
 /// uszkodzonym pliku wygląda na ekranie dokładnie tak, jakby człowiek nigdy nikogo nie wskazał,
 /// i pierwszy zapis nadpisałby to, czego nie dało się przeczytać.
 pub fn read_settings_inner(home: &Path) -> Result<SettingsWire, SettingsError> {
-    let text = match fs::read_to_string(settings_path(home)) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(SettingsWire::default());
-        }
-        Err(error) => return Err(SettingsError::Unwritable(error)),
-    };
-    if text.trim().is_empty() {
-        return Ok(SettingsWire::default());
+    read_settings_snapshot_inner(home).map(|snapshot| snapshot.settings)
+}
+
+/// Odczyt dla okna: wartości i rewizja pochodzą z jednego descriptor-relative spojrzenia.
+pub fn read_settings_snapshot_inner(home: &Path) -> Result<SettingsSnapshot, SettingsError> {
+    if !home.exists() {
+        return Ok(SettingsSnapshot {
+            settings: SettingsWire::default(),
+            revision: None,
+        });
     }
-    serde_json::from_str(&text).map_err(SettingsError::Malformed)
+    let publisher = DurableFilePublisher::new(home);
+    let mut bytes = None;
+    publisher
+        .recover_with(|root| {
+            bytes = match root.read_regular(Path::new(FILE), false) {
+                Ok(found) => Some(found),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(PublishError::Io(error)),
+            };
+            Ok(())
+        })
+        .map_err(|error| SettingsError::Unwritable(error.into_io()))?;
+    let Some(bytes) = bytes else {
+        return Ok(SettingsSnapshot {
+            settings: SettingsWire::default(),
+            revision: None,
+        });
+    };
+    let settings = if std::str::from_utf8(&bytes).is_ok_and(|text| text.trim().is_empty()) {
+        SettingsWire::default()
+    } else {
+        serde_json::from_slice(&bytes).map_err(SettingsError::Malformed)?
+    };
+    Ok(SettingsSnapshot {
+        settings,
+        revision: Some(revision_of(&bytes)),
+    })
 }
 
 /// Zapisuje wszystkie domyślne wybory i oddaje to, co ma teraz plik.
@@ -231,6 +277,29 @@ pub fn save_settings_inner(
     keep_last_runs: u32,
     learn_from_runs: bool,
 ) -> Result<SettingsWire, SettingsError> {
+    let expected = read_settings_snapshot_inner(home)?.revision;
+    save_settings_with_revision_inner(
+        home,
+        default_lead,
+        default_budget_usd,
+        nav_collapsed,
+        keep_last_runs,
+        learn_from_runs,
+        expected.as_deref(),
+    )
+    .map(|snapshot| snapshot.settings)
+}
+
+/// Wariant dla okna, które odsyła rewizję odczytaną razem z ustawieniami.
+pub fn save_settings_with_revision_inner(
+    home: &Path,
+    default_lead: &str,
+    default_budget_usd: f64,
+    nav_collapsed: bool,
+    keep_last_runs: u32,
+    learn_from_runs: bool,
+    expected: Option<&str>,
+) -> Result<SettingsSnapshot, SettingsError> {
     if !default_budget_usd.is_finite() || default_budget_usd < SMALLEST_CEILING_USD {
         return Err(SettingsError::NotAnAmount(default_budget_usd));
     }
@@ -249,17 +318,22 @@ pub fn save_settings_inner(
         nav_collapsed,
         learn_from_runs,
     };
-    write(home, &settings)?;
-    Ok(settings)
+    let revision = write(home, &settings, expected)?;
+    Ok(SettingsSnapshot {
+        settings,
+        revision: Some(revision),
+    })
 }
 
-/// Wybór → plik, przez plik tymczasowy i `rename`.
+/// Wybór → plik przez wspólny durable publisher.
 ///
-/// `rename` w obrębie jednego katalogu jest atomowe: czytelnik widzi albo poprzedni wybór
-/// w całości, albo nowy w całości, i nigdy zera bajtów w środku. Ta sama droga, którą zapisuje
-/// się listę workspace'ów i `run.json` (`commands::run::spill`).
-fn write(home: &Path, settings: &SettingsWire) -> Result<(), SettingsError> {
-    fs::create_dir_all(home).map_err(SettingsError::Unwritable)?;
+/// Publikacja synchronizuje plik tymczasowy i katalog: czytelnik widzi albo poprzedni wybór
+/// w całości, albo nowy w całości, i nigdy zera bajtów w środku. Rewizja zamyka spóźniony zapis.
+fn write(
+    home: &Path,
+    settings: &SettingsWire,
+    expected: Option<&str>,
+) -> Result<String, SettingsError> {
     // Blad serializacji idzie w `Unwritable`, nie w `Malformed`: zdanie „nie dalo sie
     // PRZECZYTAC" wypowiedziane przy zapisie wysyla czlowieka szukac uszkodzonego pliku,
     // ktorego nie ma.
@@ -268,7 +342,17 @@ fn write(home: &Path, settings: &SettingsWire) -> Result<(), SettingsError> {
     // Znak nowej linii na koncu: bez niego kazda zmiana ostatniego wiersza niesie w diffie
     // dodatkowe „\ No newline at end of file", a plik przestaje byc zwyklym plikiem tekstowym.
     text.push('\n');
-    let writing = settings_path(home).with_extension("json.writing");
-    fs::write(&writing, text).map_err(SettingsError::Unwritable)?;
-    fs::rename(&writing, settings_path(home)).map_err(SettingsError::Unwritable)
+    fs::create_dir_all(home).map_err(SettingsError::Unwritable)?;
+    DurableFilePublisher::new(home)
+        .publish_definition(
+            &settings_path(home),
+            text.as_bytes(),
+            ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+            expected,
+        )
+        .map_err(|error| match error {
+            PublishError::Changed { .. } | PublishError::Conflict { .. } => SettingsError::Changed,
+            other => SettingsError::Unwritable(other.into_io()),
+        })?;
+    Ok(revision_of(text.as_bytes()))
 }

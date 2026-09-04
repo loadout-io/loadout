@@ -23,6 +23,7 @@ import { RunButton, ThingsToFix, focusNote } from './problems';
 /** Zdanie z `workflow::check`, słowo w słowo. Ono ląduje na ekranie i w podpowiedzi Run. */
 const CIRCLE = 'These steps point back at each other in a circle. Work would never finish.';
 const LONELY = '"Check" is not connected to the rest of the workflow.';
+const TOO_MANY_TURNS = '"Review" would send the work back 300 times. Pick a number from 1 to 10.';
 
 function circle(): Note {
   return { level: 'problem', stepId: 's2', message: CIRCLE };
@@ -111,6 +112,18 @@ function first(notes: Note[]): Note {
 }
 
 describe('a problem stops Run and says which one; a warning stops nothing', () => {
+  it('shows max_turns 300 and takes the person to the tile that owns it', () => {
+    const note: Note = { level: 'problem', stepId: 's_review', message: TOO_MANY_TURNS };
+    const html = markup([note]);
+    const fitView = recorder<[Parameters<NoteFocus['fitView']>[0]]>();
+    const openPanel = recorder<[string]>();
+
+    expect(plain(html)).toContain(TOO_MANY_TURNS);
+    focusNote(note, { fitView: fitView.fn, openPanel: openPanel.fn });
+    expect(fitView.calls).toEqual([[{ nodes: [{ id: 's_review' }], duration: 400, maxZoom: 1.2 }]]);
+    expect(openPanel.calls).toEqual([['s_review']]);
+  });
+
   it('blocks Run and puts the first problem in the tooltip word for word', () => {
     const notes = [circle(), lonely()];
     const html = markup(notes);

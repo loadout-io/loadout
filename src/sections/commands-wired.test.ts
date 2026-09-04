@@ -749,6 +749,7 @@ const WIRES: readonly Wire[] = [
         navCollapsed: NAV_COLLAPSED,
         keepLastRuns: KEEP_LAST_RUNS,
         learnFromRuns: LEARN_FROM_RUNS,
+        expectedRevision: REVISION,
       },
     ],
     call: () =>
@@ -758,6 +759,7 @@ const WIRES: readonly Wire[] = [
         navCollapsed: NAV_COLLAPSED,
         keepLastRuns: KEEP_LAST_RUNS,
         learnFromRuns: LEARN_FROM_RUNS,
+        expectedRevision: REVISION,
       }),
   },
   /* 2026-08-20 (T-62) — JEDNA NOWA KRAWĘDŹ BIEGU: `/ask`, jeden agent z jednym zdaniem.

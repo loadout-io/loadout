@@ -3034,11 +3034,13 @@ pub async fn delete_workspace(
 /// workspace'ach: te wybory są biblioteką użytkownika, a nie stanem żywego biegu. Powód
 /// i zakres w całości stoją w `commands::settings`.
 #[tauri::command]
-pub async fn read_settings() -> Result<commands::settings::SettingsWire, String> {
-    tokio::task::spawn_blocking(|| commands::settings::read_settings_inner(&crate::loadout_dir()))
-        .await
-        .map_err(|error| did_not_finish("reading your settings", &error))?
-        .map_err(|error| error.to_string())
+pub async fn read_settings() -> Result<commands::settings::SettingsSnapshot, String> {
+    tokio::task::spawn_blocking(|| {
+        commands::settings::read_settings_snapshot_inner(&crate::loadout_dir())
+    })
+    .await
+    .map_err(|error| did_not_finish("reading your settings", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Zapisuje wszystkie pięć domyślnych wyborów i oddaje to, co ma teraz plik.
@@ -3053,6 +3055,7 @@ pub async fn read_settings() -> Result<commands::settings::SettingsWire, String>
 ///
 /// 2026-09 (Z-9) — CZWARTY ARGUMENT: ile ostatnich biegów zostaje w folderze projektu.
 /// 2026-09 (Z-18) — PIĄTY ARGUMENT: czy skończony bieg dostaje prywatną turę refleksji.
+/// 2026-09 (Z-32) — SZÓSTY ARGUMENT: rewizja, którą to okno naprawdę przeczytało.
 #[tauri::command]
 pub async fn save_settings(
     default_lead: &str,
@@ -3060,16 +3063,19 @@ pub async fn save_settings(
     nav_collapsed: bool,
     keep_last_runs: u32,
     learn_from_runs: bool,
-) -> Result<commands::settings::SettingsWire, String> {
+    expected_revision: Option<&str>,
+) -> Result<commands::settings::SettingsSnapshot, String> {
     let default_lead = default_lead.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
     tokio::task::spawn_blocking(move || {
-        commands::settings::save_settings_inner(
+        commands::settings::save_settings_with_revision_inner(
             &crate::loadout_dir(),
             &default_lead,
             default_budget_usd,
             nav_collapsed,
             keep_last_runs,
             learn_from_runs,
+            expected_revision.as_deref(),
         )
     })
     .await

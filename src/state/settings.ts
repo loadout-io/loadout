@@ -28,6 +28,8 @@ import type { Settings } from './settings-io';
 import { readSettings, saveSettings } from './settings-io';
 
 let chosen = '';
+/** Rewizja ustawień odczytanych przez to okno; każdy zapis odsyła ją jako warunek. */
+let revision: string | null = null;
 const listeners = new Set<() => void>();
 
 /**
@@ -160,6 +162,7 @@ export function collapseNav(collapsed: boolean): Promise<string | null> {
     navCollapsed: collapsed,
     keepLastRuns: kept,
     learnFromRuns: learning,
+    expectedRevision: revision,
   })
     .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not remember the side nav mode.'));
@@ -260,6 +263,16 @@ function learnIn(answer: unknown): boolean {
   return typeof said === 'boolean' ? said : learning;
 }
 
+/* Atrapy starszych scen nie niosą rewizji; wtedy zachowujemy ostatnią. Produkcyjny Rust zawsze
+ * oddaje napis albo `null`, więc tylko jawna wartość może przesunąć warunek następnego zapisu. */
+function revisionIn(answer: unknown): string | null {
+  if (typeof answer !== 'object' || answer === null || !Object.hasOwn(answer, 'revision')) {
+    return revision;
+  }
+  const said = (answer as { revision?: unknown }).revision;
+  return typeof said === 'string' || said === null ? said : revision;
+}
+
 /** Jedno pytanie do dysku na okno; następni wołający dostają tę samą obietnicę. */
 let asked: Promise<string | null> | null = null;
 
@@ -277,6 +290,7 @@ export function loadSettings(): Promise<string | null> {
       rememberNav(navIn(settings));
       rememberKept(keptIn(settings));
       rememberLearning(learnIn(settings));
+      revision = revisionIn(settings);
       return null;
     })
     .catch((error: unknown) => why(error, 'Loadout could not read what it does by default.'));
@@ -301,6 +315,7 @@ export function chooseDefaultLead(id: string): Promise<string | null> {
     navCollapsed: narrow,
     keepLastRuns: kept,
     learnFromRuns: learning,
+    expectedRevision: revision,
   })
     .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not save who leads by default.'));
@@ -325,6 +340,7 @@ export function chooseDefaultBudgetUsd(dollars: number): Promise<string | null> 
     navCollapsed: narrow,
     keepLastRuns: kept,
     learnFromRuns: learning,
+    expectedRevision: revision,
   })
     .then(saved)
     .catch((error: unknown) =>
@@ -353,6 +369,7 @@ export function chooseKeepLastRuns(runs: number): Promise<string | null> {
     navCollapsed: narrow,
     keepLastRuns: runs,
     learnFromRuns: learning,
+    expectedRevision: revision,
   })
     .then(saved)
     .catch((error: unknown) =>
@@ -373,6 +390,7 @@ export function chooseLearnFromRuns(enabled: boolean): Promise<string | null> {
     navCollapsed: narrow,
     keepLastRuns: kept,
     learnFromRuns: enabled,
+    expectedRevision: revision,
   })
     .then(saved)
     .catch((error: unknown) => why(error, 'Loadout could not save whether it learns from runs.'));
@@ -385,6 +403,7 @@ function saved(settings: Settings): null {
   rememberNav(navIn(settings));
   rememberKept(keptIn(settings));
   rememberLearning(learnIn(settings));
+  revision = revisionIn(settings);
   /* Zapisane wybory są od tej chwili tym, co odda `loadSettings()` następnemu ekranowi:
    * bez tego powrót na Run czytałby dysk odpowiedzią zapamiętaną przed zapisem. */
   asked = Promise.resolve(null);

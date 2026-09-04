@@ -3,8 +3,9 @@
 //!
 //! Trzy reguły trzymają ten plik w kupie i żadna nie jest kosmetyczna:
 //!
-//! 1. **Każde pole [`Agent`] jest wymagane** — ani jednego `Option<T>`. Szablon jest zawsze
-//!    kompletny, więc wynik złożenia zawsze się deserializuje [T4 §4.3, reguła 2].
+//! 1. **Każde znane pole [`Agent`] jest wymagane** — ani jednego `Option<T>`. Szablon jest
+//!    zawsze kompletny, więc wynik złożenia zawsze się deserializuje [T4 §4.3, reguła 2].
+//!    Nieznane pola przechodzą przez `extra`, żeby starszy build nie kasował ustawień nowszego.
 //! 2. **[`Overrides`] jest w całości `Option`.** „Czy to nadpisane?" ma być pytaniem
 //!    o typ, nie o wartość.
 //! 3. **Nigdzie nie ma `null`.** 2026-08-15, sprawdzone lokalnie na `json-patch` 4.2.0:
@@ -27,6 +28,7 @@
 //!   wcięciowy jest więc odmową z nazwą pliku, a nie cichym zgubieniem ustawienia.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -212,15 +214,15 @@ pub(crate) const fn reaching_the_web() -> bool {
     true
 }
 
-/// Zapisany agent. Piętnaście kluczy na drucie i ani jednego z podkreśleniem.
+/// Zapisany agent. Znane klucze nie mają ani jednego podkreślenia.
 ///
-/// `deny_unknown_fields` jest tu jedyną obroną przed defektem zmierzonym w T4 §9:
+/// Walidacja nazw pól przy odczycie jest obroną przed defektem zmierzonym w T4 §9:
 /// `claude --agents '{"broken":{"model":"sonnet"}}' -p "hi"` kończy się **kodem 0, bez
 /// słowa na stderr**. Źle zbudowana definicja wygląda dokładnie tak samo jak zła instrukcja
 /// w promptcie i kosztuje godziny diagnozy — więc walidacja jest nasza i dzieje się, zanim
 /// cokolwiek odpalimy.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Agent {
     /// Wersja schematu. Jedna liczba, wprowadzona teraz, bo dopisanie jej później znaczy
     /// zgadywanie, co znaczą pliki bez niej [T4 §5.2].
@@ -304,6 +306,10 @@ pub struct Agent {
     /// więcej", przed którym broni kryterium 1.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vendor_options: VendorOptions,
+    /// Klucze zapisane przez nowszy Loadout. Starszy build ich nie interpretuje, ale musi je
+    /// zachować bez utraty; klasyfikacja literówki i formatu nowszego dzieje się po odczycie.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl Agent {
@@ -333,6 +339,7 @@ impl Agent {
             // Pusta i taka ma zostać: niepusta przelotka dokłada szesnasty klucz, a piętnaście
             // jest tu liczbą, nie zaokrągleniem (kryterium 1).
             vendor_options: VendorOptions::new(),
+            extra: Map::new(),
         }
     }
 }
@@ -389,6 +396,9 @@ pub enum AgentError {
     /// Bajty są dostępne, ale nie opisują agenta, którego ten build umie otworzyć.
     #[error("{file} — {detail}")]
     Malformed { file: String, detail: String },
+    /// Plik niesie poprawne ustawienia, których ten build jeszcze nie zna.
+    #[error("{file} — unknown setting `{field}` from a newer Loadout")]
+    NewerFormat { file: String, field: String },
     /// Na drucie stanęła pustka tam, gdzie ma stać wartość. W RFC 7396 `null` kasuje
     /// klucz, więc przepuszczony `null` produkuje plik ustawień, który się nie wczyta.
     #[error("{field} has no value. Remove the line to go back to the agent's setting")]
@@ -422,6 +432,12 @@ pub enum AgentError {
         field: String,
         what: &'static str,
     },
+    /// Inny agent ma już tę samą nazwę widoczną dla człowieka.
+    #[error(
+        "This agent was not saved: \"{name}\" is already used by another agent. Pick a \
+         different name."
+    )]
+    NameTaken { name: String },
 }
 
 /// Agent + nadpisania -> co naprawdę pobiegnie, plus lista nazw dla znacznika „N changed".
@@ -659,8 +675,59 @@ pub(crate) fn read_agent_snapshot(path: &Path, bytes: &[u8]) -> Result<Agent, Ag
     }
     fields.insert("instructions".to_string(), Value::String(body.to_string()));
 
-    serde_json::from_value(Value::Object(fields))
-        .map_err(|error| malformed(path, &error.to_string()))
+    // 2026-09 (Z-32): odległość najwyżej dwa zachowuje ochronę przed literówką, ale dalszy
+    // klucz jest informacją z nowszego buildu, nie uszkodzeniem całego pliku.
+    if let Some((unknown, known)) = closest_typo(fields.keys().filter_map(|name| {
+        (name != "instructions" && !FRONT_MATTER.contains(&name.as_str())).then_some(name.as_str())
+    })) {
+        return Err(malformed(
+            path,
+            &format!("unknown setting `{unknown}`; did you mean `{known}`?"),
+        ));
+    }
+    let agent: Agent = serde_json::from_value(Value::Object(fields))
+        .map_err(|error| malformed(path, &error.to_string()))?;
+    if agent.extra.is_empty() {
+        return Ok(agent);
+    }
+    let Some(field) = agent.extra.keys().next().cloned() else {
+        return Ok(agent);
+    };
+    Err(AgentError::NewerFormat {
+        file: path.display().to_string(),
+        field,
+    })
+}
+
+fn closest_typo<'a>(mut unknown: impl Iterator<Item = &'a str>) -> Option<(&'a str, &'static str)> {
+    unknown.find_map(|unknown| {
+        FRONT_MATTER
+            .iter()
+            .copied()
+            .map(|known| (known, levenshtein(unknown, known)))
+            .filter(|(_, distance)| *distance <= 2)
+            .min_by_key(|(_, distance)| *distance)
+            .map(|(known, _)| (unknown, known))
+    })
+}
+
+fn levenshtein(left: &str, right: &str) -> usize {
+    let mut previous: Vec<usize> = (0..=right.chars().count()).collect();
+    let mut current = vec![0; previous.len()];
+    for (left_at, left_char) in left.chars().enumerate() {
+        current[0] = left_at + 1;
+        for (right_at, right_char) in right.chars().enumerate() {
+            current[right_at + 1] = if left_char == right_char {
+                previous[right_at]
+            } else {
+                1 + previous[right_at]
+                    .min(previous[right_at + 1])
+                    .min(current[right_at])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous.last().copied().unwrap_or(0)
 }
 
 /// Odmowa, która nazywa plik.
@@ -716,7 +783,7 @@ fn front_matter(text: &str) -> Result<Map<String, Value>, String> {
                 "this line has a value but no setting to put it in: {line}"
             ));
         }
-        fields.insert(name.to_string(), scalar(raw.trim()));
+        fields.insert(name.to_string(), scalar_for(name, raw.trim()));
     }
     Ok(fields)
 }
@@ -757,6 +824,20 @@ fn scalar(text: &str) -> Value {
         if let Some(number) = serde_json::Number::from_f64(number) {
             return Value::Number(number);
         }
+    }
+    Value::String(text.to_string())
+}
+
+/// `name` jest etykietą, nawet kiedy składa się wyłącznie z cyfr. Pozostałe pola zachowują
+/// typy YAML potrzebne liczbom, wartościom logicznym i strukturom.
+fn scalar_for(name: &str, text: &str) -> Value {
+    if name != "name" {
+        return scalar(text);
+    }
+    if text.starts_with('"')
+        && let Ok(Value::String(value)) = serde_json::from_str::<Value>(text)
+    {
+        return Value::String(value);
     }
     Value::String(text.to_string())
 }
@@ -816,11 +897,13 @@ pub fn write_agent_file(
         }
     }
 
-    let path = dir.join(agent_file_name(agent));
+    let base_file_name = agent_file_name(agent);
+    let base_path = dir.join(&base_file_name);
 
-    let wire = serde_json::to_value(agent).map_err(|error| refused(&path, &error.to_string()))?;
+    let wire =
+        serde_json::to_value(agent).map_err(|error| refused(&base_path, &error.to_string()))?;
     let Value::Object(mut fields) = wire else {
-        return Err(refused(&path, "an agent has to be a list of settings"));
+        return Err(refused(&base_path, "an agent has to be a list of settings"));
     };
 
     let instructions = fields.remove("instructions");
@@ -841,20 +924,73 @@ pub fn write_agent_file(
     text.push_str("---\n");
     text.push_str(body);
 
-    std::fs::create_dir_all(dir).map_err(|error| refused(&path, &error.to_string()))?;
-    DurableFilePublisher::new(dir)
-        .publish_definition(
-            &path,
-            text.as_bytes(),
-            ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
-            expected,
-        )
+    std::fs::create_dir_all(dir).map_err(|error| refused(&base_path, &error.to_string()))?;
+    let path = DurableFilePublisher::new(dir)
+        .with_publication(|batch| {
+            let definitions = read_agent_directory_from_root(batch.root(), dir)
+                .map_err(|error| PublishError::Io(io::Error::other(error)))?;
+            let mut same_id = Vec::new();
+            let mut technical_collision = false;
+            for (path, read) in definitions {
+                let Ok(read) = read else {
+                    continue;
+                };
+                if read.agent.id == agent.id {
+                    same_id.push((path, read.revision));
+                } else if agent_file_name(&read.agent).eq_ignore_ascii_case(&base_file_name) {
+                    technical_collision = true;
+                }
+            }
+
+            let file_name = if technical_collision {
+                format!("{}-{}.md", slug(agent), &agent.id.to_string()[..8])
+            } else {
+                base_file_name.clone()
+            };
+            let path = dir.join(&file_name);
+            let target_is_same_id = same_id.iter().any(|(old, _revision)| {
+                old.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&file_name))
+            });
+            if !same_id.is_empty()
+                && !target_is_same_id
+                && !expected.is_some_and(|expected| {
+                    same_id.iter().any(|(_path, revision)| revision == expected)
+                })
+            {
+                return Err(PublishError::Changed {
+                    target: path.clone(),
+                });
+            }
+
+            // 2026-09 (Z-32): publikacja i sprzątanie przemianowanego leafu biegną pod jednym
+            // deskryptorem katalogu. Ponowne otwarcie ścieżki zostawiałoby okno na obcy plik.
+            batch.publish_definition(
+                &path,
+                text.as_bytes(),
+                ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+                if target_is_same_id { expected } else { None },
+            )?;
+            for (old, _revision) in same_id {
+                let Some(old_name) = old.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if !old_name.eq_ignore_ascii_case(&file_name) {
+                    batch
+                        .root()
+                        .remove_regular_file(Path::new(old_name))
+                        .map_err(PublishError::Io)?;
+                }
+            }
+            Ok(path)
+        })
         .map_err(|error| match error {
             // Spóźniony zapis ma własne zdanie dla człowieka. Opakowany w „nie dało się
             // zapisać: <ścieżka> is not the file that was read" byłby powodem technicznym
             // w miejscu, w którym jest coś do zrobienia.
             PublishError::Changed { .. } | PublishError::Conflict { .. } => AgentError::Changed,
-            other => refused(&path, &other.to_string()),
+            other => refused(&base_path, &other.to_string()),
         })?;
     Ok(WrittenAgent {
         revision: revision_of(text.as_bytes()),
@@ -873,7 +1009,7 @@ pub fn agent_file_name(agent: &Agent) -> String {
 /// struktury. Zapis ma być deterministyczny co do bajtu, żeby `git diff` na katalogu agentów
 /// odpowiadał na pytanie „czy ktoś tego agenta ruszał", a nie na pytanie „czy zapisał go dwa
 /// razy" (`DECISIONS-LOCKED.md` §D6).
-const FRONT_MATTER: [&str; 15] = [
+const FRONT_MATTER: [&str; 16] = [
     "schema",
     "id",
     "name",
@@ -889,6 +1025,7 @@ const FRONT_MATTER: [&str; 15] = [
     "skills",
     "connections",
     "vendorOptions",
+    "reachesTheWeb",
 ];
 
 /// Jeden wiersz front-mattera, zakończony znakiem końca linii.

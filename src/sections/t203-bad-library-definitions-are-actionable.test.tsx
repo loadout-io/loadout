@@ -63,6 +63,13 @@ const AGENT_PROBLEM: DefinitionProblem = {
   problem: 'malformed',
 };
 
+const NEWER_AGENT_PROBLEM: DefinitionProblem = {
+  kind: 'definitionProblem',
+  shelf: 'agents',
+  fileName: 'newer-agent.md',
+  problem: 'newerFormat',
+};
+
 const WORKFLOW_PROBLEM: DefinitionProblem = {
   kind: 'definitionProblem',
   shelf: 'workflows',
@@ -100,6 +107,23 @@ function workflowsIo(listed: Definition<WorkflowEntry>[], writes: string[] = [])
 }
 
 describe('bad library definitions stay actionable beside healthy ones', () => {
+  it('shows the newer-Loadout diagnosis on the real Agents screen', async () => {
+    const agentStore = createAgentsStore(agentsIo([NEWER_AGENT_PROBLEM]));
+    await agentStore.getState().load();
+
+    const markup = renderToStaticMarkup(<AgentsScreen store={agentStore} usage={{}} />);
+    const row = region(markup, NEWER_AGENT_PROBLEM.fileName);
+    const sentence =
+      '“newer-agent.md” was saved by a newer Loadout. Update Loadout, or open your Agents folder to remove it.';
+
+    expect(problemSays(NEWER_AGENT_PROBLEM)).toBe(sentence);
+    expect(
+      row,
+      'the production Agents store classified the file, but the sentence did not reach the screen',
+    ).toContain(sentence);
+    expect(row).not.toContain('is not an agent Loadout can read');
+  });
+
   it('shows each problem on its real screen without healthy controls attached to it', async () => {
     const healthyAgent: Definition<Agent> = { kind: 'healthy', value: agent() };
     const healthyWorkflow: Definition<WorkflowEntry> = { kind: 'healthy', value: workflow() };

@@ -20,6 +20,8 @@ import { invoke } from '@tauri-apps/api/core';
  * identyfikatora byłaby pierwszą rzeczą, która się rozjedzie (niezmiennik 13).
  */
 export interface Settings {
+  /** Rewizja dokładnie tych bajtów, które okno przeczytało; `null` dla brakującego pliku. */
+  readonly revision?: string | null;
   /** Identyfikator zapisanego agenta, albo `''`, dopóki nikt nie wybierał. */
   readonly defaultLead: string;
   /**
@@ -76,7 +78,7 @@ export function readSettings(): Promise<Settings> {
  * Zapisuje wszystkie domyślne wybory i oddaje to, co ma teraz plik.
  *
  * Nazwy pól są częścią kontraktu, nie ozdobą: Tauri dopasowuje argumenty `invoke` PO NAZWIE,
- * więc pięć kluczy argumentu musi odpowiadać pięciu parametrom skorupy w `src-tauri/src/ipc.rs`.
+ * więc sześć kluczy argumentu musi odpowiadać sześciu parametrom skorupy w `src-tauri/src/ipc.rs`.
  * Podmiana klucza nie jest błędem kompilacji po żadnej ze stron — jest wywołaniem ODRZUCONYM,
  * o którym nikt się nie dowie.
  *
@@ -90,6 +92,7 @@ export function saveSettings(args: {
   navCollapsed: boolean;
   keepLastRuns: number;
   learnFromRuns: boolean;
+  expectedRevision: string | null;
 }): Promise<Settings> {
   return invoke<Settings>('save_settings', args);
 }
