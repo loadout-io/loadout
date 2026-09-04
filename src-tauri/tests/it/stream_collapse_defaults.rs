@@ -84,6 +84,35 @@ fn ran(ok: bool, output: &[String]) -> Vec<Line> {
     history
 }
 
+/// Jedyny wiersz, który ta komenda zostawia na EKRANIE — czyli ten, który zamyka jej nośnik.
+///
+/// 2026-09 (Z-36) — reguła 1 („jedna czynność, jeden wiersz") mierzy się od tego dnia na
+/// tożsamości wiersza, nie na długości listy: kurator wypuszcza wiersz w chwili, w której
+/// komenda rusza, i przepisuje go wynikiem, więc lista niesie dwa wpisy o tym samym `call_id`,
+/// a okno pokazuje z nich jeden. Sprawdzamy tu OBIE połowy tego zdania: że wpisów jest dokładnie
+/// tyle, ile ta droga produkuje, i że wszystkie mówią o jednym wywołaniu.
+fn the_one_row_of(history: &[Line]) -> &Line {
+    let carriers: Vec<&str> = history
+        .iter()
+        .filter_map(|line| match line {
+            Line::Ran { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        carriers,
+        [TOOL_ID, TOOL_ID],
+        "one command is one row on screen (rule 1): the row that opens when it starts and the \
+         row that closes it are the SAME carrier, so the window rewrites it in place. Two \
+         different call ids here are two rows about one command; anything longer is a row per \
+         heartbeat. The history was {history:?}"
+    );
+    let Some(closed) = history.last() else {
+        unreachable!("the assertion above proves the history holds both rows")
+    };
+    closed
+}
+
 /// Rodzaje, które są widoczne od razu: proza, pytania, błędy i struktura [T2 §7.3, reguła 2].
 fn open_by_default() -> Vec<Line> {
     vec![
@@ -162,7 +191,10 @@ fn collapsed_by_default() -> Vec<Line> {
         Line::Ran {
             agent: AGENT.to_owned(),
             text: "Ran the tests — ok".to_owned(),
-            ok: true,
+            call_id: TOOL_ID.to_owned(),
+            subject: COMMAND.to_owned(),
+            elapsed: 0,
+            ok: Some(true),
             preview: "line 01".to_owned(),
             detail: Vec::new(),
             detail_id: Some(4),
@@ -180,12 +212,7 @@ fn a_command_that_worked_stays_shut_and_leaves_its_output_behind_a_click() {
     let output = output_lines();
     let history = ran(true, &output);
 
-    assert_eq!(
-        history.len(),
-        1,
-        "one command is one row, whatever its output was (rule 1). The history was {history:?}"
-    );
-    let line = &history[0];
+    let line = the_one_row_of(&history);
     assert_eq!(
         line.kind(),
         LineKind::Ran,
@@ -218,12 +245,7 @@ fn a_command_that_did_not_work_opens_itself_at_the_last_twenty_lines() {
     let output = output_lines();
     let history = ran(false, &output);
 
-    assert_eq!(
-        history.len(),
-        1,
-        "one command is one row, failed or not. The history was {history:?}"
-    );
-    let line = &history[0];
+    let line = the_one_row_of(&history);
     assert!(
         line.expanded(),
         "failure is the one place a wall of text is wanted, and it opens itself: a person who \

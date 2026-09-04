@@ -207,6 +207,21 @@ export interface FeedView {
    * należy do krawędzi sekcji (`../io.ts`) — model nie zna kształtów drutu (niezmiennik 23).
    */
   readonly toCarry: string;
+  /**
+   * Zdanie o wiadomości, która CZEKA za komendą idącą w tej chwili — albo `null`.
+   *
+   * 2026-09 (Z-36) — PO CO TO POLE, ZMIERZONE. Lider siedział siedem minut w jednym wywołaniu
+   * Basha; człowiek wysłał w tym czasie wiadomość, plik tury zapisał ją jako dostarczoną, a ekran
+   * nie powiedział o tym ani słowa. Zgłoszenie brzmiało „lider się zawiesza i nie odpisuje".
+   * Wiadomość dostarczona i nieczytana wygląda dokładnie tak samo jak wiadomość zgubiona —
+   * jedyną różnicą jest zdanie, którego nie było.
+   *
+   * JEDNO POLE, NIE LISTA: żywy region na ten fakt jest jeden (niezmiennik 13), a odpowiedź
+   * „na co czekamy" ma sens dokładnie wtedy, gdy stoi za nią JEDNA komenda w toku. Gaśnie
+   * w chwili, w której ta komenda się domyka — czyli wtedy, kiedy tura naprawdę może ruszyć —
+   * i razem z całą strefą żywą, kiedy bieg schodzi.
+   */
+  readonly queued: string | null;
   readonly attention: Attention;
   readonly answers: readonly Answer[];
 }
@@ -412,7 +427,65 @@ function commandOf(line: FeedLine): string | undefined {
 
 /** Czy ta linia jest niepowodzeniem, które rozwija się samo [T2 §7.3 reguła 3]. */
 function failed(line: FeedLine): boolean {
-  return line.kind === 'ran' && !line.ok;
+  /* `=== false`, nie `!ok`: od 2026-09 (Z-36) `null` znaczy „komenda właśnie idzie", a `!null`
+   * jest prawdą — wiersz w toku malowałby się wtedy jak porażka i rozwijał sam, pokazując
+   * pustkę, której nikt jeszcze nie wypisał. */
+  return line.kind === 'ran' && line.ok === false;
+}
+
+/**
+ * Wywołanie, którego wiersz ta linia PRZEPISUJE — albo `null`, kiedy nie przepisuje żadnego.
+ *
+ * 2026-09 (Z-36) — komenda dostaje wiersz w chwili, w której rusza, a każde bicie serca i wynik
+ * są tą samą linią z nowym czasem (`engine::line`, `Line::Ran::call_id`). Bez tego klucza każda
+ * aktualizacja byłaby wierszem OBOK, bo numer linii bije okno przy odbiorze paczki (`../io.ts`)
+ * — czyli siedmiominutowa komenda zostawiałaby w strumieniu piętnaście wierszy o sobie.
+ *
+ * Pusty napis nie jest kluczem: znaczy „vendor nie nazwał tego wywołania", a wspólny pusty klucz
+ * skleiłby w jeden wiersz dwie różne komendy.
+ */
+function carrierOf(line: FeedLine): string | null {
+  if (line.kind !== 'ran' || line.callId === '') return null;
+  return line.callId;
+}
+
+/** Komenda, która w tej chwili idzie — tyle, ile trzeba, żeby powiedzieć, na co się czeka. */
+interface InFlight {
+  readonly agent: string;
+  readonly subject: string;
+  readonly elapsed: number;
+}
+
+/**
+ * `0s`, `42s`, `4m`, `7m 30s` — ta sama drabinka, którą wiersz dostaje z Rusta.
+ *
+ * BLIŹNIAK `engine::line::for_how_long`, i to jest świadomy koszt, nie przeoczenie. Zdanie
+ * o czekaniu powstaje TUTAJ, bo mówi o stanie okna („wiadomość stoi w kolejce"), którego Rust
+ * nie zna — a dwa różne zapisy jednej liczby na jednym ekranie („7m 30s" w wierszu i „450s"
+ * pod nim) są dokładnie tym rozjazdem, który każe człowiekowi sprawdzać, który z nich jest
+ * prawdziwy. Kształt jest więc przepisany co do znaku i tak ma zostać.
+ *
+ * WYEKSPORTOWANY, żeby sceny testowe (`./fixtures/lines.ts`) nie zapisywały tego samego czasu
+ * trzecim sposobem: wiersz w scenie ma czytać się dokładnie tak, jak czyta się w produkcie.
+ */
+export function forHowLong(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return String(seconds) + 's';
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (rest === 0) return String(minutes) + 'm';
+  return String(minutes) + 'm ' + String(rest) + 's';
+}
+
+/**
+ * Zdanie o wiadomości, która czeka za tą komendą.
+ *
+ * NAZYWA KOMENDĘ I CZAS, bo to są dwie rzeczy, których człowiek w tej chwili nie wie: czy jego
+ * zdanie w ogóle doszło i dlaczego nikt na nie nie odpowiada. „Please wait" bez nich jest
+ * kółkiem kręcącym się nad ciszą.
+ */
+function queuedSays(one: InFlight): string {
+  return 'Queued — the lead is still running ' + one.subject + ' (' + forHowLong(one.elapsed) + ')';
 }
 
 /**
@@ -434,7 +507,10 @@ function metricOf(line: FeedLine): string {
      * właśnie tak, a łącznik przy liczbie czyta się jak przedział. */
     return '+' + String(line.added) + ' −' + String(line.removed);
   }
-  if (line.kind === 'ran' && !line.ok) return line.preview;
+  /* `=== false` z tego samego powodu, co w [`failed`]: komenda, która właśnie idzie, nie ma
+   * jeszcze wyjścia, a metryka wzięta z pustego podglądu byłaby pustą kolumną w wierszu, który
+   * przepisuje się co trzydzieści sekund. */
+  if (line.kind === 'ran' && line.ok === false) return line.preview;
   return '';
 }
 
@@ -558,6 +634,26 @@ export function createFeed(scroller: Scroller): Feed {
   const groups = new Map<string, Group>();
 
   /**
+   * Wywołanie → gdzie w historii stoi jego wiersz. Jedna komenda, jeden nośnik (2026-09, Z-36).
+   *
+   * Opisuje ŻYWY bieg, więc schodzi CAŁA razem z nim (`runEnded`) — dokładnie jak `groups`,
+   * i z tego samego powodu: wywołanie o tym samym identyfikatorze w następnym biegu
+   * przepisywałoby wiersz biegu poprzedniego.
+   */
+  const carriers = new Map<string, number>();
+
+  /**
+   * Komendy, które w tej chwili idą, po identyfikatorze wywołania.
+   *
+   * Osobna od `carriers`, bo odpowiada na inne pytanie: tamta wie, GDZIE stoi wiersz, ta wie,
+   * CO ta komenda robi i jak długo. Wpis znika w chwili, w której komenda się domyka.
+   */
+  const inFlight = new Map<string, InFlight>();
+
+  /** Wywołanie, za którym stoi w kolejce zdanie człowieka — patrz `FeedView.queued`. */
+  let queuedBehind: string | null = null;
+
+  /**
    * Pytania bez odpowiedzi, najstarsze pierwsze. Przypięte jest zawsze to spod zera.
    *
    * Opisuje ŻYWY bieg, więc schodzi CAŁA razem z nim (`runEnded`) — dokładnie jak `doing`.
@@ -591,12 +687,16 @@ export function createFeed(scroller: Scroller): Feed {
     const rows: NowRow[] = [];
     for (const [agent, text] of doing) rows.push({ agent, text });
     const pinned = waiting[0] ?? null;
+    /* Zdanie składamy z KOMENDY, która stoi teraz, a nie z tej, która stała w chwili wysłania:
+     * czas w nim rośnie razem z wierszem, bo to jest ten sam fakt widziany dwa razy. */
+    const holding = queuedBehind === null ? undefined : inFlight.get(queuedBehind);
     return {
       history,
       now: { rows, thinking },
       pinned,
       parked,
       toCarry,
+      queued: holding === undefined ? null : queuedSays(holding),
       /* Jeden fakt, jedno miejsce: „czyja kolej" wynika z przypięcia, więc nie da się ustawić
        * go osobno i rozjechać z nim (niezmiennik 13). */
       attention: pinned === null ? 'agents' : 'you',
@@ -675,7 +775,50 @@ export function createFeed(scroller: Scroller): Feed {
         doing.set(line.agent, line.kind === 'asked' ? WAITING_ON_YOU : sentence(line));
       }
 
+      /* KOMENDA, KTÓRA IDZIE, I ZDANIE, KTÓRE ZA NIĄ CZEKA (2026-09, Z-36). Oba fakty czytamy
+       * z tej samej linii i przed wierszami, bo paczka bywa całą sceną: wiersz zamykający
+       * komendę i zdanie człowieka potrafią przyjść razem. */
+      const carrier = carrierOf(line);
+      if (carrier !== null && line.kind === 'ran') {
+        if (line.ok === null) {
+          inFlight.set(carrier, {
+            agent: line.agent,
+            subject: line.subject,
+            elapsed: line.elapsed,
+          });
+        } else {
+          inFlight.delete(carrier);
+          /* Komenda się domknęła, więc tura może ruszyć — a zdanie o czekaniu opisywałoby
+           * od tej chwili czekanie, którego nie ma (niezmiennik 17). */
+          if (queuedBehind === carrier) queuedBehind = null;
+        }
+      }
+      if (line.kind === 'told') {
+        /* Wiadomość CZEKA tylko wtedy, gdy ten, do kogo poszła, stoi w komendzie. Zdanie
+         * postawione bez tego warunku mówiłoby „queued" nad agentem, który właśnie ją czyta. */
+        for (const [call, one] of inFlight) {
+          if (one.agent === line.agent) queuedBehind = call;
+        }
+      }
+
       const rows = (next ??= [...history]);
+
+      /* TEN SAM NOŚNIK, TEN SAM WIERSZ. Aktualizacja komendy PODMIENIA swój wiersz w miejscu
+       * i zachowuje jego numer oraz stempel — numer, bo to jest klucz Reacta i klucz rozwinięcia,
+       * a stempel, bo jest chwilą, w której ta komenda RUSZYŁA. Wiersz dopisany obok byłby
+       * piętnastoma wierszami o siedmiominutowej komendzie.
+       *
+       * `groups` zostaje NIETKNIĘTA, i to jest treść: okno sklejania otwarte przed tą komendą
+       * (na przykład na odczytach tego agenta) ma rosnąć dalej, a przestawione tutaj kazałoby
+       * następnemu odczytowi otworzyć wiersz obok. */
+      const standing = carrier === null ? undefined : carriers.get(carrier);
+      const before = standing === undefined ? undefined : rows[standing];
+      if (standing !== undefined && before !== undefined) {
+        rows[standing] = { ...rowFor(line), id: before.id, at: before.at, ids: before.ids };
+        touched.add(standing);
+        continue;
+      }
+
       const group = groups.get(line.agent);
       const open =
         group !== undefined &&
@@ -693,6 +836,7 @@ export function createFeed(scroller: Scroller): Feed {
       }
 
       rows.push(rowFor(line));
+      if (carrier !== null) carriers.set(carrier, rows.length - 1);
       const index = rows.length - 1;
       groups.set(line.agent, { kind: line.kind, index, startedAt: line.at });
       touched.add(index);
@@ -723,6 +867,14 @@ export function createFeed(scroller: Scroller): Feed {
           /* Grupa, której wiersz wypadł z okna, jest zamknięta: nie ma już czego doliczyć. */
           if (index < 0) groups.delete(agent);
           else groups.set(agent, { ...group, index });
+        }
+        /* Ta sama poprawka dla nośników komend, i z tego samego powodu: pozycja niezaktualizowana
+         * po przycięciu głowy wskazuje CUDZY wiersz, więc następne bicie serca przepisałoby
+         * czyjąś linię swoim zdaniem (2026-09, Z-36). */
+        for (const [call, index] of carriers) {
+          const moved = index - shift;
+          if (moved < 0) carriers.delete(call);
+          else carriers.set(call, moved);
         }
       }
       history = next;
@@ -808,6 +960,14 @@ export function createFeed(scroller: Scroller): Feed {
      * dwa biegi w jednym wierszu historii, czyli relacja, której w danych nie ma
      * (niezmiennik 17). Zamknięcie CAŁEJ mapy, nie wybranych wpisów: dokładnie jak `doing`. */
     groups.clear();
+    /* 2026-09 (Z-36) — TRZY POLA TEJ SAMEJ RODZINY. Nośniki komend opisują żywy bieg tak samo
+     * jak okna sklejania: wywołanie o tym samym identyfikatorze w następnym biegu przepisywałoby
+     * wiersz poprzedniego. Komenda „w toku" po zejściu biegu jest pracą, której nikt nie wykonuje
+     * (niezmiennik 17), a zdanie o czekaniu — wiadomością stojącą w kolejce do agenta, który
+     * już nie słucha. */
+    carriers.clear();
+    inFlight.clear();
+    queuedBehind = null;
     /* Slot gaśnie razem z mapą: „Thinking…" po biegu jest zdaniem o procesie, który nie istnieje,
      * i jest ostatnią rzeczą na tym ekranie, którą człowiek by podważył. */
     thinking = null;

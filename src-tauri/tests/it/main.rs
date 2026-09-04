@@ -44,6 +44,7 @@ mod a_folder_inside_a_repo_says_so_at_the_start;
 mod a_late_save_does_not_undo_newer_bytes;
 mod a_leftover_that_is_not_an_agent_keeps_its_seat;
 mod a_literal_secret_never_reaches_the_file;
+mod a_long_command_is_one_line_that_keeps_its_time;
 mod a_long_complaint_says_where_the_rest_is;
 mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;

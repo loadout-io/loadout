@@ -147,8 +147,13 @@ fn sample(kind: LineKind) -> Line {
         },
         LineKind::Ran => Line::Ran {
             agent: "builder".to_owned(),
-            text: "Ran npm test — didn't work".to_owned(),
-            ok: false,
+            text: "Ran npm test — didn't work · 2m 4s".to_owned(),
+            /* 2026-09 (Z-36) — TOŻSAMOŚĆ WIERSZA NA EKRANIE. Bez niej okno nie ma jak przepisać
+             * wiersza komendy, która trwa, i każde bicie serca byłoby wierszem obok. */
+            call_id: "toolu_test_01".to_owned(),
+            subject: "npm test".to_owned(),
+            elapsed: 124_000,
+            ok: Some(false),
             preview: "FAIL src/auth.test.ts".to_owned(),
             detail: vec![
                 "FAIL src/auth.test.ts".to_owned(),

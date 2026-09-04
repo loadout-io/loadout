@@ -231,6 +231,12 @@ const THINKING_TOKENS: &str = "thinking_tokens";
 /// `subtype` linii o ponowieniu zapytania do dostawcy [T1 §4.5, docs].
 const API_RETRY: &str = "api_retry";
 
+/// `subtype` linii, którą CLI ogłasza start zadania — w tym komendy puszczonej w tło.
+///
+/// 2026-09 (Z-36) — do tego dnia linia wpadała w gałąź domyślną i znikała bez śladu, więc
+/// komenda puszczona w tło wyglądała na ekranie jak komenda, na którą wciąż czekamy.
+const TASK_STARTED: &str = "task_started";
+
 /// Po tym prefiksie `subtype` poznajemy, że linia `result` opisuje błąd — używane **wyłącznie**
 /// wtedy, gdy vendor nie dosłał `is_error`.
 const ERROR_PREFIX: &str = "error";
@@ -1549,6 +1555,10 @@ enum ClaudeLine {
     System(Box<SystemLine>),
     /// Proza, myślenie i wywołania narzędzi.
     Assistant(TurnLine),
+    /// Bicie serca czynności, która wciąż trwa (2026-09, Z-36).
+    ///
+    /// Nie jest w pudełku, bo to jest najmniejsza linia tego drutu — trzy klucze.
+    ToolProgress(ProgressLine),
     /// Wyniki narzędzi wracające do modelu (i nasze koperty, gdyby ktoś włączył ich echo).
     User(TurnLine),
     /// Limit u dostawcy. Pola siedzą **zagnieżdżone** [T1 korekta 3].
@@ -1602,6 +1612,24 @@ struct SystemLine {
     memory_paths: Option<serde_json::Map<String, Value>>,
     #[serde(default, deserialize_with = "lenient")]
     agents: Option<Vec<String>>,
+    /// Czy to zadanie poszło w tło (2026-09, Z-36). `task_started` bez tej flagi opisuje pracę,
+    /// na którą wciąż czekamy — i tę widać już po zapowiedzi czynności.
+    is_backgrounded: Option<bool>,
+    /// Wywołanie, którego to zadanie dotyczy.
+    tool_use_id: Option<String>,
+    /// Opis, który model napisał sobie sam — zapasowy podmiot wiersza o tle.
+    description: Option<String>,
+}
+
+/// Linia `tool_progress`: bicie serca czynności, która wciąż trwa (2026-09, Z-36).
+///
+/// **Zmierzone na CLI 2026-09-04: trzy klucze i ani jednego identyfikatora.** Pole `tool_use_id`
+/// stoi tu mimo to, bo vendor dokłada pola co tydzień i po cichu — a kiedy je dołoży, kurator
+/// przestanie zgadywać, o którą z równoległych komend chodzi.
+#[derive(Debug, Deserialize)]
+struct ProgressLine {
+    tool_use_id: Option<String>,
+    elapsed_time_seconds: Option<u64>,
 }
 
 /// Linia `assistant` albo `user`: obie niosą wiadomość z blokami treści [T1 §4.2, §4.3].
@@ -1803,6 +1831,10 @@ impl ClaudeDecoder {
             }
             Ok(ClaudeLine::System(line)) => self.system(&line),
             Ok(ClaudeLine::Assistant(line) | ClaudeLine::User(line)) => self.blocks(line.message),
+            Ok(ClaudeLine::ToolProgress(line)) => vec![AgentEvent::ToolProgress {
+                id: line.tool_use_id,
+                elapsed_seconds: line.elapsed_time_seconds,
+            }],
             Ok(ClaudeLine::RateLimitEvent(line)) => Self::rate_limit(&line),
             Ok(ClaudeLine::Result(line)) => vec![self.finish(&line)],
             // Nieznany typ jest ROZPOZNANY — linia się wczytała, tylko nic dla nas nie znaczy.
@@ -1848,6 +1880,15 @@ impl ClaudeDecoder {
             Some(API_RETRY) => vec![AgentEvent::Notice {
                 text: retry_sentence(line.attempt, line.max_retries),
             }],
+            /* TYLKO ZADANIE PUSZCZONE W TŁO (2026-09, Z-36). `task_started` bez tej flagi mówi
+             * o pracy, na którą wciąż czekamy, a tę widać już po zapowiedzi czynności — drugie
+             * zdarzenie z tej samej linii byłoby drugim wierszem o tym samym. */
+            Some(TASK_STARTED) if line.is_backgrounded == Some(true) => {
+                vec![AgentEvent::ToolBackgrounded {
+                    id: line.tool_use_id.clone(),
+                    description: line.description.clone(),
+                }]
+            }
             _ => Vec::new(),
         }
     }

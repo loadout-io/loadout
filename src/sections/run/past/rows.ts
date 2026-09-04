@@ -31,8 +31,22 @@ import { rowFor } from '../feed/model';
  * się odróżnić od zgubionej linii (niezmiennik 5: nieznaną linię porzucamy, biegu nie wywalamy).
  */
 export function rowsOf(lines: readonly Line[]): readonly HistoryRow[] {
-  return lines
-    .map((line, index) => ({ ...line, id: index + 1, at: 0 }))
-    .filter((line) => 'text' in line && line.text !== '')
-    .map((line) => rowFor(line));
+  return (
+    lines
+      .map((line, index) => ({ ...line, id: index + 1, at: 0 }))
+      .filter((line) => 'text' in line && line.text !== '')
+      /* KOMENDA, KTÓRA WCIĄŻ IDZIE, NIE ISTNIEJE W BIEGU, KTÓRY SIĘ SKOŃCZYŁ (2026-09, Z-36).
+       *
+       * Kurator wypuszcza wiersz w chwili, w której komenda rusza (`Working: … · 0s`), i
+       * przepisuje go wynikiem — na ekranie żywego biegu to jest JEDEN wiersz, bo model łączy
+       * je po `callId` (`../feed/model.ts`). Tutaj wiersz powstaje jeden na jedną linię, więc
+       * bez tego filtru zapisany bieg pokazywałby każdą komendę dwa razy: raz jako pracę w toku,
+       * której nikt już nie wykonuje, i raz jako jej wynik.
+       *
+       * Nic przez to nie ginie: kurator domyka KAŻDĄ czekającą komendę na końcu strumienia
+       * (`Curator::flush`), więc każdy wiersz w toku ma za sobą wiersz rozstrzygnięty — nawet
+       * wtedy, gdy proces zszedł w jej połowie. */
+      .filter((line) => line.kind !== 'ran' || line.ok !== null)
+      .map((line) => rowFor(line))
+  );
 }

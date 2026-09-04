@@ -234,14 +234,47 @@ pub enum Line {
         /// Klucz do panelu zmian (T-08).
         detail_id: Option<u64>,
     },
-    /// `Ran tests — ok · 2.4s` / `Ran build — didn't work`
+    /// `Working: npm test · 7m 30s` → `Ran npm test — ok · 7m 30s` / `Ran build — didn't work`
+    ///
+    /// # Jeden wiersz na komendę, od jej pierwszej sekundy (2026-09, Z-36)
+    ///
+    /// Do tego dnia ten wiersz powstawał **wyłącznie z wyniku**, więc komenda, która trwa,
+    /// nie miała na ekranie ani jednego znaku. Zmierzone na liderze w meetnotes: siedem minut
+    /// w jednym wywołaniu Basha, heartbeat co 30 s w strumieniu — i pusty ekran. Zgłoszenie
+    /// właściciela brzmiało „lider się zawiesza i nie odpisuje".
+    ///
+    /// Wiersz powstaje teraz na zapowiedzi czynności, a każde bicie serca i wynik **przepisują
+    /// go w miejscu**. Tożsamością jest [`Line::Ran::call_id`] — bez niej „jedna linia, jeden
+    /// nośnik" jest niewykonalne, bo stempel `id` bije okno przy odbiorze paczki
+    /// (`src/sections/run/io.ts`) i każda aktualizacja byłaby wierszem obok.
     Ran {
         /// Kto to zrobił.
         agent: String,
         /// Tekst wiersza, gotowy na ekran.
         text: String,
-        /// Czy się udało. To, i tylko to, rozwija wiersz samo (reguła 3).
-        ok: bool,
+        /// Wywołanie, o którym ten wiersz mówi — **tożsamość wiersza na ekranie**.
+        ///
+        /// Okno trzyma po niej mapę wiersz→pozycja i PODMIENIA wiersz zamiast dokładać obok
+        /// (`src/sections/run/feed/model.ts`). Pusta wartość znaczy „vendor nie nazwał tego
+        /// wywołania" i okno traktuje wtedy wiersz jak każdy inny — bo wspólny pusty klucz
+        /// skleiłby w jeden wiersz dwie różne komendy.
+        call_id: String,
+        /// Podmiot wiersza — komenda, przycięta do [`SUBJECT_LIMIT`].
+        ///
+        /// OSOBNYM POLEM, nie wycinkiem z `text`: zdanie o czekaniu, które okno stawia nad
+        /// strumieniem („Queued — the lead is still running …"), potrzebuje samego podmiotu,
+        /// a wycinanie go z gotowego zdania byłoby parsowaniem prozy po stronie widoku.
+        subject: String,
+        /// Ile ta komenda trwa albo trwała, w milisekundach.
+        ///
+        /// Większy z dwóch zegarów: naszego pomiaru i tego, co powiedział vendor. Każdy z nich
+        /// bywa jedynym, który cokolwiek wie — powód stoi przy [`Pending::how_long`].
+        elapsed: u64,
+        /// Czy się udało. `None` znaczy „jeszcze nie wiadomo": komenda właśnie idzie.
+        ///
+        /// To, i tylko to, rozwija wiersz samo (reguła 3) — a wiersz w toku nie ma czego
+        /// rozwijać i nie ma prawa malować się jak porażka.
+        ok: Option<bool>,
         /// Początek wyjścia, przycięty do 2 KB [T2 §6.3, obrona 2]. Reszta zostaje na dysku.
         preview: String,
         /// Ostatnie 20 linii wyjścia — **tylko** przy porażce. To jedyne miejsce, w którym
@@ -588,7 +621,10 @@ impl Line {
             // więc reguła 2 zwija go zawsze. Porażka jest jedynym miejscem, w którym ściana
             // tekstu jest pożądana — a człowiek, który musi kliknąć, żeby dowiedzieć się,
             // dlaczego build się wywalił, nie kliknie.
-            Self::Ran { ok, .. } => !ok,
+            //
+            // 2026-09 (Z-36) — PORAŻKA, nie „brak sukcesu": komenda w toku niesie `None`
+            // i rozwinięta pokazywałaby pustkę, którą oko czyta jako zepsutą.
+            Self::Ran { ok, .. } => *ok == Some(false),
             // Reguła 2: proza, pytania, błędy i struktura są widoczne; mechanika nie jest.
             // `thinking` jest po tej stronie, bo stały slot na dole ekranu jest widoczny —
             // ale to jedyny rodzaj, którego kurator nigdy nie dokłada do historii (reguła 5),
@@ -848,13 +884,24 @@ pub struct Curator {
     unknown_prices: HashMap<String, String>,
     /// Skąd biorą się `detail_id`. Rośnie monotonicznie w obrębie jednego biegu.
     minted: u64,
-    /// Czy proza tego kuratora zachowuje przełamania wierszy.
+    /// Czy ten kurator obsługuje ROZMOWĘ z człowiekiem, a nie bieg.
     ///
-    /// `false` w biegu (reguła 1: jedna linia na zdanie), `true` w rozmowie. Jedno pole i jedno
-    /// ramię, bo to jest JEDNA różnica między dwoma produktami stojącymi w tym samym widoku:
-    /// rozmowę się CZYTA, strumień pracy się PRZEGLĄDA. Domyślne `false` jest tu treścią,
-    /// nie oszczędnością — `Curator::default()` zostaje kuratorem biegu, co do bajtu.
-    keeps_line_breaks: bool,
+    /// Jedno pole na jedną różnicę, bo to jest JEDNA różnica między dwoma produktami stojącymi
+    /// w tym samym widoku: rozmowę się CZYTA, strumień pracy się PRZEGLĄDA. Domyślne `false`
+    /// jest tu treścią, nie oszczędnością — `Curator::default()` zostaje kuratorem biegu,
+    /// co do bajtu.
+    ///
+    /// Czyta je dziś dwa razy i za każdym razem o to samo:
+    ///
+    /// - proza rozmowy zachowuje przełamania wierszy, proza biegu schodzi do jednej linii
+    ///   (reguła 1);
+    /// - komenda w toku otwiera wiersz słowem „Running" w rozmowie i „Working" w kroku
+    ///   (2026-09, Z-36 — tak stoi w zleceniu, i rozstrzyga to kurator, bo tu mieszka
+    ///   kuracja, niezmiennik 15).
+    ///
+    /// Drugie pole na to samo rozróżnienie byłoby drugim miejscem, w którym mieszka odpowiedź
+    /// na jedno pytanie (niezmiennik 13).
+    talks_with_a_person: bool,
 }
 
 /// Grupa sklejania: sąsiednie czynności tego samego rodzaju, tego samego agenta, w oknie 2 s.
@@ -893,6 +940,45 @@ struct Pending {
     agent: String,
     /// Co uruchomił; z tego powstaje tekst wiersza.
     subject: String,
+    /// Chwila zapowiedzi, w milisekundach od startu biegu. Od niej biegnie nasz własny zegar.
+    started_at_ms: u64,
+    /// Ile ta komenda trwa wedle VENDORA — ostatnie bicie serca, w sekundach.
+    reported_secs: u64,
+}
+
+impl Pending {
+    /// Ile ta komenda już trwa, w milisekundach.
+    ///
+    /// **Większy z dwóch zegarów, bo każdy z nich bywa jedynym, który cokolwiek wie.** Nasz
+    /// pomiar milczy przy odczycie historii z pliku — `commands::history::recorded_lines`
+    /// podaje kuratorowi `at_ms: 0` dla każdej linii, bo surowy strumień nie ma znaczników
+    /// czasu — a zegar vendora milczy, dopóki nie przyśle pierwszego bicia serca. Suma
+    /// liczyłaby ten sam czas dwa razy; mniejszy z nich znaczyłby zawsze zero.
+    fn how_long(&self, at_ms: u64) -> u64 {
+        at_ms
+            .saturating_sub(self.started_at_ms)
+            .max(self.reported_secs.saturating_mul(1_000))
+    }
+
+    /// Wiersz o tej komendzie **w toku**: ten sam nośnik, większy czas.
+    fn in_flight_line(&self, word: &str, at_ms: u64) -> Line {
+        let elapsed = self.how_long(at_ms);
+        Line::Ran {
+            agent: self.agent.clone(),
+            text: format!("{word}: {} · {}", self.subject, for_how_long(elapsed)),
+            call_id: self.id.clone(),
+            subject: self.subject.clone(),
+            elapsed,
+            // Jeszcze nie wiadomo, i to jest cała treść tego wariantu: wiersz w toku nie ma
+            // prawa czytać się ani jak sukces, ani jak porażka.
+            ok: None,
+            // Wyjścia jeszcze nie ma — przyjdzie z wynikiem. Podgląd zmyślony z zapowiedzi
+            // byłby treścią, której nikt nie wypisał.
+            preview: String::new(),
+            detail: Vec::new(),
+            detail_id: None,
+        }
+    }
 }
 
 /// Ile milisekund grupa przyjmuje kolejne czynności, licząc od pierwszej (reguła 4).
@@ -935,8 +1021,22 @@ impl Curator {
     #[must_use]
     pub fn talking() -> Self {
         Self {
-            keeps_line_breaks: true,
+            talks_with_a_person: true,
             ..Self::default()
+        }
+    }
+
+    /// Słowo, którym ten kurator otwiera wiersz komendy, która **wciąż trwa**.
+    ///
+    /// Dwa brzmienia, i to jest decyzja ze zlecenia Z-36, nie przeoczenie: rozmowa z liderem
+    /// mówi „Running", karta kroku „Working". Rozstrzyga to kurator, czyli miejsce, w którym
+    /// mieszka kuracja (niezmiennik 15) — tabela brzmień po stronie okna byłaby drugą kuracją,
+    /// tą, której nie da się sprawdzić bez przeglądarki.
+    fn word_for_work_in_flight(&self) -> &'static str {
+        if self.talks_with_a_person {
+            "Running"
+        } else {
+            "Working"
         }
     }
 
@@ -1022,7 +1122,7 @@ impl Curator {
                  * piszących akapitami jest ścianą — i to nie jest przewidywanie, tylko pomiar:
                  * zrzut właściciela z biegu `20260830-191440`, jedna odpowiedź na 78 wierszy
                  * zasłaniająca komplet dziewięciu kroków. */
-                let line = if self.keeps_line_breaks {
+                let line = if self.talks_with_a_person {
                     Line::Note {
                         agent: seen.agent.to_owned(),
                         text: paragraphs(text),
@@ -1039,6 +1139,13 @@ impl Curator {
                 self.close_then(line)
             }
             AgentEvent::ToolStart { id, label } => self.tool_start(seen, id, label),
+            AgentEvent::ToolProgress {
+                id,
+                elapsed_seconds,
+            } => self.tool_progress(seen, id.as_deref(), *elapsed_seconds),
+            AgentEvent::ToolBackgrounded { id, description } => {
+                self.tool_backgrounded(seen, id.as_deref(), description.as_deref())
+            }
             AgentEvent::ToolEnd { id, ok, summary } => self.tool_end(seen, id, *ok, summary),
             AgentEvent::RateLimit {
                 status, resets_at, ..
@@ -1076,13 +1183,24 @@ impl Curator {
     pub fn flush(&mut self) -> Vec<Line> {
         let mut out: Vec<Line> = std::mem::take(&mut self.pending)
             .into_iter()
-            .map(|pending| Line::Ran {
-                agent: pending.agent,
-                text: ran_text(&pending.subject, false),
-                ok: false,
-                preview: String::new(),
-                detail: Vec::new(),
-                detail_id: None,
+            .map(|pending| {
+                /* CZAS BEZ ZEGARA (2026-09, Z-36). `flush` woła koniec strumienia i nie ma
+                 * chwili do podania — więc zostaje to, co zdążył powiedzieć vendor. Zero jest
+                 * uczciwe: komenda, o której nikt nie zdążył nic powiedzieć, nie dostaje
+                 * zmyślonego czasu, tylko zdanie bez niego. */
+                let elapsed = pending.how_long(0);
+                let text = ran_text(&pending.subject, false, elapsed);
+                Line::Ran {
+                    agent: pending.agent,
+                    text,
+                    call_id: pending.id,
+                    subject: pending.subject,
+                    elapsed,
+                    ok: Some(false),
+                    preview: String::new(),
+                    detail: Vec::new(),
+                    detail_id: None,
+                }
             })
             .collect();
         out.extend(self.close_group());
@@ -1110,14 +1228,23 @@ impl Curator {
                 self.coalesce(seen, kind_of(*action), id, target)
             }
             Action::Ran => {
-                let closed = self.close_group();
+                let mut out = self.close_group();
                 self.status = None;
-                self.pending.push(Pending {
+                let pending = Pending {
                     id: id.to_owned(),
                     agent: seen.agent.to_owned(),
                     subject: clamp(&one_line(target), SUBJECT_LIMIT),
-                });
-                closed
+                    started_at_ms: seen.at_ms,
+                    reported_secs: 0,
+                };
+                /* WIERSZ POWSTAJE OD RAZU (2026-09, Z-36) — i to jest cała różnica wobec stanu,
+                 * w którym stał tu sam `push`. Wiersz czekający na wynik nie istniał przez cały
+                 * czas trwania komendy, więc siedem minut pracy było na ekranie nieodróżnialne
+                 * od siedmiu minut ciszy. Wynik nie tworzy drugiego wiersza: `tool_end` przepisuje
+                 * ten, bo oba niosą ten sam `call_id`. */
+                out.push(pending.in_flight_line(self.word_for_work_in_flight(), seen.at_ms));
+                self.pending.push(pending);
+                out
             }
             Action::Asked => {
                 let line = Line::Asked {
@@ -1173,6 +1300,94 @@ impl Curator {
         self.coalesce(seen, LineKind::Edit, &path.display().to_string(), target)
     }
 
+    /// Która komenda czeka na wynik: ta nazwana, a kiedy nikt jej nie nazwał — **ostatnia**.
+    ///
+    /// 2026-09 (Z-36) — reguła istnieje, bo zmierzone bicie serca niesie trzy klucze i nie ma
+    /// wśród nich identyfikatora wywołania. Bez niej heartbeat nie miałby do czego wrócić, więc
+    /// najczęstsza droga tej naprawy byłaby martwa. Ostatnia, a nie pierwsza: model wypuszcza
+    /// kilka bloków `tool_use` w jednej wiadomości, a ta zapowiedziana najpóźniej jest tą, która
+    /// właśnie się ciągnie. Kiedy vendor kiedyś dołoży `tool_use_id`, zgadywania nie ma wcale.
+    fn pending_at(&self, id: Option<&str>) -> Option<usize> {
+        match id.filter(|id| !id.is_empty()) {
+            Some(id) => self.pending.iter().position(|pending| pending.id == id),
+            None => self.pending.len().checked_sub(1),
+        }
+    }
+
+    /// Bicie serca komendy, która wciąż trwa: **przepisuje** jej wiersz, nigdy nie dokłada obok.
+    fn tool_progress(
+        &mut self,
+        seen: Seen<'_>,
+        id: Option<&str>,
+        elapsed_seconds: Option<u64>,
+    ) -> Vec<Line> {
+        let Some(index) = self.pending_at(id) else {
+            // Bicie serca bez komendy, do której należy: tura żyje, ale nie wiemy, czym.
+            // Wiersz zgadnięty z samego czasu byłby wierszem bez podmiotu.
+            tracing::debug!(id, "a heartbeat arrived for a command nobody announced");
+            return Vec::new();
+        };
+        let word = self.word_for_work_in_flight();
+        let Some(pending) = self.pending.get_mut(index) else {
+            return Vec::new();
+        };
+        if let Some(seconds) = elapsed_seconds {
+            // Największa liczba, jaką vendor podał, nigdy ostatnia: zegar, który cofa się przy
+            // zdarzeniu przysłanym nie po kolei, czyta się na ekranie jak komenda uruchomiona
+            // drugi raz.
+            pending.reported_secs = pending.reported_secs.max(seconds);
+        }
+        // GRUPY SKLEJANIA NIE RUSZAMY. To nie jest nowa czynność, tylko ta sama sprzed chwili —
+        // zamknięcie otwartej grupy odczytów na bicie serca rozbiłoby `Read 6 files` na sześć
+        // wierszy w komendzie, która akurat trwa obok.
+        vec![pending.in_flight_line(word, seen.at_ms)]
+    }
+
+    /// Komenda poszła w tło: przestaje być pracą w toku i przestaje tykać.
+    ///
+    /// **Zdejmuje ją z listy czekających**, więc wynik, który CLI odsyła natychmiast po
+    /// puszczeniu jej w tło, nie domknie jej zdaniem „— ok": serwer, który dopiero wstaje, nie
+    /// jest serwerem, który skończył. Wiersz jest ostatnim słowem o tym wywołaniu i nosi ten sam
+    /// `call_id`, więc na ekranie **przepisuje** wiersz w toku, zamiast stanąć obok niego.
+    fn tool_backgrounded(
+        &mut self,
+        seen: Seen<'_>,
+        id: Option<&str>,
+        description: Option<&str>,
+    ) -> Vec<Line> {
+        let announced = self.pending_at(id).map(|index| self.pending.remove(index));
+        // Podmiot bierzemy z zapowiedzi, bo to ta sama komenda, którą wiersz w toku już nazwał;
+        // opis od modelu jest zapasem na wypadek, gdyby zapowiedzi nikt nie widział.
+        let subject = match (&announced, description) {
+            (Some(pending), _) => pending.subject.clone(),
+            (None, Some(said)) => clamp(&one_line(said), SUBJECT_LIMIT),
+            (None, None) => {
+                tracing::debug!(id, "a task went into the background without a name");
+                return Vec::new();
+            }
+        };
+        let (agent, call_id) = announced.map_or_else(
+            || (seen.agent.to_owned(), id.unwrap_or_default().to_owned()),
+            |pending| (pending.agent, pending.id),
+        );
+        let line = Line::Ran {
+            agent,
+            text: format!("Started in the background: {subject}"),
+            call_id,
+            subject,
+            // Zegar tej komendy nie jest nasz: nikt na nią nie czeka i nikt jej nie mierzy.
+            elapsed: 0,
+            // `Some(true)`, bo udało się ją URUCHOMIĆ — i tylko tyle ten wiersz twierdzi.
+            // `None` znaczyłoby „wciąż czekamy" i kazałoby ekranowi tykać zegar komendy,
+            // której nikt nie pilnuje.
+            ok: Some(true),
+            preview: String::new(),
+            detail: Vec::new(),
+            detail_id: None,
+        };
+        self.close_then(line)
+    }
+
     /// Wynik czynności. **Nigdy nie tworzy własnego wiersza** [T2 §9.3] — domyka ten, który
     /// już stoi, albo dokłada do niego fakty.
     fn tool_end(&mut self, seen: Seen<'_>, id: &str, ok: bool, summary: &str) -> Vec<Line> {
@@ -1186,10 +1401,17 @@ impl Curator {
         if let Some(index) = self.pending.iter().position(|pending| pending.id == id) {
             let pending = self.pending.remove(index);
             self.status = None;
+            // Ten sam `call_id`, co wiersz w toku, więc okno PRZEPISUJE tamten wiersz zamiast
+            // dokładać drugi (2026-09, Z-36).
+            let elapsed = pending.how_long(seen.at_ms);
+            let text = ran_text(&pending.subject, ok, elapsed);
             return vec![Line::Ran {
                 agent: pending.agent,
-                text: ran_text(&pending.subject, ok),
-                ok,
+                text,
+                call_id: pending.id,
+                subject: pending.subject,
+                elapsed,
+                ok: Some(ok),
                 preview: clamp(output, PREVIEW_LIMIT),
                 // Reguła 3: ostatnie dwadzieścia linii i tylko przy porażce. Pierwsze
                 // dwadzieścia linii wyjścia builda to zawsze banner, nigdy przyczyna.
@@ -1523,15 +1745,45 @@ fn search_text(targets: &[String], count: u32, matches: u32, answered: bool) -> 
     format!("{head} — {matches} {plural}")
 }
 
-/// `Ran npm test — ok` / `Ran npm test — didn't work`.
+/// `Ran npm test — ok` / `Ran npm test — didn't work · 7m 30s`.
 ///
 /// Podmiotem jest **komenda**, nie etykieta, którą model pisze sobie sam w `description`:
 /// tamta jest frazą czasownikową („Running the tests"), a ten wiersz ma kształt
 /// `Ran <co> — <jak poszło>` [T2 §7.2 poz. 8] i potrzebuje rzeczownika. Komenda jest przy tym
 /// jedyną wartością w tym wierszu, której nikt nie wymyślił.
-fn ran_text(subject: &str, ok: bool) -> String {
+///
+/// 2026-09 (Z-36) — CZAS DOCHODZI TYLKO WTEDY, GDY KTOKOLWIEK GO ZMIERZYŁ. Komenda, która
+/// wróciła, zanim ktoś doliczył pierwszą sekundę, czyta się dokładnie tak, jak czytała się
+/// przez cały czas istnienia tego produktu; `· 0s` doklejone do każdego wiersza każdego
+/// transkryptu byłoby liczbą, która niczego nie mówi, w miejscu, w którym oko szuka treści.
+fn ran_text(subject: &str, ok: bool, elapsed_ms: u64) -> String {
     let outcome = if ok { "ok" } else { "didn't work" };
-    format!("Ran {subject} — {outcome}")
+    let mut text = format!("Ran {subject} — {outcome}");
+    if elapsed_ms > 0 {
+        // `write!` do `String`, nie `push_str(&format!(…))`: powód stoi przy [`done_line`].
+        let _ = write!(text, " · {}", for_how_long(elapsed_ms));
+    }
+    text
+}
+
+/// `0s`, `42s`, `4m`, `7m 30s` — zegar KOMENDY.
+///
+/// 2026-09 (Z-36) — osobno od [`took_text`], bo mierzy co innego i czyta się co innego. Tamto
+/// jest zegarem TURY i podaje dziesiąte części sekundy (`6.2s`), bo tura kończy się raz i jej
+/// długość jest pomiarem. Ten zegar stoi w wierszu, który przepisuje się co trzydzieści sekund
+/// przez siedem minut — dziesiąte części zmieniałyby się w nim bez przerwy i przy każdym
+/// przerysowaniu mówiłyby coś innego o tej samej komendzie. Pełne minuty bez reszty (`4m`)
+/// z tego samego powodu: `4m 0s` jest o jedno słowo dłuższe i o zero informacji bogatsze.
+fn for_how_long(ms: u64) -> String {
+    let seconds = ms / 1_000;
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let (minutes, rest) = (seconds / 60, seconds % 60);
+    if rest == 0 {
+        return format!("{minutes}m");
+    }
+    format!("{minutes}m {rest}s")
 }
 
 /// Nazwa pliku ze ścieżki; cała ścieżka, kiedy nazwy nie da się wyjąć.

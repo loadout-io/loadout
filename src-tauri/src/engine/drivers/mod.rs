@@ -282,6 +282,35 @@ pub enum AgentEvent {
         /// `description`, więc dostajemy ją za darmo [T1 §8.6].
         label: String,
     },
+    /// Czynność wciąż trwa i vendor mówi, ile już.
+    ///
+    /// 2026-09 (Z-36) — OSOBNY WARIANT, i powstał z siedmiu minut ciszy. Lider siedział tyle
+    /// w jednym wywołaniu Basha, CLI słało co 30 s
+    /// `{"type":"tool_progress","elapsed_time_seconds":N,"heartbeat":true}`, a ekran nie pokazał
+    /// NIC: wiersz o komendzie powstawał dopiero z pary `tool_use`+`tool_result`. Właściciel
+    /// opisał to jako „lider się zawiesza i nie odpisuje".
+    ///
+    /// **Oba pola są `Option`, bo zmierzony heartbeat ma dokładnie trzy klucze i `id` nie jest
+    /// jednym z nich** (niezmiennik 5). Wywołanie, którego on nie nazywa, rozstrzyga kurator —
+    /// tam, gdzie stoi lista komend czekających na swój wynik.
+    ToolProgress {
+        /// Wywołanie, o którym mowa — kiedy vendor je nazwał.
+        id: Option<String>,
+        /// Ile ta czynność trwa, w sekundach, wedle vendora.
+        elapsed_seconds: Option<u64>,
+    },
+    /// Czynność została puszczona w tło i nikt na nią nie czeka.
+    ///
+    /// 2026-09 (Z-36) — `system/task_started` z `is_backgrounded: true`. Bez tego wariantu
+    /// komenda puszczona w tło zostawałaby na ekranie jako praca w toku i tykała do końca
+    /// biegu, choć nikt na nią nie czeka.
+    ToolBackgrounded {
+        /// Wywołanie, które poszło w tło — kiedy vendor je nazwał.
+        id: Option<String>,
+        /// Opis, który model napisał sobie sam. Zapasowy podmiot wiersza: kiedy zapowiedzi tej
+        /// czynności nie widzieliśmy, jest to jedyne, czym da się ją nazwać uczciwie.
+        description: Option<String>,
+    },
     /// Czynność się skończyła.
     ToolEnd {
         /// Identyfikator wywołania, ten sam co w [`AgentEvent::ToolStart`].

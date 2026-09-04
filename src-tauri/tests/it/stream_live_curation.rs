@@ -289,11 +289,18 @@ async fn a_live_run_tells_reading_from_editing_from_running() -> Result<(), Box<
     );
 
     // ── Komendy: jedna nieudana, jedna udana ──────────────────────────────────────────────
-    let ran = of_kind(&rows, LineKind::Ran);
+    //
+    // 2026-09 (Z-36) — KAŻDA KOMENDA ZOSTAWIA DWA WPISY, nie jeden: wiersz w chwili, w której
+    // ruszyła (`ok: None`, żeby siedmiominutowa komenda nie była na ekranie ciszą), i ten sam
+    // wiersz przepisany wynikiem. Sądzimy tu ROZSTRZYGNIĘTE, bo o nich jest to kryterium.
+    let ran: Vec<&Line> = of_kind(&rows, LineKind::Ran)
+        .into_iter()
+        .filter(|line| matches!(line, Line::Ran { ok: Some(_), .. }))
+        .collect();
     assert_eq!(
         ran.len(),
         2,
-        "two commands ran, so two rows say so. The rows that came out were {:?}",
+        "two commands ran, so two rows say how they ended. The rows that came out were {:?}",
         kinds(&rows),
     );
 
@@ -307,7 +314,7 @@ async fn a_live_run_tells_reading_from_editing_from_running() -> Result<(), Box<
         unreachable!("of_kind returned a row that is not a Ran row")
     };
     assert!(
-        !*first_ok,
+        *first_ok == Some(false),
         "the first command failed and its row says it went fine. How a command ended is the \
          one thing this row exists to say"
     );
@@ -327,7 +334,7 @@ async fn a_live_run_tells_reading_from_editing_from_running() -> Result<(), Box<
         unreachable!("of_kind returned a row that is not a Ran row")
     };
     assert!(
-        *second_ok,
+        *second_ok == Some(true),
         "the second command succeeded and its row says it did not. Two commands are here \
          precisely so that a hard-coded answer cannot pass: with one command, either constant \
          is right half the time"

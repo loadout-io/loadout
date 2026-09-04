@@ -51,14 +51,23 @@ const ANSWERED = 'Yes, keep the old one behind a switch.';
 /** Numer pierwszego pytania. Odpowiedź zdejmuje DOKŁADNIE je; drugie zostaje przypięte. */
 const FIRST_ID = 3;
 
+/** Komenda, w której stoi Forge, kiedy człowiek do niego pisze (2026-09, Z-36). */
+const LONG_COMMAND = 'until grep -q Murmur <(ps aux); do sleep 5; done';
+
+/** Ile ta komenda już trwa. */
+const RUNNING_FOR = 450_000;
+
+/** Zdanie człowieka, które staje w kolejce za tą komendą. */
+const WROTE_MEANWHILE = 'also add a dark mode toggle';
+
 /**
  * Wiersze historii, które ta scena zostawia, po numerach.
  *
- * Pięć, nie sześć: `thinking` jest statusem i do historii nie wchodzi [T2 §7.3 reguła 5].
+ * Siedem, nie osiem: `thinking` jest statusem i do historii nie wchodzi [T2 §7.3 reguła 5].
  * Wypisane wprost, bo porównanie listy z samą sobą przeszłoby też na historii pustej — a wtedy
  * kontrola przeciw przebudowie modelu nie kontrolowałaby niczego.
  */
-const HISTORY_IDS: readonly number[] = [1, 2, FIRST_ID, 4, 5];
+const HISTORY_IDS: readonly number[] = [1, 2, FIRST_ID, 4, 5, 6, 7];
 
 /** Jedno pole widoku, które opisuje ŻYWY bieg. */
 interface LiveField {
@@ -124,6 +133,16 @@ const LIVE: readonly LiveField[] = [
     quiet: '',
     says: 'a sentence queued for delivery to an agent who is no longer listening',
   },
+  {
+    /* 2026-09 (Z-36) — SIÓDME POLE, dopisane w tej samej zmianie, w której powstało. Zdanie
+     * „Queued — the lead is still running …" opisuje komendę, która IDZIE; po zejściu biegu nie
+     * idzie żadna, więc zostawione mówi o czekaniu, którego nie ma. */
+    field: 'queued',
+    at: 'queued',
+    reads: (view) => view.queued,
+    quiet: null,
+    says: 'a message standing in a queue behind a command that is no longer running',
+  },
 ];
 
 /**
@@ -172,6 +191,10 @@ function complaints(view: FeedView): readonly string[] {
  *
  * Zdanie od agenta na końcu, a myślenie za nim: prawdziwa linia gasi slot, więc odwrotna
  * kolejność zostawiłaby `now.thinking` puste i scena przestałaby zapalać wszystko.
+ *
+ * KOMENDA W TOKU I ZDANIE ZA NIĄ (2026-09, Z-36) są tu z tego samego powodu, co dwa pytania:
+ * bez komendy, która IDZIE, pole `queued` byłoby puste już w trakcie biegu i pustka po nim nie
+ * dowodziłaby o nim niczego.
  */
 function everythingLive() {
   const feed = createFeed(sealedScroller());
@@ -181,7 +204,12 @@ function everythingLive() {
     line.asked(4, 1_500, NEEDLE, SECOND_QUESTION, []),
   ]);
   feed.answer(FIRST_ID, ANSWERED);
-  feed.appendLines([line.note(5, 2_000, FORGE, FORGE_RESUMED), line.thinking(6, 2_500, NEEDLE)]);
+  feed.appendLines([
+    line.note(5, 2_000, FORGE, FORGE_RESUMED),
+    line.running(6, 2_100, FORGE, LONG_COMMAND, RUNNING_FOR),
+    line.told(7, 2_200, FORGE, WROTE_MEANWHILE),
+    line.thinking(8, 2_500, NEEDLE),
+  ]);
   return feed;
 }
 
@@ -234,7 +262,15 @@ describe('nothing that described a live run survives the run', () => {
       feed.view.history.map((row) => row.label),
       'the end of a run clears the fields that say what is happening, never the account of what ' +
         'happened. A person comes back to this screen to read the run that just went down.',
-    ).toEqual([FORGE_SAID, NEEDLE_SAID, FIRST_QUESTION, SECOND_QUESTION, FORGE_RESUMED]);
+    ).toEqual([
+      FORGE_SAID,
+      NEEDLE_SAID,
+      FIRST_QUESTION,
+      SECOND_QUESTION,
+      FORGE_RESUMED,
+      'Working: ' + LONG_COMMAND + ' · 7m 30s',
+      WROTE_MEANWHILE,
+    ]);
     expect(
       feed.view.history,
       'and it is the SAME array: a fresh one asks React to redraw the whole transcript for ' +

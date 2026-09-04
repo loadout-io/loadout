@@ -86,11 +86,28 @@ export type Line =
       removed: number;
       detailId: number | null;
     }
+  /* Komenda. TRZY POLA WIĘCEJ OD 2026-09 (Z-36), i każde jest nośnikiem czegoś, czego bez niego
+   * nie da się zrobić po tej stronie granicy:
+   *
+   *   `callId`   TOŻSAMOŚĆ wiersza. Kurator wypuszcza wiersz w chwili, w której komenda rusza,
+   *              i przepisuje go przy każdym biciu serca — a stempel `id` bije okno przy
+   *              odbiorze paczki (`../sections/run/io.ts`), więc bez wspólnego klucza każda
+   *              aktualizacja byłaby wierszem OBOK. Pusty napis znaczy „vendor nie nazwał tego
+   *              wywołania" i wtedy wiersz jest zwykłym wierszem.
+   *   `subject`  sama komenda, bez zdania wokół niej: zdanie o czekaniu składa okno, a wycinanie
+   *              podmiotu z gotowej prozy byłoby parsowaniem tekstu po stronie widoku.
+   *   `elapsed`  ile ta komenda trwa, w milisekundach.
+   *
+   * `ok` jest od tego dnia `boolean | null`: `null` znaczy „jeszcze nie wiadomo", czyli komenda
+   * właśnie idzie. */
   | {
       kind: 'ran';
       agent: string;
       text: string;
-      ok: boolean;
+      callId: string;
+      subject: string;
+      elapsed: number;
+      ok: boolean | null;
       preview: string;
       detail: string[];
       detailId: number | null;
@@ -129,6 +146,9 @@ const strs: Field = (value) => Array.isArray(value) && value.every(str);
  * stoi całe odrzucanie mutantów niżej: `detailId: null` jest poprawne, a wiersz BEZ `detailId`
  * nie jest, choćby niósł `detail_id` z dokładnie tą samą wartością. */
 const maybeNum: Field = (value) => value === null || num(value);
+/* `null` znaczy „jeszcze nie wiadomo", i to jest jedyne pole logiczne, które ma trzeci stan:
+ * komenda, która właśnie idzie, nie udała się ani nie zawiodła (2026-09, Z-36). */
+const maybeFlag: Field = (value) => value === null || flag(value);
 
 /** Cztery rodzaje niosą tylko tekst i mają dokładnie ten sam komplet pól. */
 const SAYS: Readonly<Record<string, Field>> = { agent: str, text: str };
@@ -161,7 +181,20 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
       detailId: maybeNum,
     },
   ],
-  ['ran', { agent: str, text: str, ok: flag, preview: str, detail: strs, detailId: maybeNum }],
+  [
+    'ran',
+    {
+      agent: str,
+      text: str,
+      callId: str,
+      subject: str,
+      elapsed: num,
+      ok: maybeFlag,
+      preview: str,
+      detail: strs,
+      detailId: maybeNum,
+    },
+  ],
   ['note', { agent: str, text: str, body: strs }],
   ['told', SAYS],
   /* NIE `SAYS`: propozycja niesie o jedno pole więcej i lustro porównuje zestaw kluczy CO DO
