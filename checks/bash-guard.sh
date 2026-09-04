@@ -20,8 +20,13 @@ for f in "$HOOK" ".claude/hooks/pre-bash.py" "$CASES"; do
     exit 1
   fi
 done
+# Bit wykonywalnosci. `.claude/settings.json` wola ten hak przez `bash <sciezka>`, wiec
+# dzis bit nie jest nosny — i wlasnie dlatego stoi tu asercja: `stop-gate.sh` jest
+# wykonywalny, ten ma byc tak samo, a git gubi ten bit przy kazdym zapisie przez plik
+# tymczasowy (zlapane przez straznika 2026-09-04, przy pierwszym uruchomieniu).
 if [ ! -x "$HOOK" ]; then
-  echo "bash-guard: $HOOK nie jest wykonywalny — Claude Code nie odpali go wcale" >&2
+  echo "bash-guard: $HOOK nie jest wykonywalny, a drugi hak tego repo jest" >&2
+  echo "detail: chmod +x oraz git update-index --chmod=+x, inaczej bit ginie w commicie" >&2
   exit 1
 fi
 
