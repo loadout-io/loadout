@@ -72,6 +72,11 @@ const SUMMARY = 'Stored the greeting in the file.';
 /** Co przekazał pierwszy krok drugiemu. */
 const HANDED = 'What we are building';
 
+/** Zdanie z historii biegu, którego katalogu przekazań system nie pozwolił przeczytać. */
+const CANNOT_READ =
+  "Loadout can't read this folder. Allow it under System Settings › Privacy & Security › Files " +
+  'and Folders.';
+
 /** Wiersz zapisanego strumienia, w kształcie, który przyjeżdża z Rusta. */
 const READ_LINE = {
   kind: 'read' as const,
@@ -143,7 +148,8 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 const Run = (await import('../index')).default;
 const { openHistoryFromLine, openOneRun } = await import('../history-command');
-const { closeHistory } = await import('./store');
+const { closeHistory, showPastRun } = await import('./store');
+const { PASSED_NOTHING } = await import('./panel');
 const { KNOWN, PROMPT, understand } = await import('../entry/entry');
 const { useWorkspaces } = await import('../../../state/workspaces');
 
@@ -195,6 +201,9 @@ const withTheList = screen();
 
 await openOneRun(HERE.folder, SHIP.folder);
 const withTheRun = screen();
+
+showPastRun({ ...OPENED, handoffs: [], handoffsSaid: CANNOT_READ });
+const withUnreadableHandoffs = screen();
 
 closeHistory();
 const afterClosing = screen();
@@ -327,6 +336,17 @@ describe('typing /history puts what really ran on the screen', () => {
       'a step whose stream nobody kept has to say so. An empty space there is indistinguishable ' +
         'from a step that never said anything.',
     ).toContain('Nothing of what this step said was kept on disk.');
+  });
+
+  it('says why the opened run has no readable handoffs', () => {
+    expect(
+      withUnreadableHandoffs,
+      'the sentence from Rust has to reach the history markup where the empty handoff list is',
+    ).toContain(CANNOT_READ);
+    expect(
+      withUnreadableHandoffs,
+      'an unreadable handoff directory is not a run in which no step passed anything on',
+    ).not.toContain(PASSED_NOTHING);
   });
 
   it('gives the screen back when the panel is closed', () => {

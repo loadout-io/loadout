@@ -41,6 +41,7 @@ mod a_copy_does_not_outlive_its_run;
 mod a_done_step_proves_its_group_is_dead;
 mod a_fix_may_not_move_what_it_is_measured_by;
 mod a_folder_inside_a_repo_says_so_at_the_start;
+mod a_folder_it_cannot_read_says_so_before_the_run;
 mod a_late_save_does_not_undo_newer_bytes;
 mod a_leftover_that_is_not_an_agent_keeps_its_seat;
 mod a_literal_secret_never_reaches_the_file;

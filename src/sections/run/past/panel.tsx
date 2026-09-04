@@ -237,7 +237,7 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
         </h4>
         {run.handoffs.length === 0 ? (
           <p data-empty className="lead px-[18px] py-2">
-            {PASSED_NOTHING}
+            {run.handoffsSaid ?? PASSED_NOTHING}
           </p>
         ) : (
           run.handoffs.map((handoff, index) => (

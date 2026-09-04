@@ -36,8 +36,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::memory::Result;
 use crate::memory::handoff::{Handoff, scan_run_dir};
+use crate::memory::{Error, Result};
 
 /// Katalog Loadouta w projekcie. Ta sama nazwa, co w `commands::run` i `workspace` — i to jest
 /// trzecia kopia tego napisu w drzewie, wypisana świadomie: tamte dwie są prywatne w plikach,
@@ -158,7 +158,14 @@ pub fn list_handoffs_inner(
     let runs_read = dirs.len();
     let mut out = Vec::new();
     for dir in dirs {
-        out.extend(handoffs_of_run(project, &dir));
+        match handoffs_of_run(project, &dir) {
+            Ok(handed) => out.extend(handed),
+            Err(error) => tracing::warn!(
+                run = %dir.display(),
+                %error,
+                "this run's handoffs could not be read, so they are not on the list"
+            ),
+        }
     }
     Ok(HandoffPageWire {
         handoffs: out,
@@ -167,31 +174,31 @@ pub fn list_handoffs_inner(
     })
 }
 
-/// Przekazania **jednego** biegu, w kolejności numerów kroków. Nieczytelny katalog daje pusto.
+/// Przekazania **jednego** biegu, w kolejności numerów kroków. Nieczytelny katalog oddaje zdanie.
 ///
 /// Błąd jednego katalogu biegu **nie zabiera pozostałych** (niezmiennik 5): bieg z katalogiem
-/// `handoffs/`, do którego nie mamy prawa czytać, jest jednym biegiem mniej na liście, a nie
-/// pustą sekcją. `scan_run_dir` sam już milczy o katalogu, którego nie ma.
+/// `handoffs/`, do którego nie mamy prawa czytać, jest jednym biegiem mniej na zbiorczej liście,
+/// a nie pustą sekcją. Historia jednego biegu dostaje zaś powód tej pustki. `scan_run_dir` sam
+/// już milczy o katalogu, którego nie ma.
 ///
 /// Osobna funkcja od [`list_handoffs_inner`] od 2026-08-23, bo pytających jest dwóch i pytają
 /// o co innego: sekcja przekazań pyta „co ten projekt przekazywał", a ekran otwartego biegu
 /// (`crate::commands::history`) pyta „co przekazał TEN bieg". Druga pętla po katalogach,
 /// napisana tam osobno, byłaby drugim miejscem, w którym mieszka reguła „jeden nieczytelny
 /// bieg nie kasuje listy".
-pub(crate) fn handoffs_of_run(project: &Path, run_dir: &Path) -> Vec<HandoffWire> {
+pub(crate) fn handoffs_of_run(
+    project: &Path,
+    run_dir: &Path,
+) -> std::result::Result<Vec<HandoffWire>, String> {
     match scan_run_dir(run_dir) {
-        Ok(handed) => handed
+        Ok(handed) => Ok(handed
             .iter()
             .map(|one| HandoffWire::from(one, project))
-            .collect(),
-        Err(error) => {
-            tracing::warn!(
-                run = %run_dir.display(),
-                %error,
-                "this run's handoffs could not be read, so they are not on the list"
-            );
-            Vec::new()
+            .collect()),
+        Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(crate::ipc::CANNOT_READ_THIS_FOLDER.to_owned())
         }
+        Err(error) => Err(error.to_string()),
     }
 }
 
