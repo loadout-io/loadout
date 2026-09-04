@@ -95,6 +95,29 @@ const BOARD: EvalBoard = {
   cannotRun: null,
 };
 
+const FAILED_BOARD: EvalBoard = {
+  ...BOARD,
+  runs: [
+    {
+      folder: '20260904-120000__z31',
+      when: '2026-09-04 12:00',
+      state: 'failed',
+      passed: 0,
+      judged: 1,
+      costUsd: 0.2,
+      cells: [
+        {
+          case: 'one',
+          variant: 'without',
+          outcome: 'did-not-pass',
+          said: 'The expected file was missing.',
+          costUsd: 0.2,
+        },
+      ],
+    },
+  ],
+};
+
 function screen(busy: LabBusy, board: EvalBoard | null = BOARD): string {
   const store = createLabStore(NEVER, () => Promise.resolve(null));
   store.setState({
@@ -266,5 +289,21 @@ describe('when nothing at all is happening', () => {
         'the resting screen still draws ' + marker + ', so the mark says nothing about the state',
       ).toBe(false);
     }
+  });
+
+  it('puts the smaller spending limit on both paid controls before a click', () => {
+    const writeCases = /<button[^>]*data-lab-propose[^>]*>/.exec(markup)?.[0] ?? '';
+    const proposeFix =
+      /<button[^>]*data-lab-ask-fix[^>]*>/.exec(screen('idle', FAILED_BOARD))?.[0] ?? '';
+    const limit = 'one tenth of your default spending limit';
+
+    expect(
+      writeCases.toLowerCase(),
+      'Write cases starts a paid turn, but its real button does not say what can stop its spend',
+    ).toContain(limit);
+    expect(
+      proposeFix.toLowerCase(),
+      'Propose a fix starts a second paid turn, but its real button does not say what can stop its spend',
+    ).toContain(limit);
   });
 });

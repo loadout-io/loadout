@@ -12,17 +12,18 @@
 //!
 //! **Kandydatki** to JEDNA krótka tura poza grafem, tą samą maszynerią, którą draftuje się
 //! umiejętność i porównuje kopie importu (`commands::skills::one_turn`). Jedna tura nie
-//! potrzebuje planisty i nie ma czego zapisać do katalogu biegu.
+//! potrzebuje planisty i nie ma czego zapisać do katalogu biegu. Od 2026-09 (Z-31) płatny
+//! sterownik tej tury jest jednak klonem z własnym sufitem — brak grafu nie znaczy brak granicy.
 //!
-//! **Przebieg zestawu** to N×M kroków i idzie **przez silnik**, jako zwykły bieg. Skrót
-//! „odpal sterownik wprost", którym idzie tura kandydatek, omija pulę miejsc, sufit wydatku
-//! i dowód śmierci grupy — przy jednym pytaniu o projekt to jest w porządku, przy dwudziestu
-//! siedmiu komórkach to jest zamrożony laptop i rachunek, którego nikt nie zamawiał.
+//! **Przebieg zestawu** to N×M kroków i idzie **przez silnik**, jako zwykły bieg. Jedna tura
+//! może mieć własny mały sufit; dwadzieścia siedem komórek potrzebuje ponadto puli miejsc,
+//! planowania i wspólnego rachunku, bo inaczej powstaje zamrożony laptop i koszt, którego nikt
+//! nie zamawiał.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -31,12 +32,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::engine::drivers::{DecodedEvent, Policy, RunSpec};
+use crate::engine::drivers::{AgentDriver, DecodedEvent, Policy, RunSpec};
 use crate::engine::supervisor::GroupProof;
 use crate::lab::{
     self, Case, CaseStatus, EvalSet, Subject, Variant, cases, file, fix, plan, results, slugify,
 };
-use crate::library::agents::{Overrides, resolve};
+use crate::library::agents::{Agent, Overrides, Vendor, resolve};
 use crate::memory::handoff;
 
 use super::skills::{Ended, give_up_after, off_the_wire, one_turn, some_text, the_agent_saved_as};
@@ -58,6 +59,10 @@ const ALREADY_PROPOSING: &str =
 
 /// Zdanie o turze, która wróciła pusta.
 const SAID_NOTHING: &str = "The agent finished without writing a single case.";
+
+/// Zdanie o vendorze, który nie umie dotrzymać sufitu tej płatnej tury.
+const CANNOT_LIMIT_SPEND: &str =
+    "This agent app cannot keep this turn inside its spending limit, so it did not start.";
 
 /// Zdanie o grupie, po której nie ma dowodu zejścia.
 const MAY_STILL_BE_RUNNING: &str =
@@ -272,8 +277,17 @@ pub fn save_set_inner(
     set: &EvalSet,
     expected: Option<&str>,
 ) -> Result<String, LabError> {
+    save_set(project, set, expected).map_err(|error| LabError::Unwritable(error.to_string()))
+}
+
+/// 2026-09 (Z-31) — ta sama publikacja z typem konfliktu dla jedynego wołającego, który ponawia.
+fn save_set(
+    project: &Path,
+    set: &EvalSet,
+    expected: Option<&str>,
+) -> Result<String, file::SaveError> {
     let path = file::path_for(project, &set.id);
-    file::save(set, &path, expected).map_err(|error| LabError::Unwritable(error.to_string()))
+    file::save(set, &path, expected)
 }
 
 /// Zakłada nowy zestaw dla agenta albo umiejętności i oddaje go otwartego.
@@ -705,6 +719,7 @@ pub async fn propose_cases_inner(
     let effective = resolve(&saved, &Overrides::default())
         .map_err(|error| error.to_string())?
         .agent;
+    let driver = paid_lab_driver(library, drivers, effective.runs_with)?;
 
     let run = Uuid::now_v7();
     let spec = RunSpec {
@@ -734,7 +749,7 @@ pub async fn propose_cases_inner(
     let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
     let drain = tokio::spawn(off_the_wire(inbox));
 
-    let said = match (drivers)(effective.runs_with).start(spec, events).await {
+    let said = match driver.start(spec, events).await {
         Err(error) => Err(error.to_string()),
         Ok(mut handle) => {
             let limit = give_up_after(effective.give_up_after_minutes);
@@ -754,17 +769,56 @@ pub async fn propose_cases_inner(
     }
 
     let written = proposed.cases.len();
+    let without_a_reason = proposed.without_a_reason;
+    let unfinished = proposed.unfinished;
     let mut set = open.set;
     set.cases.extend(proposed.cases);
-    let revision =
-        save_set_inner(project, &set, Some(&open.revision)).map_err(|error| error.to_string())?;
+    let (set, revision) = match save_set(project, &set, Some(&open.revision)) {
+        Ok(revision) => (set, revision),
+        Err(file::SaveError::Changed) => {
+            // 2026-09 (Z-31) — TURA JEST JUŻ OPŁACONA, a kandydatki są addytywne. Accept albo
+            // Discard wykonany podczas tej tury zostaje więc autorytetem: czytamy go ponownie,
+            // wyprowadzamy wolne identyfikatory wobec NOWEGO zestawu i próbujemy dokładnie raz.
+            let latest = read_set_inner(project, set_id).map_err(|error| error.to_string())?;
+            let taken = latest
+                .set
+                .cases
+                .iter()
+                .map(|case| case.id.clone())
+                .collect();
+            let mut set = latest.set;
+            set.cases.extend(cases::read(&said, &taken).cases);
+            let revision = save_set(project, &set, Some(&latest.revision))
+                .map_err(|error| error.to_string())?;
+            (set, revision)
+        }
+        Err(error) => return Err(error.to_string()),
+    };
 
     Ok(ProposedWire {
         set: OpenSet { set, revision },
         written,
-        without_a_reason: proposed.without_a_reason,
-        unfinished: proposed.unfinished,
+        without_a_reason,
+        unfinished,
     })
+}
+
+/// Sterownik jednej płatnej tury Labu, z limitem należącym do tej tury.
+fn paid_lab_driver(
+    library: &Path,
+    drivers: &Drivers,
+    vendor: Vendor,
+) -> Result<Arc<dyn AgentDriver>, String> {
+    // 2026-09 (Z-31) — Settings jest jedynym źródłem domyślnej kwoty, a nazwę flagi zna
+    // wyłącznie adapter (`with_budget`, niezmiennik 23). `None` odmawia PRZED `start`, bo
+    // ciche użycie sterownika bazowego byłoby dokładnie płatną turą bez obiecanego sufitu.
+    let dollars = super::settings::read_settings_inner(library)
+        .map_err(|error| error.to_string())?
+        .default_budget_usd
+        / 10.0;
+    (drivers)(vendor)
+        .with_budget(dollars)
+        .ok_or_else(|| CANNOT_LIMIT_SPEND.to_owned())
 }
 
 /// Co z tury wynikło: tekst agenta, anulowanie jako odmowa z własnym zdaniem, albo powód.
@@ -967,6 +1021,7 @@ pub async fn propose_fix_inner(
     let effective = resolve(&saved, &Overrides::default())
         .map_err(|error| error.to_string())?
         .agent;
+    let driver = paid_lab_driver(library, drivers, effective.runs_with)?;
 
     let spec = RunSpec {
         run_id: Uuid::now_v7(),
@@ -986,7 +1041,7 @@ pub async fn propose_fix_inner(
 
     let (events, inbox) = mpsc::channel::<DecodedEvent>(EVENT_QUEUE);
     let drain = tokio::spawn(off_the_wire(inbox));
-    let said = match (drivers)(effective.runs_with).start(spec, events).await {
+    let said = match driver.start(spec, events).await {
         Err(error) => Err(error.to_string()),
         Ok(mut handle) => {
             let limit = give_up_after(effective.give_up_after_minutes);
@@ -1013,12 +1068,13 @@ pub async fn propose_fix_inner(
     })
 }
 
-/// Rewizja pliku tego agenta, albo `None`, kiedy biblioteki nie da się przeczytać.
-///
-/// `None` znaczy „nie wiem", a Apply czyta to jako brak oczekiwania — czyli zapis, który
-/// niczego nie broni. To jest gorsze niż odmowa, ale lepsze niż oczekiwanie ZMYŚLONE: rewizja
-/// wymyślona odrzucałaby każdy zapis, a wtedy poprawka nie miałaby jak wejść nigdy.
+/// Rewizja tych samych bajtów, z których powstał agent, albo `None`, gdy nie ma zdrowej definicji.
 fn revision_of_agent(library: &Path, id: &str) -> Option<String> {
+    agent_with_revision(library, id).map(|(_agent, revision)| revision)
+}
+
+/// 2026-09 (Z-31) — agent i rewizja z JEDNEGO odczytu, nigdy z dwóch różnych chwil.
+fn agent_with_revision(library: &Path, id: &str) -> Option<(Agent, String)> {
     crate::commands::agents::list_agent_definitions_inner(library)
         .ok()?
         .into_iter()
@@ -1026,7 +1082,7 @@ fn revision_of_agent(library: &Path, id: &str) -> Option<String> {
             crate::library::definition::Definition::Healthy { value, revision }
                 if value.id.to_string() == id =>
             {
-                Some(revision)
+                Some((value, revision))
             }
             _ => None,
         })
@@ -1066,8 +1122,9 @@ fn what_did_not_pass(board: &BoardWire) -> Vec<String> {
 
 /// Stosuje poprawkę: zapisuje nowy tekst instrukcji agenta.
 ///
-/// `expected` jest rewizją pliku agenta, którą okno przeczytało — bez niej Apply skasowałby
-/// cudzą, nowszą zmianę tego samego agenta bez jednego zdania.
+/// `expected` jest rewizją pliku agenta, którą okno przeczytało. Kiedy starsza propozycja jej
+/// nie ma, Apply czyta agenta i jego bieżącą rewizję razem tuż przed zapisem; nigdy nie podaje
+/// publikatorowi `None`, bo tam to słowo znaczy „plik ma nie istnieć".
 ///
 /// Zmienia **jedno pole**. Reszta definicji jedzie z dysku nietknięta: poprawka opisuje tekst,
 /// a nie model, dial ani limit czasu, i implementacja składająca całego agenta z tego, co
@@ -1078,10 +1135,23 @@ pub fn apply_fix_inner(
     instructions: String,
     expected: Option<&str>,
 ) -> Result<String, LabError> {
-    let mut saved = the_agent_saved_as(library, agent)
-        .map_err(|error| LabError::Unreadable(error.to_string()))?;
+    let (mut saved, expected) = match expected {
+        Some(expected) => (
+            the_agent_saved_as(library, agent)
+                .map_err(|error| LabError::Unreadable(error.to_string()))?,
+            expected.to_owned(),
+        ),
+        None => agent_with_revision(library, agent).ok_or_else(|| {
+            // 2026-09 (Z-31) — brak świeżej rewizji jest odmową własnym zdaniem, nie
+            // `None` przekazanym do publikatora i fałszywym komunikatem o zmianie na dysku.
+            LabError::Unreadable(
+                "Loadout could not read this agent again before applying the fix, so nothing was changed."
+                    .to_owned(),
+            )
+        })?,
+    };
     saved.instructions = instructions;
-    crate::commands::agents::save_agent_inner(library, &saved, expected)
+    crate::commands::agents::save_agent_inner(library, &saved, Some(&expected))
         .map(|written| written.revision)
         .map_err(|error| LabError::Unwritable(error.to_string()))
 }

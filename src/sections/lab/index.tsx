@@ -127,7 +127,8 @@ export default function LabScreen({ store = useLab }: LabScreenProps): ReactElem
                 'Ask ' +
                 writer.name +
                 ' to read this project and draft cases for this set. You decide which of them ' +
-                'count — nothing is measured until you accept one.'
+                'count — nothing is measured until you accept one. This turn has its own ' +
+                'spending limit: one tenth of your default spending limit.'
               }
               className={theNextMoveIs(state.board.cannotRun) === 'write-cases' ? LEADS : FOLLOWS}
               onClick={() => {
@@ -709,7 +710,7 @@ function WhatDidNotPass({
             data-lab-ask-fix
             type="button"
             disabled={state.busy !== 'idle'}
-            title="Have an agent read what did not pass and write new instructions. You read them before anything changes."
+            title="Have an agent read what did not pass and write new instructions. You read them before anything changes. This turn has its own spending limit: one tenth of your default spending limit."
             className="h-8 rounded-sm border border-line px-3 text-ui text-body"
             onClick={() => {
               void store.getState().askForAFix(writer);
