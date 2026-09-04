@@ -2104,7 +2104,13 @@ impl Bench {
             serde_json::to_vec_pretty(&json!({
                 "schema": 1, "source": "linear", "enabled": true,
                 "workflow": "ship-it.json", "workspace": workspace,
-                "condition": "assigned-to-me", "api_key": KEY
+                // 2026-09 (Z-22): odniesienie do zmiennej, nie literał. Ten moduł sądzi
+                // ledger ponowień, a nie przechowywanie klucza — a od Z-22 przełącznik
+                // odmawia przepisania pliku z literałem, więc literał w tej fiksturze
+                // zatrzymywałby `set_enabled` w teście, który o kluczu nie mówi nic.
+                // Teeth stałej KEY zostają tam, gdzie ich miejsce: w uszkodzonym pliku
+                // niżej i w asercji, że komunikat go nie powtarza.
+                "condition": "assigned-to-me", "token_environment": "LINEAR_API_KEY"
             }))?,
         )?;
         Ok(Self { home, project })

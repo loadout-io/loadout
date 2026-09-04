@@ -16,6 +16,9 @@ interface SaidStatus {
   readonly machineTime?: string;
 }
 
+export const LEGACY_KEY_MIGRATION =
+  'This trigger stores its Linear key in the file. Put the key in an environment variable, then edit this trigger and enter that variable’s name.';
+
 function utcStartTime(milliseconds: number): { readonly label: string; readonly iso: string } {
   const started = new Date(milliseconds);
   if (Number.isNaN(started.getTime())) {
@@ -134,7 +137,8 @@ export function TriggerRow({
     trigger.workspace === null
       ? 'Choose a workspace in Edit before this trigger can run.'
       : 'That workspace is no longer available. Choose another one in Edit before this trigger can run.';
-  const toggleBlocked = missingWorkspace && !trigger.enabled;
+  const requiresMigration = trigger.requiresMigration === true;
+  const toggleBlocked = requiresMigration || (missingWorkspace && !trigger.enabled);
   const retryLabel =
     !trigger.enabled || missingWorkspace
       ? null
@@ -218,7 +222,11 @@ export function TriggerRow({
           title={statusWorkspace ?? undefined}
           className="lead min-w-0 flex-1"
         >
-          {missingWorkspace ? workspaceStatus : status.sentence}
+          {requiresMigration
+            ? LEGACY_KEY_MIGRATION
+            : missingWorkspace
+              ? workspaceStatus
+              : status.sentence}
         </span>
         {retryLabel === null ? null : (
           /* `.btn` drugoplanowy: obrys `--line-strong` i wypełnienie szkła to dokładnie ten
@@ -254,7 +262,9 @@ export function TriggerRow({
           aria-pressed={trigger.enabled}
           aria-label={
             toggleBlocked
-              ? `Choose a workspace before changing ${trigger.slug}`
+              ? requiresMigration
+                ? `Edit ${trigger.slug} and move its Linear key to an environment variable before changing it`
+                : `Choose a workspace before changing ${trigger.slug}`
               : `${trigger.enabled ? 'Turn off' : 'Turn on'} ${trigger.slug}`
           }
           className="btn-bare h-5 w-9 justify-start rounded-pill border border-line-strong bg-raised px-0.5"

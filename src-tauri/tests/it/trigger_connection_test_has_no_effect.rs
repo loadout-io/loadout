@@ -17,6 +17,8 @@ use tempfile::TempDir;
 
 const KEY: &str = "lin_api_1234567890123456789012345678901234567890";
 const REPLACEMENT: &str = "lin_api_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN";
+const ENVIRONMENT: &str = "LINEAR_API_KEY";
+const REPLACEMENT_ENVIRONMENT: &str = "LOADOUT_LINEAR_API_KEY";
 const VIEWER: &[u8] = br#"{"data":{"viewer":{"id":"viewer-1"}}}"#;
 
 type DirectorySnapshot = Vec<(PathBuf, Option<Vec<u8>>)>;
@@ -40,7 +42,7 @@ fn write_trigger(home: &Path, slug: &str) -> Result<(), Box<dyn Error>> {
             "workspace": workspace,
             "condition": "assigned-to-me",
             "poll_every_minutes": 5,
-            "api_key": KEY,
+            "token_environment": ENVIRONMENT,
         }))?,
     )?;
     Ok(())
@@ -95,12 +97,23 @@ fn new_replacement_and_saved_keys_leave_the_entire_home_unchanged() -> Result<()
     fs::write(home.path().join("workflows/linear.json"), b"workflow bytes")?;
     let before = tree(home.path())?;
 
-    let new_key = triggers::connection_key(home.path(), None, Some(Secret::new(REPLACEMENT)))?;
+    let new_key = triggers::connection_key_with(
+        home.path(),
+        None,
+        Some(Secret::new(REPLACEMENT_ENVIRONMENT)),
+        |name| (name == REPLACEMENT_ENVIRONMENT).then(|| REPLACEMENT.to_owned()),
+    )?;
     assert_viewer_probe(&new_key)?;
-    let replacement =
-        triggers::connection_key(home.path(), Some("mine"), Some(Secret::new(REPLACEMENT)))?;
+    let replacement = triggers::connection_key_with(
+        home.path(),
+        Some("mine"),
+        Some(Secret::new(REPLACEMENT_ENVIRONMENT)),
+        |name| (name == REPLACEMENT_ENVIRONMENT).then(|| REPLACEMENT.to_owned()),
+    )?;
     assert_viewer_probe(&replacement)?;
-    let saved = triggers::connection_key(home.path(), Some("mine"), None)?;
+    let saved = triggers::connection_key_with(home.path(), Some("mine"), None, |name| {
+        (name == ENVIRONMENT).then(|| KEY.to_owned())
+    })?;
     assert!(
         saved.exposes(KEY),
         "the edit probe did not use the saved key"
@@ -202,27 +215,47 @@ fn production_watcher_edge_builds_the_shared_curl_request() -> Result<(), Box<dy
     let home = TempDir::new()?;
     write_trigger(home.path(), "runner")?;
     let mut ran = 0;
-    let poll = triggers::poll_with_curl_runner(home.path(), "runner", 10, |command, config| {
-        ran += 1;
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(args, ["--config", "-"]);
-        let env = command
-            .get_envs()
-            .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value.to_owned())))
-            .collect::<Vec<_>>();
-        assert_eq!(env.len(), 1);
-        assert_eq!(env[0].0, OsStr::new("PATH"));
-        assert!(config.contains(KEY));
-        assert!(config.contains(triggers::ISSUES_QUERY));
-        assert!(config.contains("proto = \"=https\""));
-        assert!(config.contains("max-time = \"20\""));
-        Ok(br#"{"data":{"issues":{"nodes":[]}}}"#.to_vec())
-    })?;
+    let poll = triggers::poll_with_environment_and_curl_runner(
+        home.path(),
+        "runner",
+        10,
+        |name| {
+            assert_eq!(name, ENVIRONMENT);
+            Some(KEY.to_owned())
+        },
+        |command, config| {
+            ran += 1;
+            let args = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(args, ["--config", "-"]);
+            let env = command
+                .get_envs()
+                .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value.to_owned())))
+                .collect::<Vec<_>>();
+            assert_eq!(env.len(), 1);
+            assert_eq!(env[0].0, OsStr::new("PATH"));
+            assert!(config.contains(KEY));
+            assert!(config.contains(triggers::ISSUES_QUERY));
+            assert!(config.contains("proto = \"=https\""));
+            assert!(config.contains("max-time = \"20\""));
+            Ok(br#"{"data":{"issues":{"nodes":[]}}}"#.to_vec())
+        },
+    )?;
     assert_eq!(ran, 1);
     assert_eq!(poll, triggers::TriggerPoll::Armed);
+    for (path, contents) in tree(home.path())? {
+        if let Some(contents) = contents {
+            assert!(
+                !contents
+                    .windows(KEY.len())
+                    .any(|window| window == KEY.as_bytes()),
+                "polling wrote the resolved environment value to {}",
+                path.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -383,9 +416,9 @@ fn each_refusal_is_actionable_distinct_and_redacted() {
         "the issue watcher reflected the Authorization value"
     );
 
-    let missing = triggers::connection_key(Path::new("unused"), None, None)
+    let missing = triggers::connection_key_with(Path::new("unused"), None, None, |_| None)
         .expect_err("a new probe accepted no key");
     let sentence = missing.to_string();
-    assert!(sentence.contains("Enter a Linear API key"));
+    assert!(sentence.contains("environment variable"));
     assert!(!sentence.contains("api_key") && !sentence.contains("trigger file"));
 }

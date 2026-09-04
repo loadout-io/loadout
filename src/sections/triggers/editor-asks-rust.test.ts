@@ -14,14 +14,14 @@ const io = await import('./io');
 const GOLDEN = new URL('../../../src-tauri/commands.golden.txt', import.meta.url);
 const WIRED = new URL('../commands-wired.test.ts', import.meta.url);
 
-const KEY = 'lin_api_1234567890123456789012345678901234567890';
+const ENVIRONMENT = 'LINEAR_API_KEY';
 const DRAFT: TriggerDraft = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
   workspace: '/project',
   pollEveryMinutes: 5,
-  apiKey: KEY,
+  tokenEnvironment: ENVIRONMENT,
 };
 const EXPECTED: TriggerSnapshot = {
   slug: 'linear-0198ca82-ded0-7000-8000-000000000074',
@@ -68,8 +68,8 @@ const EDGES: readonly Edge[] = [
     exported: 'testLinearConnection',
     command: 'test_linear_connection',
     rustArguments: ['slug', 'apiKey'],
-    sent: ['test_linear_connection', { slug: null, apiKey: KEY }],
-    call: () => io.testLinearConnection(null, KEY),
+    sent: ['test_linear_connection', { slug: null, apiKey: ENVIRONMENT }],
+    call: () => io.testLinearConnection(null, ENVIRONMENT),
   },
 ];
 
@@ -129,7 +129,7 @@ describe('every Linear editor action crosses its one named Rust edge', () => {
     });
   }
 
-  it('carries the key only on explicit Test or Save requests, never Delete', async () => {
+  it('carries the environment name on Test or Save requests, never a literal key', async () => {
     for (const edge of EDGES) {
       try {
         await edge.call();
@@ -138,7 +138,8 @@ describe('every Linear editor action crosses its one named Rust edge', () => {
       }
     }
     const calls = invoked.mock.calls.map((call) => JSON.stringify(call));
-    expect(calls.filter((call) => call.includes(KEY))).toHaveLength(3);
-    expect(calls.find((call) => call.includes('delete_trigger'))).not.toContain(KEY);
+    expect(calls.filter((call) => call.includes(ENVIRONMENT))).toHaveLength(3);
+    expect(calls.join('')).not.toContain('lin_api_');
+    expect(calls.find((call) => call.includes('delete_trigger'))).not.toContain(ENVIRONMENT);
   });
 });

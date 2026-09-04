@@ -36,6 +36,10 @@ export interface ConfiguredTriggerEntry {
   readonly workspace?: string | null;
   readonly enabled: boolean;
   readonly pollEveryMinutes: TriggerCadence;
+  /** Safe reference stored in the file. Missing/null identifies a legacy literal-key file. */
+  readonly tokenEnvironment?: string | null;
+  /** Rust sets this only from the credential shape it read; the webview never guesses it. */
+  readonly requiresMigration?: boolean;
   readonly hasApiKey: boolean;
   readonly problem?: never;
 }
@@ -59,7 +63,7 @@ export type TriggerEntry = ConfiguredTriggerEntry | BrokenTriggerEntry;
 /** The only polling cadences which the Linear form can honestly schedule. */
 export type TriggerCadence = 1 | 5 | 15 | 60;
 
-/** Everything Rust needs to create or update a trigger, including a one-way optional secret. */
+/** Everything Rust needs to create or update a trigger, without carrying the secret itself. */
 export interface TriggerDraft {
   readonly source: string;
   readonly condition: string;
@@ -67,7 +71,9 @@ export interface TriggerDraft {
   /** A submitted editor always names one registered workspace; Rust validates it again. */
   readonly workspace: string;
   readonly pollEveryMinutes: TriggerCadence;
-  readonly apiKey: string | null;
+  readonly tokenEnvironment?: string | null;
+  /** Legacy input remains representable so Rust can return its shared secret-shaped refusal. */
+  readonly apiKey?: string | null;
 }
 
 /** A redacted optimistic snapshot. The secret itself never returns to the webview. */
@@ -109,7 +115,7 @@ export interface TriggerIo {
     draft: TriggerDraft,
   ): Promise<ConfiguredTriggerEntry>;
   deleteTrigger(slug: string, expected: TriggerSnapshot): Promise<void>;
-  testLinearConnection(slug: string | null, apiKey: string | null): Promise<void>;
+  testLinearConnection(slug: string | null, tokenEnvironment: string | null): Promise<void>;
 }
 
 /** The whole redacted library. Secrets remain in Rust and never enter this type. */
@@ -136,7 +142,7 @@ export function retryTrigger(slug: string): Promise<TriggerDelivery> {
   return invoke<TriggerDelivery>('retry_trigger', { slug });
 }
 
-/** Create is one request; the secret travels only inside the explicitly submitted draft. */
+/** Create is one request; only an environment-variable name crosses this boundary. */
 export function createTrigger(draft: TriggerDraft): Promise<ConfiguredTriggerEntry> {
   return invoke<ConfiguredTriggerEntry>('create_trigger', { draft });
 }
@@ -156,6 +162,11 @@ export function deleteTrigger(slug: string, expected: TriggerSnapshot): Promise<
 }
 
 /** A dedicated viewer probe: it neither polls a trigger nor arms durable delivery state. */
-export function testLinearConnection(slug: string | null, apiKey: string | null): Promise<void> {
-  return invoke<void>('test_linear_connection', { slug, apiKey });
+export function testLinearConnection(
+  slug: string | null,
+  tokenEnvironment: string | null,
+): Promise<void> {
+  /* 2026-09: the top-level IPC name stays compatible with the registered Rust command, but its
+   * value is now only a variable name; Rust resolves the key after deserialization. */
+  return invoke<void>('test_linear_connection', { slug, apiKey: tokenEnvironment });
 }

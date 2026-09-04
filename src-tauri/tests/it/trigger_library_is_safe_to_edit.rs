@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const SECRET: &str = "lin_api_1234567890123456789012345678901234567890";
+const ENVIRONMENT: &str = "LINEAR_API_KEY";
 
 #[test]
 fn accepted_poll_uses_the_frontend_wire_names() -> Result<(), Box<dyn Error>> {
@@ -107,6 +108,8 @@ fn listing_names_every_file_without_ever_exposing_a_key() -> Result<(), Box<dyn 
     assert_eq!(mine.condition.as_deref(), Some("assigned-to-me"));
     assert_eq!(mine.workflow.as_deref(), Some("ship-it"));
     assert_eq!(mine.enabled, Some(true));
+    assert_eq!(mine.token_environment.as_deref(), Some(ENVIRONMENT));
+    assert_eq!(mine.requires_migration, Some(false));
     assert!(
         mine.problem.is_none(),
         "a healthy file was reported as broken"
@@ -230,7 +233,7 @@ fn switching_is_atomic_and_preserves_every_other_byte_of_meaning() -> Result<(),
         "workflow",
         "workspace",
         "condition",
-        "api_key",
+        "token_environment",
     ] {
         assert_eq!(
             after[key], before[key],
@@ -248,8 +251,45 @@ fn switching_is_atomic_and_preserves_every_other_byte_of_meaning() -> Result<(),
         "a fresh load did not see the persisted switch"
     );
     assert!(
-        loaded.api_key.exposes(SECRET),
-        "the switch replaced or erased the secret"
+        loaded.api_key.exposes(ENVIRONMENT),
+        "the switch replaced or erased the environment reference"
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_toggle_is_refused_without_rewriting_the_file() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let dir = home.path().join(triggers::TRIGGERS_DIR);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("legacy.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&json!({
+            "schema": 1,
+            "source": "linear",
+            "enabled": true,
+            "workflow": "ship-it",
+            "workspace": home.path(),
+            "condition": "assigned-to-me",
+            "api_key": SECRET
+        }))?,
+    )?;
+    let before = fs::read(&path)?;
+
+    let refused = triggers::set_enabled(home.path(), "legacy", false)
+        .expect_err("a toggle rewrote a legacy literal key");
+
+    assert!(matches!(
+        refused,
+        triggers::TriggerError::LiteralKey { what: "a key" }
+    ));
+    assert_eq!(fs::read(&path)?, before);
+    assert!(
+        fs::read_dir(&dir)?
+            .filter_map(Result::ok)
+            .all(|entry| { !entry.file_name().to_string_lossy().ends_with(".writing") }),
+        "refusing the legacy toggle left a rewrite candidate"
     );
     Ok(())
 }
@@ -269,7 +309,7 @@ fn temp_is_restricted_before_content_and_a_manual_edit_wins_the_compare()
         "enabled": true,
         "workflow": "edited-by-hand",
         "condition": "keep this manual edit",
-        "api_key": SECRET
+        "token_environment": "LINEAR_API_KEY_EDITED"
     }))?;
     let mut saw_empty_restricted_temp = false;
     let mut saw_complete_temp = false;
@@ -290,11 +330,11 @@ fn temp_is_restricted_before_content_and_a_manual_edit_wins_the_compare()
             triggers::ToggleStage::BeforeCompare => {
                 let staged = fs::read(temp)?;
                 if !staged
-                    .windows(SECRET.len())
-                    .any(|window| window == SECRET.as_bytes())
+                    .windows(ENVIRONMENT.len())
+                    .any(|window| window == ENVIRONMENT.as_bytes())
                 {
                     return Err(std::io::Error::other(
-                        "the compare seam ran before the complete secret-bearing file was staged",
+                        "the compare seam ran before the complete safe file was staged",
                     ));
                 }
                 saw_complete_temp = true;
@@ -318,7 +358,7 @@ fn temp_is_restricted_before_content_and_a_manual_edit_wins_the_compare()
         fs::read_dir(&dir)?
             .filter_map(Result::ok)
             .all(|entry| { !entry.file_name().to_string_lossy().ends_with(".writing") }),
-        "the conflict left a secret-bearing temp file behind"
+        "the conflict left a trigger temp file behind"
     );
     Ok(())
 }
@@ -385,7 +425,7 @@ fn write_trigger(path: &Path, enabled: bool, workflow: &str) -> Result<(), Box<d
             "workflow": workflow,
             "workspace": workspace,
             "condition": "assigned-to-me",
-            "api_key": SECRET
+            "token_environment": ENVIRONMENT
         }))?,
     )?;
     Ok(())

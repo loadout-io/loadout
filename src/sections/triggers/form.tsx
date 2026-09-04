@@ -13,7 +13,7 @@ export interface TriggerWorkspaceOption {
   readonly folder: string;
 }
 
-/** The editable values in the panel. The saved secret is represented by a fact, never a value. */
+/** The editable values in the panel. `apiKey` now carries only the safe environment name. */
 export interface TriggerFormValue {
   readonly connector: '' | 'linear';
   readonly apiKey: string;
@@ -65,13 +65,11 @@ function cadenceFrom(raw: string, current: TriggerCadence): TriggerCadence {
 }
 
 function missingForSave(
-  mode: TriggerFormProps['mode'],
   value: TriggerFormValue,
-  hasSavedKey: boolean,
   workspaces: readonly TriggerWorkspaceOption[],
 ): string | null {
-  if (value.apiKey.trim() === '' && (mode === 'create' || !hasSavedKey)) {
-    return 'Enter a Linear API key to save this trigger.';
+  if (value.apiKey.trim() === '') {
+    return 'Enter an environment variable name to save this trigger.';
   }
   if (value.connector !== 'linear') return 'Choose Linear to save this trigger.';
   if (!workspaces.some((workspace) => workspace.folder === value.workspace)) {
@@ -87,7 +85,6 @@ export function TriggerForm({
   value,
   workflows,
   workspaces,
-  hasSavedKey,
   refusal,
   connection,
   confirmingDelete,
@@ -100,8 +97,8 @@ export function TriggerForm({
   onConfirmDelete,
   onKeep,
 }: TriggerFormProps): ReactElement {
-  const missing = missingForSave(mode, value, hasSavedKey, workspaces);
-  const canTest = value.apiKey.trim() !== '' || (mode === 'edit' && hasSavedKey);
+  const missing = missingForSave(value, workspaces);
+  const canTest = value.apiKey.trim() !== '';
   const testing = connection.kind === 'testing';
 
   return (
@@ -144,26 +141,24 @@ export function TriggerForm({
       </div>
 
       <div className="stack">
-        <label htmlFor="trigger-api-key" className="label">
-          Linear API key
+        <label htmlFor="trigger-token-environment" className="label">
+          Environment variable name
         </label>
-        {mode === 'edit' && hasSavedKey ? <p className="lead">A Linear key is saved.</p> : null}
         <input
-          id="trigger-api-key"
-          data-trigger-field="apiKey"
+          id="trigger-token-environment"
+          data-trigger-field="tokenEnvironment"
           className="field"
-          type="password"
-          autoComplete="new-password"
+          type="text"
+          autoComplete="off"
           disabled={busy !== 'idle'}
           value={value.apiKey}
-          aria-label={
-            mode === 'edit' && hasSavedKey ? 'Replace the saved Linear API key' : undefined
-          }
           onChange={(event) => {
             onChange({ ...value, apiKey: event.target.value });
           }}
         />
-        <p className="lead">Create or copy it in Linear Settings → Security &amp; access.</p>
+        <p className="lead">
+          Put the Linear key in this environment variable before testing or saving.
+        </p>
       </div>
 
       <div className="stack">

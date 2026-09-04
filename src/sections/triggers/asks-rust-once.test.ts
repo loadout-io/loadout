@@ -9,14 +9,14 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: invoked }));
 
 const io = await import('./io');
 const GOLDEN = new URL('../../../src-tauri/commands.golden.txt', import.meta.url);
-const KEY = 'lin_api_1234567890123456789012345678901234567890';
+const ENVIRONMENT = 'LINEAR_API_KEY';
 const DRAFT: TriggerDraft = {
   source: 'linear',
   condition: 'assigned-to-me',
   workflow: 'analysis.json',
   workspace: '/project',
   pollEveryMinutes: 5,
-  apiKey: KEY,
+  tokenEnvironment: ENVIRONMENT,
 };
 const EXPECTED: TriggerSnapshot = {
   slug: 'linear-0198ca82-ded0-7000-8000-000000000074',
@@ -98,8 +98,8 @@ const EDGES: readonly Edge[] = [
     exported: 'testLinearConnection',
     command: 'test_linear_connection',
     rustArguments: ['slug', 'apiKey'],
-    sent: ['test_linear_connection', { slug: null, apiKey: KEY }],
-    call: () => io.testLinearConnection(null, KEY),
+    sent: ['test_linear_connection', { slug: null, apiKey: ENVIRONMENT }],
+    call: () => io.testLinearConnection(null, ENVIRONMENT),
   },
 ];
 

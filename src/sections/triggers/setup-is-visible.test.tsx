@@ -77,7 +77,9 @@ const HEALTHY: ConfiguredTriggerView = {
   workflowName: 'Analysis',
   enabled: true,
   pollEveryMinutes: 5,
-  hasApiKey: true,
+  tokenEnvironment: 'LINEAR_API_KEY',
+  requiresMigration: false,
+  hasApiKey: false,
   status: { kind: 'armed' },
 };
 
@@ -102,7 +104,7 @@ const EDIT: OpenedTriggerEditor = {
   mode: 'edit',
   value: {
     connector: 'linear',
-    apiKey: '',
+    apiKey: 'LINEAR_API_KEY',
     workflow: 'verify.json',
     workspace: WORKSPACE,
     pollEveryMinutes: 15,
@@ -303,7 +305,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
       workflow: 'loaded-analysis.json',
       workspace: WORKSPACE,
       pollEveryMinutes: 5,
-      apiKey: 'lin_api_explicit_save_key',
+      tokenEnvironment: 'LINEAR_API_KEY',
     });
     expect(store.getState().triggers[0]?.workflowName).toBe('Loaded analysis');
   });
@@ -313,7 +315,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
     expect(markup).toContain('data-trigger-editor');
     for (const label of [
       'Connector',
-      'Linear API key',
+      'Environment variable name',
       'When',
       'Workspace',
       'Check every',
@@ -322,10 +324,10 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
       expect(markup).toContain(label);
     }
     expect(markup).toContain('An issue is assigned to you');
-    expect(markup.replaceAll('&amp;', '&')).toContain(
-      'Create or copy it in Linear Settings → Security & access.',
+    expect(markup).toContain(
+      'Put the Linear key in this environment variable before testing or saving.',
     );
-    expect(markup).toMatch(/<input[^>]*type="password"/);
+    expect(markup).toMatch(/<input[^>]*type="text"/);
     expect(occurrences(markup, 'value="linear"')).toBe(1);
     expect(markup).not.toMatch(/Jira|ClickUp|Slack/);
     for (const cadence of [1, 5, 15, 60]) {
@@ -335,7 +337,8 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
     expect(markup).toContain('Analysis');
     expect(markup).toContain('value="analysis.json"');
     for (const action of ['Test connection', 'Save', 'Cancel']) expect(markup).toContain(action);
-    expect(markup).toContain('Enter a Linear API key to save this trigger.');
+    expect(markup).toContain('Enter an environment variable name to save this trigger.');
+    expect(markup).toMatch(/data-trigger-action="save"[^>]*disabled=""/);
   });
 
   it('keeps Save visibly unavailable until a workflow is chosen', () => {
@@ -344,7 +347,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
         mode: 'create',
         value: {
           connector: 'linear',
-          apiKey: 'lin_api_ready_for_an_explicit_save',
+          apiKey: 'LINEAR_API_KEY',
           workflow: '',
           workspace: WORKSPACE,
           pollEveryMinutes: 1,
@@ -355,11 +358,10 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
     expect(markup).toMatch(/data-trigger-action="save"[^>]*disabled=""/);
   });
 
-  it('edits with a saved-key fact and an empty replacement field, never the secret', () => {
+  it('edits with the saved environment name and never receives the secret', () => {
     const secret = 'lin_api_this_value_must_never_return_to_the_window';
     const markup = screen({ triggers: [HEALTHY], opened: EDIT });
-    expect(markup).toContain('A Linear key is saved.');
-    expect(markup).toMatch(/<input[^>]*type="password"[^>]*value=""/);
+    expect(markup).toMatch(/<input[^>]*type="text"[^>]*value="LINEAR_API_KEY"/);
     expect(markup).not.toContain(secret);
     expect(markup).toContain('value="verify.json"');
     expect(markup).toContain('value="15"');
@@ -395,7 +397,7 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
       mode: 'edit',
       value: {
         connector: 'linear',
-        apiKey: '',
+        apiKey: 'LINEAR_API_KEY',
         workflow: HEALTHY.workflow,
         workspace: HEALTHY.workspace ?? '',
         pollEveryMinutes: HEALTHY.pollEveryMinutes,

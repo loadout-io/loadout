@@ -232,7 +232,7 @@ describe('each trigger keeps its own polling cadence on the root heartbeat', () 
         workflow: 'analysis.json',
         workspace: '/project',
         pollEveryMinutes: 15,
-        apiKey: null,
+        tokenEnvironment: 'LINEAR_API_KEY',
       })
       .catch(() => false);
     expect(updated).toHaveBeenCalledTimes(1);
@@ -288,7 +288,7 @@ describe('each trigger keeps its own polling cadence on the root heartbeat', () 
       workflow: 'analysis.json',
       workspace: '/project',
       pollEveryMinutes: 60,
-      apiKey: 'lin_api_explicit_create_key',
+      tokenEnvironment: 'LINEAR_API_KEY',
     });
     checked.mockClear();
     await clock.advanceMinutes(59);
