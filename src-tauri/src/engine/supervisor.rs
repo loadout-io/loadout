@@ -2184,6 +2184,14 @@ impl Supervised {
         }
         let status = self.child.wait().await?;
         self.status = Some(status);
+        // 2026-09 (Z-30) — DOWÓD BIERZEMY TU, BO TU JEST DARMOWY. Lider właśnie został zebrany,
+        // więc jeżeli żadna znana grupa nie odpowiada już na sygnał zerowy, mamy `ESRCH`
+        // z niezmiennika 6 bez wysyłania czegokolwiek. Bez tego uchwyt po naturalnym wyjściu
+        // ginął z `proved_dead == false` i gwardia `Drop` strzelała dziewiątką w numer, który od
+        // czasu przeglądu mógł już należeć do kogoś innego (powód przy [`machine_booted_at`]).
+        if self.first_survivor().is_none() {
+            self.proved_dead = true;
+        }
         Ok(status)
     }
 
@@ -2206,6 +2214,10 @@ impl Supervised {
     /// Wołane drugi raz na tej samej grupie nadal zwraca `Dead`, tylko bez statusu: powtórzone
     /// zatrzymanie jest normalną ścieżką (anulowanie biegu, po którym idzie `Drop`), a nie
     /// błędem.
+    ///
+    /// 2026-09 (Z-30) — od tego dnia wchodzi tędy także uchwyt, którego dowód wziął `wait()` po
+    /// naturalnym wyjściu. To nie gubi kodu wyjścia: status odbiera się **raz** i odbiera go ten,
+    /// kto czekał (`stopping_a_group_twice_still_answers_dead_without_a_status`).
     pub async fn stop(&mut self, grace: Duration) -> GroupProof {
         if self.proved_dead {
             return GroupProof::Dead { status: None };
@@ -2396,6 +2408,42 @@ fn group_is_gone(pgid: i32) -> bool {
     }
 }
 
+/// Dobija te zapamiętane grupy, które na sondę jeszcze odpowiadają — i **żadnej innej**.
+///
+/// 2026-09 (Z-30) — SONDA ZEREM PRZED DZIEWIĄTKĄ, i to jest ta sama ostrożność, którą przy
+/// odzyskiwaniu po awarii niesie strażnik czasu startu maszyny. `pgid` trafia do
+/// [`ProcessTree::groups`] przy przeglądzie i **zostaje tam do końca życia uchwytu**, a numery
+/// procesów przewijają się na macOS w godzinach (`kern.maxproc` = 16 000, powód przy
+/// [`machine_booted_at`]). Dziewiątka w numer, który od tamtego przeglądu zdążył zwolnić się
+/// i przypaść komuś innemu, jest błędem POPRAWNOŚCI, nie ryzykiem teoretycznym [T7 ryzyko 2].
+///
+/// **KAŻDA grupa, razem z grupą lidera.** Pierwsza wersja tej poprawki wyjmowała lidera przed
+/// pętlą, bo schodzi on przez uchwyt dziecka (`ChildWrapper::start_kill`), a nie przez `killpg`
+/// po gołym numerze — i to była luka, nie skrót: uchwyt zna swojego potomka tylko dopóki ten
+/// jest jego potomkiem, a `start_kill` po zebranym dziecku jest strzałem bez sondy dokładnie tak
+/// samo, jak każdy inny. Kto strzela, ten przechodzi tędy; sposób dostarczenia sygnału wybiera
+/// wołający, w domknięciu `kill`.
+///
+/// Obie czynności wjeżdżają argumentem, bo to jedyne dwie rzeczy w tej decyzji, które rozmawiają
+/// z systemem: dzięki temu kryterium akceptacji sprawdza SAMĄ politykę — łącznie z kolejnością,
+/// w jakiej te dwie czynności padają — bez zabijania czegokolwiek na prawdziwej maszynie.
+#[cfg(unix)]
+#[doc(hidden)]
+pub fn kill_what_still_answers(
+    groups: &[i32],
+    mut is_gone: impl FnMut(i32) -> bool,
+    mut kill: impl FnMut(i32),
+) {
+    for &pgid in groups {
+        // Grupa, która nie odpowiada, jest już pusta — nie ma tu czego dobijać, a jedyne, co
+        // dziewiątka mogłaby w tym miejscu trafić, to cudza praca pod przewiniętym numerem.
+        if is_gone(pgid) {
+            continue;
+        }
+        kill(pgid);
+    }
+}
+
 /// Czy w grupie `pgid` nie ma już nikogo — **publiczne okno** na ten sam pomiar, którym schodzi
 /// każda grupa tego pliku.
 ///
@@ -2573,17 +2621,26 @@ impl Drop for Supervised {
         let (pids, groups) = descendants_of(&self.tree.descendants);
         self.tree.descendants.extend(pids);
         self.tree.groups.extend(groups);
-        for &pgid in &self.tree.groups {
-            if pgid != self.group.pgid {
-                let _ = signal_group(pgid, SIGNAL_KILL);
-            }
-        }
 
         // 2026-08-15 — dziewiątka bez łaski, bo to jest ścieżka, na której wołający wyszedł
         // wcześniej przez `?` i nikt już nie trzyma niczego, czym dałoby się poczekać.
         // Zostawiona grupa to `claude` palący limit w tle, zmierzone jako `total=2 orphaned=2`
         // [T7 §3.1].
-        let _ = self.child.start_kill();
+        //
+        // 2026-09 (Z-30) — GRUPA LIDERA IDZIE TĄ SAMĄ DROGĄ, CO KAŻDA INNA: najpierw sonda, potem
+        // sygnał. Sposób dostarczenia zostaje różny i to jest jedyna różnica, jaka lidera dotyczy
+        // — sygnał wysyła jego własny uchwyt, bo obok niego gołe `killpg` byłoby DRUGIM nadawcą
+        // do tej samej grupy (ten sam powód, co w [`Supervised::term_new_groups`]).
+        let remembered: Vec<i32> = self.tree.groups.iter().copied().collect();
+        let leader = self.group.pgid;
+        let child = &mut self.child;
+        kill_what_still_answers(&remembered, group_is_gone, |pgid| {
+            if pgid == leader {
+                let _ = child.start_kill();
+            } else {
+                let _ = signal_group(pgid, SIGNAL_KILL);
+            }
+        });
 
         // Zebranie lidera jest częścią zabijania, nie sprzątaniem po nim: zombie **nadal
         // odpowiada** na sygnał zerowy, więc grupa z zombie w środku nigdy nie da `ESRCH` —
