@@ -172,8 +172,9 @@ async fn every_known_model_prices_three_unequal_token_columns() -> Result<(), Bo
         assert_eq!(
             outcome.tokens,
             Tokens {
-                input: INPUT,
-                cached: CACHED,
+                uncached_input: INPUT - CACHED,
+                cache_read: CACHED,
+                cache_write: 0,
                 output: OUTPUT,
             },
             "{model}: the oracle is meaningful only if the real adapter kept the deliberately \
@@ -222,17 +223,15 @@ async fn run_json_marks_only_the_estimate_and_spent_in_sums_it() -> Result<(), B
 
     let codex = step_named(&run, "Code")?;
     assert_eq!(
-        codex.get("input_tokens").and_then(Value::as_u64),
-        Some(INPUT)
+        codex.get("uncached_input").and_then(Value::as_u64),
+        Some(INPUT - CACHED)
     );
     assert_eq!(
-        codex.get("cached_tokens").and_then(Value::as_u64),
+        codex.get("cache_read").and_then(Value::as_u64),
         Some(CACHED)
     );
-    assert_eq!(
-        codex.get("output_tokens").and_then(Value::as_u64),
-        Some(OUTPUT)
-    );
+    assert_eq!(codex.get("cache_write").and_then(Value::as_u64), Some(0));
+    assert_eq!(codex.get("output").and_then(Value::as_u64), Some(OUTPUT));
     let codex_cost = codex
         .get("cost_usd")
         .and_then(Value::as_f64)

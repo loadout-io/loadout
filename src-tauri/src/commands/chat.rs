@@ -2702,11 +2702,15 @@ async fn read_along(
         }
         if let AgentEvent::Finished(outcome) = &event {
             if let Some(evidence) = &evidence {
+                // 2026-09 (Z-48) — prywatne pliki rozmowy zachowują stary schemat addytywnie
+                // (niezmiennik 25), ale od tej granicy liczby mają już wspólne znaczenie.
+                // `cache_write` nie ma w nim kolumny; zwykłe kroki zachowują go w `run.json`,
+                // a zmiana schematu prywatnej rozmowy pozostaje poza zakresem Z-48.
                 let counters = TurnCounters {
-                    turns: u64::from(outcome.turns),
-                    input_tokens: outcome.tokens.input,
+                    turns: outcome.vendor_turns().map(u64::from).unwrap_or_default(),
+                    input_tokens: outcome.tokens.uncached_input,
                     output_tokens: outcome.tokens.output,
-                    cached_tokens: outcome.tokens.cached,
+                    cached_tokens: outcome.tokens.cache_read,
                 };
                 let cancelled = outcome.reason == FinishReason::Cancelled;
                 if evidence

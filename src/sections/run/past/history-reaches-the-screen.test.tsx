@@ -77,6 +77,9 @@ const CANNOT_READ =
   "Loadout can't read this folder. Allow it under System Settings › Privacy & Security › Files " +
   'and Folders.';
 
+/** Zdanie o koszcie kontekstu, które ma stać w nagłówku kroku, nie tylko w danych. */
+const CONTEXT_PER_TURN = '154 turns · 168k length per turn on average';
+
 /** Wiersz zapisanego strumienia, w kształcie, który przyjeżdża z Rusta. */
 const READ_LINE = {
   kind: 'read' as const,
@@ -103,6 +106,7 @@ const OPENED: PastRun = {
       summary: 'Wrote the plan.',
       error: '',
       costUsd: 0.25,
+      contextPerTurn: CONTEXT_PER_TURN,
       lines: [],
     },
     {
@@ -320,6 +324,11 @@ describe('typing /history puts what really ran on the screen', () => {
         "card. Leaving the wire value in a store or painting the planner's succeeded state as " +
         'done would both hide what happened from the person reading this screen.',
     ).toContain('>not run</span>');
+    expect(
+      withTheRun,
+      'the saved step header must show the vendor turns and average context where a person ' +
+        'reads the history, not only carry the calculation in an unread value',
+    ).toContain(CONTEXT_PER_TURN + ' · $0.25');
     expect(
       withTheRun,
       'what one step handed to the next is the only way a result travels between them, and it ' +

@@ -37,7 +37,7 @@ const DURATION_MS: u64 = 6_220;
 
 /// Zdanie, które czyta człowiek na końcu tury. Liczby w nim są zaokrąglone **do wyświetlenia**,
 /// a pola obok niosą wartości surowe — na tym polega różnica między formatowaniem a utratą.
-const DONE_TEXT: &str = "Done · 2 turns · 6.2s · $0.15";
+const DONE_TEXT: &str = "Done · 2 turns · 33k length per turn on average · 6.2s · $0.15";
 
 /// Kiedy wraca limit u dostawcy, w sekundach epoki uniksowej. Ta liczba jedzie z drutu i nie
 /// wolno jej policzyć samemu: godzinę lokalną renderuje widok [T7 §7.2].
@@ -81,12 +81,13 @@ fn structure_samples() -> Vec<Line> {
         Line::Done {
             agent: AGENT.to_owned(),
             text: DONE_TEXT.to_owned(),
-            turns: TURNS,
+            vendor_turns: Some(TURNS),
             duration_ms: DURATION_MS,
             cost_usd: Some(0.148_362_900_000_000_02),
-            input_tokens: 4,
-            output_tokens: 336,
-            cached_tokens: 65_403,
+            uncached_input: 4,
+            cache_read: 65_403,
+            cache_write: 0,
+            output: 336,
             ended: loadout_lib::engine::line::Ended::Well,
         },
     ]
@@ -258,13 +259,17 @@ async fn the_closing_row_copies_the_numbers_the_result_line_reported() -> anyhow
 
     match done {
         Line::Done {
-            turns,
+            vendor_turns,
             duration_ms,
             cost_usd,
             text,
             ..
         } => {
-            assert_eq!(*turns, TURNS, "the turn count is copied, not counted here");
+            assert_eq!(
+                *vendor_turns,
+                Some(TURNS),
+                "the vendor turn count is copied, not counted here"
+            );
             assert_eq!(
                 *duration_ms, DURATION_MS,
                 "the duration is the vendor's duration_ms, copied. Timing it ourselves would \

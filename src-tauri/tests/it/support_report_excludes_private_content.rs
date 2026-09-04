@@ -27,12 +27,12 @@ const PRIVATE: [&str; 12] = [
     "PRIVATE_NAME_T34",
 ];
 
-const ALLOWED_KEYS: [&str; 39] = [
-    "agentTurns",
+const ALLOWED_KEYS: [&str; 41] = [
     "appVersion",
     "artifacts",
     "attempts",
-    "cachedTokens",
+    "cacheRead",
+    "cacheWrite",
     "complete",
     "conversations",
     "counts",
@@ -50,13 +50,13 @@ const ALLOWED_KEYS: [&str; 39] = [
     "handoffs",
     "id",
     "inputManifest",
-    "inputTokens",
     "kind",
     "model",
     "modelConfigured",
-    "outputTokens",
+    "output",
     "present",
     "receipt",
+    "reason",
     "runs",
     "schemaVersion",
     "startedAt",
@@ -69,7 +69,9 @@ const ALLOWED_KEYS: [&str; 39] = [
     "total",
     "turnFiles",
     "turns",
+    "uncachedInput",
     "vendor",
+    "vendorTurns",
     "workspace",
 ];
 
@@ -192,7 +194,7 @@ fn seed_conversations(active: &Path) -> Result<(), Box<dyn Error>> {
             "startedAt": 1_777_777_777_301_i64, "endedAt": 1_777_777_777_302_i64,
             "attempts": 2, "turns": 1, "failureKind": "deliveryFailed",
             "error": "PRIVATE_ERROR_T34", "exitCode": 17, "deathProof": true,
-            "agentTurns": 1, "inputTokens": 21, "outputTokens": 13, "cachedTokens": 8
+            "agentTurns": 1, "inputTokens": 13, "outputTokens": 13, "cachedTokens": 8
         }))?,
     )?;
     write(
@@ -296,11 +298,7 @@ fn assert_run_facts(document: &Value) -> Result<(), Box<dyn Error>> {
         .ok_or("the safe step has no report entry")?;
     assert_eq!(step.get("vendor").and_then(Value::as_str), Some("codex"));
     assert_eq!(step.get("exitCode").and_then(Value::as_i64), Some(17));
-    for (key, value) in [
-        ("inputTokens", 13),
-        ("outputTokens", 8),
-        ("cachedTokens", 3),
-    ] {
+    for (key, value) in [("uncachedInput", 10), ("output", 8), ("cacheRead", 3)] {
         assert_eq!(step.get(key).and_then(Value::as_u64), Some(value));
     }
     assert_eq!(
@@ -366,11 +364,7 @@ fn assert_conversation_facts(document: &Value) -> Result<(), Box<dyn Error>> {
             .and_then(Value::as_bool),
         Some(true)
     );
-    for (key, value) in [
-        ("inputTokens", 21),
-        ("outputTokens", 13),
-        ("cachedTokens", 8),
-    ] {
+    for (key, value) in [("uncachedInput", 13), ("output", 13), ("cacheRead", 8)] {
         assert_eq!(failed.get(key).and_then(Value::as_u64), Some(value));
     }
     assert_eq!(failed.get("exitCode").and_then(Value::as_i64), Some(17));

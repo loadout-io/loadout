@@ -187,14 +187,15 @@ async fn a_completed_turn_hands_over_its_tokens_and_admits_it_knows_no_cost()
     );
 
     assert_eq!(
-        outcome.tokens.input, 24_763,
-        "fresh input, straight from usage.input_tokens"
+        outcome.tokens.uncached_input, 315,
+        "fresh input is usage.input_tokens without its cached_input_tokens"
     );
     assert_eq!(
-        outcome.tokens.cached, 24_448,
+        outcome.tokens.cache_read, 24_448,
         "usage.cached_input_tokens, and this is the number that says whether context isolation \
          works at all - reading the wrong field here makes that measurement silently meaningless"
     );
+    assert_eq!(outcome.tokens.cache_write, 0);
     assert_eq!(
         outcome.tokens.output, 122,
         "output, straight from usage.output_tokens"

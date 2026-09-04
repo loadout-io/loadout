@@ -132,14 +132,12 @@ impl Prices {
     #[must_use]
     pub fn estimate(&self, model: &str, tokens: Tokens) -> Option<f64> {
         let rate = self.rate_for(model)?;
-        // 2026-09 (Z-12): `input_tokens` Codeksa już zawiera `cached_input_tokens`. Liczenie obu
-        // kolumn jako osobnych wejść płaciło za cache dwa razy — w pamięci projektu pokazało
-        // 23,68 USD zamiast 5,53 USD — więc pełną stawkę dostają wyłącznie świeże tokeny.
-        let fresh_input = tokens.input.saturating_sub(tokens.cached);
+        // 2026-09 (Z-48): oba sterowniki przekazują już świeże wejście bez cache'u. Drugie
+        // odejmowanie tutaj zerowałoby poprawnie znormalizowane liczby Claude'a.
         // `From<u64> for f64` nie istnieje. Parsowanie dziesiętnego zapisu zachowuje pełny zakres
         // licznika bez ryzykownego, wyciszanego rzutowania; dla każdego `u64` wynik jest skończony.
-        let input = fresh_input.to_string().parse::<f64>().ok()?;
-        let cached = tokens.cached.to_string().parse::<f64>().ok()?;
+        let input = tokens.uncached_input.to_string().parse::<f64>().ok()?;
+        let cached = tokens.cache_read.to_string().parse::<f64>().ok()?;
         let output = tokens.output.to_string().parse::<f64>().ok()?;
         Some((input * rate.input + cached * rate.cached + output * rate.output) / 1_000_000.0)
     }

@@ -137,8 +137,9 @@ async fn the_serialized_final_row_names_the_model_whose_price_is_unknown()
     assert_eq!(
         outcome.tokens,
         Tokens {
-            input: INPUT,
-            cached: CACHED,
+            uncached_input: INPUT - CACHED,
+            cache_read: CACHED,
+            cache_write: 0,
             output: OUTPUT,
         },
         "an unknown price must not discard the usage the vendor did report"
@@ -262,17 +263,12 @@ async fn run_json_keeps_usage_without_money_or_false_provenance() -> Result<(), 
         .and_then(|steps| steps.first())
         .ok_or("run.json has no first step")?;
     assert_eq!(
-        step.get("input_tokens").and_then(Value::as_u64),
-        Some(INPUT)
+        step.get("uncached_input").and_then(Value::as_u64),
+        Some(INPUT - CACHED)
     );
-    assert_eq!(
-        step.get("cached_tokens").and_then(Value::as_u64),
-        Some(CACHED)
-    );
-    assert_eq!(
-        step.get("output_tokens").and_then(Value::as_u64),
-        Some(OUTPUT)
-    );
+    assert_eq!(step.get("cache_read").and_then(Value::as_u64), Some(CACHED));
+    assert_eq!(step.get("cache_write").and_then(Value::as_u64), Some(0));
+    assert_eq!(step.get("output").and_then(Value::as_u64), Some(OUTPUT));
     assert!(
         step.get("cost_usd").is_some_and(Value::is_null),
         "the unknown model must keep a null price, never zero or an omitted token ledger: {step}"

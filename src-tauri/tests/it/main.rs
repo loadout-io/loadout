@@ -463,5 +463,6 @@ mod z38_the_window_reads_the_ceiling;
 mod z39_a_step_stopped_from_outside_says_so;
 mod z39_the_lead_stops_a_run;
 mod z3_a_stop_gives_the_heavy_seat_back;
+mod z48_one_token_dictionary;
 mod z5_a_turn_starts_over_a_dead_group;
 mod z5_closing_a_step_has_a_ceiling;

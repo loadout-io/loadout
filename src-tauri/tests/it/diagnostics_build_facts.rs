@@ -20,7 +20,7 @@ fn keys(value: &Value) -> Result<BTreeSet<&str>, Box<dyn Error>> {
 fn assert_empty_report(workspace: &std::path::Path, text: &str) -> Result<(), Box<dyn Error>> {
     let document: Value = serde_json::from_str(text)?;
 
-    assert_eq!(document["schemaVersion"].as_u64(), Some(2));
+    assert_eq!(document["schemaVersion"].as_u64(), Some(3));
     assert_eq!(
         document["appVersion"].as_str(),
         Some(env!("CARGO_PKG_VERSION"))

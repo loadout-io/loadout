@@ -9,7 +9,7 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-const REPORT_SCHEMA_VERSION: u8 = 2;
+const REPORT_SCHEMA_VERSION: u8 = 3;
 
 /// Stale, allowlistowane odmowy granicy schowka. Zrodlo bledu nigdy nie przechodzi do okna.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -97,6 +97,9 @@ struct StepFacts {
     id: String,
     kind: &'static str,
     state: &'static str,
+    /// Zamknięte zdanie wyłącznie dla kopii pętli, której Loadout nie uruchomił.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vendor: Option<&'static str>,
     model: Presence,
@@ -123,13 +126,15 @@ struct StepFacts {
     ended_at: Option<i64>,
     exit_code: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    turns: Option<u64>,
+    vendor_turns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    input_tokens: Option<u64>,
+    uncached_input: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    output_tokens: Option<u64>,
+    cache_read: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cached_tokens: Option<u64>,
+    cache_write: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<u64>,
     artifacts: ArtifactSet,
 }
 
@@ -151,10 +156,13 @@ struct ConversationFacts {
     ended_at: Option<i64>,
     attempts: usize,
     turns: usize,
-    agent_turns: u64,
-    input_tokens: u64,
-    output_tokens: u64,
-    cached_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor_turns: Option<u64>,
+    uncached_input: u64,
+    cache_read: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_write: Option<u64>,
+    output: u64,
     exit_code: Option<i64>,
     death_proof: Presence,
     artifacts: ConversationArtifacts,
@@ -217,11 +225,25 @@ struct StepInput {
     #[serde(default)]
     kind: String,
     #[serde(default)]
+    not_run_because: Option<String>,
+    #[serde(default)]
     started_at: Option<i64>,
     #[serde(default)]
     ended_at: Option<i64>,
     #[serde(default)]
     exit_code: Option<i64>,
+    #[serde(default, alias = "vendorTurns")]
+    vendor_turns: Option<u64>,
+    #[serde(default, alias = "uncachedInput")]
+    uncached_input: Option<u64>,
+    #[serde(default, alias = "cacheRead")]
+    cache_read: Option<u64>,
+    #[serde(default, alias = "cacheWrite")]
+    cache_write: Option<u64>,
+    #[serde(default)]
+    output: Option<u64>,
+    /// Stary kształt pliku. Nie jest aliasem serde do nowych pól, bo znaczenie wejścia
+    /// Codeksa trzeba najpierw znormalizować, a jego `turns` odrzucić (2026-09, Z-48).
     #[serde(default)]
     turns: Option<u64>,
     #[serde(default, alias = "inputTokens")]
@@ -247,6 +269,61 @@ struct StepInput {
 struct EffectiveInput {
     #[serde(default)]
     model: Option<String>,
+    #[serde(default, rename = "runsWith")]
+    runs_with: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NormalizedStepUsage {
+    vendor_turns: Option<u64>,
+    uncached_input: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    output: Option<u64>,
+}
+
+/// Nowy zapis jest już neutralny wobec vendora; stary wymaga odjęcia cache'u wyłącznie
+/// dla Codeksa i odrzucenia jego sztucznej jednej tury (2026-09, Z-48).
+fn normalized_step_usage(step: &StepInput) -> NormalizedStepUsage {
+    let vendor = step_vendor(step);
+    let cache_read = step.cache_read.or(step.cached_tokens);
+    let uncached_input = step.uncached_input.or_else(|| {
+        step.input_tokens.map(|input| {
+            if vendor == Some("codex") {
+                input.saturating_sub(cache_read.unwrap_or_default())
+            } else {
+                input
+            }
+        })
+    });
+    let vendor_turns = step
+        .vendor_turns
+        .or_else(|| (vendor == Some("claude")).then_some(step.turns).flatten());
+    NormalizedStepUsage {
+        vendor_turns,
+        uncached_input,
+        cache_read,
+        cache_write: step.cache_write,
+        output: step.output.or(step.output_tokens),
+    }
+}
+
+/// Migawka wykonania jest prawdą dla starszych plików, w których `agent` mógł być UUID-em;
+/// bieżący zapis trzyma już nazwę vendora bezpośrednio (2026-09, niezmiennik 4).
+fn step_vendor(step: &StepInput) -> Option<&'static str> {
+    step.effective
+        .as_ref()
+        .and_then(|effective| safe_vendor(&effective.runs_with))
+        .or_else(|| safe_vendor(&step.agent))
+        // Przed migawką `effective` stary słownik liczników i identyfikator agenta oznaczały
+        // jedynego wspieranego vendora, Claude'a. Nowego nieznanego vendora nie zgadujemy
+        // (2026-09, Z-48; niezmienniki 4 i 5).
+        .or_else(|| {
+            (step.uncached_input.is_none()
+                && step.input_tokens.is_some()
+                && !step.agent.trim().is_empty())
+            .then_some("claude")
+        })
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -380,20 +457,33 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
         };
         artifacts = artifacts.saturating_add(handoffs);
         let mut steps = Vec::new();
-        for step in input.steps {
+        for (ordinal, step) in input.steps.into_iter().enumerate() {
             let Some(step_id) = safe_identifier(&step.id) else {
                 continue;
             };
-            let set = step_artifacts(&run_dir, &step_id);
+            let set = step_artifacts(&run_dir, &step_id, ordinal);
             let kind = safe_step_kind(&step.kind, &step.agent);
             let failure_kind =
                 safe_failure_kind(kind, &step.status, step.exit_code, step.death_proof, &set);
-            artifacts = artifacts.saturating_add(artifact_count(&set));
+            // Przekazania zostały już policzone raz na poziomie biegu. Po Z-48 widać je
+            // także przy kroku, ale receipt nadal liczy fizyczne pliki, nie dwa widoki tego
+            // samego pliku (2026-09, niezmiennik 13).
+            artifacts = artifacts.saturating_add(step_log_artifact_count(&set));
+            let usage = normalized_step_usage(&step);
+            let not_run = step.not_run_because.is_some();
             steps.push(StepFacts {
                 id: step_id,
                 kind,
-                state: safe_step_state(&step.status),
-                vendor: safe_vendor(&step.agent),
+                state: if not_run {
+                    "notRun"
+                } else {
+                    safe_step_state(&step.status)
+                },
+                reason: step
+                    .not_run_because
+                    .as_deref()
+                    .and_then(safe_not_run_reason),
+                vendor: step_vendor(&step),
                 model: Presence {
                     /* Sam napis modelu jest arbitralny i moze byc sekretem wpisanym przez
                      * czlowieka. Raportuje sie wylacznie fakt konfiguracji, nigdy wartosc. */
@@ -414,10 +504,11 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
                 started_at: step.started_at,
                 ended_at: step.ended_at,
                 exit_code: step.exit_code,
-                turns: step.turns,
-                input_tokens: step.input_tokens,
-                output_tokens: step.output_tokens,
-                cached_tokens: step.cached_tokens,
+                vendor_turns: usage.vendor_turns,
+                uncached_input: usage.uncached_input,
+                cache_read: usage.cache_read,
+                cache_write: usage.cache_write,
+                output: usage.output,
                 artifacts: set,
             });
         }
@@ -489,10 +580,14 @@ fn scan_conversations(root: &Path) -> anyhow::Result<(Vec<ConversationFacts>, us
             ended_at: input.ended_at,
             attempts: input.attempts,
             turns: input.turns,
-            agent_turns: input.agent_turns,
-            input_tokens: input.input_tokens,
-            output_tokens: input.output_tokens,
-            cached_tokens: input.cached_tokens,
+            vendor_turns: (input.vendor == "claude" && input.agent_turns > 0)
+                .then_some(input.agent_turns),
+            uncached_input: input.input_tokens,
+            cache_read: input.cached_tokens,
+            // `conversation.json` sprzed Z-48 nie miał osobnej kolumny zapisu cache'u;
+            // raport nie zmyśla zera tam, gdzie plik nic nie wie (2026-09, niezmiennik 4).
+            cache_write: None,
+            output: input.output_tokens,
             exit_code: input.exit_code,
             death_proof: Presence {
                 present: input.death_proof,
@@ -504,7 +599,7 @@ fn scan_conversations(root: &Path) -> anyhow::Result<(Vec<ConversationFacts>, us
     Ok((out, artifacts))
 }
 
-fn step_artifacts(run_dir: &Path, step_id: &str) -> ArtifactSet {
+fn step_artifacts(run_dir: &Path, step_id: &str, ordinal: usize) -> ArtifactSet {
     let logs = run_dir.join("logs");
     ArtifactSet {
         stdout: Presence {
@@ -516,15 +611,16 @@ fn step_artifacts(run_dir: &Path, step_id: &str) -> ArtifactSet {
         input_manifest: Presence {
             present: is_real_file(&logs.join(format!("agent-{step_id}.input.json"))),
         },
-        handoffs: Count { total: 0 },
+        handoffs: Count {
+            total: count_step_handoffs(&run_dir.join("handoffs"), ordinal),
+        },
     }
 }
 
-fn artifact_count(set: &ArtifactSet) -> usize {
+fn step_log_artifact_count(set: &ArtifactSet) -> usize {
     usize::from(set.stdout.present)
         .saturating_add(usize::from(set.stderr.present))
         .saturating_add(usize::from(set.input_manifest.present))
-        .saturating_add(set.handoffs.total)
 }
 
 fn conversation_artifact_count(set: &ConversationArtifacts) -> usize {
@@ -572,6 +668,28 @@ fn count_real_files(root: &Path) -> anyhow::Result<usize> {
         }
     }
     Ok(count)
+}
+
+/// Liczy przekazania napisane przez fizyczny krok. Prefiks jest ordynałem kroku z `run.json`,
+/// tym samym, który `commands::run::hand_over` wkłada do nazwy pliku (2026-09, Z-48).
+fn count_step_handoffs(root: &Path, ordinal: usize) -> usize {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let prefix = format!("{ordinal:02}__");
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let path = entry.path();
+            let real_file = fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink());
+            real_file
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .count()
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
@@ -644,6 +762,16 @@ fn safe_step_state(value: &str) -> &'static str {
         "skipped" => "skipped",
         _ => "unknown",
     }
+}
+
+/// Nie przepisuje arbitralnego tekstu z prywatnego pliku. Akceptuje wyłącznie zamknięty
+/// kształt Z-33, a liczbę zapisuje ponownie po parsowaniu (2026-09, Z-48).
+fn safe_not_run_reason(value: &str) -> Option<String> {
+    let attempt = value
+        .strip_prefix("loop settled at try ")?
+        .parse::<u32>()
+        .ok()?;
+    Some(format!("loop settled at try {attempt}"))
 }
 
 fn safe_vendor(value: &str) -> Option<&'static str> {

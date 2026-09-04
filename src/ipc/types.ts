@@ -119,16 +119,15 @@ export type Line =
       kind: 'done';
       agent: string;
       text: string;
-      turns: number;
+      vendorTurns: number | null;
       durationMs: number;
       costUsd: number | null;
-      /* Trzy liczniki tej tury, przepisane z drutu. Vendor, który nie podaje kwoty, podaje
-       * przynajmniej te — i to z nich pasek składa `12k tokens` tam, gdzie nie ma czego wyliczyć
-       * w dolarach. Zero znaczy „nic nie zgłoszono", bo tyle właśnie niesie `Tokens` po tamtej
-       * stronie; pustkę na ekranie rozstrzyga suma, nie brak pola. */
-      inputTokens: number;
-      outputTokens: number;
-      cachedTokens: number;
+      /* Jeden słownik obu vendorów. `uncachedInput` nigdy nie zawiera cache'u, więc okno
+       * nie musi znać różnicy protokołów; zero jest liczbą zgłoszoną przez adapter. */
+      uncachedInput: number;
+      cacheRead: number;
+      cacheWrite: number;
+      output: number;
       /** Jak się skończyło — lustro `engine::line::Ended`. Okno NIE czyta tego z `text`. */
       ended: 'well' | 'badly' | 'stopped';
     };
@@ -214,12 +213,13 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
     {
       agent: str,
       text: str,
-      turns: num,
+      vendorTurns: maybeNum,
       durationMs: num,
       costUsd: maybeNum,
-      inputTokens: num,
-      outputTokens: num,
-      cachedTokens: num,
+      uncachedInput: num,
+      cacheRead: num,
+      cacheWrite: num,
+      output: num,
       ended: str,
     },
   ],

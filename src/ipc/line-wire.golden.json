@@ -111,13 +111,14 @@
   {
     "kind": "done",
     "agent": "builder",
-    "text": "Done · 2 turns · 6.2s · $0.15",
-    "turns": 2,
+    "text": "Done · 2 turns · 33k length per turn on average · 6.2s · $0.15",
+    "vendorTurns": 2,
     "durationMs": 6200,
     "costUsd": 0.15,
-    "inputTokens": 4,
-    "outputTokens": 336,
-    "cachedTokens": 65403,
+    "uncachedInput": 4,
+    "cacheRead": 65403,
+    "cacheWrite": 0,
+    "output": 336,
     "ended": "well"
   }
 ]

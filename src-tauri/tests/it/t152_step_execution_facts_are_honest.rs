@@ -433,10 +433,11 @@ fn assert_facts(step: &Value, executed: bool, process_started: bool) {
             "pgid",
             "agent_session_id",
             "cost_usd",
-            "turns",
-            "input_tokens",
-            "output_tokens",
-            "cached_tokens",
+            "vendor_turns",
+            "uncached_input",
+            "cache_read",
+            "cache_write",
+            "output",
         ] {
             assert!(
                 step.get(key).is_none_or(Value::is_null),
@@ -572,9 +573,10 @@ impl AgentHandle for FakeHandle {
             text: answer.to_owned(),
             cost_usd: Some(0.25),
             tokens: Tokens {
-                input: 10,
+                uncached_input: 10,
+                cache_read: 2,
+                cache_write: 0,
                 output: 5,
-                cached: 2,
             },
             turns: 1,
             took: Duration::from_millis(1),

@@ -305,9 +305,14 @@ async fn assert_first_turn(dir: &Path, is_claude: bool) -> Result<(), Box<dyn Er
     assert!(!complete_at(dir)?);
     let first = wait_for_state(&dir.join("turns/0001.json"), "succeeded").await?;
     let live: Value = serde_json::from_slice(&fs::read(dir.join("conversation.json"))?)?;
-    for key in ["attempts", "turns", "agentTurns"] {
+    for key in ["attempts", "turns"] {
         assert_eq!(live.get(key).and_then(Value::as_u64), Some(1));
     }
+    let vendor_turns = u64::from(is_claude);
+    assert_eq!(
+        live.get("agentTurns").and_then(Value::as_u64),
+        Some(vendor_turns)
+    );
     assert_eq!(live.get("complete").and_then(Value::as_bool), Some(false));
     assert_eq!(live.get("state").and_then(Value::as_str), Some("active"));
     assert_eq!(
@@ -316,7 +321,10 @@ async fn assert_first_turn(dir: &Path, is_claude: bool) -> Result<(), Box<dyn Er
     );
     let vendor = if is_claude { "claude" } else { "codex" };
     assert_eq!(live.get("vendor").and_then(Value::as_str), Some(vendor));
-    assert_eq!(first.get("turns").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        first.get("turns").and_then(Value::as_u64),
+        Some(vendor_turns)
+    );
     let tokens = u64::from(!is_claude);
     assert_eq!(
         first.get("inputTokens").and_then(Value::as_u64),
@@ -332,9 +340,14 @@ async fn assert_first_turn(dir: &Path, is_claude: bool) -> Result<(), Box<dyn Er
 async fn assert_second_turn(dir: &Path, is_claude: bool) -> Result<(), Box<dyn Error>> {
     let second = wait_for_state(&dir.join("turns/0002.json"), "succeeded").await?;
     let live: Value = serde_json::from_slice(&fs::read(dir.join("conversation.json"))?)?;
-    for key in ["attempts", "turns", "agentTurns"] {
+    for key in ["attempts", "turns"] {
         assert_eq!(live.get(key).and_then(Value::as_u64), Some(2));
     }
+    let vendor_turns = if is_claude { 2 } else { 0 };
+    assert_eq!(
+        live.get("agentTurns").and_then(Value::as_u64),
+        Some(vendor_turns)
+    );
     let tokens = u64::from(!is_claude);
     assert_eq!(
         live.get("inputTokens").and_then(Value::as_u64),
@@ -344,7 +357,10 @@ async fn assert_second_turn(dir: &Path, is_claude: bool) -> Result<(), Box<dyn E
         live.get("outputTokens").and_then(Value::as_u64),
         Some(tokens * 2)
     );
-    assert_eq!(second.get("turns").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        second.get("turns").and_then(Value::as_u64),
+        Some(u64::from(is_claude))
+    );
     assert_eq!(
         second.get("inputTokens").and_then(Value::as_u64),
         Some(tokens)
@@ -510,8 +526,16 @@ fn assert_safe_conversation_report(workspace: &Path) -> Result<(), Box<dyn Error
                 .and_then(Value::as_bool),
             Some(true)
         );
-        for key in ["attempts", "turns", "agentTurns"] {
+        for key in ["attempts", "turns"] {
             assert_eq!(facts.get(key).and_then(Value::as_u64), Some(2));
+        }
+        if vendor == "claude" {
+            assert_eq!(facts.get("vendorTurns").and_then(Value::as_u64), Some(2));
+        } else {
+            assert!(facts.get("vendorTurns").is_none());
+        }
+        for key in ["uncachedInput", "cacheRead", "output"] {
+            assert!(facts.get(key).and_then(Value::as_u64).is_some());
         }
         for key in ["createdAt", "startedAt", "endedAt"] {
             assert!(facts.get(key).and_then(Value::as_i64).is_some());
@@ -595,9 +619,10 @@ impl AgentDriver for RefusesFollowUp {
             text: "safe first response".to_owned(),
             cost_usd: None,
             tokens: Tokens {
-                input: 7,
+                uncached_input: 7,
+                cache_read: 3,
+                cache_write: 0,
                 output: 5,
-                cached: 3,
             },
             turns: 2,
             took: Duration::from_millis(1),

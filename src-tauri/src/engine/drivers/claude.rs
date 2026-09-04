@@ -1734,17 +1734,21 @@ struct ResultLine {
     usage: Option<Usage>,
 }
 
-/// Zużycie kontekstu z drutu. Trzy pola z kilkunastu: reszta to statystyki, których nikt nie
+/// Zużycie kontekstu z drutu. Cztery pola z kilkunastu: reszta to statystyki, których nikt nie
 /// czyta, a pole bez czytelnika jest zakazane (niezmiennik 21).
 #[derive(Debug, Deserialize)]
 struct Usage {
     #[serde(rename = "input_tokens")]
-    input: Option<u64>,
+    uncached_input: Option<u64>,
+    /// Claude rozdziela zapis i odczyt cache'u; pominięcie pierwszego zaniżało koszt kontekstu
+    /// mimo że liczba była już na drucie (2026-09, Z-48).
+    #[serde(rename = "cache_creation_input_tokens")]
+    cache_write: Option<u64>,
     #[serde(rename = "output_tokens")]
     output: Option<u64>,
     /// Ta liczba, i tylko ta, mówi, czy izolacja kontekstu w ogóle działa [T1 §3.3].
     #[serde(rename = "cache_read_input_tokens")]
-    cached: Option<u64>,
+    cache_read: Option<u64>,
 }
 
 /// Dekoder jednego strumienia: linia tekstu → zero lub więcej [`AgentEvent`].
@@ -2029,9 +2033,14 @@ impl ClaudeDecoder {
             // zamawiał.
             cost_usd: line.total_cost_usd,
             tokens: Tokens {
-                input: usage.and_then(|usage| usage.input).unwrap_or_default(),
+                uncached_input: usage
+                    .and_then(|usage| usage.uncached_input)
+                    .unwrap_or_default(),
+                cache_read: usage.and_then(|usage| usage.cache_read).unwrap_or_default(),
+                cache_write: usage
+                    .and_then(|usage| usage.cache_write)
+                    .unwrap_or_default(),
                 output: usage.and_then(|usage| usage.output).unwrap_or_default(),
-                cached: usage.and_then(|usage| usage.cached).unwrap_or_default(),
             },
             turns: line.num_turns.unwrap_or_default(),
             took: Duration::from_millis(line.duration_ms.unwrap_or_default()),

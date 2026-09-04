@@ -8403,10 +8403,12 @@ struct StepRun {
     cost_estimate: Option<bool>,
     /// Rzeczywiste liczniki z terminalnego [`crate::engine::drivers::Outcome`]. `None` znaczy,
     /// że krok nie dostał wyniku agenta (np. Check albo odmowa przed startem), nie zero.
-    turns: Option<u32>,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_tokens: Option<u64>,
+    /// Nazwy są wspólne dla obu vendorów od granicy sterownika (2026-09, Z-48).
+    uncached_input: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    output: Option<u64>,
+    vendor_turns: Option<u32>,
     /// Jedna linia dla szyny agentów.
     summary: Option<String>,
     /// Powód, jeśli coś poszło nie tak.
@@ -8490,10 +8492,11 @@ struct ExecutionFacts {
 fn record_turn(step: &mut StepRun, turn: &DriverOutcome, cost_is_estimate: bool) {
     step.cost_usd = turn.cost_usd;
     step.cost_estimate = (turn.cost_usd.is_some() && cost_is_estimate).then_some(true);
-    step.turns = Some(turn.turns);
-    step.input_tokens = Some(turn.tokens.input);
-    step.output_tokens = Some(turn.tokens.output);
-    step.cached_tokens = Some(turn.tokens.cached);
+    step.uncached_input = Some(turn.tokens.uncached_input);
+    step.cache_read = Some(turn.tokens.cache_read);
+    step.cache_write = Some(turn.tokens.cache_write);
+    step.output = Some(turn.tokens.output);
+    step.vendor_turns = turn.vendor_turns();
 }
 
 /// Stan **biegu**: pięć wartości z `CHECK` przy tabeli `runs` w `store::schema`.
@@ -8680,10 +8683,11 @@ impl Live {
                 death_proof: false,
                 cost_usd: None,
                 cost_estimate: None,
-                turns: None,
-                input_tokens: None,
-                output_tokens: None,
-                cached_tokens: None,
+                uncached_input: None,
+                cache_read: None,
+                cache_write: None,
+                output: None,
+                vendor_turns: None,
                 summary: None,
                 error: None,
                 stopped_from_outside: None,
@@ -9643,10 +9647,11 @@ impl Live {
                 ended_at: run.ended_at,
                 cost_usd: run.cost_usd,
                 cost_estimate: run.cost_estimate,
-                turns: run.turns,
-                input_tokens: run.input_tokens,
-                output_tokens: run.output_tokens,
-                cached_tokens: run.cached_tokens,
+                uncached_input: run.uncached_input,
+                cache_read: run.cache_read,
+                cache_write: run.cache_write,
+                output: run.output,
+                vendor_turns: run.vendor_turns,
                 summary: run.summary.as_deref(),
                 error: run.error.as_deref(),
                 stopped_from_outside: run.stopped_from_outside,
@@ -13515,10 +13520,12 @@ struct StepEntry<'a> {
     cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cost_estimate: Option<bool>,
-    turns: Option<u32>,
-    input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    cached_tokens: Option<u64>,
+    uncached_input: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    output: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor_turns: Option<u32>,
     summary: Option<&'a str>,
     error: Option<&'a str>,
     /// Numer sygnału, którym ktoś SPOZA Loadouta zatrzymał ten krok.
