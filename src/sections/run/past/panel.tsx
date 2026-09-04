@@ -21,7 +21,15 @@ import type { ReactElement } from 'react';
 import { useState, useSyncExternalStore } from 'react';
 
 import { costText, openOneRun, stateWord } from '../history-command';
-import type { PastBranch, PastHandoff, PastMemory, PastRun, PastRunRow, PastStep } from '../io';
+import type {
+  CouldForget,
+  PastBranch,
+  PastHandoff,
+  PastMemory,
+  PastRun,
+  PastRunRow,
+  PastStep,
+} from '../io';
 import { Line } from '../feed/line';
 import type { HistoryRow } from '../feed/model';
 import { identityToken, statusToken } from '../rail/colour';
@@ -29,9 +37,12 @@ import { reflectionText } from '../reflection/said';
 import { PICK_UP_HERE, pickUpFrom } from './pick-up';
 import { rowsOf } from './rows';
 import {
+  askAboutRunsOlderThan,
   backToTheList,
   closeHistory,
   forgetTheBranches,
+  forgetTheLeftovers,
+  forgetTheOldRuns,
   forgetThisRun,
   pastNow,
   subscribeToPast,
@@ -72,6 +83,23 @@ export const FORGET_THIS_RUN = 'Forget this run';
  * zdania o jednym stanie to dwa miejsca, w których mieszka jedna odpowiedź (niezmiennik 13).
  */
 export const NO_BRANCHES_LEFT = 'No branches left';
+
+/**
+ * Napis na kontrolce, która zdejmuje to, co zostawiły biegi sprzed sprzątania.
+ *
+ * „them", bo zdanie tuż nad nią właśnie powiedziało, co to jest i ile tego jest. Napis
+ * powtarzający liczby byłby drugim miejscem, w którym mieszka jedna odpowiedź (niezmiennik 13).
+ */
+export const FORGET_THE_LEFTOVERS = 'Forget them';
+
+/** Początek zdania kontrolki daty. Liczba dni stoi w polu obok, bo to ona jest wyborem. */
+export const FORGET_RUNS_OLDER_THAN = 'Forget runs older than';
+
+/** Reszta tego zdania, za polem. */
+export const DAYS = 'days';
+
+/** Napis na kontrolce, która zdejmuje te biegi. Mówi dokładnie tyle, ile robi. */
+export const FORGET_THESE_RUNS = 'Forget these runs';
 
 /** Nagłówek zamrożonego rachunku pod każdym fizycznym krokiem. */
 export const WHAT_THIS_STEP_KNEW = 'What this step knew';
@@ -527,6 +555,115 @@ function MemoryRecord({ record }: { record: PastMemory }): ReactElement {
 }
 
 /**
+ * Co ten folder mógłby zapomnieć — nad listą biegów, bo dotyczy całej listy, nie żadnego wiersza.
+ *
+ * # 2026-09 (Z-46) — PO CO TO JEST NA EKRANIE
+ *
+ * Sprzątanie przy otwarciu folderu domyka wyłącznie te katalogi robocze, o których bieg zostawił
+ * notatkę. Bieg sprzed tej notatki nie ma jej wcale, więc jego katalog stoi dalej — i do dziś nic
+ * o nim nie mówiło. Zmierzone u właściciela 2026-09-03 na jednym monorepo: dziennik zameldował
+ * 75 zamkniętych folderów, `git worktree list` pokazywał dwanaście stojących po 264 MB, a gałęzi
+ * po biegach, których katalogów już nie ma, stało tam 99 przy czternastu biegach.
+ *
+ * # DWIE KONTROLKI, BO TO SĄ DWIE RÓŻNE CZYNNOŚCI
+ *
+ * Pierwsza zdejmuje **leżaki po biegach, których Loadout nie zamknął** — same biegi zostają.
+ * Druga zdejmuje **biegi po dacie**, razem ze wszystkim, co po nich zostało. Jedna kontrolka na
+ * oba znaczyłaby, że człowiek, który chce odzyskać miejsce, traci przy okazji historię.
+ *
+ * # CZEGO TU NIE MA, KIEDY NIE MA CZEGO ZDEJMOWAĆ
+ *
+ * Zdania o leżakach nie ma, kiedy ich nie ma (Rust oddaje wtedy pusty napis), a całej kontrolki
+ * daty nie ma w folderze bez ani jednego biegu. Przycisk, który umie odpowiedzieć wyłącznie „nie
+ * było czego", jest przyciskiem bez skutku (niezmiennik 16). Samo POLE dni zostaje, dopóki jest
+ * jakikolwiek bieg: to ono decyduje, o co pytamy, więc schowane za własną odpowiedzią nie dałoby
+ * się nigdy zmienić.
+ *
+ * # 2026-09 (Z-46) — ZDANIE O LEŻAKACH NIE ZALEŻY OD DŁUGOŚCI LISTY BIEGÓW
+ *
+ * Stało tu `runs === 0 → null`, czyli cały ten blok znikał razem z pustą historią. To jest
+ * dokładnie ten folder, w którym on jest najbardziej potrzebny: „Forget runs older than …"
+ * kasuje KATALOGI biegów, a gałąź biegu, którego katalogu już nie ma, jest tym, co zamiatacz ma
+ * sprzątać. Po dwóch takich czyszczeniach folder miał zero wierszy historii, komplet osieroconych
+ * gałęzi i ani jednego zdania o nich.
+ */
+function WhatCouldGo({
+  could,
+  days,
+  runs,
+}: {
+  could: CouldForget | null;
+  days: number;
+  runs: number;
+}): ReactElement | null {
+  if (could === null) return null;
+  return (
+    <section data-what-could-go className="mb-2 grid gap-2 border-b border-line pb-3">
+      {could.said === '' ? null : (
+        <div className="flex items-baseline gap-3">
+          <p data-leftovers className="lead min-w-0">
+            {could.said}
+          </p>
+          <button
+            type="button"
+            data-forget-leftovers
+            onClick={() => {
+              void forgetTheLeftovers();
+            }}
+            className={QUIET + ' ml-auto'}
+          >
+            {FORGET_THE_LEFTOVERS}
+          </button>
+        </div>
+      )}
+
+      {runs === 0 ? null : (
+        <>
+          <div className="flex items-baseline gap-2">
+            <label className="label" htmlFor="older-than-days">
+              {FORGET_RUNS_OLDER_THAN}
+            </label>
+            {/* Liczba jest wartością maszynową, więc `.field` (DESIGN §4) — ta sama kontrolka, co
+            przy „ile ostatnich biegów zostaje" w Settings. */}
+            <input
+              id="older-than-days"
+              data-older-than-days
+              type="number"
+              inputMode="numeric"
+              min={1}
+              step={1}
+              className="field w-20 text-right"
+              value={days}
+              onChange={(event) => {
+                askAboutRunsOlderThan(Number(event.target.value));
+              }}
+            />
+            <span className="label">{DAYS}</span>
+            {could.older.runs === 0 ? null : (
+              <button
+                type="button"
+                data-forget-old-runs
+                onClick={() => {
+                  void forgetTheOldRuns();
+                }}
+                className={QUIET + ' ml-auto'}
+              >
+                {FORGET_THESE_RUNS}
+              </button>
+            )}
+          </div>
+          {/* CO ZEJDZIE — ZAWSZE, także kiedy nic. Cisza nad kontrolką, która kasuje, jest tym
+              samym, co obietnica bez treści: człowiek naciska i dowiaduje się po fakcie. */}
+          <p data-older-said className="lead">
+            {could.older.said}
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
  * Panel historii — albo `null`, kiedy nikt o nią nie poprosił.
  *
  * Montuje go ekran pracy (`../index.tsx`), tuż obok pytania o zamknięcie karty: obie te rzeczy
@@ -571,6 +708,7 @@ export function PastRuns(): ReactElement | null {
         )}
         {now.opened === null ? (
           <div className="grid gap-[6px]">
+            <WhatCouldGo could={now.could} days={now.olderThanDays} runs={now.rows.length} />
             {now.rows.map((row) => (
               <Row key={row.folder} row={row} folder={now.folder} />
             ))}

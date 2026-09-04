@@ -27,7 +27,7 @@ import { stepStateOf, type Step } from '../../state/run';
 import { activeWorkspace } from '../../state/workspaces';
 import type { PastRun, PastRunRow } from './io';
 import { listRuns, readRun } from './io';
-import { sayInHistory, showHistory, showPastRun } from './past/store';
+import { sayInHistory, showHistory, showPastRun, whatCouldGoIn } from './past/store';
 import type { AgentStatus } from './rail/card';
 
 /**
@@ -217,7 +217,20 @@ export async function openHistoryFromLine(rest: string): Promise<string | null> 
     return why(error, COULD_NOT_READ);
   }
 
-  if (rows.length === 0) return NOTHING_YET;
+  if (rows.length === 0) {
+    /* PUSTA LISTA NIE ZNACZY PUSTY FOLDER (2026-09, Z-46). Do tego dnia `/history` odpowiadał tu
+     * zaproszeniem i panelu nie otwierał — a to jest dokładnie ten stan, do którego prowadzi
+     * „Forget runs older than …": katalogi biegów schodzą, gałęzie po nich zostają, i wtedy nie ma
+     * już ŻADNEJ drogi, którą człowiek mógłby te gałęzie zobaczyć albo zdjąć. Zmierzone
+     * u właściciela na jednym monorepo: 99 gałęzi `loadout/*` przy czternastu biegach.
+     *
+     * Odpowiedź jedzie do `showHistory` ARGUMENTEM: panel pyta o to samo przy otwarciu, a dwa
+     * odczyty na jedno naciśnięcie dałyby dwie odpowiedzi z dwóch chwil (niezmiennik 13). */
+    const could = await whatCouldGoIn(folder);
+    if (could === null || could.said === '') return NOTHING_YET;
+    showHistory(folder, [], could);
+    return null;
+  }
 
   const wanted = matching(rows, rest);
   if (wanted.length === 0) return nothingLikeThat(rest, rows);

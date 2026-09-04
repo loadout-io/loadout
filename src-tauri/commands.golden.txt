@@ -38,6 +38,8 @@ drop_eval_variant
 fold_run_into_branch
 forget_run
 forget_run_branches
+forget_runs_older_than
+forget_what_the_old_runs_left
 install_skill
 list_agents
 list_eval_sets
@@ -90,3 +92,4 @@ suggest_paths
 test_linear_connection
 update_trigger
 what_the_lead_can_do
+what_this_folder_could_forget

@@ -173,6 +173,18 @@ fn a_folder_that_could_not_be_cleared_away_is_named_in_the_run_record() -> Resul
          wrong and then has to find one folder among the ones every other run left. It said: {}",
         step.error
     );
+    /* I MÓWI, ŻE PRÓBOWALIŚMY — nie że ten run jest za stary (2026-09, Z-46). Od Z-46 stoi obok
+     * druga droga do tego samego pola: folder po biegu SPRZED markera izolacji też dostaje tu
+     * swoje zdanie, ale mówi ono coś innego i o czymś innym. Ten run marker MA, a Loadout
+     * naprawdę próbował po nim posprzątać i dostał od gita powód — zdanie o wieku runu byłoby
+     * w tym miejscu nieprawdą i wysyłałoby człowieka szukać przyczyny nie tam. */
+    assert!(
+        step.error.contains("could not tidy up"),
+        "the sentence in the record is not the one about a clean-up that was attempted and \
+         refused, so this folder now reads exactly like one left by a run too old to have a note \
+         at all — and the reason git gave is nowhere. It said: {}",
+        step.error
+    );
 
     Ok(())
 }

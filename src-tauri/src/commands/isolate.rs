@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Czego nie wnosimy do własnego drzewa, kiedy kopiujemy folder bez gita.
@@ -694,7 +694,12 @@ fn what_does_not_belong_in_the_commit(
 /// `--force`, bo katalog kroku niesie też to, czego git nie śledzi — wynik builda, cache
 /// pakietów — a bez tej flagi `worktree remove` odmawia na pierwszym takim pliku. Praca, o którą
 /// tu chodzi, jest w tym momencie już na gałęzi; reszta jest odtwarzalna jedną komendą.
-fn remove_tree(project: &Path, dest: &Path) -> Result<(), String> {
+///
+/// 2026-09 (Z-46) — PUBLICZNE, bo zamiatacz starych biegów ([`super::sweep`]) zdejmuje katalogi
+/// dokładnie tak samo. Własne `remove_dir_all` tam byłoby drugą polityką kasowania (niezmiennik
+/// 23), a katalog skasowany bez gita zostawia wpis, który odmawia potem założenia drzewa pod tą
+/// samą ścieżką.
+pub fn remove_tree(project: &Path, dest: &Path) -> Result<(), String> {
     git(
         project,
         &["worktree", "remove", "--force", &dest.display().to_string()],
@@ -835,6 +840,53 @@ pub fn branches_under(project: &Path, prefix: &str) -> Vec<String> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// Katalogi, które to repozytorium zna jako miejsca pracy — **wszystkie**, razem z korzeniem.
+///
+/// 2026-09 (Z-46) — POWSTAŁO DLA ZAMIATACZA STARYCH BIEGÓW. Bieg sprzed markera izolacji nie
+/// zostawia po sobie ani jednego pliku, po którym dałoby się poznać, że otworzył sobie katalog;
+/// jedynym miejscem, w którym ten fakt stoi, jest rejestr gita. Zmierzone u właściciela
+/// 2026-09-03 na `urc-monorepo`: dwanaście takich wpisów przy dzienniku meldującym, że wszystko
+/// zostało zamknięte.
+///
+/// Bliźniak [`branches_in_use`] czyta to samo wyjście i pyta o drugą połowę wiersza — tam
+/// o gałąź, tu o katalog. Pusta lista, kiedy git nie odpowiada: „nie wiem o żadnym" jest tu
+/// odpowiedzią ostrożną, bo wołający na jej podstawie **kasuje**.
+#[must_use]
+pub fn trees_registered(project: &Path) -> Vec<PathBuf> {
+    git(project, &["worktree", "list", "--porcelain"])
+        .map(|said| {
+            said.lines()
+                .filter_map(|line| line.trim().strip_prefix("worktree "))
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Czy w tym katalogu leży zmiana, której nikt nie zapisał. **Wątpliwość znaczy „tak".**
+///
+/// 2026-09 (Z-46) — TO SAMO PYTANIE, CO PIERWSZA LINIA [`finish`], I ODWROTNA OSTROŻNOŚĆ, bo to
+/// jest inne pytanie. Tam odpowiedź brzmi „czy jest co commitować" i git, który nie odpowiada,
+/// prowadzi do sprzątania pustego drzewa. Tutaj odpowiedź brzmi „czy wolno ten katalog skasować",
+/// a jedyną kopią tego, co ktoś w nim napisał, jest on sam — więc cisza gita ma go zostawić.
+#[must_use]
+pub fn holds_unsaved_work(dest: &Path) -> bool {
+    git(dest, &["status", "--porcelain"]).map_or(true, |said| !said.trim().is_empty())
+}
+
+/// Czy na tej gałęzi stoi commit, którego nie ma `HEAD` projektu. **Wątpliwość znaczy „tak".**
+///
+/// 2026-09 (Z-46) — pytanie zadawane przed `branch -D` na gałęzi po biegu, którego katalogu już
+/// nie ma. Praca zapisana ręką agenta żyje wyłącznie na niej: po `branch -D` nie ma jej ani
+/// w `git log`, ani w `git branch`, a sięga do niej wyłącznie `git fsck`. Ten sam wybór, co przy
+/// [`committed_over`] — pomyłka w jedną stronę zostawia wiersz w `git branch`, w drugą kasuje
+/// czyjąś pracę.
+#[must_use]
+pub fn carries_its_own_work(project: &Path, branch: &str) -> bool {
+    let range = format!("HEAD..{branch}");
+    git(project, &["rev-list", "--count", &range]).map_or(true, |said| said.trim() != "0")
 }
 
 /// Gałęzie wyjęte W TEJ CHWILI do pracy w jakimkolwiek drzewie tego repozytorium.

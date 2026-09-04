@@ -19,8 +19,23 @@
  * przełączył boczne menu, zanim kliknął.
  */
 import { why } from '../../../ipc/why';
-import type { PastRun, PastRunRow } from '../io';
-import { forgetRun, forgetRunBranches } from '../io';
+import type { CouldForget, PastRun, PastRunRow } from '../io';
+import {
+  forgetRun,
+  forgetRunBranches,
+  forgetRunsOlderThan,
+  forgetWhatTheOldRunsLeft,
+  listRuns,
+  whatThisFolderCouldForget,
+} from '../io';
+
+/**
+ * Ile dni ma mieć bieg, żeby kontrolka daty proponowała go zdjąć — dopóki nikt nie zmieni liczby.
+ *
+ * Trzydzieści, a nie siedem: bieg sprzed miesiąca to bieg, do którego nikt nie wrócił przez
+ * miesiąc, a bieg sprzed tygodnia bywa tym, którego wynik ktoś właśnie porównuje.
+ */
+export const FORGET_AFTER_DAYS = 30;
 
 /** Co widać: nic, lista albo jeden otwarty bieg. */
 export interface PastState {
@@ -34,6 +49,16 @@ export interface PastState {
   readonly opened: PastRun | null;
   /** Co Loadout powiedział o TYM panelu (np. czemu nie dało się otworzyć wiersza). */
   readonly said: string | null;
+  /**
+   * Co ten folder mógłby zapomnieć — albo `null`, dopóki Rust nie odpowiedział.
+   *
+   * `null`, a nie zera: „jeszcze nie pytaliśmy" i „nie ma czego zdejmować" to dwa różne stany,
+   * a zdanie o zerach postawione nad folderem, którego nikt nie policzył, jest zdaniem o czymś,
+   * czego nie sprawdziliśmy (niezmiennik 17).
+   */
+  readonly could: CouldForget | null;
+  /** Ile dni wpisano w kontrolce daty. Podgląd nad nią liczy się DLA TEJ liczby. */
+  readonly olderThanDays: number;
 }
 
 const CLOSED: PastState = {
@@ -42,16 +67,52 @@ const CLOSED: PastState = {
   rows: [],
   opened: null,
   said: null,
+  could: null,
+  olderThanDays: FORGET_AFTER_DAYS,
 };
 
 let now: PastState = CLOSED;
 
 const listeners = new Set<() => void>();
 
-/** Otwiera panel na LIŚCIE biegów tego zakresu. */
-export function showHistory(folder: string | null, rows: readonly PastRunRow[]): void {
-  now = { open: true, folder, rows, opened: null, said: null };
+/**
+ * Otwiera panel na LIŚCIE biegów tego zakresu.
+ *
+ * `could` jest tym, co wołający już wie: `/history` nad folderem bez ani jednego biegu musi
+ * zapytać o leżaki, ZANIM zdecyduje, czy panel w ogóle otwierać (`../history-command.ts`), więc
+ * odpowiedź jedzie tędy zamiast być czytana drugi raz (2026-09, Z-46). `null` znaczy „nie
+ * pytałem" i wtedy pytamy tutaj.
+ */
+export function showHistory(
+  folder: string | null,
+  rows: readonly PastRunRow[],
+  could: CouldForget | null = null,
+): void {
+  now = { ...CLOSED, open: true, folder, rows, could };
   publish();
+  // PYTAMY OD RAZU, bo to jest jedyne miejsce, w którym człowiek te liczby zobaczy, a zdanie
+  // dorysowane sekundę później jest zdaniem, które ktoś przeczyta — puste miejsce nie jest
+  // (2026-09, Z-46).
+  if (could === null) void learnWhatCouldGo();
+}
+
+/**
+ * Co ten folder mógłby zapomnieć — pytanie zadane, ZANIM panel wstanie.
+ *
+ * 2026-09 (Z-46) — istnieje dla jednej drogi: `/history` nad folderem, w którym nie ma ani jednego
+ * biegu, odpowiadał zdaniem „nothing has run here yet" i panelu nie otwierał. To jest jednak stan,
+ * do którego prowadzi „Forget runs older than …": katalogi biegów schodzą, a gałęzie po nich
+ * zostają — i wtedy nie ma już ŻADNEJ drogi, którą człowiek mógłby je zobaczyć albo zdjąć.
+ *
+ * Kształt sprawdza [`countsIn`], więc odpowiedź, która nie niesie liczb, jest tu tym samym, co
+ * brak odpowiedzi (niezmiennik 5).
+ */
+export async function whatCouldGoIn(folder: string | null): Promise<CouldForget | null> {
+  try {
+    return countsIn(await whatThisFolderCouldForget(folder, FORGET_AFTER_DAYS));
+  } catch {
+    return null;
+  }
 }
 
 /** Otwiera JEDEN bieg do odczytu. Lista zostaje pod spodem, żeby „wróć" miało dokąd wrócić. */
@@ -177,6 +238,119 @@ export async function forgetThisRun(): Promise<void> {
     said: null,
   };
   publish();
+}
+
+/** Co powiedzieć, kiedy Rust nie dał rady zdjąć tego, co zostało po starych biegach. */
+export const COULD_NOT_SWEEP = 'Loadout could not take away what the old runs left behind.';
+
+/** Co powiedzieć, kiedy Rust nie dał rady zapomnieć starych biegów. */
+export const COULD_NOT_FORGET_OLD = 'Loadout could not forget the runs older than that.';
+
+/**
+ * Pyta Rusta, co ten folder mógłby zapomnieć, i wkłada odpowiedź do panelu.
+ *
+ * CICHO, KIEDY NIE MA ODPOWIEDZI, i to jest wybór: to jest liczenie w tle, o które nikt nie
+ * prosił, a czerwone zdanie nad listą biegów uczyłoby ignorować czerwone zdania. Człowiek widzi
+ * wtedy dokładnie to, co widział dotąd — listę bez akapitu o leżakach.
+ *
+ * KSZTAŁT SPRAWDZAMY, zamiast mu ufać: granica bywa atrapą (`e2e/harness.ts` odpowiada kształtem,
+ * nie stanem), a starszy Loadout tej komendy nie zna wcale. Odpowiedź, która nie niesie liczb,
+ * jest tu tym samym, co brak odpowiedzi (niezmiennik 5).
+ */
+export async function learnWhatCouldGo(): Promise<void> {
+  if (!now.open) return;
+  const folder = now.folder;
+  const days = now.olderThanDays;
+  let answer: unknown;
+  try {
+    answer = await whatThisFolderCouldForget(folder, days);
+  } catch {
+    return;
+  }
+  // Ten sam panel, co przed pytaniem: człowiek mógł go w międzyczasie zamknąć albo przełączyć
+  // zakres, a wtedy odpowiedź o tamtym folderze nie ma prawa przepisać tego, co widać.
+  if (!now.open || now.folder !== folder || now.olderThanDays !== days) return;
+  now = { ...now, could: countsIn(answer) };
+  publish();
+}
+
+/** Odpowiedź Rusta, kiedy naprawdę niesie liczby — inaczej `null`, czyli „nie wiemy". */
+function countsIn(answer: unknown): CouldForget | null {
+  if (typeof answer !== 'object' || answer === null) return null;
+  const could = answer as CouldForget;
+  return typeof could.workFolders === 'number' && typeof could.branches === 'number' ? could : null;
+}
+
+/**
+ * Zmienia liczbę dni w kontrolce daty i przelicza podgląd dla NIEJ.
+ *
+ * Wyczyszczone pole daje `NaN`, a zero znaczyłoby „zapomnij wszystko" — obie wartości zostawiają
+ * poprzednią liczbę, bo obie stoją nad kontrolką, która KASUJE, i żadna nie jest wyborem.
+ */
+export function askAboutRunsOlderThan(days: number): void {
+  if (!Number.isFinite(days) || days < 1) return;
+  if (!now.open || now.olderThanDays === days) return;
+  // Podgląd starej liczby schodzi razem z nią: zdanie „3 runs" nad polem, w którym stoi już inna
+  // liczba dni, mówi o czymś, o co nikt nie pytał.
+  now = { ...now, olderThanDays: days, could: null };
+  publish();
+  void learnWhatCouldGo();
+}
+
+/**
+ * „Forget them" — zdejmuje to, co zostawiły biegi, których Loadout nie zamknął.
+ *
+ * TUTAJ, A NIE W KOMPONENCIE, z tego samego powodu, co [`forgetTheBranches`] wyżej: to repo nie
+ * ma jsdom, więc `onClick` nie odpala się w żadnym kryterium, a polityka zamknięta w handlerze
+ * byłaby kodem, którego nic nie sądzi (niezmiennik 16).
+ *
+ * ZDANIE RUSTA IDZIE NA EKRAN ZAWSZE, także po udanym zdjęciu, i to jest cała treść tej
+ * kontrolki: Rust zostawia katalog z niezapisaną zmianą i gałąź z commitem, którego nie ma reszta
+ * projektu — a człowiek, który przeczyta samo „gotowe", naciśnie drugi raz nad tym samym stanem.
+ */
+export async function forgetTheLeftovers(): Promise<void> {
+  const folder = now.folder;
+  if (!now.open) return;
+  try {
+    const done = await forgetWhatTheOldRunsLeft(folder);
+    sayInHistory(typeof done?.said === 'string' ? done.said : COULD_NOT_SWEEP);
+  } catch (error: unknown) {
+    sayInHistory(why(error, COULD_NOT_SWEEP));
+  }
+  // LICZBY PRZELICZAMY Z DYSKU, nie odejmujemy ich w oknie: to, co zostało, wie wyłącznie Rust,
+  // a odjęcie „ile prosiliśmy" pokazałoby zero nad projektem, w którym stoi katalog z pracą.
+  await learnWhatCouldGo();
+}
+
+/**
+ * „Forget runs older than N days" — zdejmuje stare biegi razem z ich gałęziami i katalogami.
+ *
+ * LISTA WRACA Z DYSKU. Odpowiedź niesie liczby, nie nazwy, więc nie ma czego odfiltrować
+ * w oknie — a lista zostawiona taka, jaka była, pokazywałaby wiersze, których nie da się już
+ * otworzyć. Pliki są prawdą (niezmiennik 4), więc pytamy o nią tę samą krawędź, którą ten panel
+ * wstał.
+ */
+export async function forgetTheOldRuns(): Promise<void> {
+  const folder = now.folder;
+  if (!now.open) return;
+  try {
+    const done = await forgetRunsOlderThan(folder, now.olderThanDays);
+    sayInHistory(typeof done?.said === 'string' ? done.said : COULD_NOT_FORGET_OLD);
+  } catch (error: unknown) {
+    sayInHistory(why(error, COULD_NOT_FORGET_OLD));
+    return;
+  }
+  try {
+    const rows = await listRuns(folder);
+    if (now.open && now.folder === folder) {
+      now = { ...now, rows, opened: null };
+      publish();
+    }
+  } catch {
+    /* Lista, której nie dało się odczytać po zdjęciu, mówi o sobie sama przy następnym
+     * `/history`. Zdanie o tym, co zeszło, stoi już na ekranie i jest tym, po co naciskano. */
+  }
+  await learnWhatCouldGo();
 }
 
 function publish(): void {

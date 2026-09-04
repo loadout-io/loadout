@@ -74,6 +74,11 @@ pub struct Reconciled {
     pub closed: usize,
     /// Ile biegów zeszło z dysku, bo człowiek prosił o krótszą historię (2026-09, Z-9).
     pub forgotten: usize,
+    /// Ile katalogów roboczych **nie** dało się domknąć, bo są sprzed markera (2026-09, Z-46).
+    ///
+    /// Nie zero znaczy: stoją w projekcie, nikt ich nie zamknie sam z siebie, a Loadout właśnie
+    /// wpisał zdanie o każdym z nich do opisu jego biegu. Zdejmuje je dopiero człowiek, z historii.
+    pub left_over: usize,
 }
 
 /// Ile biegów zostaje w folderze projektu po sprzątaniu.
@@ -164,8 +169,86 @@ pub fn reconcile_runs_keeping(project: &Path, keep: &Keep) -> Reconciled {
             "our own folder could not be added to the list only this clone of the project reads"
         );
     }
+    // PO `prune_trees`, bo pytanie brzmi „co git wciąż zna": wpis po katalogu, którego już nie ma,
+    // czytałby się jako leżak, o którym trzeba powiedzieć — a to jest śmieć, który właśnie zszedł
+    // sam (2026-09, Z-46).
+    done.left_over = say_what_the_runs_did_not_close(project);
     done.forgotten = forget_all_but_the_last(project, keep);
     done
+}
+
+/// Wpisuje krokom zdanie o katalogach roboczych, których to sprzątanie **nie** domknęło.
+///
+/// # 2026-09 (Z-46) — CISZA MIAŁA JEDNĄ PRZYCZYNĘ
+///
+/// [`close_what_the_runs_left`] chodzi po markerach izolacji (`<bieg>/.isolation/<klucz>`), czyli
+/// po notatce, którą bieg pisze o każdym katalogu, jaki sobie otworzył. Bieg sprzed tej notatki
+/// nie ma jej wcale, więc jego katalog jest dla tamtej pętli niewidzialny — nie zamyka go i nie
+/// mówi o nim ani słowa. Zmierzone u właściciela 2026-09-03 na `urc-monorepo`: dziennik zameldował
+/// „75 folder(s) closed", a `git worktree list` dalej wymieniał dwanaście katalogów po 264 MB.
+///
+/// # NIC NIE KASUJE, i to jest cała różnica wobec pętli wyżej
+///
+/// Tamta ma marker, czyli wie, na której gałęzi ta praca ma wylądować i od którego commita drzewo
+/// powstało. Tutaj nie wiadomo nic poza tym, że katalog stoi — a `worktree remove` bez tej wiedzy
+/// zdejmuje jedyną kopię niezapisanej pracy. Zdanie idzie więc tam, gdzie człowiek o biegu czyta
+/// (niezmiennik 29), a zdejmuje to dopiero kontrolka w historii ([`super::sweep`]).
+fn say_what_the_runs_did_not_close(project: &Path) -> usize {
+    let mut said: BTreeMap<PathBuf, BTreeMap<String, String>> = BTreeMap::new();
+    for (dir, work) in super::sweep::folders_the_runs_did_not_close(project) {
+        let Some(run) = read_run(&dir) else { continue };
+        let key = work
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(step) = the_step_called(&run, &key) else {
+            // Opis biegu nie zna już tego kroku, więc nie ma przy czym postawić zdania. Katalog
+            // dalej stoi i dalej liczy się do tego, co proponuje zdjąć historia.
+            continue;
+        };
+        /* KATALOG ZE ZNACZNIKIEM MA JUŻ SWOJE ZDANIE i jest ono konkretniejsze: pętla wyżej
+         * PRÓBOWAŁA go domknąć i niesie powód od gita (`isolate::could_not_tidy`). To zdanie
+         * mówi co innego — „ten bieg jest starszy niż znacznik" — więc postawione nad drzewem,
+         * które znacznik MA, byłoby po prostu nieprawdą (2026-09, Z-46). */
+        if crate::commands::run::trees_left_in(&dir)
+            .iter()
+            .any(|one| one.key == key)
+        {
+            continue;
+        }
+        said.entry(dir)
+            .or_default()
+            .insert(step.id, super::sweep::a_folder_we_did_not_close(&work));
+    }
+    let mut named = 0;
+    for (dir, steps) in &said {
+        let rows: BTreeMap<&str, &str> = steps
+            .iter()
+            .map(|(id, one)| (id.as_str(), one.as_str()))
+            .collect();
+        named += note_on_steps(dir, &rows);
+    }
+    named
+}
+
+/// Czy tego biegu nikt już nie prowadzi — po katalogu, w którym leży jego opis.
+///
+/// 2026-09 (Z-46) — WIDOCZNE DLA MODUŁU OBOK, bo zamiatacz starych biegów ([`super::sweep`])
+/// zadaje dokładnie to samo pytanie o dokładnie te same katalogi. Druga kopia tego warunku byłaby
+/// tą, która pewnego dnia uzna bieg pracujący w tej chwili za skończony i zaproponuje człowiekowi
+/// skasowanie katalogu, w którym agent właśnie pisze (niezmiennik 23).
+pub(super) fn run_is_over(dir: &Path) -> bool {
+    read_run(dir).is_some_and(|run| is_over(&run))
+}
+
+/// Identyfikator biegu z jego opisu, albo `None` — z niego składa się przedrostek jego gałęzi.
+///
+/// 2026-09 (Z-46) — widoczne dla [`super::sweep`] z tego samego powodu, co [`run_is_over`]: to
+/// jest jedna odpowiedź na pytanie „czyj jest ten katalog", czytana z jednego pliku.
+pub(super) fn run_named_by(dir: &Path) -> Option<String> {
+    let run = read_run(dir)?;
+    let id = text(&run, "id");
+    (!id.trim().is_empty()).then_some(id)
 }
 
 /// Domyka drzewa robocze biegów, których nikt już nie prowadzi. Oddaje liczbę domkniętych.

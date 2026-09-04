@@ -70,6 +70,8 @@ pub mod run;
 pub mod settings;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
 pub mod skills;
+/// Co zostawiły biegi, których Loadout nie zamknął — i jedyna droga, którą to schodzi.
+pub mod sweep;
 /// Zrodla zdarzen, ktore pytaja zewnetrzny serwis i pamietaja kursor w pliku.
 pub mod triggers;
 /// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
