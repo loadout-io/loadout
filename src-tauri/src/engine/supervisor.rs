@@ -1541,6 +1541,47 @@ pub fn open_private_file(
 /// ([`StdinPlan`]), nigdy w argv i nigdy w pliku tymczasowym.
 pub const PASSTHROUGH: &[&str] = &["PATH", "HOME", "LANG", "TERM", "TMPDIR", "USER"];
 
+/// Druga lista: czym agent **loguje się do swojego dostawcy** i jak wychodzi z tej sieci.
+///
+/// 2026-09 (Z-23, audyt D-8) — OSOBNA STAŁA, NIE DOPISEK DO [`PASSTHROUGH`], i to jest treść,
+/// nie porządki. Tamta lista odpowiada na „czym w ogóle jest proces w tym systemie" i nie ma
+/// w niej ani jednej nazwy, której wartość byłaby sekretem. Ta odpowiada na „czym ten agent
+/// płaci i którędy wychodzi", więc każda pozycja tutaj jest decyzją o przepuszczeniu czegoś,
+/// co bywa sekretem. Zlanie ich w jedną listę zabiera to rozróżnienie diffowi — a diff jest
+/// jedynym miejscem, w którym ktokolwiek tę politykę ogląda.
+///
+/// **Nazwy, nigdy wartości.** Ta stała nie trzyma ani jednego bajtu sekretu i nie ma prawa
+/// zacząć: wartości przychodzą ze środowiska okna albo z nośnika Loadouta
+/// (`connections::secrets`), a stąd bierze się wyłącznie decyzja, którą nazwę przepuścić.
+/// Ten sam wzorzec ma `codex mcp get`, które pokazuje `FIGMA_TOKEN=*****` (zmierzone
+/// 2026-09-04 na `codex-cli 0.153.0`).
+///
+/// Dlaczego te trzy grupy. **Klucze dostawców** — bez nich `claude` i `codex` uruchomione
+/// przez Loadouta widzą wylogowanego użytkownika, choć w terminalu tego samego człowieka
+/// działają; to jest cała klasa „u mnie działa, z ikony nie". **Proxy** — w sieci firmowej
+/// jest jedyną drogą na zewnątrz, a jego brak wygląda jak awaria dostawcy, nie jak wycięta
+/// zmienna. **Własne CA** — bez niego to samo proxy zrywa TLS. Obie pisownie proxy, bo
+/// narzędzia czytają raz wielkie, raz małe, a przepuszczenie połowy jest gorsze niż zera:
+/// działa u jednego vendora i milczy u drugiego.
+pub const VENDOR_AUTH_PASSTHROUGH: &[&str] = &[
+    // czym agent płaci
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    // którędy wychodzi
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    // czemu ufa po drodze
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+];
+
 /// Nazwa zmiennej, którą **każdy** proces kroku niesie identyfikator swojego biegu.
 ///
 /// 2026-09 (Z-01d) — po awarii aplikacji z całego biegu zostaje `run.json` i garść liczb; sam
@@ -1790,6 +1831,30 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
+}
+
+/// Czy ten plik mogą przeczytać także inne konta na tej maszynie.
+///
+/// 2026-09 (Z-23) — MIESZKA TUTAJ, a pyta o to `connections::secrets`, bo prawa pliku są
+/// pojęciem systemu, a niezmiennik 3 trzyma kod zależny od platformy w tym jednym pliku.
+/// Pytanie zadaje nośnik wartości Połączeń: plik z kluczami do wszystkich narzędzi człowieka
+/// jest wart dokładnie tyle, ile jego prawa dostępu, więc czytelny dla grupy albo dla świata
+/// jest pomijany w całości.
+///
+/// Nieodczytane prawa czytamy jako „czytelny", nie „prywatny": nośnik, o którego prawa nie
+/// umiemy zapytać, ma zostać pominięty, a nie użyty w ciemno.
+#[cfg(unix)]
+#[must_use]
+pub fn others_can_read_it(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path).map_or(true, |metadata| metadata.permissions().mode() & 0o077 != 0)
+}
+
+#[cfg(not(unix))]
+#[must_use]
+pub fn others_can_read_it(_path: &Path) -> bool {
+    false
 }
 
 /// Okno między SIGTERM a SIGKILL w produkcji.
@@ -2744,7 +2809,10 @@ pub fn spawn_tagged(
     // Najpierw pusto, potem jawna lista. Odwrotna kolejność nie istnieje: `env_clear()` po
     // dołożeniu nazw skasowałoby także je.
     command.env_clear();
-    for &name in PASSTHROUGH {
+    // Dwie listy, jedna pętla: obie są tą samą polityką („co dziecko dostaje") zapisaną w dwóch
+    // stałych, bo dopisanie nazwy do drugiej jest decyzją innej wagi niż do pierwszej
+    // (2026-09, Z-23 — powód w całości przy [`VENDOR_AUTH_PASSTHROUGH`]).
+    for &name in PASSTHROUGH.iter().chain(VENDOR_AUTH_PASSTHROUGH) {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }

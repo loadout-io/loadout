@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod runtime;
+pub mod secrets;
 
 /// Transport, który Loadout potrafi bezpiecznie przepisać do konfiguracji vendora.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

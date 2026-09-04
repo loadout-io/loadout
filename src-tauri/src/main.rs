@@ -19,11 +19,12 @@
 use std::io::{self, Write as _};
 
 fn main() {
-    /* ROZGAŁĘZIENIE PRZED TAURI, i to jest cała jego treść: proces mostu nie otwiera okna,
-     * nie zakłada bazy i nie czyta biblioteki. Jest rurą, która umie ramkować MCP.
+    /* ROZGAŁĘZIENIE PRZED TAURI, i to jest cała jego treść: ani most, ani rozrusznik nie
+     * otwierają okna, nie zakładają bazy i nie czytają biblioteki. Jeden jest rurą, która umie
+     * ramkować MCP, drugi znika przy `exec`.
      *
-     * `nth(1)`, nie parser argumentów: to jedyna flaga, którą ta binarka rozumie sama z siebie,
-     * a parser dla jednego napisu byłby zależnością za nic. */
+     * Pierwszy argument, nie parser: to są DWIE flagi, które ta binarka rozumie sama z siebie,
+     * a parser dla dwóch napisów byłby zależnością za nic. */
     let mut argv = std::env::args_os().skip(1);
     if argv
         .next()

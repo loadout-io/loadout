@@ -2987,14 +2987,22 @@ fn connections_of(
     }
 
     let asked_for_connections = !lead.agent.connections.is_empty();
-    crate::connections::runtime::for_driver(
+    /* WARTOŚCI BIERZE NOŚNIK LOADOUTA, nie samo środowisko tego okna (2026-09, Z-23).
+     *
+     * Aplikacja uruchomiona z Docka nie dziedziczy powłoki człowieka, więc rozmowa z liderem,
+     * którego Połączenie wymaga klucza, odmawiała po kliknięciu w ikonę i ruszała po starcie
+     * z terminala — z niczym na ekranie, co by tę różnicę nazywało. Biblioteki może nie być
+     * wyłącznie wtedy, gdy lider nie prosił o ani jedno Połączenie (odmowa wyżej), a most
+     * własnych czasowników nie wymaga ani jednej nazwy. */
+    let secrets = crate::connections::secrets::Carrier::in_library(library);
+    crate::connections::runtime::for_driver_with_secrets(
         &folder
             .join(OURS)
             .join(CONNECTIONS)
             .join(lead.agent.id.to_string()),
         vendor,
         &chosen,
-        |name| std::env::var_os(name),
+        &secrets,
     )
     .or_else(|error| {
         /* ODMOWA MA WAGĘ TEGO, CO PRZEZ NIĄ PRZEPADA, i to są dwie różne rzeczy.
