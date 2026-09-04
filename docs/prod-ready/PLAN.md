@@ -323,8 +323,8 @@ obniża koszt każdej następnej bramki (60 binariów testowych → 8).
 | Z-16 | `z16-context-loaded-by-cli` | `prompts/Z-16.md` | R | C→X | | Z-15 | **LANDED** `2026-09-04` | domknięte ręką: brakowało wyłącznie akapitu do mnie |
 | Z-17 | `z17-prompt-file-lead-settings` | `prompts/Z-17.md` | R | X→C | | Z-16 | **LANDED** `2026-09-04` | dwie rundy | |
 | Z-18 | `z18-reflection-switch` | `prompts/Z-18.md` | R | X→C | | Z-17 | **LANDED** `2026-09-04` | dwie rundy | |
-| Z-19 | `z19-codex-resume-flag` | `prompts/Z-19.md` | R | X→C | | Z-18 | RUNNING | jedna flaga |
-| Z-20 | `z20-roster-same-copy-skill` | `prompts/Z-20.md` | R | X→C | | Z-19 | TODO | odblokowuje workflow Urc |
+| Z-19 | `z19-codex-resume-flag` | `prompts/Z-19.md` | R | X→C | | Z-18 | **LANDED** `2026-09-04` | trzy rundy |
+| Z-20 | `z20-roster-same-copy-skill` | `prompts/Z-20.md` | R | X→C | | Z-19 | RUNNING | odblokowuje workflow Urc |
 | Z-21 | `z21-borrow-review` | `prompts/Z-21.md` | R | C→X | | Z-20 | TODO | |
 | Z-22 | `z22-trigger-key` | `prompts/Z-22.md` | R | X→C | | Z-21 | TODO | |
 | Z-23 | `z23-connection-secrets` | `prompts/Z-23.md` | R | C→X | duże | Z-22 | TODO | sonda `env_vars` Codeksa PRZED startem; wynik dopisz do promptu jako akapit „Wynik sondy" |
