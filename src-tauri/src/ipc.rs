@@ -743,8 +743,8 @@ impl AppState {
          *
          * Niezmiennik 26: dwa `cargo`/`rustc` naraz na tym Macu przypinają kompresor pamięci
          * i zamrażają maszynę przy zerowym swapie. Krok „sprawdź" bierze więc miejsce z puli
-         * **i** to jedno miejsce ciężkie (`engine::limits::Weight::Heavy`), a kroki agenta
-         * biegną obok niego normalnie.
+         * **i** to jedno miejsce ciężkie (`engine::limits::Weight::Heavy`). Od 2026-09 (Z-45)
+         * tą samą drogą bierze je krok agenta oznaczony jako ciężki w pliku workflow.
          *
          * Szerokość samej puli jest tymczasowa: „ile naraz" jest odpowiedzią człowieka udzieloną
          * przy Starcie, więc ustawia ją pierwszy bieg (`commands::run::run_workflow_inner`).

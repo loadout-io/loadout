@@ -1352,6 +1352,7 @@ fn graph_steps(
             overrides: Map::new(),
             vendor_options: BTreeMap::new(),
             copies: 1,
+            weight: crate::workflow::Weight::Ordinary,
             instructions: declared.task.clone(),
             skills: if selected.is_empty() {
                 Skills::default()
@@ -1661,6 +1662,7 @@ fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str, at: Point
         overrides: Map::new(),
         vendor_options: BTreeMap::new(),
         copies: 1,
+        weight: crate::workflow::Weight::Ordinary,
         instructions: instructions.to_owned(),
         skills: Skills::default(),
         borrow: crate::workflow::Borrow::default(),

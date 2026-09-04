@@ -74,6 +74,7 @@ export function planOf(steps: readonly FileStep[]): readonly RunStep[] {
     state: 'pending' as const,
     kind: step.kind,
     at: step.at,
+    ...(step.kind === 'agent' && step.weight !== undefined ? { weight: step.weight } : {}),
   }));
 }
 

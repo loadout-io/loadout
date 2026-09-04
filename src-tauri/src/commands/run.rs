@@ -3954,6 +3954,8 @@ fn how_it_went_down(how: ClosedHow, code: Option<i32>, proof: &GroupProof) -> Ho
 struct AgentJob {
     /// Sterownik vendora, wzięty z fabryki raz, przy planowaniu.
     driver: Arc<dyn AgentDriver>,
+    /// 2026-09 (Z-45) — to samo pole pliku workflow, przełożone raz na język wspólnego limitera.
+    weight: limits::Weight,
     /// Nazwa agenta z BIBLIOTEKI — ta, którą człowiek widzi i pisze (`Backend Dev`).
     ///
     /// 2026-08-23 (T-92): notatka o zakresie „ten agent" musi umieć powiedzieć, **którego**
@@ -4471,6 +4473,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
             overrides: Map::new(),
             vendor_options: BTreeMap::new(),
             copies: 1,
+            weight: crate::workflow::Weight::Ordinary,
             /* ZDANIE CZŁOWIEKA JEST INSTRUKCJĄ TEGO KROKU, więc ląduje w migawce na dysku:
              * bieg, po którym nie da się powiedzieć, o co go poproszono, jest biegiem, którego
              * nie da się potem wyjaśnić (niezmiennik 4). */
@@ -5492,6 +5495,44 @@ fn which_nodes(unrolled: &Unrolled, file: &WorkflowFile, part: Option<&Part>) ->
     }
 }
 
+/// Dopisuje do rachunku kontekstu zadanie dokładnie w takim kształcie, w jakim dostał je krok.
+///
+/// 2026-09 (Z-45) — `/ask` niesie jedno źródło, a zwykły workflow rozdziela zadanie biegu od
+/// instrukcji kroku; osobna funkcja trzyma tę różnicę w jednym miejscu i zostawia `plan_agent`
+/// jako składanie gotowych części planu.
+fn add_task_context(
+    context: &mut Vec<ContextSource>,
+    instructions: &str,
+    setup: &Setup<'_>,
+    node: usize,
+) {
+    if setup.is_ask {
+        if !instructions.is_empty() {
+            context.push(ContextSource {
+                kind: ContextKind::RunTask,
+                reference: "ask/task".to_owned(),
+                bytes: instructions.len(),
+            });
+        }
+    } else {
+        if !setup.task.is_empty() {
+            context.push(ContextSource {
+                kind: ContextKind::RunTask,
+                reference: "run/task".to_owned(),
+                bytes: setup.task.len(),
+            });
+        }
+        let instruction_bytes = instructions.replace(TASK_MARK, "").len();
+        if instruction_bytes > 0 {
+            context.push(ContextSource {
+                kind: ContextKind::WorkflowStep,
+                reference: format!("workflow/steps/{node}"),
+                bytes: instruction_bytes,
+            });
+        }
+    }
+}
+
 /// Krok agenta: konfiguracja efektywna, sterownik, katalog roboczy.
 ///
 /// `spot` przyjeżdża gotowy z [`plan_step`], bo od 2026-08-29 pytanie „gdzie ten krok pracuje"
@@ -5579,31 +5620,7 @@ fn plan_agent(
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
     let (knows, mut context, memory) =
         what_this_step_knows(&setup.knows, &effective.name, setup.data, setup.project);
-    if setup.is_ask {
-        if !instructions.is_empty() {
-            context.push(ContextSource {
-                kind: ContextKind::RunTask,
-                reference: "ask/task".to_owned(),
-                bytes: instructions.len(),
-            });
-        }
-    } else {
-        if !setup.task.is_empty() {
-            context.push(ContextSource {
-                kind: ContextKind::RunTask,
-                reference: "run/task".to_owned(),
-                bytes: setup.task.len(),
-            });
-        }
-        let instruction_bytes = instructions.replace(TASK_MARK, "").len();
-        if instruction_bytes > 0 {
-            context.push(ContextSource {
-                kind: ContextKind::WorkflowStep,
-                reference: format!("workflow/steps/{node}"),
-                bytes: instruction_bytes,
-            });
-        }
-    }
+    add_task_context(&mut context, &instructions, setup, node);
 
     // Sterownik stoi już wyżej (przy suficie narzędzi) i jest **jeden na krok**: etykieta
     // vendora idzie do `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo
@@ -5617,6 +5634,10 @@ fn plan_agent(
 
     Ok(AgentJob {
         driver,
+        weight: match step.weight {
+            crate::workflow::Weight::Ordinary => limits::Weight::Ordinary,
+            crate::workflow::Weight::Heavy => limits::Weight::Heavy,
+        },
         agent_name: effective.name.clone(),
         session: Uuid::now_v7(),
         cwd: spot.cwd,
@@ -9822,8 +9843,9 @@ impl Live {
          * innej drodze ta wartość ginie dokładnie tam, gdzie ginęła: na końcu tej funkcji, czyli
          * już PO `finish_this_step`. */
         let mut slot = match &self.plan.steps[id].job {
-            // Krok „sprawdź" bierze miejsce z puli **i** jedno miejsce ciężkie ([`weight_of`]),
-            // więc dwa takie kroki nigdy nie idą obok siebie, choćby pula miała ich osiem.
+            // Krok „sprawdź" i agent oznaczony jako ciężki biorą miejsce z puli **i** jedno
+            // miejsce ciężkie ([`weight_of`]), więc dwa takie kroki nigdy nie idą obok siebie,
+            // choćby pula miała ich osiem.
             // Pytanie do człowieka nie waży nic i miejsca nie bierze wcale — to jest cała
             // różnica między tymi dwoma ramionami.
             /* KAFELEK „URUCHOM I ZOSTAW" NIE BIERZE MIEJSCA, i to jest decyzja, nie pominięcie.
@@ -13383,22 +13405,23 @@ fn anything_was_priced(book: &Book) -> bool {
 
 /// Ile miejsca bierze krok tego rodzaju.
 ///
-/// # Dlaczego „sprawdź" jest ciężkie, a agent nie (niezmiennik 26)
+/// # Dlaczego „sprawdź" jest ciężkie, a agent wybiera wagę (niezmiennik 26)
 ///
 /// Bo `./verify.sh full` odpala `cargo`, `cargo` odpala `rustc`, a dwa równoległe linki
-/// przypinają kompresor pamięci macOS i zamrażają maszynę przy zerowym swapie. Agent to
-/// rozmowa: bierze pamięć, ale nie bierze całej maszyny.
+/// przypinają kompresor pamięci macOS i zamrażają maszynę przy zerowym swapie. Zwykła tura
+/// agenta jest rozmową, ale krok, któremu człowiek zleca build, pełną suitę albo przeglądarkę,
+/// niesie tę różnicę w pliku workflow.
 ///
-/// **Rodzaj kroku, nie jego nazwa ani rola** (niezmiennik 27). `if step.name == "check"` byłoby
-/// etapem zaszytym w silniku; tu pytamy o to, czym ten krok JEST — kafelkiem z komendą albo
-/// kafelkiem z agentem — i tę odpowiedź niesie sam graf.
+/// **Pole kroku, nie jego nazwa ani rola** (niezmiennik 27). `if step.name == "check"` byłoby
+/// etapem zaszytym w silniku; tu odpowiedź niesie jawny fakt z grafu.
 fn weight_of(job: &Job) -> limits::Weight {
     match job {
+        Job::Agent(job) => job.weight,
         Job::Check(_) => limits::Weight::Heavy,
         // Kafelek kontrolny i „uruchom i zostaw" nie proszą tędy o miejsce w ogóle
         // ([`Live::step`]), więc odpowiedź dla nich nie ma czytelnika i jest tą samą, co dla
         // rozmowy.
-        Job::Agent(_) | Job::Ask { .. } | Job::Serve(_) => limits::Weight::Ordinary,
+        Job::Ask { .. } | Job::Serve(_) => limits::Weight::Ordinary,
     }
 }
 

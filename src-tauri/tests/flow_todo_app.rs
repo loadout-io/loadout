@@ -390,6 +390,7 @@ fn todo_workflow(lead: &Agent, scout: &Agent, builder: &Agent, checker: &Agent) 
                     overrides: serde_json::Map::new(),
                     vendor_options: std::collections::BTreeMap::new(),
                     copies: 1,
+                    weight: loadout_lib::workflow::Weight::Ordinary,
                     instructions: one.task.to_owned(),
                     skills: loadout_lib::workflow::Skills::default(),
                     borrow: loadout_lib::workflow::Borrow::default(),

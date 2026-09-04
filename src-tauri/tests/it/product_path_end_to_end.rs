@@ -295,6 +295,7 @@ fn one_step_for(agent: &Agent, task: &str) -> WorkflowFile {
             overrides: serde_json::Map::new(),
             vendor_options: std::collections::BTreeMap::new(),
             copies: 1,
+            weight: loadout_lib::workflow::Weight::Ordinary,
             instructions: task.to_owned(),
             skills: loadout_lib::workflow::Skills::default(),
             borrow: loadout_lib::workflow::Borrow::default(),

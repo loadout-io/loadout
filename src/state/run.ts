@@ -29,7 +29,7 @@ import type { Line } from '../ipc/types';
  * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc magazyn biegu nie zyskuje ani
  * jednej zależności W CZASIE WYKONANIA — a to jest ten sam powód, dla którego `FeedLine` stoi
  * w tym pliku, a nie w sekcji. */
-import type { Link, Point, Step as FileStep } from './workflows';
+import type { AgentStep, Link, Point, Step as FileStep } from './workflows';
 /* ZAKRES PRACY MA JEDNO ŹRÓDŁO (niezmiennik 13) i jest nim ten magazyn — `activeId` jest
  * kluczem sesji. Import idzie w tę stronę i nigdy w drugą: magazyn zakresów nie wie, że
  * istnieją biegi, a gdyby wiedział, przełączenie zakresu musiałoby coś o biegu decydować. */
@@ -147,6 +147,8 @@ export interface Step {
    * i mają dalej dostawać podpis paska bez ani jednego dopisanego słowa.
    */
   readonly kind?: FileStep['kind'];
+  /** Waga z kroku agenta w pliku workflow; brak znaczy, że plan jej nie zna. */
+  readonly weight?: AgentStep['weight'];
   /**
    * Gdzie ten kafelek stoi na płótnie — albo BRAK POLA, kiedy nie wiadomo.
    *

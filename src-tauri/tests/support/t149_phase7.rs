@@ -1489,6 +1489,7 @@ fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str) -> Step {
         overrides: serde_json::Map::new(),
         vendor_options: BTreeMap::new(),
         copies: 1,
+        weight: loadout_lib::workflow::Weight::Ordinary,
         instructions: instructions.to_owned(),
         skills: Skills::default(),
         borrow: Borrow::default(),

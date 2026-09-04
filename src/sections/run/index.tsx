@@ -349,6 +349,9 @@ function planFor(
         ...(says === '' ? {} : { doing: says }),
         ...(step.at === undefined ? {} : { at: step.at }),
         ...(step.carriedOn === true ? { carriedOn: true as const } : {}),
+        ...(step.state === 'ready' && step.weight === 'heavy'
+          ? { waitingForHeavy: true as const }
+          : {}),
         ...(asked === undefined ? {} : { asked }),
       };
     }),
