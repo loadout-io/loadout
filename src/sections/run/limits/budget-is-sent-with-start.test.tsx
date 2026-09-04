@@ -103,7 +103,7 @@ function turnCosting(costUsd: number | null): Parameters<typeof spendFor>[0][num
     kind: 'done',
     agent: 'Hand',
     text: '',
-    turns: 1,
+    vendorTurns: 1,
     durationMs: 252_000,
     costUsd,
     ended: 'well',
@@ -111,9 +111,10 @@ function turnCosting(costUsd: number | null): Parameters<typeof spendFor>[0][num
      * wymagane, bo `Tokens` po stronie Rusta niesie trzy liczby, nie opcje — zero znaczy
      * „nic nie zgłoszono". Ten literał ma być tym, co NAPRAWDĘ przychodzi z drutu, więc
      * idzie za jego kształtem. Sam test mierzy koszt i nie pyta o tokeny. */
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedTokens: 0,
+    uncachedInput: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
     id: 1,
     at: 0,
   };

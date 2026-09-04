@@ -1771,9 +1771,10 @@ impl AgentHandle for Turn {
             text: self.said.clone(),
             cost_usd: Some(self.cost_usd),
             tokens: Tokens {
-                input: 20,
+                uncached_input: 20,
+                cache_read: 0,
+                cache_write: 0,
                 output: 10,
-                cached: 0,
             },
             turns: 1,
             took: Duration::from_millis(1),

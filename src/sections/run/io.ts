@@ -924,6 +924,9 @@ export interface PastStep {
   /** Powód, jeśli coś poszło nie tak. */
   readonly error: string;
   readonly costUsd: number | null;
+  /** Zdanie policzone przez Rust z tego samego słownika, który zasila widoczny wiersz.
+   * Opcjonalne tylko dla starszego drutu i zapisanych fixture'ów. */
+  readonly contextPerTurn?: string | null;
   /**
    * Zamrożone notatki przypięte przez Rust do fizycznego UUID tego kroku.
    *

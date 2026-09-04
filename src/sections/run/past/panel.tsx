@@ -370,7 +370,9 @@ function Step({
           {step.name}
         </span>
         <StateWord state={step.state} />
-        <span className="value ml-auto">{costText(step.costUsd)}</span>
+        <span className="value ml-auto">
+          {[step.contextPerTurn, costText(step.costUsd)].filter(Boolean).join(' · ')}
+        </span>
         {/* KONTYNUACJA STOI PRZY KROKU, a nie w nagłówku biegu, bo to jest wybór KROKU:
             „od którego miejsca ciągniemy dalej". Jeden przycisk nad całym biegiem musiałby ten
             krok zgadnąć — a zgadnięcie źle znaczy albo powtórzenie pracy, która się udała, albo

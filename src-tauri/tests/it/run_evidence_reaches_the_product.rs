@@ -950,18 +950,19 @@ fn assert_product_counters(workspace: &Path, manual: &RunReport) -> Result<(), B
                 .find(|step| step.get("node_key").and_then(Value::as_str) == Some("s_codex"))
         })
         .ok_or("the product run omitted its Codex step")?;
-    assert_eq!(codex_step.get("turns").and_then(Value::as_u64), Some(1));
+    assert!(codex_step.get("vendor_turns").is_none());
     assert_eq!(
-        codex_step.get("input_tokens").and_then(Value::as_u64),
-        Some(3)
-    );
-    assert_eq!(
-        codex_step.get("output_tokens").and_then(Value::as_u64),
+        codex_step.get("uncached_input").and_then(Value::as_u64),
         Some(2)
     );
+    assert_eq!(codex_step.get("output").and_then(Value::as_u64), Some(2));
     assert_eq!(
-        codex_step.get("cached_tokens").and_then(Value::as_u64),
+        codex_step.get("cache_read").and_then(Value::as_u64),
         Some(1)
+    );
+    assert_eq!(
+        codex_step.get("cache_write").and_then(Value::as_u64),
+        Some(0)
     );
     let report_document: Value = serde_json::from_str(support_report(workspace)?.text())?;
     let safe_run_id = manual
@@ -984,18 +985,16 @@ fn assert_product_counters(workspace: &Path, manual: &RunReport) -> Result<(), B
                 })
         })
         .ok_or("the support report omitted the product Codex step")?;
-    assert_eq!(safe_codex.get("turns"), codex_step.get("turns"));
+    assert!(safe_codex.get("vendorTurns").is_none());
     assert_eq!(
-        safe_codex.get("inputTokens").and_then(Value::as_u64),
-        Some(3)
-    );
-    assert_eq!(
-        safe_codex.get("outputTokens").and_then(Value::as_u64),
+        safe_codex.get("uncachedInput").and_then(Value::as_u64),
         Some(2)
     );
+    assert_eq!(safe_codex.get("output").and_then(Value::as_u64), Some(2));
+    assert_eq!(safe_codex.get("cacheRead").and_then(Value::as_u64), Some(1));
     assert_eq!(
-        safe_codex.get("cachedTokens").and_then(Value::as_u64),
-        Some(1)
+        safe_codex.get("cacheWrite").and_then(Value::as_u64),
+        Some(0)
     );
     Ok(())
 }

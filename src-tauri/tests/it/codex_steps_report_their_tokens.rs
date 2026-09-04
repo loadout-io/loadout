@@ -122,9 +122,9 @@ fn closing_row() -> Result<Line, Box<dyn Error>> {
 fn the_closing_row_carries_the_tokens_the_vendor_reported() -> Result<(), Box<dyn Error>> {
     let row = closing_row()?;
     let Line::Done {
-        input_tokens,
-        output_tokens,
-        cached_tokens,
+        uncached_input,
+        output,
+        cache_read,
         cost_usd,
         ..
     } = &row
@@ -134,18 +134,19 @@ fn the_closing_row_carries_the_tokens_the_vendor_reported() -> Result<(), Box<dy
 
     // (a) CO DO SZTUKI. `> 0` przechodzi dla implementacji, która wpisuje tam długość promptu.
     assert_eq!(
-        *input_tokens, INPUT,
-        "the vendor said it read {INPUT} tokens of fresh input, and the row a person sees says \
-         {input_tokens}. This row is the only thing the view ever receives, so what is not here \
-         is nowhere"
+        *uncached_input,
+        INPUT - CACHED,
+        "the vendor included cache in {INPUT} input tokens, so the fresh column must say {}. \
+         This row is the only thing the view ever receives, so what is not here is nowhere",
+        INPUT - CACHED
     );
     assert_eq!(
-        *output_tokens, OUTPUT,
-        "the vendor said it wrote {OUTPUT} tokens, and the row says {output_tokens}"
+        *output, OUTPUT,
+        "the vendor said it wrote {OUTPUT} tokens, and the row says {output}"
     );
     assert_eq!(
-        *cached_tokens, CACHED,
-        "the vendor said {CACHED} tokens came from its cache, and the row says {cached_tokens}. \
+        *cache_read, CACHED,
+        "the vendor said {CACHED} tokens came from its cache, and the row says {cache_read}. \
          That one number is the whole answer to whether context isolation works at all"
     );
 
@@ -170,12 +171,14 @@ fn the_tokens_reach_the_wire_under_the_names_the_window_reads() -> Result<(), Bo
         .ok_or("a row goes out as a flat object, so the window gets one kind and one field")?;
 
     // Po drucie, nie po polu Rusta: bez `rename_all_fields` te trzy jadą jako `input_tokens`,
-    // okno czyta `inputTokens`, dostaje `undefined` i wywraca widok — a przyczyna jest w derive,
-    // nie w komponencie, więc pierwsze poprawki idą w złą warstwę [FOUNDATIONS section 3].
+    // okno czyta `uncachedInput`, dostaje `undefined` i wywraca widok — a przyczyna jest
+    // w derive, nie w komponencie, więc pierwsze poprawki idą w złą warstwę
+    // [FOUNDATIONS section 3].
     for (name, expected) in [
-        ("inputTokens", INPUT),
-        ("outputTokens", OUTPUT),
-        ("cachedTokens", CACHED),
+        ("uncachedInput", INPUT - CACHED),
+        ("cacheRead", CACHED),
+        ("cacheWrite", 0),
+        ("output", OUTPUT),
     ] {
         let carried = fields.get(name).and_then(Value::as_u64).ok_or_else(|| {
             format!(
@@ -224,9 +227,10 @@ async fn the_run_file_keeps_the_tokens_of_a_step_whose_vendor_reports_no_price()
     // To są dwa różne artefakty i dwie różne umowy: drut nazywa pola tak, jak czyta je okno,
     // a ten plik tak, jak czyta go `store::rebuild` po skasowaniu indeksu (niezmiennik 4).
     for (name, expected) in [
-        ("input_tokens", INPUT),
-        ("output_tokens", OUTPUT),
-        ("cached_tokens", CACHED),
+        ("uncached_input", INPUT - CACHED),
+        ("cache_read", CACHED),
+        ("cache_write", 0),
+        ("output", OUTPUT),
     ] {
         let carried = step.get(name).and_then(Value::as_u64).ok_or_else(|| {
             format!(
@@ -237,6 +241,10 @@ async fn the_run_file_keeps_the_tokens_of_a_step_whose_vendor_reports_no_price()
         })?;
         assert_eq!(carried, expected, "{name} was written as {carried}");
     }
+    assert!(
+        step.get("vendor_turns").is_none(),
+        "one Loadout turn must not pretend to be an internal Codex turn: {step}"
+    );
 
     assert!(
         step.get("cost_usd").is_some_and(Value::is_null),
@@ -361,11 +369,14 @@ impl AgentHandle for Turn {
             // Kwoty ten vendor nie podaje i to jest treść tego dubla.
             cost_usd: None,
             tokens: Tokens {
-                input: INPUT,
+                uncached_input: INPUT - CACHED,
+                cache_read: CACHED,
+                cache_write: 0,
                 output: OUTPUT,
-                cached: CACHED,
             },
-            turns: 1,
+            // Codex nie podaje wewnętrznych tur vendora; dubl nie może zmyślić jednej z samego
+            // faktu, że Loadout uruchomił go raz (2026-09, Z-48).
+            turns: 0,
             took: Duration::from_millis(6_200),
             session: self.session.clone(),
         };

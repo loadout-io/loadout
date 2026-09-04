@@ -459,12 +459,24 @@ pub struct Outcome {
     pub cost_usd: Option<f64>,
     /// Zużycie kontekstu.
     pub tokens: Tokens,
-    /// Ile tur agent wykonał w tej wymianie.
+    /// Ile wewnętrznych tur zgłosił vendor. Zero jest zgodnościowym zapisem braku dla
+    /// adaptera, którego protokół tej liczby nie podaje; na trwałą granicę wychodzi przez
+    /// [`Outcome::vendor_turns`] jako `None` (2026-09, Z-48).
     pub turns: u32,
     /// Ile to trwało, według vendora.
     pub took: Duration,
     /// Sesja, w której to się zdarzyło.
     pub session: SessionRef,
+}
+
+impl Outcome {
+    /// Wewnętrzne tury vendora, tylko kiedy jego protokół naprawdę je zgłasza.
+    #[must_use]
+    pub fn vendor_turns(&self) -> Option<u32> {
+        // 2026-09 (Z-48) — adapter bez takiego licznika zapisuje zgodnościowe zero. Rdzeń
+        // nie rozpoznaje vendora po nazwie i nie powiela jego polityki (niezmiennik 23).
+        (self.turns > 0).then_some(self.turns)
+    }
 }
 
 /// Uchwyt sesji vendora — to, czego potrzeba, żeby wrócić do tej samej rozmowy.
@@ -493,16 +505,18 @@ pub enum FinishReason {
     Failed(String),
 }
 
-/// Zużycie kontekstu w jednej turze.
+/// Zużycie kontekstu w jednej turze, w jednym słowniku dla obu vendorów (2026-09, Z-48).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tokens {
-    /// Świeże wejście.
-    pub input: u64,
-    /// Wyjście modelu.
-    pub output: u64,
+    /// Świeże wejście, bez tego przeczytanego z cache'u.
+    pub uncached_input: u64,
     /// Wejście przeczytane z cache'u. To ta liczba pokazuje, czy izolacja kontekstu działa:
     /// bieg bez niej płacił 36 870 zamiast 4 725 [T1 §3.3, korekta 4].
-    pub cached: u64,
+    pub cache_read: u64,
+    /// Wejście zapisane do cache'u, kiedy vendor je rozróżnia.
+    pub cache_write: u64,
+    /// Wyjście modelu.
+    pub output: u64,
 }
 
 /// Co wiadomo o CLI vendora **przed** pierwszym biegiem. Napędza ekran ustawień (T-01/T-11).

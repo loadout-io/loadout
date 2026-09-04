@@ -52,7 +52,7 @@ use super::isolate;
 use crate::engine::drivers::DecodedEvent;
 use crate::engine::drivers::claude::ClaudeDecoder;
 use crate::engine::drivers::codex::CodexDecoder;
-use crate::engine::line::{Curator, Line, Seen};
+use crate::engine::line::{Curator, Line, Seen, context_per_turn};
 use crate::engine::stream::{Decoded, decode};
 
 /// Opis biegu. Ta sama nazwa, którą składa `commands::run` — rozjazd znaczy pustą historię.
@@ -258,6 +258,9 @@ pub struct PastStepWire {
     pub error: String,
     /// Ile kosztował ten krok. `None` znaczy „nie podał", nie zero.
     pub cost_usd: Option<f64>,
+    /// Zdanie o kontekście na wewnętrzną turę vendora. `None`, kiedy vendor nie podał tur
+    /// albo liczniki są puste; historia nie zgaduje jednej tury Codeksa (2026-09, Z-48).
+    pub context_per_turn: Option<String>,
     /// Zamrożony receipt wyłącznie TEGO fizycznego kroku. Pusta lista jest jawna także dla
     /// starych biegów, żeby granica TypeScript nie musiała zgadywać, czy pole zaginęło.
     pub memory: Vec<PastMemoryWire>,
@@ -417,6 +420,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 summary: step.summary.clone().unwrap_or_default(),
                 error: step.error.clone().unwrap_or_default(),
                 cost_usd: step.cost_usd,
+                context_per_turn: recorded_context_per_turn(step),
                 memory: memory_for_step(&file.memory, &step.id),
                 loaded_by_the_app: step.loaded_by_the_app.clone(),
                 lines: recorded_lines(
@@ -696,6 +700,23 @@ struct StepDescription {
     error: Option<String>,
     #[serde(default)]
     cost_usd: Option<f64>,
+    /// Nowy słownik Z-48. Na dysku ma `snake_case`; aliasy przyjmują te same fakty z kopii,
+    /// która przeszła przez drut JSON zamiast bezpośrednio przez pisarza `run.json`.
+    #[serde(default, alias = "uncachedInput")]
+    uncached_input: Option<u64>,
+    #[serde(default, alias = "cacheRead")]
+    cache_read: Option<u64>,
+    #[serde(default, alias = "vendorTurns")]
+    vendor_turns: Option<u32>,
+    /// Stare klucze zostają wyłącznie czytnikiem zgodności. Dla Codeksa `input_tokens`
+    /// zawierał cache, a `turns` znaczył turę Loadouta, więc oba wymagają mapowania zamiast
+    /// prostego przepisania (2026-09, Z-48; niezmiennik 4).
+    #[serde(default, alias = "inputTokens")]
+    input_tokens: Option<u64>,
+    #[serde(default, alias = "cachedTokens")]
+    cached_tokens: Option<u64>,
+    #[serde(default)]
+    turns: Option<u32>,
     /// Migawka agenta, z której bierzemy JEDNO pole: czym ten krok był prowadzony.
     ///
     /// `None` dla kroków bez agenta (kafelek kontrolny, „sprawdź", „uruchom i zostaw") i dla
@@ -707,6 +728,40 @@ struct StepDescription {
     /// biegi dalej dawały się otworzyć (niezmiennik 5 na granicy pliku).
     #[serde(default)]
     loaded_by_the_app: Option<LoadedByTheAppWire>,
+}
+
+/// To samo zdanie, które [`crate::engine::line::done_line`] wkłada do widocznego wiersza.
+fn recorded_context_per_turn(step: &StepDescription) -> Option<String> {
+    let effective_vendor = step
+        .effective
+        .as_ref()
+        .map(|one| one.runs_with.as_str())
+        .filter(|one| !one.trim().is_empty());
+    let mut vendor = effective_vendor
+        .unwrap_or(step.agent.as_str())
+        .trim()
+        .to_ascii_lowercase();
+    // Pliki starsze od migawki `effective` uruchamiały wyłącznie Claude'a; UUID agenta
+    // nie może zostać błędnie uznany za nowego vendora (2026-09, niezmiennik 4).
+    if effective_vendor.is_none() && !matches!(vendor.as_str(), "codex" | "claude" | "claude-code")
+    {
+        "claude-code".clone_into(&mut vendor);
+    }
+    let cache_read = step.cache_read.or(step.cached_tokens).unwrap_or_default();
+    let uncached_input = step.uncached_input.unwrap_or_else(|| {
+        let old = step.input_tokens.unwrap_or_default();
+        if vendor == "codex" {
+            old.saturating_sub(cache_read)
+        } else {
+            old
+        }
+    });
+    let turns = step.vendor_turns.or_else(|| {
+        matches!(vendor.as_str(), "claude" | "claude-code" | "claudecode")
+            .then_some(step.turns)
+            .flatten()
+    })?;
+    context_per_turn(uncached_input, cache_read, turns)
 }
 
 /// Stan jednego fizycznego kroku, który ma przeczytać człowiek.

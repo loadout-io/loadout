@@ -986,10 +986,16 @@ fn app_usage(value: &Value) -> Option<Tokens> {
         .into_iter()
         .filter_map(|path| value.pointer(path))
         .find_map(|usage| serde_json::from_value::<Usage>(usage.clone()).ok())
-        .map(|usage| Tokens {
-            input: usage.input.unwrap_or_default(),
-            output: usage.output.unwrap_or_default(),
-            cached: usage.cached.unwrap_or_default(),
+        .map(|usage| {
+            let cache_read = usage.cache_read.unwrap_or_default();
+            Tokens {
+                // 2026-09 (Z-48) — normalizacja dzieje się PRZED deltą kumulatywnego
+                // licznika, więc oba wejścia `token_delta` mają już to samo znaczenie.
+                uncached_input: usage.input.unwrap_or_default().saturating_sub(cache_read),
+                cache_read,
+                cache_write: usage.cache_write.unwrap_or_default(),
+                output: usage.output.unwrap_or_default(),
+            }
         })
 }
 
@@ -1005,9 +1011,10 @@ fn token_delta(total: Tokens, baseline: Tokens) -> Tokens {
     }
 
     Tokens {
-        input: component(total.input, baseline.input),
+        uncached_input: component(total.uncached_input, baseline.uncached_input),
+        cache_read: component(total.cache_read, baseline.cache_read),
+        cache_write: component(total.cache_write, baseline.cache_write),
         output: component(total.output, baseline.output),
-        cached: component(total.cached, baseline.cached),
     }
 }
 
@@ -1033,9 +1040,9 @@ fn curated_app_evidence(value: &Value) -> Option<Vec<u8>> {
                 "method": method,
                 "status": status,
                 "usage": {
-                    "inputTokens": usage.input,
+                    "inputTokens": usage.uncached_input,
                     "outputTokens": usage.output,
-                    "cachedInputTokens": usage.cached,
+                    "cachedInputTokens": usage.cache_read,
                 }
             })
         }
@@ -1044,9 +1051,9 @@ fn curated_app_evidence(value: &Value) -> Option<Vec<u8>> {
             json!({
                 "method": method,
                 "usage": {
-                    "inputTokens": usage.input,
+                    "inputTokens": usage.uncached_input,
                     "outputTokens": usage.output,
-                    "cachedInputTokens": usage.cached,
+                    "cachedInputTokens": usage.cache_read,
                 }
             })
         }
@@ -2335,7 +2342,9 @@ struct Usage {
     input: Option<u64>,
     /// Ta liczba, i tylko ta, mówi, czy izolacja kontekstu w ogóle działa [T1 §3.3].
     #[serde(rename = "cached_input_tokens", alias = "cachedInputTokens")]
-    cached: Option<u64>,
+    cache_read: Option<u64>,
+    #[serde(rename = "cache_write_input_tokens", alias = "cacheWriteInputTokens")]
+    cache_write: Option<u64>,
     #[serde(rename = "output_tokens", alias = "outputTokens")]
     output: Option<u64>,
 }
@@ -2687,10 +2696,19 @@ impl CodexDecoder {
 
     /// `turn.completed` → koniec tury, która się udała.
     fn finish(&mut self, usage: Option<&Usage>) -> Vec<AgentEvent> {
+        let cache_read = usage.and_then(|usage| usage.cache_read).unwrap_or_default();
         self.finish_tokens(Tokens {
-            input: usage.and_then(|usage| usage.input).unwrap_or_default(),
+            // 2026-09 (Z-48) — CodeX wlicza cache read do `input_tokens`; odejmujemy go przy
+            // granicy vendora, żeby każdy dalszy czytelnik dostał już jedno znaczenie.
+            uncached_input: usage
+                .and_then(|usage| usage.input)
+                .unwrap_or_default()
+                .saturating_sub(cache_read),
+            cache_read,
+            cache_write: usage
+                .and_then(|usage| usage.cache_write)
+                .unwrap_or_default(),
             output: usage.and_then(|usage| usage.output).unwrap_or_default(),
-            cached: usage.and_then(|usage| usage.cached).unwrap_or_default(),
         })
     }
 
@@ -2716,9 +2734,9 @@ impl CodexDecoder {
             // Nieznany model pozostaje `None`: zero wyglądałoby jak znana, darmowa tura.
             cost_usd,
             tokens,
-            // Jeden proces to jedna tura — to jest fakt o NASZYM wywołaniu, nie liczba z drutu.
-            // Codex nie ma odpowiednika `num_turns` i nie ma czego tu zgadywać.
-            turns: 1,
+            // Codex nie ma odpowiednika `num_turns`; jedna tura Loadouta nie może udawać
+            // liczby wewnętrznych tur vendora (2026-09, Z-48).
+            turns: 0,
             // Vendor nie mówi, ile to trwało. Zero jest tu uczciwe tylko dlatego, że wypełnia to
             // pole zmierzonym czasem sterownik, w [`pump`] — dekoder zegara nie ma i mieć nie ma
             // po co (2026-08-19).
@@ -2748,7 +2766,7 @@ impl CodexDecoder {
             text: self.said.clone(),
             cost_usd: None,
             tokens: Tokens::default(),
-            turns: 1,
+            turns: 0,
             took: Duration::ZERO,
             session: self.session_ref(),
         }));
@@ -3683,8 +3701,9 @@ mod app_server_pricing_tests {
     };
 
     const TOKENS: Tokens = Tokens {
-        input: 10_000,
-        cached: 5_000,
+        uncached_input: 5_000,
+        cache_read: 5_000,
+        cache_write: 0,
         output: 20_000,
     };
 
@@ -3696,8 +3715,8 @@ mod app_server_pricing_tests {
             "params": {
                 "turn": { "status": "completed" },
                 "usage": {
-                    "inputTokens": TOKENS.input,
-                    "cachedInputTokens": TOKENS.cached,
+                    "inputTokens": TOKENS.uncached_input + TOKENS.cache_read,
+                    "cachedInputTokens": TOKENS.cache_read,
                     "outputTokens": TOKENS.output
                 }
             }
@@ -3766,8 +3785,8 @@ mod app_server_pricing_tests {
             "params": {
                 "turn": { "status": "completed" },
                 "usage": {
-                    "inputTokens": TOKENS.input,
-                    "cachedInputTokens": TOKENS.cached,
+                    "inputTokens": TOKENS.uncached_input + TOKENS.cache_read,
+                    "cachedInputTokens": TOKENS.cache_read,
                     "outputTokens": TOKENS.output
                 }
             }

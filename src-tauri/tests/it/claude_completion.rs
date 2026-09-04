@@ -188,11 +188,18 @@ fn the_fixture_hands_over_its_own_session_cost_and_tokens() -> Result<(), Box<dy
          it came out as {cost}"
     );
 
-    assert_eq!(outcome.tokens.input, 4, "fresh input from the wire");
     assert_eq!(
-        outcome.tokens.cached, 65_403,
+        outcome.tokens.uncached_input, 4,
+        "fresh input from the wire"
+    );
+    assert_eq!(
+        outcome.tokens.cache_read, 65_403,
         "cached input is the number that says whether context isolation is working at all; \
          reading the wrong usage field here makes that measurement silently meaningless"
+    );
+    assert_eq!(
+        outcome.tokens.cache_write, 20_615,
+        "cache creation is a fourth distinct column in the Claude fixture"
     );
     assert_eq!(outcome.tokens.output, 336, "output from the wire");
 

@@ -416,14 +416,15 @@ pub enum Line {
         /// Godzinę lokalną renderuje front; to jest formatowanie, nie kuracja [T7 §7.2].
         resets_at: Option<i64>,
     },
-    /// `Done · 2 turns · 6.2s · $0.15`
+    /// `Done · 2 turns · 33k length per turn on average · 6.2s · $0.15`
     Done {
         /// Kto skończył.
         agent: String,
         /// Tekst wiersza, gotowy na ekran.
         text: String,
-        /// Ile tur agent wykonał — przepisane, nie przeliczone.
-        turns: u32,
+        /// Ile wewnętrznych tur podał vendor. Brak nie jest zerem i nie wolno go zastępować
+        /// jedną turą Loadouta (2026-09, Z-48).
+        vendor_turns: Option<u32>,
         /// Ile to trwało według vendora, w milisekundach — przepisane, nie przeliczone.
         duration_ms: u64,
         /// Koszt tury. `None`, kiedy vendor go nie podał: zero jest liczbą i sumuje się
@@ -431,22 +432,23 @@ pub enum Line {
         cost_usd: Option<f64>,
         /// Świeże wejście tej tury — **przepisane z drutu**, nie policzone.
         ///
-        /// 2026-08-24 (T-97) — TRZY POLA SĄ NOWE i powstały z kroku, który nie miał na ekranie
+        /// 2026-08-24 (T-97) — liczniki powstały z kroku, który nie miał na ekranie
         /// ani jednej cyfry. `Outcome::tokens` niesie te liczby od T-06, a wiersz zamykający je
         /// wyrzucał: u Claude'a nie było tego widać, bo obok stał koszt, ale Codex kwoty nie
         /// podaje (`cost_usd` zostaje `None` i ma zostać), więc jego kroki pokazywały pustkę
         /// i liczyły się jako zero w każdym podsumowaniu.
         ///
         /// Zero, a nie `Option`, i to jest wybór za źródłem: [`Outcome::tokens`] jest
-        /// [`super::drivers::Tokens`] z trzema `u64`, więc `Option` tutaj wymyślałby rozróżnienie,
+        /// [`super::drivers::Tokens`] z czterema `u64`, więc `Option` tutaj wymyślałby rozróżnienie,
         /// którego drut nie niesie. Pustkę na ekranie rozstrzyga suma: bieg, w którym wszystkie
-        /// trzy są zerem, nie ma czego pokazać i nie pokazuje nic.
-        input_tokens: u64,
+        /// cztery są zerem, nie ma czego pokazać i nie pokazuje nic.
+        uncached_input: u64,
+        /// Wejście przeczytane z cache'u.
+        cache_read: u64,
+        /// Wejście zapisane do cache'u.
+        cache_write: u64,
         /// Wyjście modelu w tej turze — przepisane, nie policzone.
-        output_tokens: u64,
-        /// Wejście przeczytane z cache'u. To ta liczba mówi, czy izolacja kontekstu działa
-        /// [T1 §3.3, korekta 4].
-        cached_tokens: u64,
+        output: u64,
         /// Jak się skończyło — **osobnym polem, nie do wyczytania z `text`**.
         ///
         /// 2026-08-22 — POLE JEST NOWE i powstało z wady widocznej na zrzucie właściciela:
@@ -1542,7 +1544,7 @@ fn file_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// Linia zamykająca turę: `Done · 2 turns · 6.2s · $0.15`.
+/// Linia zamykająca turę: `Done · 2 turns · 33k length per turn on average · 6.2s · $0.15`.
 ///
 /// Liczby w zdaniu są zaokrąglone **do wyświetlenia**, a pola obok niosą wartości surowe —
 /// na tym polega różnica między formatowaniem a utratą. `cost_usd` przepisany co do bitu,
@@ -1566,9 +1568,21 @@ fn done_line(agent: &str, outcome: &Outcome, unknown_price: Option<&str>) -> Lin
         Ended::Badly => "Didn't work",
     };
 
-    let turns = outcome.turns;
-    let plural = if turns == 1 { "turn" } else { "turns" };
-    let mut text = format!("{head} · {turns} {plural} · {}", took_text(duration_ms));
+    let mut text = head.to_owned();
+    let vendor_turns = outcome.vendor_turns();
+    if let Some(turns) = vendor_turns {
+        if let Some(context) = context_per_turn(
+            outcome.tokens.uncached_input,
+            outcome.tokens.cache_read,
+            turns,
+        ) {
+            let _ = write!(text, " · {context}");
+        } else {
+            let plural = if turns == 1 { "turn" } else { "turns" };
+            let _ = write!(text, " · {turns} {plural}");
+        }
+    }
+    let _ = write!(text, " · {}", took_text(duration_ms));
     if let Some(cost) = outcome.cost_usd {
         // `write!` do `String`, nie `push_str(&format!(…))`: ten drugi alokuje bufor
         // pośredni tylko po to, żeby go zaraz skopiować i wyrzucić (clippy
@@ -1605,16 +1619,54 @@ fn done_line(agent: &str, outcome: &Outcome, unknown_price: Option<&str>) -> Lin
     Line::Done {
         agent: agent.to_owned(),
         text,
-        turns,
+        vendor_turns,
         duration_ms,
         cost_usd: outcome.cost_usd,
-        // PRZEPISANE, NIE POLICZONE — tak samo jak `turns` i `duration_ms` obok. Vendor bez
-        // cennika (Codex) podaje wyłącznie te trzy liczby, więc to one są jedynym, co ten krok
-        // ma do powiedzenia o swoim rozmiarze.
-        input_tokens: outcome.tokens.input,
-        output_tokens: outcome.tokens.output,
-        cached_tokens: outcome.tokens.cached,
+        // PRZEPISANE, NIE POLICZONE — normalizacja wydarzyła się już na granicy vendora.
+        // Dzięki temu drut nie musi znać różnicy między Claude'em i Codeksem (2026-09, Z-48).
+        uncached_input: outcome.tokens.uncached_input,
+        cache_read: outcome.tokens.cache_read,
+        cache_write: outcome.tokens.cache_write,
+        output: outcome.tokens.output,
         ended,
+    }
+}
+
+/// Jedno zdanie o przeciętnej ilości kontekstu na wewnętrzną turę vendora.
+///
+/// `None` przy zerze tur albo zerowym kontekście, bo dzielenie przez zero i „0 length"
+/// udawałyby pomiar, którego vendor nie dostarczył. Ta funkcja zasila zarówno linię na
+/// kafelku, jak i historię, więc jeden fakt ma jedno brzmienie (niezmienniki 13 i 29).
+#[must_use]
+pub fn context_per_turn(uncached_input: u64, cache_read: u64, turns: u32) -> Option<String> {
+    if turns == 0 {
+        return None;
+    }
+    let total = uncached_input.saturating_add(cache_read);
+    if total == 0 {
+        return None;
+    }
+    let average = total / u64::from(turns);
+    let plural = if turns == 1 { "turn" } else { "turns" };
+    Some(format!(
+        "{turns} {plural} · {} length per turn on average",
+        compact_length(average)
+    ))
+}
+
+/// Krótki zapis liczby, który mieści się w jednym wierszu historii.
+fn compact_length(value: u64) -> String {
+    if value >= 1_000_000 {
+        let tenths = value.saturating_add(50_000) / 100_000;
+        if tenths.is_multiple_of(10) {
+            format!("{}m", tenths / 10)
+        } else {
+            format!("{}.{:01}m", tenths / 10, tenths % 10)
+        }
+    } else if value >= 1_000 {
+        format!("{}k", value.saturating_add(500) / 1_000)
+    } else {
+        value.to_string()
     }
 }
 

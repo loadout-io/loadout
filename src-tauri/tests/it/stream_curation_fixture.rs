@@ -165,13 +165,14 @@ async fn the_three_rows_say_what_the_stream_said() -> anyhow::Result<()> {
     // ── Wiersz 3: linia zamykająca ────────────────────────────────────────────────────────
     match &lines[2] {
         Line::Done {
-            turns,
+            vendor_turns,
             duration_ms,
             cost_usd,
             ..
         } => {
             assert_eq!(
-                *turns, TURNS,
+                *vendor_turns,
+                Some(TURNS),
                 "the turn count is copied from the result line, not counted by us"
             );
             assert_eq!(
