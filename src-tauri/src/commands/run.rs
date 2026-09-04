@@ -3113,6 +3113,15 @@ struct Plan {
     /// Kiedy wstała maszyna. Czytane RAZ, przy planowaniu: ten sam bieg ma nosić jedną
     /// odpowiedź, a nie tyle, ile razy ktoś zapyta system.
     boot_id: Option<String>,
+    /// Skąd ten bieg bierze wartości wymagane przez zatwierdzone Connections.
+    ///
+    /// 2026-09 (Z-23) — POLE DOSZŁO, bo do tego dnia jedynym źródłem było środowisko procesu
+    /// okna, a aplikacja uruchomiona z Docka nie dziedziczy powłoki człowieka: ten sam bieg
+    /// ruszał po starcie z terminala i odmawiał po kliknięciu w ikonę. Nośnik jest częścią
+    /// PLANU, a nie odczytem w chwili startu kroku, z tego samego powodu, co polityka i lista
+    /// narzędzi obok — biblioteka jest znana przed pierwszym procesem, a dwa kroki tego samego
+    /// biegu mają pytać ten sam plik.
+    secrets: crate::connections::secrets::Carrier,
 }
 
 #[derive(Debug, Clone)]
@@ -3865,6 +3874,7 @@ fn plan_run_with_identity(
         // Odczyt przy każdym zrzucie dałby wartości, które teoretycznie mogą się różnić —
         // i strażnik porównywałby wtedy coś z czymś innym.
         boot_id: crate::engine::supervisor::machine_booted_at(),
+        secrets: crate::connections::secrets::Carrier::in_library(Some(deps.home)),
     })
 }
 
@@ -4079,6 +4089,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         trigger_origin: None,
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
         boot_id: crate::engine::supervisor::machine_booted_at(),
+        secrets: crate::connections::secrets::Carrier::in_library(Some(deps.home)),
     })
 }
 
@@ -9803,11 +9814,16 @@ impl Live {
                 .dir
                 .join("connections")
                 .join(&self.plan.steps[id].node_key);
-            crate::connections::runtime::for_driver(
+            /* WARTOŚCI BIERZE NOŚNIK LOADOUTA, nie samo środowisko tego okna (2026-09, Z-23):
+             * bieg zaczęty z aplikacji uruchomionej z Docka nie widział ani jednej zmiennej
+             * wyeksportowanej w powłoce człowieka, więc krok z zatwierdzonym Połączeniem
+             * odmawiał tam, gdzie ten sam krok z terminala ruszał. Nośnik przyjechał planem —
+             * powód przy [`Plan::secrets`]. */
+            crate::connections::runtime::for_driver_with_secrets(
                 &directory,
                 job.driver.id(),
                 &job.connections,
-                |name| std::env::var_os(name),
+                &self.plan.secrets,
             )?
         };
         configuration

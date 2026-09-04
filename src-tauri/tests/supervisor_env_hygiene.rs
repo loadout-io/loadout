@@ -21,12 +21,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use loadout_lib::engine::supervisor::{self, PASSTHROUGH, StdinPlan};
+use loadout_lib::engine::supervisor::{self, PASSTHROUGH, StdinPlan, VENDOR_AUTH_PASSTHROUGH};
 use tokio::process::Command;
 
 /// Nazwa, której w środowisku dziecka być nie może. Sekret nazwany wprost, żeby test mógł
 /// szukać zarówno nazwy, jak i wartości: wyciek jednego bez drugiego to nadal wyciek.
 const SECRET_NAME: &str = "LOADOUT_SECRET_MARKER";
+
+/// Nazwa z DRUGIEJ listy, którą dziecko dostać musi (2026-09, Z-23; audyt D-8).
+///
+/// Bez niej `claude` i `codex` uruchomione przez Loadouta widzą wylogowanego użytkownika, choć
+/// w terminalu tego samego człowieka działają — czyli cała klasa „u mnie działa, z ikony nie".
+/// Ta jedna nazwa reprezentuje tu obie listy naraz: sama obecność `VENDOR_AUTH_PASSTHROUGH`
+/// w kodzie niczego nie dowodzi, dopóki `env_clear()` nie przepuści ani jednej jej pozycji.
+const VENDOR_KEY_NAME: &str = "ANTHROPIC_API_KEY";
 
 /// Zmienne, które dokłada **sama powłoka** już po starcie, więc nie ma ich w `PASSTHROUGH`
 /// i nie są dowodem na nieszczelność.
@@ -97,7 +105,11 @@ fn plant_secret(name: &str, value: &str) {
 }
 
 /// Część pierwsza: co dziecko widzi w swoim środowisku.
-async fn the_environment_is_scrubbed(dir: &Path, secret: &str) -> Result<(), Box<dyn Error>> {
+async fn the_environment_is_scrubbed(
+    dir: &Path,
+    secret: &str,
+    vendor_key: &str,
+) -> Result<(), Box<dyn Error>> {
     let dumped_to = dir.join("child-environment.txt");
     let script = write_script(dir, "printenv.sh", ENV_SCRIPT)?;
 
@@ -133,7 +145,30 @@ async fn the_environment_is_scrubbed(dir: &Path, secret: &str) -> Result<(), Box
          has nothing to do with the agent"
     );
 
-    let allowed: HashSet<&str> = PASSTHROUGH.iter().copied().chain(SHELL_ADDS).collect();
+    // DRUGA LISTA, i to jest osobne pytanie od tego wyżej. Tamto brzmi „czy coś przeciekło";
+    // to brzmi „czy to, co miało przejść, przeszło". Odpowiedź „nie" jest niewidoczna aż do
+    // pierwszego prawdziwego biegu, w którym agent melduje, że nie jest zalogowany.
+    //
+    // TA ASERCJA SĄDZI ZACHOWANIE, NIE ISTNIENIE STAŁEJ (AGENTS.md §2a p. 4, niezmiennik 20).
+    // Powstała nad `VENDOR_AUTH_PASSTHROUGH = &[]` — szkieletem, przy którym ten plik kompiluje
+    // się w całości i pada DOKŁADNIE tutaj, w wykonaniu. Zmierzone dwa razy: przy pustej liście
+    // czerwień, po jej wypełnieniu zieleń (2026-09, Z-23).
+    assert!(
+        dumped
+            .lines()
+            .any(|line| line == format!("{VENDOR_KEY_NAME}={vendor_key}")),
+        "{VENDOR_KEY_NAME} did not reach the child, so this app hands its agent a logged-out \
+         session while the same CLI works in this person's terminal. The environment that \
+         proves a vendor who we are is a second, explicit list (VENDOR_AUTH_PASSTHROUGH), never \
+         a value pasted into a command line"
+    );
+
+    let allowed: HashSet<&str> = PASSTHROUGH
+        .iter()
+        .chain(VENDOR_AUTH_PASSTHROUGH)
+        .copied()
+        .chain(SHELL_ADDS)
+        .collect();
     let leaked: Vec<&str> = dumped
         .lines()
         .filter_map(|line| line.split_once('='))
@@ -202,8 +237,16 @@ async fn the_child_gets_a_scrubbed_environment_and_an_immediately_closed_stdin()
     let dir = tempfile::tempdir()?;
     let secret = unique_secret();
     plant_secret(SECRET_NAME, &secret);
+    /* DWIE ZASADZONE WARTOŚCI, W PRZECIWNE STRONY (2026-09, Z-23). Jedna ma zniknąć, druga ma
+     * przejść, i dopiero obie naraz opisują politykę: lista, która przepuszcza wszystko, oblewa
+     * pierwszą asercję, a `env_clear()` bez drugiej listy — tę drugą.
+     *
+     * Wartość jest unikalna dla tego biegu, więc podmienia ewentualny prawdziwy klucz człowieka
+     * na czas tego jednego procesu testowego i nie ma jak wyciec do dowodów. */
+    let vendor_key = unique_secret();
+    plant_secret(VENDOR_KEY_NAME, &vendor_key);
 
-    the_environment_is_scrubbed(dir.path(), &secret).await?;
+    the_environment_is_scrubbed(dir.path(), &secret, &vendor_key).await?;
     stdin_closes_at_once(dir.path()).await?;
 
     Ok(())
