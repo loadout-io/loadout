@@ -34,7 +34,7 @@ const SHIP: PastRunRow = {
   title: 'Ship a feature',
   workflowFile: 'ship-a-feature.json',
   state: 'succeeded',
-  steps: 2,
+  steps: 3,
   costUsd: 1,
   said: null,
 };
@@ -110,6 +110,17 @@ const OPENED: PastRun = {
       error: 'The check would not run.',
       costUsd: 0.75,
       lines: [READ_LINE],
+    },
+    {
+      id: '01a02b3c-15f5-7f13-a86f-f2f856e4d773',
+      tile: 's_build',
+      name: 'Build',
+      agent: 'claude',
+      state: 'not_run',
+      summary: 'Not needed: the work already passed in an earlier try.',
+      error: '',
+      costUsd: null,
+      lines: [],
     },
   ],
   handoffs: [{ from: 'Plan', to: ['Build'], title: HANDED, kind: 'plan' }],
@@ -294,6 +305,12 @@ describe('typing /history puts what really ran on the screen', () => {
       'and the reason a step did not work has to be there too, or the screen shows a step that ' +
         'failed and no reason for it',
     ).toContain('The check would not run.');
+    expect(
+      withTheRun,
+      'a loop round omitted after an earlier pass has to say "not run" on its real history ' +
+        "card. Leaving the wire value in a store or painting the planner's succeeded state as " +
+        'done would both hide what happened from the person reading this screen.',
+    ).toContain('>not run</span>');
     expect(
       withTheRun,
       'what one step handed to the next is the only way a result travels between them, and it ' +

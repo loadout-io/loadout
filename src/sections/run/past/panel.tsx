@@ -151,11 +151,14 @@ export function rowText(row: PastRunRow): string {
 function StateWord({ state }: { state: string }): ReactElement | null {
   const word = stateWord(state);
   if (word === '') return null;
+  // 2026-09 (Z-33) — `not run` istnieje tylko w historii. Dostaje ten sam przygaszony token co
+  // inne zakończone stany, bez dopisywania fikcyjnego stanu do żywej szyny agentów.
+  const colour = word === 'not run' ? '--color-muted' : statusToken(word);
   return (
     <span
       data-run-state
       className="font-mono text-label whitespace-nowrap"
-      style={{ color: `var(${statusToken(word)})` }}
+      style={{ color: `var(${colour})` }}
     >
       {word}
     </span>

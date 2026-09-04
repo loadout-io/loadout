@@ -7865,6 +7865,9 @@ struct StepRun {
     /// Stan kroku. `paused` tu nie istnieje i nie ma go w [`StepState`] — to jest stan biegu.
     status: StepState,
     execution: ExecutionFacts,
+    /// Dlaczego planner musiał domknąć węzeł, którego produkt nie uruchomił. Osobno od stanu:
+    /// `Succeeded` nadal odblokowuje graf, a ten fakt mówi prawdę w `run.json` (2026-09, Z-33).
+    not_run_because: Option<String>,
     /// Co sędzia powiedział o tej rundzie. `None` dla kroków poza sędzią i rund, które nie
     /// ruszyły; stan kroku pozostaje osobnym faktem.
     round_outcome: Option<handoff::Verdict>,
@@ -8133,6 +8136,7 @@ impl Live {
             .map(|planned| StepRun {
                 status: StepState::Pending,
                 execution: ExecutionFacts::default(),
+                not_run_because: None,
                 round_outcome: None,
                 started_at: None,
                 ended_at: None,
@@ -8258,21 +8262,19 @@ impl Live {
     /// człowiek czyta o CZYNNOŚCIACH agenta (niezmiennik 15), a to jest fakt o biegu. Puszczony
     /// przez sklejanie zniknąłby w grupie `read` albo poczekał na jej domknięcie — czyli pasek
     /// przestawiałby się z opóźnieniem względem tego, co widać w strumieniu.
-    /// Czy ten węzeł jest rundą pętli, która już się domknęła.
+    /// Dlaczego ten węzeł jest rundą pętli, która już się domknęła.
     ///
     /// Porównanie jest na NUMERZE RUNDY, nie na „czy pętla przeszła": rundy do tej, w której padł
     /// werdykt `pass`, naprawdę się wykonały i ich stan jest prawdziwy. Pomijamy wyłącznie to,
-    /// co jest PO niej.
-    fn already_settled(&self, id: StepId) -> bool {
+    /// co jest PO niej. Numer próby jedzie w odpowiedzi, bo dokładnie on zostaje później zapisany.
+    fn not_run_because(&self, id: StepId) -> Option<String> {
         let step = &self.plan.steps[id];
         /* Tylko ciało pętli, i to TEJ pętli, do której ten węzeł należy. Krok spoza wszystkich
          * pętli ma rundę zero i nigdy nie zostałby pominięty, ale warunek stoi tu wprost, żeby
          * ten kod nie zależał od tego, jak `unroll` numeruje. */
-        let Some(which) = step.in_loop else {
-            return false;
-        };
+        let which = step.in_loop?;
         if step.turn == 0 {
-            return false;
+            return None;
         }
         let settled = self
             .settled_at
@@ -8285,7 +8287,10 @@ impl Live {
             .get(which)
             .copied()
             .flatten()
-            .is_some_and(|turn| step.turn > turn)
+            .filter(|&turn| step.turn > turn)
+            // `turn` jest zerowy wewnątrz planu, a trwałe zdanie czyta człowiek (2026-09,
+            // Z-33). „try 0" byłoby technicznie spójne i produktowo fałszywe.
+            .map(|turn| format!("loop settled at try {}", turn + 1))
     }
 
     fn has_routes(&self, id: StepId) -> bool {
@@ -8758,7 +8763,7 @@ impl Live {
     ///   ozdobą.
     ///
     /// Werdykt `pass` zapala `settled_at` i wtedy rundy PO tej zostają pominięte
-    /// ([`Live::already_settled`]) — nie przepalone. To jest jedyne miejsce, w którym wyjście
+    /// ([`Live::not_run_because`]) — nie przepalone. To jest jedyne miejsce, w którym wyjście
     /// komendy rozstrzyga o kształcie biegu, i jedyna różnica między „domknęło się na tym, co się
     /// stało" a „domknęło się na tym, co ktoś powiedział".
     fn verdict_of_a_check(&self, id: StepId, passed: bool) -> bool {
@@ -8768,6 +8773,16 @@ impl Live {
         let Some((which, the_loop)) = self.judging(step) else {
             return !passed;
         };
+
+        // 2026-09 (Z-33) — zapisujemy ten sam werdykt, którym sterujemy pętlą. `Succeeded`
+        // nieostatniej czerwonej rundy jest wyłącznie mechaniką planisty; historia czyta ten
+        // osobny fakt, żeby nie pokazać człowiekowi, że sprawdzenie przeszło (niezmiennik 29).
+        let verdict = if passed {
+            handoff::Verdict::Pass
+        } else {
+            handoff::Verdict::Fail
+        };
+        self.update(|book| book.steps[id].round_outcome = Some(verdict));
 
         if passed {
             self.settle(which, step.turn);
@@ -9009,6 +9024,7 @@ impl Live {
                     executed: run.execution.executed,
                     process_started: run.execution.process_started,
                 },
+                not_run_because: run.not_run_because.as_deref(),
                 round_outcome: run.round_outcome,
                 // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
                 // [PLAN §7], więc każdy krok ma tu dziś dokładnie jedno podejście.
@@ -9122,9 +9138,9 @@ impl Live {
          * zabrania przepisywania tabel, więc każda ISTNIEJĄCA baza odmówiłaby wiersza już PO
          * zapłaceniu za bieg.
          *
-         * Że runda nie biegła, widać po czymś innym niż słowo `succeeded`: zerowym koszcie, braku
-         * logu, braku przekazania i zdaniu w podsumowaniu kroku. Droga jest ta sama, którą kończy
-         * się kafelek kontrolny — krok, który nigdy nie woła vendora, nie jest tu nowością.
+         * Że runda nie biegła, zapisuje `not_run_because`; koszt, log i przekazanie pozostają
+         * puste. To rozdziela stan planisty od prawdy widocznej w `run.json` i historii
+         * (2026-09, Z-33), bez ósmego stanu w bazie.
          *
          * PRZED miejscem z puli, nie po: runda, której nikt nie potrzebuje, nie ma prawa stać
          * w kolejce po zasób wart ~583 MB i blokować kroku, który naprawdę ma coś do zrobienia. */
@@ -9152,9 +9168,10 @@ impl Live {
             return self.finish_this_step(id, StepReport::Succeeded).await;
         }
 
-        if self.already_settled(id) {
+        if let Some(why) = self.not_run_because(id) {
             self.update(|book| {
                 let step = &mut book.steps[id];
+                step.not_run_because = Some(why);
                 step.summary = Some(NOT_NEEDED.to_owned());
             });
             return self.finish_this_step(id, StepReport::Succeeded).await;
@@ -11651,7 +11668,7 @@ impl Live {
     ///
     /// 2026-08-23 (T-87) — TO JEST NAPRAWA FAN-INU, ZMIERZONA NA BIEGU WŁAŚCICIELA. Strzałka
     /// z pętli na zewnątrz wychodzi z rundy OSTATNIEJ (`workflow::unroll`), a rundy po tej,
-    /// w której padł werdykt `pass`, są pomijane bez sterownika ([`Live::already_settled`])
+    /// w której padł werdykt `pass`, są pomijane bez sterownika ([`Live::not_run_because`])
     /// i nie oddają nic. Krok za pętlą wisiał więc na węźle, który z definicji nie napisał ani
     /// słowa: w biegu `20260823-145648` synteza z TRZEMA strzałkami wchodzącymi dostała dwa
     /// pliki, obie krytyki negatywne, i **zero** z gałęzi, które przeszły. Design
@@ -12698,6 +12715,10 @@ struct StepEntry<'a> {
     status: StepState,
     #[serde(flatten)]
     execution: ExecutionEntry,
+    /// Addytywny fakt dla rund domkniętych wyłącznie na potrzeby planisty. Brak zachowuje
+    /// dotychczasowy kształt każdego kroku, który naprawdę biegł albo został pominięty inaczej.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_run_because: Option<&'a str>,
     /// Rozstrzygnięcie sędziego tej rundy. Brak klucza znaczy, że ten węzeł nie był sędzią albo
     /// nie ruszył; stare pliki bez pola zachowują właśnie tę wartość domyślną.
     #[serde(default, skip_serializing_if = "Option::is_none")]

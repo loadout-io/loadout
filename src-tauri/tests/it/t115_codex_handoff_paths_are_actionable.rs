@@ -8,15 +8,17 @@
 
 use std::error::Error;
 use std::fs;
+use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::claude::ClaudeDriver;
-use loadout_lib::engine::drivers::codex::CodexDriver;
+use loadout_lib::engine::drivers::codex::{CodexDriver, build_exec_argv};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Probe, RunSpec,
     SessionRef, Tokens,
@@ -31,6 +33,7 @@ use tempfile::TempDir;
 use tokio::sync::mpsc;
 
 const PATIENCE: Duration = Duration::from_secs(30);
+const PROBE_PATIENCE: Duration = Duration::from_secs(12);
 const CODEX_READER: &str = "read codex: use what Source found.";
 const CLAUDE_READER: &str = "read claude: use what Source found.";
 const FILES_ARE_OUTSIDE: &str =
@@ -55,6 +58,15 @@ what comes next needs to know.
 what you could not settle.
 
 Do not write your results to a file. Loadout files your last message for you, and a file you write yourself is read by nobody.";
+
+const COMPLAINING_VERSION: &str = r#"#!/bin/sh
+i=0
+while [ "$i" -lt 4096 ]; do
+  printf '%s\n' 'a deliberately large diagnostic line from the version fixture' >&2
+  i=$((i + 1))
+done
+printf '%s\n' 'fixture-cli 9.9.0'
+"#;
 
 const SOURCE_AGENT: &str = "---
 schema: 1
@@ -172,7 +184,7 @@ const CLAUDE_WORKFLOW: &str = r#"{
 }"#;
 
 #[test]
-fn carrying_extra_directories_is_the_default_and_codex_explicitly_says_no() {
+fn codex_keeps_handoff_paths_read_only_instead_of_widening_its_sandbox() {
     assert!(
         ClaudeDriver::new().carries_extra_dirs(),
         "the conservative default keeps today's extra-directory transport for Claude and for \
@@ -180,8 +192,9 @@ fn carrying_extra_directories_is_the_default_and_codex_explicitly_says_no() {
     );
     assert!(
         !CodexDriver::new().carries_extra_dirs(),
-        "Codex has no equivalent of Claude's --add-dir and must explicitly opt out so the \
-         prompt can make its absolute paths actionable"
+        "Codex 0.152 has exec --add-dir, but using it for handoffs would make read-only inputs \
+         writable. The adapter must opt out so the prompt carries actionable absolute paths \
+         without widening the sandbox"
     );
 }
 
@@ -214,6 +227,16 @@ async fn the_real_codex_prompt_explains_and_opens_its_outside_path() -> Result<(
         "the Codex prompt needs one plain-English sentence explaining why these addresses do \
          not live under cwd. It was {:?}",
         asked.prompt
+    );
+    assert!(
+        !asked.argv.iter().any(|argument| argument == "--add-dir")
+            && !asked
+                .argv
+                .iter()
+                .any(|argument| argument == &handoff.display().to_string()),
+        "the handoff only needs to be read. Codex argv must not widen the writable sandbox to \
+         its directory; argv was {:?}",
+        asked.argv
     );
 
     // `Path::join` with an absolute right-hand side resolves to that absolute path. This is
@@ -254,6 +277,85 @@ async fn the_claude_prompt_is_byte_for_byte_the_pre_t115_prompt() -> Result<(), 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_vendor_probes_drain_stderr_and_keep_their_answers() -> Result<(), Box<dyn Error>> {
+    let bench = ProbeBench::new()?;
+    let binary = bench.executable("complaining-version.sh", COMPLAINING_VERSION)?;
+    let claude = ClaudeDriver::with_binary(binary.clone());
+    let codex = CodexDriver::with_binary(binary);
+
+    let (claude, codex) = tokio::time::timeout(PROBE_PATIENCE, async {
+        tokio::join!(claude.probe(), codex.probe())
+    })
+    .await?;
+    for answer in [claude?, codex?] {
+        assert_eq!(
+            answer,
+            Probe {
+                found: true,
+                version: Some("fixture-cli 9.9.0".to_owned()),
+            },
+            "a stderr stream larger than a pipe must not keep a natural version response from \
+             reaching the setup screen"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn both_vendor_probes_keep_failed_spawn_as_not_found() -> Result<(), Box<dyn Error>> {
+    let bench = ProbeBench::new()?;
+    let missing = bench.root.path().join("there-is-no-cli-here");
+    let claude = ClaudeDriver::with_binary(missing.clone());
+    let codex = CodexDriver::with_binary(missing);
+    let (claude, codex) = tokio::join!(claude.probe(), codex.probe());
+
+    for answer in [claude?, codex?] {
+        assert_eq!(
+            answer,
+            Probe {
+                found: false,
+                version: None,
+            },
+            "a CLI that could not start is a setup answer, not an application-start error"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn both_vendor_probes_stop_a_hung_group_after_five_seconds() -> Result<(), Box<dyn Error>> {
+    let bench = ProbeBench::new()?;
+    let claude_pid = bench.root.path().join("claude.pid");
+    let codex_pid = bench.root.path().join("codex.pid");
+    let claude = ClaudeDriver::with_binary(bench.hanging("hung-claude.sh", &claude_pid)?);
+    let codex = CodexDriver::with_binary(bench.hanging("hung-codex.sh", &codex_pid)?);
+
+    let began = Instant::now();
+    let (claude, codex) = tokio::time::timeout(PROBE_PATIENCE, async {
+        tokio::join!(claude.probe(), codex.probe())
+    })
+    .await?;
+    assert!(claude?.found && codex?.found);
+    assert!(
+        began.elapsed() >= Duration::from_secs(5),
+        "the hung fixtures came back before the five-second program ceiling: {:?}",
+        began.elapsed()
+    );
+
+    for pid_file in [&claude_pid, &codex_pid] {
+        let pgid: i32 = fs::read_to_string(pid_file)?.trim().parse()?;
+        let asked = group_probe(pgid);
+        assert_eq!(
+            asked.err().and_then(|error| error.raw_os_error()),
+            Some(libc::ESRCH),
+            "probe() returned while kill(-{pgid}, 0) still found the hung fixture; a timeout \
+             without this death proof would leave the CLI burning in the background"
+        );
+    }
+    Ok(())
+}
+
 fn source_handoff(run_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let mut files = Vec::new();
     for entry in fs::read_dir(run_dir.join("handoffs"))? {
@@ -278,6 +380,7 @@ fn source_handoff(run_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
 struct Asked {
     prompt: String,
     cwd: PathBuf,
+    argv: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -288,6 +391,9 @@ impl Watch {
         self.lock().push(Asked {
             prompt: spec.prompt.clone(),
             cwd: spec.cwd.clone(),
+            // 2026-09 (Z-33) — sprawdzamy produkcyjny składacz Codeksa na dokładnym `RunSpec`,
+            // który dostała granica biegu; osobna fikstura argv mogłaby zgubić `extra_dirs`.
+            argv: build_exec_argv(spec),
         });
     }
 
@@ -483,5 +589,45 @@ impl Bench {
         .await
         .map_err(|_| format!("the handoff-path run did not finish within {PATIENCE:?}"))?;
         Ok(report?)
+    }
+}
+
+struct ProbeBench {
+    root: TempDir,
+}
+
+impl ProbeBench {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            root: TempDir::new()?,
+        })
+    }
+
+    fn executable(&self, name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let path = self.root.path().join(name);
+        fs::write(&path, body)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        Ok(path)
+    }
+
+    fn hanging(&self, name: &str, pid: &Path) -> Result<PathBuf, Box<dyn Error>> {
+        self.executable(
+            name,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"{}\"\nwhile :; do sleep 1; done\n",
+                pid.display()
+            ),
+        )
+    }
+}
+
+#[allow(unsafe_code)]
+fn group_probe(pgid: i32) -> io::Result<()> {
+    // SAFETY: sygnał zero nie jest dostarczany; ujemny PID pyta o całą grupę atrapy.
+    let rc = unsafe { libc::kill(-pgid, 0) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }

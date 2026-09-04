@@ -24,12 +24,15 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use uuid::Uuid;
 
 use super::line::Tool;
@@ -126,8 +129,12 @@ pub struct RunSpec {
     /// Katalogi poza `cwd`, do których krok ma mieć dostęp — w praktyce katalog przekazań
     /// [`docs/ARCHITECTURE.md` §8].
     pub extra_dirs: Vec<PathBuf>,
-    /// Jawny adapterowy start istniejącej sesji. `None` wybiera pierwszą turę kroku;
-    /// recovery tego pola nie konstruuje, bo wyłącznie sprząta i oznacza przerwane kroki.
+    /// Jawny adapterowy start istniejącej sesji. `None` wybiera pierwszą turę kroku.
+    ///
+    /// 2026-09 (Z-33) — to pole nie ma dziś producenta: recovery wyłącznie sprząta i oznacza
+    /// przerwane kroki, a wznowienie historii buduje nowy bieg. Gdyby zaczęło je wypełniać bez
+    /// osobnego transportu katalogu stanu i starego worktree, vendor szukałby identyfikatora
+    /// rozmowy w świeżych katalogach i kończył `No conversation found`.
     pub resume: Option<SessionRef>,
 }
 
@@ -501,6 +508,89 @@ pub struct Probe {
     /// Wersja, jeśli binarka odpowiedziała. Vendorzy dokładają i zabierają flagi co tydzień,
     /// więc to jest liczba, którą chcemy widzieć w zgłoszeniu błędu [T1 ryzyko 2].
     pub version: Option<String>,
+}
+
+/// Ile sonda daje samej binarce na odpowiedź. Eskalacja supervisora biegnie już po tym czasie.
+const PROBE_CEILING: Duration = Duration::from_secs(5);
+
+/// Wspólna sonda obu vendorów: ten sam spawn, ten sam sufit i ten sam dowód śmierci.
+///
+/// 2026-09 (Z-33) — poprzednie kopie w adapterach czekały bez końca i nie odbierały stderr.
+/// Binarka pisząca ponad pojemność potoku blokowała się przed wyjściem, więc nawet poprawne
+/// `--version` mogło zawiesić start aplikacji. Oba potoki ruszają przed czekaniem na proces;
+/// timeout zawsze przechodzi przez TERM → łaska → KILL → ESRCH (niezmienniki 6, 10 i 23).
+pub(crate) async fn probe_binary(binary: &Path) -> anyhow::Result<Probe> {
+    let mut command = Command::new(binary);
+    command.arg("--version");
+
+    let mut process =
+        match supervisor::spawn_tagged(command, supervisor::StdinPlan::Null, &[], None) {
+            Ok(process) => process,
+            Err(_error) => {
+                tracing::debug!(
+                    "the agent CLI could not be started, so the setup screen has its answer"
+                );
+                return Ok(Probe {
+                    found: false,
+                    version: None,
+                });
+            }
+        };
+
+    // Zadania zaczynają opróżniać oba potoki przed `wait()`. Sekwencyjne czytanie stdout,
+    // a dopiero potem stderr, nadal zakleszcza sondę, która najpierw wypełni drugi potok.
+    let answer = process
+        .stdout()
+        .map(|stdout| tokio::spawn(first_answer(stdout)));
+    let complaints = process
+        .stderr()
+        .map(|stderr| tokio::spawn(drain_complaints(stderr)));
+
+    let _waited = timeout(PROBE_CEILING, process.wait()).await;
+    let proof = process.stop(supervisor::DEFAULT_GRACE).await;
+    if !matches!(proof, GroupProof::Dead { .. }) {
+        if let Some(answer) = &answer {
+            answer.abort();
+        }
+        if let Some(complaints) = &complaints {
+            complaints.abort();
+        }
+        anyhow::bail!("the agent CLI probe stayed alive after supervised escalation");
+    }
+
+    let version = match answer {
+        Some(answer) => answer.await.ok().flatten(),
+        None => None,
+    };
+    if let Some(complaints) = complaints {
+        let _drained = complaints.await;
+    }
+
+    Ok(Probe {
+        found: true,
+        version,
+    })
+}
+
+/// Pierwsza niepusta linia jest odpowiedzią, ale stdout jest opróżniany do EOF.
+async fn first_answer(stdout: ChildStdout) -> Option<String> {
+    let mut lines = BufReader::new(stdout).lines();
+    let mut answer = None;
+    while let Ok(Some(line)) = lines.next_line().await {
+        if answer.is_none() {
+            let line = line.trim();
+            if !line.is_empty() {
+                answer = Some(line.to_owned());
+            }
+        }
+    }
+    answer
+}
+
+/// Treść skarg nie jest odpowiedzią sondy, ale każdy bajt musi opuścić potok.
+async fn drain_complaints(mut stderr: ChildStderr) {
+    let mut nowhere = tokio::io::sink();
+    let _drained = tokio::io::copy(&mut stderr, &mut nowhere).await;
 }
 
 /// Jeden z czterech formatow obrazu, ktore oba wspierane vendory przyjmuja natywnie.

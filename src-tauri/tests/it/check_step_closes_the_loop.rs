@@ -1,14 +1,10 @@
 //! AC-5 dla T-55: pętla domyka się na WERDYKCIE kroku „sprawdź", a nie na słowie agenta.
 //!
-//! # Cicha porażka, która jest w produkcie DZISIAJ
+//! # Regresja, której to kryterium pilnuje
 //!
-//! Pętla z limitem tur weszła 2026-08-19 (`Link::max_turns`, `workflow::unroll`,
-//! `Live::verdict_after`) i domyka się na wierszu `outcome: pass` napisanym przez agenta-sędziego.
-//! Protokół werdyktu ma więc wyłącznie połowę CZYTAJĄCĄ — nic w produkcie nie mówi sędziemu, żeby
-//! ten wiersz napisał. Sędzia, który go nie napisze, dostaje `Verdict::Fail` z domyślnej wartości
-//! i pętla kręci się do wyczerpania limitu; sędzia, który napisze go z uprzejmości nad czerwonymi
-//! testami, zamyka pętlę na obietnicy. Oba przypadki kosztują prawdziwe tury i oba wyglądają jak
-//! działający produkt.
+//! Przed T-55 pętla domykała się wyłącznie na wierszu `outcome: pass` napisanym przez
+//! agenta-sędziego. Krok „sprawdź" zamknął tę lukę: dla repo ze sprawdzeniami werdykt pochodzi
+//! z kodu wyjścia komendy i licznika przejść, nigdy z obietnicy agenta.
 //!
 //! # SŁABA WERSJA
 //!
@@ -19,17 +15,17 @@
 //!
 //! * strażnik (d), który zamienia tekst dublera w ODMOWĘ w starym protokole — więc implementacja
 //!   domykająca pętlę na słowie agenta przepala wszystkie rundy i kończy porażką;
-//! * licznik uruchomień KOMENDY (b), bo tylko on odróżnia „rundy nie było" od „runda przeszła";
+//! * licznik uruchomień KOMENDY (b), bo dowodzi wykonania bez ufania zapisowi; `run.json` i
+//!   historia osobno nazywają wynik oraz pominięcie (2026-09, Z-33);
 //! * sufit `max_turns: 3`, przy którym zatrzymanie się na dwóch jest decyzją, a nie zbiegiem
 //!   okoliczności.
 //!
 //! # Czego to kryterium NIE wymaga
 //!
-//! `memory::handoff::verdict_in` zostaje i nie jest tu ruszana. Sędzia-agent jest jedyną drogą dla
-//! repo, które sprawdzeń nie ma (D7, „Co musi przetrwać nawet przy zerowej ceremonii"), więc
-//! `runcmd_loop.rs` ma zostać zielone bez jednej zmiany w swoim pliku. Jeżeli zmiana w
-//! `Live::verdict_after` je przewraca, to nie jest kolizja kryteriów, tylko znak, że ścieżka
-//! awaryjna została skasowana, a nie uzupełniona drugą.
+//! `memory::handoff::verdict_in` zostaje. Sędzia-agent jest jedyną drogą dla repo, które
+//! sprawdzeń nie ma (D7, „Co musi przetrwać nawet przy zerowej ceremonii"), a jego osobne
+//! kryteria mieszkają w `runcmd_loop.rs`. Jeżeli zmiana w `Live::verdict_after` je przewraca,
+//! ścieżka awaryjna została skasowana, a nie uzupełniona drugą.
 
 // `unwrap()` i `expect()` w teście: panika w teście JEST jego wynikiem. `checks/full-clippy.sh`
 // biegnie `--all-targets -- -D warnings`, więc bez tej linii ląduje to w bramce, nie tutaj.
@@ -43,6 +39,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use loadout_lib::commands::history::read_run_inner;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
@@ -156,8 +153,8 @@ async fn the_loop_closes_on_what_the_command_did() -> Result<(), Box<dyn Error>>
 
     // ── (b) LICZNIK URUCHOMIEŃ KOMENDY ────────────────────────────────────────────────────
     // Dokładnie dwa wiersze: runda 0 padła, runda 1 przeszła, runda 2 została POMINIĘTA, a nie
-    // przepalona. Ten licznik jest jedynym miejscem, w którym różnica między „rundy nie było"
-    // i „runda przeszła" jest widoczna z zewnątrz — stan kroku mówi `succeeded` w obu.
+    // przepalona. Licznik dowodzi, co uruchomił system; `run.json` i historia niżej nazywają
+    // osobno prawdę rund, mimo że stan planisty mówi `succeeded` (2026-09, Z-33).
     assert_eq!(
         lines_in(&counter),
         2,
@@ -176,11 +173,33 @@ async fn the_loop_closes_on_what_the_command_did() -> Result<(), Box<dyn Error>>
         watch.seen()
     );
 
-    // ── (a) BIEG SIĘ UDAŁ ─────────────────────────────────────────────────────────────────
+    // ── (a) WEWNĘTRZNY PLANISTA DOMKNĄŁ GRAF ───────────────────────────────────────────────
     assert!(
         report.steps.iter().all(|one| *one == StepState::Succeeded),
-        "a loop that passed leaves nothing failed behind; it left {:?}",
+        "the planner needs every node settled to release the graph; it left {:?}",
         report.steps
+    );
+
+    // `read_run_inner`, bo dopiero ten drut zasila kartę historii (niezmiennik 29). Pierwszy
+    // check nie przeszedł, drugi przeszedł, trzeci nie ruszył — trzy różne prawdy nad trzema
+    // wewnętrznymi `Succeeded`.
+    let folder = report
+        .dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("the run directory has no readable folder name")?;
+    let past = read_run_inner(bench.project.path(), folder)?;
+    let checks: Vec<&str> = past
+        .steps
+        .iter()
+        .filter(|step| step.name == "Run the checks")
+        .map(|step| step.state.as_str())
+        .collect();
+    assert_eq!(
+        checks,
+        vec!["failed", "succeeded", "not_run"],
+        "history must distinguish a negative non-final check, the passing check and the round \
+         the loop did not need"
     );
 
     // ── (e) I ZOSTAWIŁ PO SOBIE TO, CO PADŁO ──────────────────────────────────────────────

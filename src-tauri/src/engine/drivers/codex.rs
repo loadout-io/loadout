@@ -3239,18 +3239,6 @@ async fn emit(
     }
 }
 
-/// Pierwsza niepusta linia, jaką powiedziała binarka. Tyle wystarczy na pytanie o wersję.
-async fn first_answer(stdout: ChildStdout) -> Option<String> {
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim();
-        if !line.is_empty() {
-            return Some(line.to_owned());
-        }
-    }
-    None
-}
-
 /// Żywa sesja `codex` — **wiele procesów**, jedna tożsamość.
 ///
 /// To jest cała różnica wobec `ClaudeHandle`, w którym proces jest jeden na całą sesję. Tura
@@ -3615,47 +3603,12 @@ impl AgentDriver for CodexDriver {
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
     /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
     ///
-    /// Najprościej, jak się da, i to jest świadome — ekranu ustawień na tym nie budujemy
-    /// („Świadomie poza zakresem"). Nieudany start jest odpowiedzią w **każdej** postaci, nie
-    /// tylko przy braku pliku: binarka bez prawa wykonania i binarka, której nie ma, znaczą dla
-    /// użytkownika dokładnie to samo zdanie.
+    /// Nieudany start jest odpowiedzią w **każdej** postaci, nie tylko przy braku pliku:
+    /// binarka bez prawa wykonania i binarka, której nie ma, znaczą dla użytkownika dokładnie
+    /// to samo zdanie. Sufit i drenaż obu potoków są wspólne z Claude'em w `probe_binary`, żeby
+    /// dwa adaptery nie rozjechały polityki procesu (2026-09, Z-33; niezmiennik 23).
     async fn probe(&self) -> anyhow::Result<Probe> {
-        let mut command = Command::new(&self.binary);
-        command.arg("--version");
-
-        // Przez ten sam start co bieg, a nie własną komendą obok: `env_clear()` plus jawna lista
-        // przepuszczanych zmiennych mieszka w jednym rdzeniu (niezmiennik 23), a `/dev/null` na
-        // wejściu oszczędza czekanie na EOF, którego nikt by nie wysłał.
-        //
-        // BEZ ZNACZNIKA, tak samo jak sonda Claude'a i z tego samego powodu (2026-09, Z-01d):
-        // sonda wersji nie należy do żadnego biegu, a jej `pgid` nie trafia do żadnego `run.json`.
-        let mut process = match supervisor::spawn_tagged(command, StdinPlan::Null, &[], None) {
-            Ok(process) => process,
-            Err(_error) => {
-                tracing::debug!(
-                    "the agent CLI could not be started, so the setup screen has its answer"
-                );
-                return Ok(Probe {
-                    found: false,
-                    version: None,
-                });
-            }
-        };
-
-        let mut version = None;
-        if let Some(stdout) = process.stdout() {
-            version = first_answer(stdout).await;
-        }
-
-        // Zebranie procesu jest częścią jego uruchomienia, nie sprzątaniem po nim: zombie nadal
-        // odpowiada na sygnał zerowy, więc niezebrany `--version` zostawiłby grupę, której nikt
-        // nigdy nie udowodni martwej (niezmiennik 6).
-        let _reaped = process.wait().await;
-
-        Ok(Probe {
-            found: true,
-            version,
-        })
+        super::probe_binary(&self.binary).await
     }
 
     async fn start(
@@ -3701,8 +3654,9 @@ impl AgentDriver for CodexDriver {
         Some(Arc::new(configured))
     }
 
-    /// Codex nie ma odpowiednika `--add-dir`; pełne ścieżki zostają więc w prompcie,
-    /// a wspólny składacz dopowiada, że leżą poza katalogiem pracy kroku.
+    /// Codex 0.152 ma `exec --add-dir`, ale ta flaga poszerza katalogi zapisywalne piaskownicy.
+    /// Przekazania wymagają tylko odczytu, więc zostają pełnymi ścieżkami w prompcie, bez
+    /// rozszerzania prawa zapisu (2026-09, Z-33).
     fn carries_extra_dirs(&self) -> bool {
         false
     }
