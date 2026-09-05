@@ -336,7 +336,18 @@ async fn both_vendor_probes_stop_a_hung_group_after_five_seconds() -> Result<(),
         tokio::join!(claude.probe(), codex.probe())
     })
     .await?;
-    assert!(claude?.found && codex?.found);
+    // 2026-09-05 (przy przywroceniu Z-34) — ZAWIESZONE CLI TO ODMOWA, NIE ZNALEZIONA APLIKACJA.
+    // Do tego dnia sonda oddawala na sufit `Ok(found: true)`: plik jest, wiec „znaleziony".
+    // Stopka Z-34 pyta o co innego — czy tym da sie ruszyc krok — a programem, ktory nigdy nie
+    // wychodzi, nie da sie. Przedmiotem TEGO testu jest sufit i dowod smierci grupy, i oba
+    // trzymaja tak samo; pinujemy wiec wartosc prawdziwa zamiast starej.
+    for answer in [claude, codex] {
+        let refusal = answer.expect_err("a program that never exits cannot be a found app");
+        assert!(
+            refusal.to_string().contains("five second limit"),
+            "the hung fixture came back with something other than the ceiling refusal: {refusal}"
+        );
+    }
     assert!(
         began.elapsed() >= Duration::from_secs(5),
         "the hung fixtures came back before the five-second program ceiling: {:?}",
