@@ -884,6 +884,8 @@ impl Processes {
         self.start_owned_description(
             &crate::workflow::LaunchDescription {
                 command: spec.command.clone(),
+                kind: crate::workflow::TargetKind::default(),
+                test_data_env: None,
                 subdirectory: relative.to_string_lossy().into_owned(),
                 environment: BTreeMap::new(),
                 required_env: Vec::new(),

@@ -112,6 +112,8 @@ impl ServiceBench {
         Ok(self.processes.configure_description(
             &LaunchDescription {
                 command: "printf 'app started\\n'; sleep 10".to_owned(),
+                kind: Default::default(),
+                test_data_env: None,
                 subdirectory: String::new(),
                 environment: Default::default(),
                 required_env: Vec::new(),
@@ -158,6 +160,8 @@ impl ServiceBench {
         let started = self.processes.start_owned_description(
             &LaunchDescription {
                 command: "printf 'app started\\n'; sleep 10".to_owned(),
+                kind: Default::default(),
+                test_data_env: None,
                 subdirectory: String::new(),
                 environment: Default::default(),
                 required_env: Vec::new(),

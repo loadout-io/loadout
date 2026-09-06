@@ -37,6 +37,8 @@ async fn a_read_only_consumer_can_read_the_last_error_and_exit_reason_after_natu
     let started = processes.start_owned_description(
         &LaunchDescription {
             command: "printf 'The app could not load its entry point.\\n' >&2; exit 7".to_owned(),
+            kind: Default::default(),
+            test_data_env: None,
             subdirectory: String::new(),
             environment: Default::default(),
             required_env: Vec::new(),

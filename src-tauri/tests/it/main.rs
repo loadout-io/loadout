@@ -75,6 +75,7 @@ mod a_step_borrows_from_the_host;
 mod a_step_says_what_loadout_did_not_give;
 mod a_step_says_what_the_folder_gave_it;
 mod a_step_that_commits_its_own_work;
+mod a_test_instance_keeps_its_data_apart;
 mod a_step_without_a_model_names_its_unknown_price;
 mod a_stopped_run_is_not_worth_looking_back_at;
 mod a_suggestion_can_be_discarded;

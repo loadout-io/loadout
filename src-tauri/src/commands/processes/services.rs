@@ -378,6 +378,7 @@ impl Processes {
                 .iter()
                 .map(|(name, value)| (name.clone(), std::ffi::OsString::from(value))),
         );
+        environment.extend(isolated_data(&slot.description, &service.owner)?);
         service.configure_readiness(endpoints, slot.description.readiness.is_some())?;
         {
             let mut record = service
@@ -771,4 +772,44 @@ impl Answers for ServiceAccess {
             Err(why) => Answer::Refused(why.to_string()),
         }
     }
+}
+
+/// P-02: dokąd instancja testowa zapisuje swoje dane — i dlaczego nigdy do katalogu człowieka.
+///
+/// # Dwie rzeczy, obie zmierzone
+///
+/// **Aplikacja natywna bez własnej podmiany katalogu danych nie startuje.** To jest dosłownie
+/// brak adaptera, nie izolacja: instancja testowa, która pisze do prawdziwego katalogu
+/// użytkownika, jest gorsza od jej braku, bo scenariusz „skasuj nagranie" wykonuje się na jego
+/// nagraniach. Cel webowy zostaje bez tego wymagania — serwer bez własnych danych jest zwykły.
+///
+/// **Katalog leży przy BIEGU**, nie w kopii roboczej: kopia jest porównywana z bazą, więc dane
+/// aplikacji w jej środku wyglądałyby jak praca agenta.
+fn isolated_data(
+    description: &crate::workflow::LaunchDescription,
+    owner: &super::ServiceOwner,
+) -> io::Result<Vec<(String, std::ffi::OsString)>> {
+    /* PODMIANY `HOME` NIE SPRAWDZAMY TUTAJ i to jest świadome: robi to już walidator opisu
+     * uruchomienia (`workflow::check`, „The app cannot replace the environment variable …").
+     * Druga kopia tej samej polityki rozjechałaby się z pierwszą przy pierwszej poprawce
+     * (niezmiennik 23), a lista zastrzeżonych zmiennych mieszka tam razem z powodem. */
+    let Some(name) = description
+        .test_data_env
+        .as_ref()
+        .map(|one| one.trim())
+        .filter(|one| !one.is_empty())
+    else {
+        if description.kind == crate::workflow::TargetKind::Native {
+            return Err(io::Error::other(
+                "This app has no way to keep test data apart from yours, so Loadout did not                  start it. That is a missing setting in the app, not a result about it: give it                  the name of the setting it reads for a test data folder.",
+            ));
+        }
+        return Ok(Vec::new());
+    };
+    let at = owner
+        .run_dir
+        .join("app-data")
+        .join(&owner.reference.service_id);
+    std::fs::create_dir_all(&at)?;
+    Ok(vec![(name.to_owned(), at.into_os_string())])
 }

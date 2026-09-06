@@ -638,6 +638,22 @@ impl CommandFormat {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LaunchDescription {
     pub command: String,
+    /// P-02: czym jest to, co ta definicja uruchamia.
+    ///
+    /// Rozróżnienie jest treścią, nie etykietą: gotowy port jest KOMPLETNYM dowodem dla celu
+    /// webowego i **połową prawdy** o aplikacji z własnym oknem. Zmierzone 2026-09-06 (I-06):
+    /// wymagania dopuszczały samo uruchomienie dev-serwera jako potwierdzenie zachowania,
+    /// które widać wyłącznie w oknie.
+    #[serde(default)]
+    pub kind: TargetKind,
+    /// P-02: zmienna, którą TA aplikacja przyjmuje jako podmianę katalogu danych na czas testu.
+    ///
+    /// Brak znaczy „ta aplikacja nie ma czym oddzielić danych testowych od danych człowieka",
+    /// i to jest **brak adaptera, nie izolacja**. Loadout mówi o tym wprost zamiast podmieniać
+    /// `HOME` albo pisać po globalnej konfiguracji: instancja testowa, która zapisuje do
+    /// prawdziwego katalogu użytkownika, jest gorsza od jej braku.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_data_env: Option<String>,
     #[serde(default)]
     pub subdirectory: String,
     #[serde(default)]
@@ -648,6 +664,21 @@ pub struct LaunchDescription {
     pub endpoints: Vec<ServiceEndpointSpec>,
     #[serde(default)]
     pub readiness: Option<ReadinessSpec>,
+}
+
+/// Czym jest cel, który uruchamia [`LaunchDescription`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetKind {
+    /// Serwer, do którego dochodzi się adresem. Gotowy port i odpowiedź to komplet.
+    #[default]
+    Web,
+    /// Aplikacja z własnym oknem. Gotowy port mówi o niej połowę prawdy.
+    Native,
+    /// Program, który kończy się sam i nie ma czego wystawiać.
+    Cli,
+    #[serde(other)]
+    Unknown,
 }
 
 /// Gdzie krok pracuje.

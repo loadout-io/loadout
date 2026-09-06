@@ -11750,6 +11750,8 @@ impl Live {
             Ok(Some(said)) => said,
             Ok(None) => crate::workflow::LaunchDescription {
                 command: job.command.clone(),
+                kind: crate::workflow::TargetKind::default(),
+                test_data_env: None,
                 subdirectory: String::new(),
                 environment: BTreeMap::new(),
                 required_env: Vec::new(),
@@ -12012,6 +12014,8 @@ impl Live {
             }
             crate::workflow::CommandFormat::Command => crate::workflow::LaunchDescription {
                 command: said,
+                kind: crate::workflow::TargetKind::default(),
+                test_data_env: None,
                 subdirectory: String::new(),
                 environment: BTreeMap::new(),
                 required_env: Vec::new(),
