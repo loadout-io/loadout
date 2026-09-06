@@ -486,6 +486,7 @@ mod trigger_key_refusal_pauses_the_watch;
 mod trigger_library_is_safe_to_edit;
 mod trigger_never_fires_twice;
 mod trigger_reads_the_answer;
+mod the_shipped_workflow_checks_before_it_believes;
 mod trigger_run_is_accepted_once;
 mod trigger_waits_only_for_its_own_folder;
 mod trigger_workspace_is_authority;

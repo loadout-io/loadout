@@ -1,0 +1,171 @@
+{
+  "format": 1,
+  "id": "wf_verified_change",
+  "name": "A change that was actually checked",
+  "description": "Plan, then two people working at once, then one copy that holds both, then the tests that were asked for, then the application itself. Nothing here is built into Loadout: every stage is a tile and an arrow, so any of them can be removed.",
+  "steps": [
+    {
+      "kind": "agent",
+      "id": "s_plan",
+      "name": "Plan the change",
+      "agent": "REPLACE_WITH_A_PLANNER",
+      "instructions": "Say what has to change and split it into work for the two steps after you. Name the behaviour a person should be able to see afterwards.",
+      "folder": {
+        "use": "project"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 0,
+        "y": 120
+      }
+    },
+    {
+      "kind": "agent",
+      "id": "s_backend",
+      "name": "Backend",
+      "agent": "REPLACE_WITH_A_DEVELOPER",
+      "instructions": "Do the part of the plan that lives behind the interface. Add the tests the checks after you name, and run them yourself before you answer.",
+      "folder": {
+        "use": "fresh-copy"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 200,
+        "y": 40
+      }
+    },
+    {
+      "kind": "agent",
+      "id": "s_frontend",
+      "name": "Frontend",
+      "agent": "REPLACE_WITH_A_DEVELOPER",
+      "instructions": "Do the part of the plan a person touches. Add the tests the checks after you name, and run them yourself before you answer.",
+      "folder": {
+        "use": "fresh-copy"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 200,
+        "y": 200
+      }
+    },
+    {
+      "kind": "agent",
+      "id": "s_combine",
+      "name": "Put the work together",
+      "agent": "REPLACE_WITH_A_DEVELOPER",
+      "instructions": "Both pieces are now in one copy. Make them work together and say what you changed to do it. Do not start new work here.",
+      "folder": {
+        "use": "same-copy"
+      },
+      "handover": "notes",
+      "at": {
+        "x": 400,
+        "y": 120
+      }
+    },
+    {
+      "kind": "check",
+      "id": "s_checks",
+      "name": "The tests that were asked for",
+      "folder": {
+        "use": "same-copy"
+      },
+      "command": "cargo test --manifest-path src-tauri/Cargo.toml --test it 2>&1",
+      "proof": "(\\d+) passed",
+      "requiredTests": [
+        "recording_survives_later::audio_is_kept_when_the_person_chooses_later",
+        "recording_survives_later::the_next_recording_starts_after_later",
+        "recording_survives_later::a_restart_does_not_begin_the_work_that_was_put_off"
+      ],
+      "whenItFails": "stop",
+      "at": {
+        "x": 600,
+        "y": 120
+      }
+    },
+    {
+      "kind": "serve",
+      "id": "s_app",
+      "name": "The application itself",
+      "folder": {
+        "use": "same-copy"
+      },
+      "command": "npm run app",
+      "at": {
+        "x": 800,
+        "y": 120
+      }
+    },
+    {
+      "kind": "agent",
+      "id": "s_qa",
+      "name": "Check the running app",
+      "agent": "01a07100-0000-7000-8000-000000000001",
+      "instructions": "The application is running from the copy the work landed in. Use it and answer about each requirement below.",
+      "folder": {
+        "use": "same-copy"
+      },
+      "handover": "notes",
+      "criteria": [
+        {
+          "id": "c1",
+          "behaviour": "Stopping a recording and choosing Later keeps the audio and starts nothing",
+          "required": true,
+          "method": "full-runtime"
+        },
+        {
+          "id": "c2",
+          "behaviour": "The next recording starts normally after Later",
+          "required": true,
+          "method": "full-runtime"
+        },
+        {
+          "id": "c3",
+          "behaviour": "Restarting the app does not begin the work that was put off",
+          "required": true,
+          "method": "full-runtime"
+        }
+      ],
+      "at": {
+        "x": 1000,
+        "y": 120
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": "s_plan",
+      "to": "s_backend"
+    },
+    {
+      "from": "s_plan",
+      "to": "s_frontend"
+    },
+    {
+      "from": "s_backend",
+      "to": "s_combine"
+    },
+    {
+      "from": "s_frontend",
+      "to": "s_combine"
+    },
+    {
+      "from": "s_combine",
+      "to": "s_checks"
+    },
+    {
+      "from": "s_checks",
+      "to": "s_app"
+    },
+    {
+      "from": "s_app",
+      "to": "s_qa"
+    },
+    {
+      "from": "s_qa",
+      "to": "s_combine",
+      "max_turns": 3
+    }
+  ]
+}
