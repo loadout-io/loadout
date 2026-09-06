@@ -50,6 +50,7 @@ mod a_literal_secret_never_reaches_the_file;
 mod a_live_preview_keeps_its_working_copy;
 mod a_long_command_is_one_line_that_keeps_its_time;
 mod a_long_complaint_says_where_the_rest_is;
+mod a_neighbour_repository_is_named_before_the_run;
 mod a_new_lead_knows_saved_project_facts;
 mod a_note_remembers_when_it_was_used;
 mod a_passed_loop_reaches_the_next_step;

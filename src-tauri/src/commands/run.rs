@@ -180,6 +180,7 @@
 //! się kluczem węzła, katalogiem roboczym i podpisem („Build (2 of 3)"). `RunReport::steps` ma
 //! od teraz jeden wpis na WĘZEŁ, nie na krok pliku.
 
+mod neighbours;
 mod protection;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -2139,6 +2140,18 @@ fn everything_before_the_first_process(
         run_file_identity,
     )?;
     provisional.check(PrestartFaultPoint::AfterFirstRunFile)?;
+    /* P-01 (incydent I-08): SĄSIEDNIE REPO NAZWANE, ZANIM RUSZY PIERWSZY PROCES.
+     *
+     * Krok pracujący we własnej kopii dostaje `.loadout/runs/<bieg>/work/<krok>`, więc
+     * zależność `path = "../murmur-server"` wskazuje mu katalog, którego tam nie ma i nie
+     * będzie. Bez tego zdania agent czyta wyłącznie błąd Cargo — prawdziwy i milczący o kopii —
+     * i pali tury na ratowanie środowiska zamiast na swoją robotę.
+     *
+     * ZDANIE, NIE ODMOWA. Loadout nie wie, czy ten krok w ogóle zbuduje ten manifest, a odmowa
+     * biegu na podstawie manifestu, którego nikt może nie tknąć, kosztowałaby więcej niż
+     * ostrzeżenie. Wciągnięcia sąsiada nie proponujemy jako czynności Loadouta: to jest
+     * decyzja człowieka o zakresie odczytu cudzego katalogu. */
+    live.say_which_neighbours_will_be_missing();
     if let Some(before_stamp) = before_stamp {
         let (id, job) = live
             .plan
@@ -11963,6 +11976,40 @@ impl Live {
             book.steps[id].end_cause = Some(super::run_inputs::EndCause::Refused);
         });
         StepReport::Failed
+    }
+
+    /// P-01: nazywa sąsiednie katalogi, których nie będzie w kopiach roboczych.
+    ///
+    /// Skan jest jeden na bieg, nie jeden na krok: manifesty projektu są te same dla wszystkich,
+    /// a chodzenie po drzewie raz na kafelek byłoby tą samą odpowiedzią policzoną n razy.
+    fn say_which_neighbours_will_be_missing(&self) {
+        /* „Własna kopia" poznaje się po katalogu roboczym, nie po polu `folder`: to samo
+         * `same-copy` raz jest folderem projektu, a raz kopią założoną przez krok przed nim. */
+        let works_in_its_own_copy: Vec<&str> = self
+            .plan
+            .steps
+            .iter()
+            .filter(|step| match &step.job {
+                Job::Agent(job) => job.cwd != self.plan.project,
+                Job::Check(check) => check.spec.cwd != self.plan.project,
+                Job::Ask { .. } | Job::Serve(_) => false,
+            })
+            .map(|step| step.name.as_str())
+            .collect();
+        if works_in_its_own_copy.is_empty() {
+            return;
+        }
+        let neighbours = neighbours::outside_the_project(&self.plan.project);
+        if neighbours.is_empty() {
+            return;
+        }
+        for step in works_in_its_own_copy {
+            let _ = self.control.show_in_the_run(Line::Problem {
+                agent: step.to_owned(),
+                text: neighbours::said(step, &neighbours),
+                resets_at: None,
+            });
+        }
     }
 
     fn announce(&self, id: StepId, state: StepState) {
