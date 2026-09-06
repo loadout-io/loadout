@@ -31,6 +31,12 @@ use tokio::process::Command;
 /// Gdzie stoi interpreter skryptów systemowych na macOS.
 const OSASCRIPT: &str = "/usr/bin/osascript";
 
+/// Interpreter, którym produkcja pyta system o okna.
+#[must_use]
+pub fn interpreter() -> PathBuf {
+    PathBuf::from(OSASCRIPT)
+}
+
 /// Sufit czasu jednej sondy. Zapytanie o okna nie ma prawa trwać dłużej niż chwilę,
 /// a `System Events` bez zgody potrafi czekać na dialog, którego nikt nie kliknie.
 const PATIENCE: Duration = Duration::from_secs(10);
@@ -152,4 +158,60 @@ fn refused_for_permission(complained: &str) -> bool {
     ["-1743", "-25211", "-10004"]
         .iter()
         .any(|code| complained.contains(code))
+}
+
+/// Ile okien ma proces o tym `pid` — potwierdzenie, że instancja testowa naprawdę ma okno.
+///
+/// P-02 punkt 6: sam działający serwer spełnia wyłącznie cel WEBOWY. Dla aplikacji natywnej
+/// gotowy port jest połową prawdy — druga połowa to okno, w którym scenariusz ma się odbyć.
+///
+/// PYTAMY PO `pid`, NIE PO NAZWIE. Dwie kopie tej samej aplikacji nazywają się identycznie,
+/// więc nazwa trafia w instancję użytkownika równie chętnie, co w testową. To jest ten sam
+/// powód, dla którego każde późniejsze działanie musi być adresowane tożsamością instancji.
+pub async fn windows_of(program: &std::path::Path, pid: u32) -> Result<usize, NativeUiAccess> {
+    let mut command = Command::new(program);
+    command
+        .arg("-e")
+        .arg(format!(
+            "tell application \"System Events\" to tell (first process whose unix id is {pid}) \
+             to count windows"
+        ))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = match tokio::time::timeout(PATIENCE, command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(NativeUiAccess::Missing {
+                said: NOT_A_MAC.to_owned(),
+            });
+        }
+        Ok(Err(_)) | Err(_) => {
+            return Err(NativeUiAccess::Unknown {
+                said: "This computer did not answer whether the test application has a window \
+                       yet."
+                    .to_owned(),
+            });
+        }
+    };
+    if !output.status.success() {
+        let complained = String::from_utf8_lossy(&output.stderr);
+        return Err(if refused_for_permission(&complained) {
+            NativeUiAccess::NotPermitted {
+                said: NOT_PERMITTED.to_owned(),
+            }
+        } else {
+            /* Proces bez wpisu w liście aplikacji jeszcze nie pokazał okna. To jest stan
+             * PRZEJŚCIOWY przy starcie, nie awaria — czekanie na gotowość powtórzy pytanie. */
+            NativeUiAccess::Unknown {
+                said: "The test application has not shown a window yet.".to_owned(),
+            }
+        });
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| NativeUiAccess::Unknown {
+            said: "This computer answered something that is not a number of windows.".to_owned(),
+        })
 }

@@ -624,6 +624,8 @@ pub struct Processes {
     /// eskalacja czeka DOPIERO po jego zwolnieniu. Zamek trzymany przez zatrzymywanie zawiesiłby
     /// całe okno na czas okna łaski, czyli dokładnie wtedy, kiedy człowiek na coś patrzy.
     held: Arc<Mutex<Held>>,
+    /// P-03b: czym pytamy system, czy instancja natywna naprawdę pokazała okno.
+    native_ui: std::path::PathBuf,
 
     /// Drop anuluje wyłącznie obserwatorów EOF. Zadania trzymają słabe odwołania do mapy i wpisu,
     /// a ten token zamyka także wąskie okno, w którym obserwator zdążył je podnieść tuż przed
@@ -678,13 +680,29 @@ impl Processes {
     /// Ani jednej rzeczy — stan aplikacji, która właśnie wstała.
     #[must_use]
     pub fn new() -> Self {
+        Self::confirming_windows_with(crate::engine::native_ui::interpreter())
+    }
+
+    /// P-03b: ten sam rejestr, z podanym interpreterem potwierdzania okna.
+    ///
+    /// Szew, nie furtka: produkcja wchodzi tędy przez [`Processes::new`] z interpreterem
+    /// systemowym, a kryterium podstawia własny — inaczej sądziłoby ZGODY TEJ MASZYNY zamiast
+    /// tego kodu, i musiałoby być czerwone u każdego, kto ich nie nadał.
+    #[must_use]
+    pub fn confirming_windows_with(native_ui: std::path::PathBuf) -> Self {
         Self {
             services: Mutex::new(BTreeMap::new()),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
             held: Arc::new(Mutex::new(BTreeMap::new())),
             natural_reapers: CancellationToken::new(),
             unproven: Mutex::new(Vec::new()),
+            native_ui,
         }
+    }
+
+    /// Czym ten rejestr pyta system o okno instancji natywnej.
+    pub(super) fn native_ui_program(&self) -> &Path {
+        &self.native_ui
     }
 
     fn acquire_copy_lease(&self, cwd: &Path, service: &ServiceRef) -> io::Result<CopyLease> {

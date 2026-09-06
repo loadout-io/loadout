@@ -229,13 +229,7 @@ impl Processes {
                     .await;
             }
             if tokio::time::Instant::now() >= deadline {
-                return self
-                    .readiness_failed(
-                        reference,
-                        service,
-                        "The app did not become ready within the requested time.".to_owned(),
-                    )
-                    .await;
+                return self.readiness_ran_out(reference, service).await;
             }
             // Własność jest sprawdzana przed i po odpowiedzi. Obcy listener,
             // który wygrał race po przydziale portu, nie uwalnia konsumenta.
@@ -247,16 +241,15 @@ impl Processes {
                 return self.readiness_cancelled(reference, service).await;
             }
             if tokio::time::Instant::now() >= deadline {
-                return self
-                    .readiness_failed(
-                        reference,
-                        service,
-                        "The app did not become ready within the requested time.".to_owned(),
-                    )
-                    .await;
+                return self.readiness_ran_out(reference, service).await;
             }
             match checked {
-                Ok(true) => return self.mark_ready(reference, service, &endpoint, &entry).await,
+                // Powód, dla którego port to nie wszystko, stoi przy `native_window_confirmed`.
+                Ok(true) => match self.native_window_confirmed(reference, &entry).await {
+                    Ok(true) => return self.mark_ready(reference, service, &endpoint, &entry).await,
+                    Ok(false) => {}
+                    Err(said) => return self.readiness_failed(reference, service, said).await,
+                },
                 Err(error) => {
                     return self
                         .readiness_failed(reference, service, error.to_string())
@@ -268,6 +261,59 @@ impl Processes {
                 () = cancel.cancelled() => return self.readiness_cancelled(reference, service).await,
                 () = tokio::time::sleep(Duration::from_millis(40)) => {}
             }
+        }
+    }
+
+    /// Jedno zdanie o limicie czasu, w jednym miejscu: czekanie sprawdza go dwa razy w obrocie
+    /// (przed sondą i po niej), a dwa brzmienia tego samego faktu rozjechałyby się przy pierwszej
+    /// poprawce.
+    async fn readiness_ran_out(
+        &self,
+        reference: &ServiceRef,
+        service: &ServiceOwnership,
+    ) -> ReadinessEnd {
+        self.readiness_failed(
+            reference,
+            service,
+            "The app did not become ready within the requested time.".to_owned(),
+        )
+        .await
+    }
+
+    /// Czy ten cel ma już okno — albo czy w ogóle go potrzebuje.
+    ///
+    /// # P-02 punkt 6 / P-03b: dla celu natywnego gotowy port jest POŁOWĄ prawdy
+    ///
+    /// Scenariusz, który ma się odbyć w oknie, potrzebuje okna — a serwer deweloperski
+    /// odpowiadający na porcie spełnia wyłącznie cel webowy. Incydent I-06 (2026-09-06):
+    /// wymagania dopuszczały samo uruchomienie takiego serwera jako potwierdzenie zachowania
+    /// widocznego wyłącznie w interfejsie.
+    ///
+    /// Brak okna NIE jest porażką: aplikacja natywna pokazuje je chwilę po starcie, więc
+    /// pytanie wraca w następnym obrocie pętli, aż do limitu czasu. Brak ZGODY na pytanie jest
+    /// osobnym wynikiem i kończy czekanie od razu — powtarzanie pytania, na które system nie
+    /// pozwoli odpowiedzieć, jest wyłącznie czekaniem.
+    ///
+    /// `Ok(true)` znaczy „możesz ogłosić gotowość": cel webowy i `cli` nie mają okna z definicji,
+    /// więc odpowiadają tak od razu. `Ok(false)` znaczy „jeszcze nie, zapytaj za chwilę".
+    /// `Err(zdanie)` znaczy „nikt tu nigdy nie odpowie" — brak zgody albo nie ten system.
+    async fn native_window_confirmed(
+        &self,
+        reference: &ServiceRef,
+        entry: &super::HeldProcess,
+    ) -> Result<bool, String> {
+        let slot = self.managed_service(reference).map_err(|why| why.to_string())?;
+        if slot.description.kind != crate::workflow::TargetKind::Native {
+            return Ok(true);
+        }
+        // Grupa procesów bez dodatniego identyfikatora nie ma jak zostać wskazana systemowi.
+        let Ok(pid) = u32::try_from(entry.pgid) else {
+            return Ok(false);
+        };
+        match crate::engine::native_ui::windows_of(self.native_ui_program(), pid).await {
+            Ok(windows) => Ok(windows > 0),
+            Err(crate::engine::native_ui::NativeUiAccess::Unknown { .. }) => Ok(false),
+            Err(refused) => Err(refused.said().to_owned()),
         }
     }
 

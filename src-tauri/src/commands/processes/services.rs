@@ -23,7 +23,7 @@ use crate::workflow::{LaunchDescription, ServiceLifetime};
 
 #[derive(Debug)]
 pub(super) struct ManagedService {
-    description: LaunchDescription,
+    pub(super) description: LaunchDescription,
     tag: StepTag,
     /// Tylko podmiana krótkich wartości, nigdy przez await.
     pub(super) current: Mutex<Current>,

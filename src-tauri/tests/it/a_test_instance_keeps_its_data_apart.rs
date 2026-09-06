@@ -11,9 +11,13 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::os::unix::fs::PermissionsExt as _;
+
 use loadout_lib::commands::processes::{Processes, ServiceOwner, ServiceRef};
 use loadout_lib::engine::supervisor::StepTag;
-use loadout_lib::workflow::{LaunchDescription, ServiceLifetime, TargetKind};
+use loadout_lib::workflow::{
+    LaunchDescription, ReadinessSpec, ServiceEndpointSpec, ServiceLifetime, TargetKind,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Podmiana katalogu domowego jest odmową, nie izolacją.
@@ -130,6 +134,96 @@ async fn the_named_setting_reaches_the_process_and_points_beside_the_run()
     Ok(())
 }
 
+/// P-02 punkt 6 / P-03b: dla celu NATYWNEGO gotowy port jest połową prawdy.
+///
+/// Scenariusz, który ma się odbyć w oknie, potrzebuje okna. `ng serve` odpowiadający na porcie
+/// spełnia wyłącznie cel webowy — a incydent I-06 to właśnie dopuszczał jako potwierdzenie
+/// zachowania widocznego wyłącznie w interfejsie.
+#[tokio::test]
+async fn a_native_target_without_a_window_is_not_ready_yet() -> Result<(), Box<dyn Error>> {
+    // System, który odpowiada „zero okien": aplikacja jeszcze go nie pokazała.
+    let bench = Bench::answering("echo 0")?;
+    let why = bench
+        .start(native_with_readiness())
+        .await
+        .expect_err("a native target with no window was announced as ready");
+    assert!(
+        why.contains("did not become ready"),
+        "the wait ended for some other reason than the missing window: {why:?}"
+    );
+    Ok(())
+}
+
+/// Brak ZGODY na pytanie kończy czekanie od razu i mówi, czego brakuje. Powtarzanie pytania,
+/// na które system nie pozwoli odpowiedzieć, jest wyłącznie czekaniem.
+#[tokio::test]
+async fn a_refused_permission_ends_the_wait_with_its_own_sentence() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::answering(
+        "echo 'execution error: System Events — błąd: Nie masz zgody. (-1743)' >&2; exit 1",
+    )?;
+    let why = bench
+        .start(native_with_readiness())
+        .await
+        .expect_err("a refused permission was treated as a window that will still appear");
+    assert!(
+        why.contains("permission on this machine, not a result about the application"),
+        "the refusal reads like a verdict about the application: {why:?}"
+    );
+    Ok(())
+}
+
+/// Okno jest — cel natywny może zostać ogłoszony gotowym.
+#[tokio::test]
+async fn a_native_target_with_a_window_becomes_ready() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::answering("echo 1")?;
+    bench.start(native_with_readiness()).await?;
+    Ok(())
+}
+
+/// Cel WEBOWY nie jest o okno pytany w ogóle: interpreter, który zawsze odmawia, nie ma prawa
+/// zatrzymać serwera, którego gotowość jest kompletna bez okna.
+#[tokio::test]
+async fn a_web_target_is_never_asked_about_a_window() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::answering("echo 'never asked' >&2; exit 1")?;
+    let mut description = native_with_readiness();
+    description.kind = TargetKind::Web;
+    description.test_data_env = None;
+    bench.start(description).await?;
+    Ok(())
+}
+
+/// Aplikacja, która stoi i słucha na swoim porcie.
+fn native_with_readiness() -> LaunchDescription {
+    LaunchDescription {
+        /* Prawdziwy nasłuch na przydzielonym porcie, trzymany do końca testu. `nc -l` odpada:
+         * na macOS kończy się natychmiast, a wtedy kryterium mówiłoby o wyjściu procesu
+         * zamiast o oknie. */
+        command: "python3 -c \"import os,socket,time; s=socket.socket(); \
+                  s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); \
+                  s.bind(('127.0.0.1', int(os.environ['APP_PORT']))); s.listen(8); \
+                  time.sleep(20)\""
+            .to_owned(),
+        kind: TargetKind::Native,
+        test_data_env: Some("MURMUR_TEST_DATA".to_owned()),
+        subdirectory: String::new(),
+        environment: std::collections::BTreeMap::new(),
+        required_env: Vec::new(),
+        endpoints: vec![ServiceEndpointSpec {
+            name: "app".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 0,
+            port_env: Some("APP_PORT".to_owned()),
+        }],
+        readiness: Some(ReadinessSpec {
+            kind: loadout_lib::workflow::ReadinessKind::Tcp,
+            endpoint: "app".to_owned(),
+            path: "/".to_owned(),
+            timeout_seconds: 3,
+            expected_status: 200,
+        }),
+    }
+}
+
 struct Bench {
     _project: tempfile::TempDir,
     workspace: std::path::PathBuf,
@@ -138,12 +232,22 @@ struct Bench {
 
 impl Bench {
     fn new() -> Result<Self, Box<dyn Error>> {
+        Self::answering("echo 1")
+    }
+
+    /// Ten sam świat, z podstawionym interpreterem odpowiedzi systemu — bez tego kryterium
+    /// sądziłoby ZGODY tej maszyny zamiast tego kodu.
+    fn answering(body: &str) -> Result<Self, Box<dyn Error>> {
         let project = tempfile::tempdir()?;
         let workspace = std::fs::canonicalize(project.path())?;
+        let pretending = workspace.join("osascript");
+        std::fs::create_dir_all(&workspace)?;
+        std::fs::write(&pretending, format!("#!/bin/sh\n{body}\n"))?;
+        std::fs::set_permissions(&pretending, std::fs::Permissions::from_mode(0o755))?;
         Ok(Self {
             _project: project,
             workspace,
-            processes: Arc::new(Processes::new()),
+            processes: Arc::new(Processes::confirming_windows_with(pretending)),
         })
     }
 

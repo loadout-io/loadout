@@ -144,6 +144,25 @@ fn the_shipped_qa_role_is_not_told_to_implement() -> Result<(), Box<dyn Error>> 
         !said.contains("implement"),
         "the role that checks the work inherited an instruction to build it"
     );
+    /* P-03b: KAŻDA AKCJA ADRESOWANA TOŻSAMOŚCIĄ INSTANCJI TESTOWEJ.
+     *
+     * Tego jednego Loadout nie umie wymusić kodem i to jest udokumentowany wybór, nie
+     * przeoczenie (niezmiennik 28): agent steruje oknem przez `Bash` i `osascript`, więc
+     * przechwycenie każdej akcji znaczyłoby napisanie własnego systemu Computer Use — czego
+     * plan zabrania wprost. Egzekwowalne jest to, co obok: metoda `full-runtime`, potwierdzone
+     * okno przed startem QA i „nie zmierzono" bez drogi do okna.
+     *
+     * Zostaje więc zdanie w roli — i ono ma tam BYĆ, bo kliknięcie wysłane po NAZWIE aplikacji
+     * trafia w tę, na którą akurat wskazuje menedżer okien, czyli potencjalnie w prawdziwą
+     * aplikację człowieka z jego prawdziwymi nagraniami. */
+    assert!(
+        said.contains("unix id") && said.contains("never the"),
+        "the role was never told to address the exact process it was given"
+    );
+    assert!(
+        said.contains("do not record audio") || said.contains("not record"),
+        "the role was never told that a real conversation is not test material"
+    );
     Ok(())
 }
 
