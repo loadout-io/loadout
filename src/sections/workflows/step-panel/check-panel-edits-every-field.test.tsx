@@ -266,11 +266,13 @@ describe('the panel of a check tile edits every field the tile has', () => {
     const pickFolder = chooseFolder(tree);
     const pickFailure = changeOf(tree, 'check-when-it-fails');
     const typeName = changeOf(tree, 'check-name');
+    const typeRequired = changeOf(tree, 'check-required-tests');
 
     expect(
-      [typeName, typeCommand, typePattern, pickFolder, pickFailure].filter((one) => one === null)
-        .length,
-      'one of the five controls in the rendered panel has no handler, so the rest of this test ' +
+      [typeName, typeCommand, typePattern, typeRequired, pickFolder, pickFailure].filter(
+        (one) => one === null,
+      ).length,
+      'one of the six controls in the rendered panel has no handler, so the rest of this test ' +
         'would assert nothing at all about it. A control with nothing behind it does not go ' +
         'into this repo (invariant 16), and it looks on screen exactly like one that works.',
     ).toBe(0);
@@ -278,6 +280,7 @@ describe('the panel of a check tile edits every field the tile has', () => {
     typeName?.({ target: { value: 'Run the checks' } });
     typeCommand?.({ target: { value: COMMAND } });
     typePattern?.({ target: { value: PROOF } });
+    typeRequired?.({ target: { value: 'wanted::first\n  wanted::second  \n\n' } });
     pickFolder?.({ use: 'fresh-copy' });
     pickFailure?.({ target: { value: 'carry-on' } });
 
@@ -290,6 +293,8 @@ describe('the panel of a check tile edits every field the tile has', () => {
       { name: 'Run the checks' },
       { command: COMMAND },
       { proof: PROOF },
+      // Puste wiersze i spacje nie są tożsamością testu; lista wychodzi z panelu przycięta.
+      { requiredTests: ['wanted::first', 'wanted::second'] },
       { folder: { use: 'fresh-copy' } },
       { whenItFails: 'carry-on' },
     ]);

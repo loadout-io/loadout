@@ -384,6 +384,17 @@ pub struct CheckStep {
     /// OTWORZYĆ i naprawić.
     #[serde(default)]
     pub proof: String,
+    /// V-01: dokładne testy, które ta komenda ma potwierdzić.
+    ///
+    /// Pusta lista zachowuje dotychczasowy kontrakt kroku. Niepusta dokłada pytanie, na które
+    /// sam licznik przejść nie odpowiada: KTÓRE testy się wykonały. Zmierzone 2026-09-06
+    /// (I-04) — krok, który miał potwierdzić trzynaście testów, uruchomił dwa niezwiązane
+    /// i był zielony, bo licznik był dodatni, a kod wyjścia zerowy.
+    ///
+    /// Nazwa jest tożsamością, nie wzorcem: `cargo test` wypisuje `test <moduł>::<nazwa> ... ok`,
+    /// a runner frontendowy z reporterem TAP `ok <n> - <plik> > <nazwa>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_tests: Vec<String>,
     /// Gdzie ta komenda biegnie. `cargo test` pisze po `target/`, więc to **nie** jest krok
     /// tylko do odczytu i reguła kolizji z niezmiennika 12 obowiązuje go tak samo jak agenta.
     #[serde(default)]

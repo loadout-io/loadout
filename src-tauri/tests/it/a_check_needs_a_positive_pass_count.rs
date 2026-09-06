@@ -12,6 +12,7 @@ async fn check(command: &str, proof: &str, expected: bool) -> Result<(), Box<dyn
         command: command.to_owned(),
         proof: proof.to_owned(),
         cwd: workspace.path().to_path_buf(),
+        required_tests: Vec::new(),
     };
     let driver = CommandDriver::new();
     let cancel = CancellationToken::new();

@@ -320,6 +320,7 @@ async fn a_check_killed_by_a_signal_keeps_the_match_it_already_saw() -> Result<(
         command: "echo \"4 passed\"; sleep 0.2; kill -9 $$".to_owned(),
         proof: PROOF.to_owned(),
         cwd: dir.path().to_path_buf(),
+        required_tests: Vec::new(),
     };
     let mut live = driver.start(&spec)?;
     let cancel = CancellationToken::new();
@@ -370,6 +371,7 @@ async fn a_check_that_never_ends_still_comes_back_overdue_and_dead() -> Result<(
             .to_owned(),
         proof: PROOF.to_owned(),
         cwd: dir.path().to_path_buf(),
+        required_tests: Vec::new(),
     };
     let mut live = driver.start(&spec)?;
     let cancel = CancellationToken::new();
@@ -491,6 +493,7 @@ async fn one_check(cwd: &Path, command: &str) -> Result<CheckReport, Box<dyn Err
         command: command.to_owned(),
         proof: PROOF.to_owned(),
         cwd: cwd.to_path_buf(),
+        required_tests: Vec::new(),
     };
     let cancel = CancellationToken::new();
     let end = tokio::time::timeout(PATIENCE, driver.run(&spec, &cancel))

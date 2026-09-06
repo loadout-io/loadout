@@ -1416,6 +1416,7 @@ fn routine_workflow(
             name: "Run the checks".to_owned(),
             command: command.clone(),
             proof: proof.clone(),
+            required_tests: Vec::new(),
             folder: Folder::Project,
             when_it_fails: WhenItFails::default(),
             at: point(0.0, 0.0),
@@ -1560,6 +1561,7 @@ fn ship_ui(
             name: "Run the project checks".to_owned(),
             command: command.to_owned(),
             proof: proof.to_owned(),
+            required_tests: Vec::new(),
             folder: Folder::SameCopy,
             // Import nie zgaduje polityki: przeniesiona konfiguracja zachowuje się tak,
             // jak zachowywał się każdy krok do 2026-08-23.
@@ -1574,6 +1576,7 @@ fn ship_ui(
         name: "Run the final checks".to_owned(),
         command: command.to_owned(),
         proof: proof.to_owned(),
+        required_tests: Vec::new(),
         folder: Folder::SameCopy,
         when_it_fails: WhenItFails::Stop,
         at: point(1440.0, 0.0),

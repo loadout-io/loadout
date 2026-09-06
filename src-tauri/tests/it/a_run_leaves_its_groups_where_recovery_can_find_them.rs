@@ -540,6 +540,7 @@ async fn every_way_a_step_starts_a_process_carries_the_run_marker() -> Result<()
             command: line.clone(),
             proof: "never matches".to_owned(),
             cwd: dir.path().to_path_buf(),
+            required_tests: Vec::new(),
         })?;
     let checked = wait_for_marker(checking.group().pgid, START_LIMIT);
     let _checked_proof = checking.cancel().await;

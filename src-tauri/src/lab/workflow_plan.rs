@@ -262,6 +262,7 @@ fn grader_step(case: &super::Case, prefix: &str, grader: &str) -> Step {
         name: format!("{prefix} · Independent checks"),
         command: case.command.clone(),
         proof: case.proof.clone(),
+        required_tests: Vec::new(),
         folder: Folder::FreshCopy,
         when_it_fails: WhenItFails::Stop,
         at: Point::default(),

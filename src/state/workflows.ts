@@ -324,6 +324,16 @@ export interface CheckStep {
    * wychodzi zerem.
    */
   proof: string;
+  /**
+   * Dokładne testy, które to sprawdzenie ma potwierdzić — nazwa w nazwę, jak wypisuje je
+   * runner. Lustro `workflow::CheckStep::required_tests`.
+   *
+   * Pusta lista zachowuje dotychczasowy kontrakt kroku. Niepusta dokłada pytanie, na które
+   * sam licznik przejść nie odpowiada: KTÓRE testy się wykonały. Zmierzone 2026-09-06 —
+   * krok, który miał potwierdzić trzynaście testów, uruchomił dwa niezwiązane i był zielony,
+   * bo licznik był dodatni, a kod wyjścia zerowy.
+   */
+  requiredTests?: string[];
   /** Gdzie ta komenda biegnie. `cargo test` pisze po `target/`, więc to NIE jest krok tylko
    * do odczytu i reguła kolizji z niezmiennika 12 obowiązuje go tak samo jak agenta. */
   folder: Folder;

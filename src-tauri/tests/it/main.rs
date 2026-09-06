@@ -311,6 +311,7 @@ mod reflection_receipt_reaches_the_history;
 mod repeated_tool_failure_stops_step;
 mod replay_uses_the_recorded_run_inputs;
 mod repository_instructions_reach_lead_and_steps;
+mod required_checks_run_the_requested_tests;
 mod required_fields_are_required;
 mod reserved_flags_cover_what_loadout_sets;
 mod results_are_written_where_asked;

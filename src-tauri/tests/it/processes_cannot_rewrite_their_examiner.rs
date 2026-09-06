@@ -303,6 +303,7 @@ async fn an_ordinary_check_and_its_children_have_the_same_file_boundary()
                 command: "/bin/sh probe.sh".to_owned(),
                 proof: r"(\d+) passed".to_owned(),
                 cwd: bench.cell.clone(),
+                required_tests: Vec::new(),
             },
             &CancellationToken::new(),
         )

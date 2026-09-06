@@ -210,6 +210,7 @@ fn checks_step(case: &Case, id: String, at: Point) -> CheckStep {
         name: format!("{} · checks", case.name.trim()),
         command: case.command.clone(),
         proof: case.proof.clone(),
+        required_tests: Vec::new(),
         // W drzewie, które właśnie zbudowała praca tej komórki — inaczej komenda sprawdzałaby
         // katalog, w którym nic się nie wydarzyło.
         folder: Folder::SameCopy,

@@ -5837,6 +5837,7 @@ fn plan_step(
                         command: check.command.clone(),
                         proof: check.proof.clone(),
                         cwd: spot.cwd,
+                        required_tests: check.required_tests.clone(),
                     },
                     ours: spot.ours,
                 })),
@@ -14072,6 +14073,18 @@ impl Live {
                         && !report.passed
                     {
                         step.error = Some(assessment.reason.clone());
+                    }
+                    /* V-01: ZDANIE O WYMAGANYCH TESTACH WYGRYWA Z POWODEM EGZAMINATORA, bo
+                     * odpowiada na wcześniejsze pytanie. „Sprawdzenie nie przeszło" nad suitą,
+                     * która wykonała dwa niezwiązane testy zamiast trzynastu wymaganych, wysyła
+                     * człowieka szukać wady w produkcie — a wada jest w komendzie albo
+                     * w katalogu, z którego ją uruchomiono (incydenty I-03/I-04). */
+                    if proven_dead
+                        && let Some(missing) = report.required.as_ref().filter(|one| {
+                            !crate::engine::drivers::command::RequiredTests::all_confirmed(one)
+                        })
+                    {
+                        step.error = Some(missing.said());
                     }
                 });
                 // Ocalały jedzie do rejestru PRZED przekazaniem i przed werdyktem: za nimi stoi

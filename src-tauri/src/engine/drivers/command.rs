@@ -42,7 +42,9 @@ use tokio_util::sync::CancellationToken;
 use super::super::supervisor::{self, GroupId, GroupProof, StdinPlan, Supervised};
 
 pub mod assessment;
+pub mod required;
 pub use assessment::ProofMode;
+pub use required::RequiredTests;
 
 /// Ile jeden krok „sprawdź" ma prawo trwać.
 ///
@@ -83,6 +85,13 @@ pub struct CheckSpec {
     pub proof: String,
     /// Katalog roboczy kroku.
     pub cwd: PathBuf,
+    /// V-01: dokładne testy, które to sprawdzenie ma potwierdzić.
+    ///
+    /// Pusta lista zachowuje dotychczasowy kontrakt: werdykt liczy się z kodu wyjścia
+    /// i wzorca dowodu. Niepusta dokłada pytanie, na które sam licznik nie odpowiada —
+    /// KTÓRE testy przeszły (incydent I-04: dwa niezwiązane przejścia zamiast trzynastu
+    /// wymaganych, exit 0, dodatni licznik, zielony krok).
+    pub required_tests: Vec<String>,
 }
 
 /// Co z komendy wyszło.
@@ -90,6 +99,8 @@ pub struct CheckSpec {
 pub struct CheckReport {
     /// Dowód z osobnego egzaminatora; None zachowuje dawny kontrakt command/proof.
     pub assessment: Option<assessment::Assessment>,
+    /// V-01: co się stało z wymaganymi testami. `None`, kiedy sprawdzenie ich nie wymienia.
+    pub required: Option<RequiredTests>,
     /// Werdykt Loadouta. Liczony z [`passed`], czyli z kodu wyjścia **i** dopasowania naraz.
     pub passed: bool,
     /// Kod wyjścia. `None`, kiedy proces zginął od sygnału i kodu po prostu nie ma — a `None`
@@ -146,6 +157,8 @@ pub struct Checking {
     handle: Supervised,
     /// Wzorzec dowodu tego kroku, przepisany ze [`CheckSpec`].
     proof: String,
+    /// V-01: wymagane testy tego kroku, przepisane ze [`CheckSpec`].
+    required: Vec<String>,
     proof_mode: ProofMode,
     /// Od kiedy liczymy [`CheckReport::took`] i [`GIVE_UP_AFTER`].
     began: Instant,
@@ -253,17 +266,25 @@ impl Checking {
         } = captured;
         let assessment =
             assessment_bytes.map(|bytes| assessment::assess(&bytes, exit_code, read_failed));
+        /* V-01: SĄDZONE NA SUROWYM WYJŚCIU, przed podmianą na powód egzaminatora. Tożsamość
+         * wykonanych testów jest w tym, co wypisał runner, i nigdzie indziej. */
+        let required = (!self.required.is_empty()).then(|| required::judge(&self.required, &text));
         CheckReport {
             passed: assessment.as_ref().map_or_else(
                 || verdict(exit_code, matched),
                 |one| one.outcome == assessment::Outcome::Passed,
-            ),
+            )
+            /* LICZNIK PRZEJŚĆ NIE MÓWI, KTÓRE TESTY PRZESZŁY (V-01, incydent I-04). Dwa
+             * niezwiązane przejścia dają dodatni licznik i zerowy kod wyjścia dokładnie tak
+             * samo, jak trzynaście wymaganych. */
+            && required.as_ref().is_none_or(RequiredTests::all_confirmed),
             exit_code,
             matched: assessment
                 .as_ref()
                 .map_or(matched, |one| one.receipt.is_some()),
             output: assessment.as_ref().map_or(text, |one| one.reason.clone()),
             assessment,
+            required,
             took: self.began.elapsed(),
         }
     }
@@ -784,6 +805,19 @@ impl CommandDriver {
                 "This kind of check evidence is not supported.",
             ));
         }
+        /* V-01 (incydent I-03, 2026-09-06): KATALOG SPRAWDZAMY PRZED STARTEM, NIE PO NIM.
+         *
+         * Krok, którego `cd src-tauri` nie powiodło się, uruchamiał komendę tam, gdzie akurat
+         * stał — a `cargo test` z innego katalogu to inna suita, nie brak suity. Sam system
+         * odmawia tu `No such file or directory (os error 2)`: prawda, która nie mówi CZEGO
+         * nie ma, więc człowiek czyta ją przy kroku i nie wie, czy zabrakło katalogu, komendy,
+         * czy pliku, którego ta komenda szukała. */
+        if !spec.cwd.is_dir() {
+            return Err(io::Error::other(format!(
+                "This check could not start: its folder {} does not exist.",
+                spec.cwd.display()
+            )));
+        }
         let mut command = if let Some((program, arguments)) = &self.executable {
             let mut command = tokio::process::Command::new(program);
             command.args(arguments);
@@ -814,6 +848,7 @@ impl CommandDriver {
         let group = handle.group();
         Ok(Checking {
             group,
+            required: spec.required_tests.clone(),
             handle,
             proof: spec.proof.clone(),
             proof_mode: self.proof_mode,

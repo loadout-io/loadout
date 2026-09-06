@@ -190,6 +190,7 @@ async fn a_stopped_check_leaves_no_grandchild_behind() -> Result<(), Box<dyn Err
         command: format!("{} {} {marker}", parent.display(), grandchild.display()),
         proof: r"(\d+) passed".to_owned(),
         cwd: dir.path().to_path_buf(),
+        required_tests: Vec::new(),
     };
 
     let driver = CommandDriver::new();

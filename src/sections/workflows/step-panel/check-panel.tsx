@@ -25,7 +25,7 @@ import { WhereItWorks } from './where-it-works';
 /** Cztery pola kafelka sprawdzenia. Ten kafelek nie ma agenta, więc nie dziedziczy niczego —
  * nie ma tu nadpisań ani wartości efektywnych, są same pola kroku. */
 export type CheckFields = Partial<
-  Pick<CheckStep, 'name' | 'command' | 'proof' | 'folder' | 'whenItFails'>
+  Pick<CheckStep, 'name' | 'command' | 'proof' | 'requiredTests' | 'folder' | 'whenItFails'>
 >;
 
 export interface CheckPanelProps {
@@ -138,6 +138,36 @@ export function CheckPanel({ step, onEditStep }: CheckPanelProps): ReactElement 
           Plain text, with (\d+) standing for a number: write (\d+) passed and the count can be
           anything. Left empty, this step cannot be saved — a command that ran nothing at all comes
           back happy.
+        </span>
+      </div>
+
+      <div className="stack">
+        <label htmlFor="check-required-tests" className="label">
+          Tests this check must confirm
+        </label>
+        <textarea
+          id="check-required-tests"
+          className={FIELD}
+          rows={3}
+          placeholder={'wanted::first\nwanted::second'}
+          value={(step.requiredTests ?? []).join('\n')}
+          onChange={(event) => {
+            onEditStep({
+              requiredTests: event.target.value
+                .split('\n')
+                .map((one) => one.trim())
+                .filter((one) => one.length > 0),
+            });
+          }}
+        />
+        {/* DRUGA POŁOWA NIEZMIENNIKA 19, i to jest połowa, której licznik nie zna. Zmierzone
+            2026-09-06: krok miał potwierdzić trzynaście testów, jego filtry uruchomiły dwa
+            niezwiązane, a wynik był zielony — bo licznik był dodatni i komenda wróciła zerem.
+            Bez tego zdania człowiek nie ma jak się dowiedzieć, że pole w ogóle odpowiada na
+            inne pytanie niż wzorzec wyżej. */}
+        <span className="lead">
+          One name per line, exactly as the runner prints it. Left empty, a count above zero is
+          enough — and two unrelated passes then read the same as the thirteen you asked for.
         </span>
       </div>
 
