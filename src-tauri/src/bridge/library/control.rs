@@ -258,7 +258,7 @@ impl Desk {
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| "Write the message to send to that step.".to_owned())?;
-        let reply = crate::commands::step_message::send(&control, &run.run_id, node, text).await;
+        let reply = crate::commands::step_message::send(&control, &run.run_id, node, text);
         serde_json::to_value(reply)
             .map_err(|_| "Loadout could not describe that delivery.".to_owned())
     }

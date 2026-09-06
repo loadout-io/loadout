@@ -1369,7 +1369,7 @@ impl AppState {
         commands::checkpoint::answer(&deps.control, run_id, checkpoint_id, original)
     }
 
-    pub async fn send_to_step_in(
+    pub fn send_to_step_in(
         &self,
         project: &Path,
         run_id: &str,
@@ -1377,7 +1377,7 @@ impl AppState {
         text: &str,
     ) -> commands::step_message::StepMessageReply {
         let deps = self.deps_in(project);
-        commands::step_message::send(&deps.control, run_id, node_key, text).await
+        commands::step_message::send(&deps.control, run_id, node_key, text)
     }
 
     pub fn step_message_recipients_in(
@@ -4590,9 +4590,7 @@ pub async fn send_to_step(
     text: &str,
 ) -> Result<commands::step_message::StepMessageReply, String> {
     let project = state.project_for(folder.as_deref()).await?;
-    Ok(state
-        .send_to_step_in(&project, run_id, node_key, text)
-        .await)
+    Ok(state.send_to_step_in(&project, run_id, node_key, text))
 }
 
 #[tauri::command]

@@ -533,6 +533,8 @@ impl RunControl {
                     voice,
                     finished: false,
                     generation,
+                    waiting: std::collections::VecDeque::new(),
+                    accepting: true,
                 },
             );
             (generation, can_receive)
@@ -550,7 +552,7 @@ impl RunControl {
     }
 
     pub(crate) fn step_session_finished(&self, node_key: &str, generation: u64) {
-        let name = {
+        let (name, unsent) = {
             let mut sessions = self
                 .inner
                 .voices
@@ -564,8 +566,22 @@ impl RunControl {
             };
             session.voice = None;
             session.finished = true;
-            session.name.clone()
+            session.accepting = false;
+            // L-01: kolejka niepusta w tym miejscu znaczy, że krok zszedł, zanim zdążył
+            // obsłużyć przyjętą pracę — po anulowaniu albo po limicie czasu. Człowiek ma
+            // zobaczyć, ile jego zdań nie dojechało, a nie domyślić się tego z ciszy.
+            (session.name.clone(), std::mem::take(&mut session.waiting).len())
         };
+        if unsent > 0 {
+            let _ = self.show_in_the_run(crate::engine::line::Line::Problem {
+                agent: name.clone(),
+                text: format!(
+                    "{name} stopped before it could read {unsent} message{} you sent to it.",
+                    if unsent == 1 { "" } else { "s" }
+                ),
+                resets_at: None,
+            });
+        }
         if let Some(address) = self.run_address() {
             let _ = self.show_in_the_run(crate::engine::line::Line::StepSession {
                 agent: name,
@@ -574,6 +590,56 @@ impl RunControl {
                 can_receive: false,
                 finished: true,
             });
+        }
+    }
+
+    /// L-01: albo następna tura z kolejki tego kroku, albo zamknięcie przyjmowania — **w jednym
+    /// wzięciu zamka**.
+    ///
+    /// To jest cała treść słowa „atomowo" z L-01. Rozbite na dwie operacje („czy pusta?", potem
+    /// „już nie przyjmuję") zostawia okno, w którym wiadomość wchodzi do kolejki po sprawdzeniu
+    /// i przed zamknięciem — czyli zostaje przyjęta i nigdy nie podana. Człowiek dostaje wtedy
+    /// „przyjęte" za zdanie, którego agent nie zobaczył.
+    ///
+    /// `generation` odcina wcześniejszą próbę tego samego kafelka: kolejka nowej sesji nie
+    /// należy do tury, która ją zamawiała.
+    pub(crate) fn next_turn_or_stop_accepting(
+        &self,
+        node_key: &str,
+        generation: u64,
+    ) -> Option<String> {
+        let mut sessions = self
+            .inner
+            .voices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let session = sessions
+            .get_mut(node_key)
+            .filter(|one| one.generation == generation)?;
+        match session.waiting.pop_front() {
+            Some(text) => Some(text),
+            None => {
+                session.accepting = false;
+                None
+            }
+        }
+    }
+
+    /// Zamyka przyjmowanie bez zabierania niczego z kolejki.
+    ///
+    /// Woła to tura, która nie ma już czym podać kolejnej wiadomości (sesja bez głosu albo
+    /// transport, który padł). Zostawione w kolejce zdania rozlicza
+    /// [`RunControl::step_session_finished`].
+    pub(crate) fn stop_accepting(&self, node_key: &str, generation: u64) {
+        if let Some(session) = self
+            .inner
+            .voices
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(node_key)
+            .filter(|one| one.generation == generation)
+        {
+            session.accepting = false;
         }
     }
 

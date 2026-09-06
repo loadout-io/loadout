@@ -215,7 +215,7 @@ use crate::engine::drivers::prices::{Prices, WHERE_PRICES_LIVE};
 use crate::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
     DriverSetupError, DriverSetupFailure, FinishReason, LoadedFromTheFolder,
-    Outcome as DriverOutcome, Policy, RunSpec, THE_MODEL_WITH_NO_NAME,
+    Outcome as DriverOutcome, Policy, RunSpec, THE_MODEL_WITH_NO_NAME, ToAgent,
 };
 use crate::engine::limits::{self, Limiter};
 use crate::engine::line::{Action, Curator, Line, Seen, Status, Tool};
@@ -3569,7 +3569,7 @@ pub async fn say_to_agent_inner(
             .iter()
             .find(|one| one.agent == to && one.can_receive)
             .ok_or_else(|| RunError::StoppedListening { name: to.clone() })?;
-        let reply = super::step_message::send(control, &run.id, &node.node_key, said).await;
+        let reply = super::step_message::send(control, &run.id, &node.node_key, said);
         return if reply.result == super::step_message::StepMessageResult::AcceptedBySession {
             Ok(())
         } else {
@@ -10697,14 +10697,54 @@ struct ExecutionFacts {
     process_started: bool,
 }
 
-fn record_turn(step: &mut StepRun, turn: &DriverOutcome, cost_is_estimate: bool) {
-    step.cost_usd = turn.cost_usd;
-    step.cost_estimate = (turn.cost_usd.is_some() && cost_is_estimate).then_some(true);
-    step.uncached_input = Some(turn.tokens.uncached_input);
-    step.cache_read = Some(turn.tokens.cache_read);
-    step.cache_write = Some(turn.tokens.cache_write);
-    step.output = Some(turn.tokens.output);
-    step.vendor_turns = turn.vendor_turns();
+/// Zużycie WSZYSTKICH tur, które ten krok naprawdę obsłużył.
+///
+/// L-01 (2026-09-06) — do dnia, w którym krok mógł mieć więcej niż jedną turę, zapis zużycia
+/// był podstawieniem: `step.cost_usd = turn.cost_usd`. Druga tura przepisywała rachunek
+/// pierwszej, więc człowiek widział cenę ostatniego zdania zamiast ceny kroku. Sumowanie musi
+/// mieszkać w jednym miejscu, bo to jest polityka, nie arytmetyka rozsypana po ścieżkach
+/// zejścia (niezmiennik 23).
+#[derive(Debug, Default, Clone)]
+struct TurnTotals {
+    cost_usd: Option<f64>,
+    tokens: crate::engine::drivers::Tokens,
+    /// Wewnętrzne tury zgłoszone przez vendora, zsumowane.
+    vendor_turns: u32,
+    /// Ile tur obsłużył Loadout. Zero znaczy „krok miał dokładnie jedną turę".
+    handled: u32,
+}
+
+impl TurnTotals {
+    fn add(&mut self, one: &DriverOutcome) {
+        if let Some(spent) = one.cost_usd {
+            self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + spent);
+        }
+        self.tokens.uncached_input += one.tokens.uncached_input;
+        self.tokens.cache_read += one.tokens.cache_read;
+        self.tokens.cache_write += one.tokens.cache_write;
+        self.tokens.output += one.tokens.output;
+        self.vendor_turns += one.turns;
+        self.handled += 1;
+    }
+
+    /// Te totals powiększone o jeszcze jedną turę, bez zmiany oryginału.
+    fn with(&self, one: &DriverOutcome) -> Self {
+        let mut both = self.clone();
+        both.add(one);
+        both
+    }
+
+    fn record(&self, step: &mut StepRun, cost_is_estimate: bool) {
+        step.cost_usd = self.cost_usd;
+        step.cost_estimate = (self.cost_usd.is_some() && cost_is_estimate).then_some(true);
+        step.uncached_input = Some(self.tokens.uncached_input);
+        step.cache_read = Some(self.tokens.cache_read);
+        step.cache_write = Some(self.tokens.cache_write);
+        step.output = Some(self.tokens.output);
+        // 2026-09 (Z-48) — adapter bez licznika tur zapisuje zgodnościowe zero, a zero na
+        // trwałej granicy jest brakiem, nie liczbą.
+        step.vendor_turns = (self.vendor_turns > 0).then_some(self.vendor_turns);
+    }
 }
 
 /// Stan **biegu**: pięć wartości z `CHECK` przy tabeli `runs` w `store::schema`.
@@ -14614,8 +14654,12 @@ impl Live {
         outcome: DriverOutcome,
         cost_is_estimate: bool,
         turn: &mut LiveAgentTurn<'_>,
+        carried: &TurnTotals,
     ) -> StepReport {
         let id = turn.id;
+        // L-01: rachunek kroku to suma tur, które naprawdę się odbyły. Wynik i powód
+        // pochodzą wyłącznie z tej ostatniej.
+        let totals = carried.with(&outcome);
         let Closed { how, code, proof } = self
             .close_and_prove(id, handle.as_mut(), turn.evidence, turn.cancel)
             .await;
@@ -14638,7 +14682,7 @@ impl Live {
         self.update(|book| {
             let step = &mut book.steps[id];
             step.exit_code = code;
-            record_turn(step, &outcome, cost_is_estimate);
+            totals.record(step, cost_is_estimate);
             step.end_cause = Some(if !proven_dead {
                 super::run_inputs::EndCause::UnprovenStop
             } else if !matches!(how, ClosedHow::OnItsOwn) || !evidence_complete {
@@ -14735,6 +14779,7 @@ impl Live {
         cost_is_estimate: bool,
         limit: Duration,
         turn: &mut LiveAgentTurn<'_>,
+        carried: &TurnTotals,
     ) -> Turned {
         let id = turn.id;
         match finished {
@@ -14839,7 +14884,7 @@ impl Live {
                 Turned::Broke("This step's agent stopped in the middle of its turn.".to_owned())
             }
             Ended::Turn(Ok(outcome)) => Turned::Settled(
-                self.finish_completed_agent_turn(handle, outcome, cost_is_estimate, turn)
+                self.finish_completed_agent_turn(handle, outcome, cost_is_estimate, turn, carried)
                     .await,
             ),
         }
@@ -14877,9 +14922,59 @@ impl Live {
             Job::Agent(job) => job.give_up_after,
             Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Duration::MAX,
         };
-        let finished = Self::wait_for_agent_turn(handle.as_mut(), &mut turn, limit).await;
+        /* L-01: SUFIT CZASU DOTYCZY CAŁEGO KROKU, NIE KAŻDEJ TURY Z OSOBNA (2026-09-06).
+         * Zegar zerowany przy każdej wiadomości oddaje krokowi nieskończony czas w zamian
+         * za jedno zdanie co kilka minut — a limit kroku jest tym, co gasi bieg, który
+         * przestał posuwać się do przodu. */
+        let started = tokio::time::Instant::now();
+        let node_key = self.plan.steps[id].node_key.clone();
+        let mut carried = TurnTotals::default();
+        let mut finished = Self::wait_for_agent_turn(handle.as_mut(), &mut turn, limit).await;
+        /* L-01 (incydent I-01): tura, która wróciła wynikiem, NIE JEST końcem sesji, dopóki
+         * kolejka tego kroku ma czym ją przedłużyć. Do 2026-09-06 pierwszy `result` szedł
+         * prosto w zamknięcie wejścia i zabicie grupy — razem z turą, którą vendor już zaczął
+         * dla przyjętej wiadomości człowieka. */
+        loop {
+            let Ended::Turn(Ok(done)) = finished else {
+                break;
+            };
+            let Some(voice) = handle.voice() else {
+                // Sesja bez głosu nie ma jak dostać kolejnej tury; nic też nie mogło do niej
+                // wejść (`accept_into_the_queue` odmawia bez głosu).
+                self.control.stop_accepting(&node_key, message_generation);
+                finished = Ended::Turn(Ok(done));
+                break;
+            };
+            let Some(next) = self
+                .control
+                .next_turn_or_stop_accepting(&node_key, message_generation)
+            else {
+                finished = Ended::Turn(Ok(done));
+                break;
+            };
+            if voice.send(ToAgent::Turn(next)).await.is_err() {
+                // Transport padł między przyjęciem a podaniem. Krok kończy się na tym, co ma;
+                // nieoddane zdania rozliczy `step_session_finished`.
+                self.control.stop_accepting(&node_key, message_generation);
+                finished = Ended::Turn(Ok(done));
+                break;
+            }
+            // Rozliczenie udziału idzie PER TURA, nie na końcu: sufit wydatku sprawdzany
+            // w środku następnej tury musi widzieć, ile ten krok już wydał.
+            if let Some(spent) = done.cost_usd {
+                self.settle_the_share(id, spent);
+            }
+            carried.add(&done);
+            self.update(|book| carried.record(&mut book.steps[id], cost_is_estimate));
+            finished = Self::wait_for_agent_turn(
+                handle.as_mut(),
+                &mut turn,
+                limit.saturating_sub(started.elapsed()),
+            )
+            .await;
+        }
         let report = self
-            .finish_agent_turn(handle, finished, cost_is_estimate, limit, &mut turn)
+            .finish_agent_turn(handle, finished, cost_is_estimate, limit, &mut turn, &carried)
             .await;
         self.control
             .step_session_finished(&self.plan.steps[id].node_key, message_generation);

@@ -369,6 +369,7 @@ mod started_processes_die_with_the_window;
 mod step_deadline_stops_the_agent;
 mod step_message_capability_matches_the_session;
 mod step_sessions_receive_their_app_tools;
+mod step_turn_queue_is_atomic;
 mod steps_below_a_spent_budget_say_so;
 mod stop_answers_while_the_trees_close;
 mod stop_is_addressed_by_folder;

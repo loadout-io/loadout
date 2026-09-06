@@ -94,7 +94,7 @@ async fn scenario(with_voice: bool, external_messages: bool) -> Result<(), Box<d
         }
         tokio::join!(running, async {
             let address = deps.control.run_address().ok_or("runtime has no durable address")?;
-            let reply = state.send_to_step_in(&project, &address.id, "builder", "  exact message  ").await;
+            let reply = state.send_to_step_in(&project, &address.id, "builder", "  exact message  ");
             if !external_messages {
                 let refused = "This comparison uses fixed inputs. Start a new run to change them.";
                 assert_eq!(serde_json::to_value(reply.result)?, json!("fixedInputs"),
@@ -126,13 +126,18 @@ async fn scenario(with_voice: bool, external_messages: bool) -> Result<(), Box<d
             assert_eq!(actual.run_id, address.id);
             assert_eq!(actual.can_receive, with_voice);
             assert!(!actual.finished);
-            let stale = state.send_to_step_in(&project, "older-run", "builder", "do not deliver").await;
+            let stale = state.send_to_step_in(&project, "older-run", "builder", "do not deliver");
             assert_eq!(stale.result, StepMessageResult::StaleRun);
-            let wrong = state.send_to_step_in(&project, &address.id, "Builder", "do not deliver").await;
+            let wrong = state.send_to_step_in(&project, &address.id, "Builder", "do not deliver");
             assert_eq!(wrong.result, StepMessageResult::NoSuchStep, "a display name is not an exact session address");
             if with_voice {
-                assert!(matches!(inbox.recv().await, Some(ToAgent::Turn(text)) if text == "  exact message  "));
-                assert!(inbox.try_recv().is_err(), "stale or misaddressed message reached the channel");
+                /* L-01 (2026-09-06): PRZYJĘTE PRZEZ LOADOUT TO NIE TO SAMO, CO PODANE
+                 * TRANSPORTOWI. Do tego dnia wiadomość szła prosto w kanał vendora w środku
+                 * trwającej tury — a Loadout, nic o niej nie wiedząc, zamykał wejście zaraz
+                 * po pierwszym `result` i zabijał turę, którą vendor dla niej zaczął (I-01).
+                 * Teraz czeka w kolejce biegu i dostaje własną turę. */
+                assert!(inbox.try_recv().is_err(),
+                    "an accepted message was pushed into the running turn instead of waiting for its own");
             }
             let mut lines = Vec::new();
             while let Some(line) = output.try_next() { lines.push(line); }
@@ -151,6 +156,14 @@ async fn scenario(with_voice: bool, external_messages: bool) -> Result<(), Box<d
                 if text == &reply.said || text == &stale.said || text == &wrong.said)),
                 "the sender owns a refusal; the runtime must not echo it into another stream");
             release.notify_one();
+            if with_voice {
+                // Dopiero po wyniku bieżącej tury Loadout podaje przyjętą wiadomość sesji.
+                let handed = tokio::time::timeout(Duration::from_secs(5), inbox.recv())
+                    .await
+                    .map_err(|_| "the accepted message never reached the session as its own turn")?;
+                assert!(matches!(handed, Some(ToAgent::Turn(text)) if text == "  exact message  "));
+                assert!(inbox.try_recv().is_err(), "stale or misaddressed message reached the channel");
+            }
             Ok::<(), Box<dyn Error>>(())
         })
     }).await?;
@@ -197,6 +210,7 @@ impl AgentDriver for Driver {
                 vendor: "claude-code",
                 id: spec.run_id.to_string(),
             },
+            turns: 0,
         }))
     }
 }
@@ -207,6 +221,8 @@ struct Handle {
     voice: Option<Voice>,
     events: mpsc::Sender<DecodedEvent>,
     session: SessionRef,
+    /// L-01: kolejna tura kończy się od razu — treść czyta sam test, prosto z kanału.
+    turns: u32,
 }
 
 #[async_trait]
@@ -224,8 +240,11 @@ impl AgentHandle for Handle {
         anyhow::bail!("the runtime must use the exposed channel")
     }
     async fn wait(&mut self) -> anyhow::Result<Outcome> {
-        self.entered.notify_one();
-        self.release.notified().await;
+        self.turns += 1;
+        if self.turns == 1 {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
         let result = Outcome {
             ok: true,
             reason: FinishReason::Completed,
