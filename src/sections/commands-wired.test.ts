@@ -233,6 +233,23 @@ const WIRES: readonly Wire[] = [
     given: [AGENT_ID],
     call: () => agents.remove(AGENT_ID),
   },
+  /* G-02 — dwie krawedzie generowania agenta. Dopisane w tej samej godzinie, w ktorej
+   * powstaly: krawedz bez wiersza tutaj jest krawedzia, ktorej nikt nie widzial dochodzacej
+   * do Rusta. */
+  {
+    where: 'agents',
+    what: 'generate',
+    command: 'generate_agent',
+    given: ['op-1', 'a tester', 'codex'],
+    call: () => agents.generate('op-1', 'a tester', 'codex'),
+  },
+  {
+    where: 'agents',
+    what: 'stopGenerating',
+    command: 'stop_generating_agent',
+    given: ['op-1'],
+    call: () => agents.stopGenerating('op-1'),
+  },
   {
     where: 'workflows',
     what: 'list',

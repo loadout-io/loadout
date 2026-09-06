@@ -70,6 +70,8 @@ import { problemSays } from '../../state/library';
 import { askedAgent, subscribeToAsked, takeAskedAgent } from '../../ui/palette/asked';
 import { evaluateAgent } from '../lab/evaluate';
 import { ImportSetup } from '../import';
+import { DraftNotes, GenerateAgent } from './generate-agent';
+import type { GeneratedDraft } from './io';
 import { AgentForm } from './agent-form';
 import * as Disk from './io';
 import { readUsage, usageSays, usedIn } from './usage';
@@ -80,6 +82,21 @@ export type AgentsStore = ReturnType<typeof createAgentsStore>;
 export interface AgentsScreenProps {
   /** Bez propsu ekran bierze swój prawdziwy magazyn, z propsem ten z testu. */
   store?: AgentsStore;
+  /**
+   * Droga do generowania agenta — szew testowy, tak samo jak `opened` niżej.
+   *
+   * Produkcja nie podaje tego propsu i bierze prawdziwe komendy. W repo nie ma jsdom, więc
+   * bez tego szwu żaden test nie miałby jak sprawdzić, KTÓRY vendor dostaje żądanie po
+   * kliknięciu — a to jest cała treść dwóch przycisków (niezmiennik 16).
+   */
+  generating?: {
+    readonly generate: (
+      operation: string,
+      described: string,
+      runsWith: Agent['runsWith'],
+    ) => Promise<GeneratedDraft>;
+    readonly stopGenerating: (operation: string) => Promise<void>;
+  };
   /**
    * Ile workflow nazywa którego agenta — trzy stany, i wszystkie trzy niosą treść.
    *
@@ -315,6 +332,7 @@ function deletingSays(
 
 export default function AgentsScreen({
   store = OWN_STORE,
+  generating = { generate: Disk.generate, stopGenerating: Disk.stopGenerating },
   usage: usageProp,
   opened,
   confirming,
@@ -404,7 +422,23 @@ export default function AgentsScreen({
 
   /* Jedna funkcja na całą sekcję i to jest cały sens niezmiennika 16: przycisk w spisie
    * i przycisk w zaproszeniu są dwoma wejściami do JEDNEJ ścieżki. */
+  /* Co ostatni szkic powiedział o sobie. Trzymane obok szkicu, nie w nim: to nie są pola
+   * agenta i nie mają prawa pojechać do pliku. `null` znaczy „ta rola nie przyszła z opisu". */
+  const [generated, setGenerated] = useState<GeneratedDraft | null>(null);
+
+  /* Szkic z generatora wchodzi TĄ SAMĄ drogą, co ręczny: jeden edytor, jeden zapis.
+   * Drugi pełny formularz agenta byłby drugim miejscem, w którym mieszka to samo pytanie. */
+  const takeDraft = (draft: GeneratedDraft): void => {
+    setDraft(draft.agent);
+    setGenerated(draft);
+    setPicked('');
+    setExpanded(false);
+    setPendingDelete(null);
+    store.getState().dismiss();
+  };
+
   const startDraft = (): void => {
+    setGenerated(null);
     /* Drugie kliknięcie w `＋ Create` NIE kasuje tego, co człowiek zdążył wpisać w nowej roli.
      * Kliknięcie przy otwartej roli ZAPISANEJ zaczyna nową — bo o to właśnie prosi, a szkic
      * tamtej roli nie ma prawa wjechać pod nagłówek „New agent". */
@@ -676,6 +710,18 @@ export default function AgentsScreen({
             >
               ＋ Create
             </button>
+            {/* OPIS I DWA PRZYCISKI OBOK ręcznego tworzenia, nie zamiast niego. Powód, dla
+                którego ten wiersz w ogóle powstał, stoi w całości w `./generate-agent.tsx`. */}
+            <div className="mb-3">
+              <GenerateAgent
+                onGenerate={generating.generate}
+                onStop={(operation) => {
+                  void generating.stopGenerating(operation);
+                }}
+                onDraft={takeDraft}
+                freshOperation={() => crypto.randomUUID()}
+              />
+            </div>
             <ul className="stack" data-gap="1">
               {state.agents.map((agent) => (
                 /* `relative`, bo kwadrat tożsamości stoi OBOK przycisku otwierającego, a nie
@@ -928,6 +974,12 @@ export default function AgentsScreen({
                 pole z osobna: 768 px to ta sama miara, którą ma kolumna czytania w Knowledge.
                 `flex-1 min-h-0` przewleka wysokość dalej, do wiersza instrukcji. */}
             <div className="flex min-h-0 w-full max-w-192 flex-1 flex-col">
+              {/* CO SZKIC POWIEDZIAŁ O SOBIE — nad formularzem, bo to jest pytanie WCZEŚNIEJSZE
+                  niż którekolwiek pole: czy ta rola w ogóle może robić to, o co poproszono.
+                  Rola stworzona ręcznie nie ma tu nic i wiersz nie powstaje. */}
+              {generated === null || generated.agent.id !== standing.id ? null : (
+                <DraftNotes draft={generated} />
+              )}
               <AgentForm
                 value={standing}
                 expanded={expanded}

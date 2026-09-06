@@ -143,3 +143,36 @@ export async function revisionOf(id: string): Promise<string | null> {
 export function remove(id: string): Promise<void> {
   return invoke<void>('delete_agent', { id });
 }
+
+/** Co wrócilo z generowania: szkic i wszystko, czego w nim nie ma. */
+export interface GeneratedDraft {
+  readonly operation: string;
+  readonly agent: Agent;
+  /** Czego generator musial sie domyslic z opisu. */
+  readonly assumptions: readonly string[];
+  /** Krotkie uzasadnienia istotnych ustawien — po co, nie jak myslal. */
+  readonly because: readonly string[];
+  /** Mozliwosci, o ktore poprosil, a ktorych tu nie ma. Widoczne PRZED zapisem. */
+  readonly missing: readonly string[];
+  /** Co odrzucono przy dopasowaniu, po jednym zdaniu. */
+  readonly refused: readonly string[];
+}
+
+/**
+ * Prosi wybranego vendora o napisanie szkicu agenta.
+ *
+ * `operation` jest identyfikatorem TEJ proby: po nim idzie anulowanie i po nim poznaje sie
+ * spozniona odpowiedz, ktora nie ma prawa nadpisac nowszego szkicu.
+ */
+export function generate(
+  operation: string,
+  described: string,
+  runsWith: Agent['runsWith'],
+): Promise<GeneratedDraft> {
+  return invoke<GeneratedDraft>('generate_agent', { operation, described, runsWith });
+}
+
+/** Zatrzymuje JEDNO generowanie. Bieg workflow sie o tym nie dowiaduje. */
+export function stopGenerating(operation: string): Promise<void> {
+  return invoke<void>('stop_generating_agent', { operation });
+}

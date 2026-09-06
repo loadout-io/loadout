@@ -473,6 +473,12 @@ pub struct AppState {
     store: Store,
     /// Fabryka sterowników vendorów.
     drivers: Drivers,
+    /// G-02: trwające generowania agentów, po jednym tokenie na operację.
+    ///
+    /// OSOBNE OD BIEGÓW, i to jest cała treść: Cancel generatora nie ma prawa zatrzymać
+    /// workflow, a Stop workflow nie ma prawa zabić generowania. Token per operacja, nigdy
+    /// globalny bool — bool przecieka między operacjami (niezmiennik 7).
+    generating: Mutex<std::collections::BTreeMap<String, tokio_util::sync::CancellationToken>>,
     /// Foldery, ktorych biegi ta sesja juz uzgodnila z tym, co naprawde zyje na maszynie.
     ///
     /// 2026-08-23 — RAZ NA FOLDER NA SESJE, i oba slowa sa tu wazne. „Raz", bo uzgodnienie
@@ -770,6 +776,7 @@ impl AppState {
             project,
             store,
             drivers,
+            generating: Mutex::new(std::collections::BTreeMap::new()),
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
             slots,
             live,
@@ -1367,6 +1374,75 @@ impl AppState {
     ) -> commands::checkpoint::CheckpointReply {
         let deps = self.deps_in(project);
         commands::checkpoint::answer(&deps.control, run_id, checkpoint_id, original)
+    }
+
+    /// G-02: całe generowanie jednego agenta — od zebrania możliwości po szkic.
+    ///
+    /// Tu mieszka lifecycle: token operacji, wybór sterownika z fabryki i sprzątanie rejestru.
+    /// Okno prosi, pokazuje i anuluje; niczego nie prowadzi.
+    pub async fn generate_agent_in(
+        &self,
+        operation: &str,
+        described: &str,
+        runs_with: crate::library::agents::Vendor,
+    ) -> Result<serde_json::Value, String> {
+        use crate::library::agent_generation::{Available, Wanted};
+        if described.trim().is_empty() {
+            return Err("Describe what this agent should do first.".to_owned());
+        }
+        if described.len() > crate::library::agent_generation::DESCRIPTION_LIMIT_BYTES {
+            return Err("That description is longer than this can send. Shorten it.".to_owned());
+        }
+        /* MIGAWKA WZIĘTA PRZED WYSŁANIEM OPISU. Lista, która zmienia się między prośbą
+         * a walidacją, odrzucałaby szkic za coś, co w chwili pisania naprawdę istniało.
+         *
+         * `models` zostaje PUSTE i to jest uczciwy brak, nie niedbałość: zweryfikowanego
+         * katalogu modeli ta wersja nie ma, a stara statyczna lista z formularza nie jest
+         * dowodem bieżącej dostępności. Pusta lista znaczy „nie sprawdzamy", więc model
+         * wskazany przez generatora przechodzi i widzi go człowiek. */
+        let available = Available {
+            skills: commands::skills::list_skills_in(&self.home, None)
+                .map(|skills| skills.into_iter().map(|one| one.name).collect())
+                .unwrap_or_default(),
+            connections: crate::connections::runtime::all(&self.home.join("connections"))
+                .map(|found| found.into_iter().map(|one| one.id).collect())
+                .unwrap_or_default(),
+            services: Vec::new(),
+            models: Vec::new(),
+        };
+        let wanted = Wanted::from_one_vendor(described.to_owned(), runs_with, available);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.generating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(operation.to_owned(), cancel.clone());
+        let driver = (self.drivers)(runs_with);
+        let made = commands::agent_generation::generate(driver.as_ref(), &wanted, &cancel).await;
+        self.generating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(operation);
+        let draft = made.map_err(|why| why.said())?;
+        Ok(serde_json::json!({
+            "operation": operation,
+            "agent": draft.agent,
+            "assumptions": draft.assumptions,
+            "because": draft.because,
+            "missing": draft.missing,
+            "refused": draft.refused,
+        }))
+    }
+
+    /// G-02: zatrzymuje jedną operację generowania po jej identyfikatorze.
+    pub fn stop_generating_agent_in(&self, operation: &str) {
+        if let Some(cancel) = self
+            .generating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(operation)
+        {
+            cancel.cancel();
+        }
     }
 
     pub fn send_to_step_in(
@@ -2688,6 +2764,27 @@ pub async fn save_agent(agent: Agent, expected_revision: Option<&str>) -> Result
     .map_err(|error| did_not_finish("saving that agent", &error))?
     .map(|written| written.revision)
     .map_err(|error| error.to_string())
+}
+
+/// G-02/G-03: prosi wybranego vendora o napisanie szkicu agenta.
+///
+/// Zwraca szkic, założenia i braki. **Nie zapisuje niczego** — zapis jest osobną, świadomą
+/// czynnością człowieka, po obejrzeniu tego, co przyszło.
+#[tauri::command]
+pub async fn generate_agent(
+    state: State<'_, AppState>,
+    operation: &str,
+    described: &str,
+    runs_with: crate::library::agents::Vendor,
+) -> Result<serde_json::Value, String> {
+    state.generate_agent_in(operation, described, runs_with).await
+}
+
+/// Zatrzymuje JEDNO generowanie. Bieg workflow się o tym nie dowiaduje.
+#[tauri::command]
+pub async fn stop_generating_agent(state: State<'_, AppState>, operation: &str) -> Result<(), String> {
+    state.stop_generating_agent_in(operation);
+    Ok(())
 }
 
 /// Usuwa agenta po identyfikatorze, razem z jego plikiem.
@@ -5011,6 +5108,8 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         run_agent,
         run_eval_set,
         run_workflow,
+        generate_agent,
+        stop_generating_agent,
         save_agent,
         save_eval_protection,
         save_settings,

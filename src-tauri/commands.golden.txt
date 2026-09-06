@@ -14,6 +14,7 @@
 # w znak — ta sama po stronie Rusta (nazwa funkcji pod `#[tauri::command]`) i po stronie okna
 # wierszem diffu, a nie przesunięciem całego pliku.
 accept_lead_start
+generate_agent
 prepare_replay
 copy_recorded_workflow
 prepare_result_restore
@@ -103,6 +104,7 @@ set_trigger_enabled
 start_process
 stop_comparing_copies
 stop_draft
+stop_generating_agent
 stop_process
 stop_proposing_cases
 stop_run
