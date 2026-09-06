@@ -107,37 +107,100 @@ fn names(ids: &[String]) -> String {
     }
 }
 
-/// Sądzi wymagane testy po wyjściu komendy.
+/// Sufit niedokończonej linii. Runner, który pisze megabajt bez znaku nowej linii, nie pisze
+/// wyniku testu — i nie ma prawa zjeść pamięci procesu, który go czyta.
+const LONGEST_LINE: usize = 16 * 1024;
+
+/// Śledzi wymagane testy **w locie**, kawałek po kawałku.
 ///
-/// Dopasowanie jest DOKŁADNE. Nazwa podana przez człowieka jest tożsamością testu, a nie
-/// wzorcem: dopasowanie po fragmencie zamienia „wymagam `wanted::second`" w „wystarczy mi
-/// cokolwiek, co tak się zaczyna" — czyli w tę samą zgodę na przybliżenie, przez którą dwa
-/// niezwiązane testy uchodziły za trzynaście.
-#[must_use]
-pub fn judge(required: &[String], output: &str) -> RequiredTests {
-    let seen = read(output);
-    let mut result = RequiredTests {
-        confirmed: Vec::new(),
-        did_not_pass: Vec::new(),
-        did_not_run: Vec::new(),
-    };
-    for want in required {
-        let want = want.trim();
-        match seen.iter().find(|one| one.id == want) {
-            Some(one) if one.ran == Ran::Passed => result.confirmed.push(want.to_owned()),
-            // Pominięty przez runner test nie wykonał się, więc niczego nie potwierdza.
-            Some(one) if one.ran == Ran::Skipped => result.did_not_run.push(want.to_owned()),
-            Some(_) => result.did_not_pass.push(want.to_owned()),
-            None => result.did_not_run.push(want.to_owned()),
-        }
-    }
-    result
+/// # Dlaczego strumieniowo, a nie z zebranego tekstu
+///
+/// Bo zebranego tekstu nie ma. Krok „sprawdź" zachowuje wyłącznie OSTATNIE 64 KiB wyjścia
+/// (`KEEP_LAST`) — pełny strumień nigdy nie powstaje ani jako `Vec`, ani jako `String`,
+/// i to jest rozstrzygnięcie sprzed tego zadania. Sądzenie po ogonie mówiłoby „ten test się
+/// nie wykonał" o każdym teście prawdziwej suity, która wypisała więcej: dokładnie to samo
+/// kłamstwo, które ten moduł ma zamykać, tylko od drugiej strony.
+///
+/// Ten sam kształt, co [`ProofScan`](super::ProofScan): stan żywy, wejście dowolnie pocięte.
+#[derive(Debug)]
+pub struct Scan {
+    /// Wymagane testy w kolejności, w jakiej podał je człowiek, i co dotąd o nich wiadomo.
+    wanted: Vec<(String, Option<Ran>)>,
+    /// Ostatnia, jeszcze niedokończona linia.
+    line: String,
+    /// Czy bieżąca linia przekroczyła sufit i jest porzucana do najbliższego `\n`.
+    too_long: bool,
 }
 
-/// Wszystkie testy rozpoznane w wyjściu, w kolejności wystąpienia.
-#[must_use]
-pub fn read(output: &str) -> Vec<Seen> {
-    output.lines().filter_map(one_line).collect()
+impl Scan {
+    #[must_use]
+    pub fn new(required: &[String]) -> Self {
+        Self {
+            wanted: required
+                .iter()
+                .map(|one| (one.trim().to_owned(), None))
+                .collect(),
+            line: String::new(),
+            too_long: false,
+        }
+    }
+
+    /// Dowolny kawałek wyjścia. Linie sklejamy same, bo granica porcji z potoku nie ma
+    /// nic wspólnego z granicą linii.
+    pub fn take(&mut self, text: &str) {
+        for part in text.split_inclusive('\n') {
+            if let Some(rest) = part.strip_suffix('\n') {
+                if !self.too_long {
+                    self.line.push_str(rest);
+                    let line = std::mem::take(&mut self.line);
+                    self.record(&line);
+                } else {
+                    self.line.clear();
+                    self.too_long = false;
+                }
+            } else if self.line.len() + part.len() > LONGEST_LINE {
+                self.too_long = true;
+                self.line.clear();
+            } else {
+                self.line.push_str(part);
+            }
+        }
+    }
+
+    /// Dopasowanie jest DOKŁADNE. Nazwa podana przez człowieka jest tożsamością testu, a nie
+    /// wzorcem: dopasowanie po fragmencie zamienia „wymagam `wanted::second`" w „wystarczy mi
+    /// cokolwiek, co tak się zaczyna" — czyli w tę samą zgodę na przybliżenie, przez którą
+    /// dwa niezwiązane testy uchodziły za trzynaście.
+    fn record(&mut self, line: &str) {
+        let Some(seen) = one_line(line.trim()) else {
+            return;
+        };
+        if let Some((_, ran)) = self.wanted.iter_mut().find(|(id, _)| *id == seen.id) {
+            *ran = Some(seen.ran);
+        }
+    }
+
+    #[must_use]
+    pub fn finish(mut self) -> RequiredTests {
+        if !self.line.is_empty() && !self.too_long {
+            let line = std::mem::take(&mut self.line);
+            self.record(&line);
+        }
+        let mut result = RequiredTests {
+            confirmed: Vec::new(),
+            did_not_pass: Vec::new(),
+            did_not_run: Vec::new(),
+        };
+        for (id, ran) in self.wanted {
+            match ran {
+                Some(Ran::Passed) => result.confirmed.push(id),
+                Some(Ran::Failed) => result.did_not_pass.push(id),
+                // Pominięty przez runner test nie wykonał się, więc niczego nie potwierdza.
+                Some(Ran::Skipped) | None => result.did_not_run.push(id),
+            }
+        }
+        result
+    }
 }
 
 fn one_line(line: &str) -> Option<Seen> {

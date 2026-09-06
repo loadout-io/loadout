@@ -202,7 +202,7 @@ impl Checking {
         let reading = read_to_eof(
             self.handle.stdout(),
             self.handle.stderr(),
-            CheckCapture::for_mode(&self.proof, self.proof_mode),
+            CheckCapture::for_mode(&self.proof, self.proof_mode, &self.required),
         );
         tokio::pin!(reading);
 
@@ -261,14 +261,12 @@ impl Checking {
         let Captured {
             text,
             matched,
+            required,
             assessment_bytes,
             read_failed,
         } = captured;
         let assessment =
             assessment_bytes.map(|bytes| assessment::assess(&bytes, exit_code, read_failed));
-        /* V-01: SĄDZONE NA SUROWYM WYJŚCIU, przed podmianą na powód egzaminatora. Tożsamość
-         * wykonanych testów jest w tym, co wypisał runner, i nigdzie indziej. */
-        let required = (!self.required.is_empty()).then(|| required::judge(&self.required, &text));
         CheckReport {
             passed: assessment.as_ref().map_or_else(
                 || verdict(exit_code, matched),
@@ -504,6 +502,8 @@ impl ProofScan {
 struct Captured {
     text: String,
     matched: bool,
+    /// V-01: co się stało z wymaganymi testami. `None`, kiedy krok ich nie wymienia.
+    required: Option<RequiredTests>,
     assessment_bytes: Option<Vec<u8>>,
     read_failed: bool,
 }
@@ -516,6 +516,13 @@ struct CheckCapture {
     tail: String,
     pending: Vec<u8>,
     proof: ProofScan,
+    /// V-01: wymagane testy śledzone w locie, wyłącznie po `stdout`.
+    ///
+    /// `stdout`, a nie złączony strumień, i to jest jedyna droga, na której cudze zdanie nie
+    /// staje się wynikiem testu: runnery wypisują werdykty na `stdout`, a `stderr` niesie to,
+    /// co napisał ktokolwiek inny w tej komendzie — łącznie z tekstem, który wygląda jak
+    /// linia libtesta i nią nie jest.
+    required: Option<required::Scan>,
     dropped: bool,
     assessment_bytes: Option<Vec<u8>>,
     read_failed: bool,
@@ -527,16 +534,20 @@ impl CheckCapture {
             tail: String::new(),
             pending: Vec::with_capacity(3),
             proof: ProofScan::new(proof),
+            required: None,
             dropped: false,
             assessment_bytes: None,
             read_failed: false,
         }
     }
 
-    fn for_mode(proof: &str, mode: ProofMode) -> Self {
+    fn for_mode(proof: &str, mode: ProofMode, required: &[String]) -> Self {
         let mut capture = Self::new(proof);
         if mode == ProofMode::ExternalAssessmentV1 {
             capture.assessment_bytes = Some(Vec::new());
+        }
+        if !required.is_empty() {
+            capture.required = Some(required::Scan::new(required));
         }
         capture
     }
@@ -545,6 +556,10 @@ impl CheckCapture {
         if stdout && let Some(bytes) = &mut self.assessment_bytes {
             let left = (assessment::MAX_BYTES + 1).saturating_sub(bytes.len());
             bytes.extend_from_slice(&chunk[..left.min(chunk.len())]);
+        }
+        // Wymagane testy widzą WYŁĄCZNIE `stdout` — powód przy polu `required`.
+        if stdout && let Some(scan) = &mut self.required {
+            scan.take(&String::from_utf8_lossy(chunk));
         }
         self.take(chunk);
     }
@@ -618,6 +633,7 @@ impl CheckCapture {
         Captured {
             text: self.tail,
             matched: self.proof.matched,
+            required: self.required.map(required::Scan::finish),
             assessment_bytes: self.assessment_bytes,
             read_failed: self.read_failed,
         }

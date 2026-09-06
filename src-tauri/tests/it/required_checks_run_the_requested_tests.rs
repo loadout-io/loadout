@@ -178,6 +178,61 @@ async fn a_missing_working_directory_stops_before_anything_runs() -> Result<(), 
     Ok(())
 }
 
+/// Prawdziwa suita wypisuje więcej niż zachowywany ogon. Wymagany test wypisany na POCZĄTKU
+/// nie może po tym wyglądać na niewykonany.
+///
+/// Krok „sprawdź" trzyma ostatnie 64 KiB wyjścia. Sądzenie po tym ogonie mówiłoby „nie wykonał
+/// się" o każdym teście, po którym runner wypisał dość tekstu — czyli o każdym teście z 1600.
+#[tokio::test]
+async fn a_pass_printed_before_the_kept_tail_still_counts() -> Result<(), Box<dyn Error>> {
+    let report = check(
+        "printf 'test wanted::first ... ok\\n'; \
+         for i in $(seq 1 3000); do printf 'noise line %s aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' \"$i\"; done; \
+         printf 'test result: ok. 1 passed; 0 failed\\n'",
+        r"(\d+) passed",
+        &["wanted::first".to_owned()],
+    )
+    .await?;
+    // Bez tej asercji kryterium nie sądzi niczego: gdyby wyjście zmieściło się w ogonie,
+    // przechodziłoby także po zebranym tekście, czyli po kodzie sprzed tej poprawki.
+    assert!(
+        report.kept.starts_with("[Loadout omitted earlier output from this check.]"),
+        "the fixture did not print past the kept tail, so this criterion proves nothing"
+    );
+    assert!(
+        !report.kept.contains("test wanted::first"),
+        "the required test is still inside the kept output, so this criterion proves nothing"
+    );
+    assert!(
+        report.confirmed,
+        "a required test that really ran was lost because the kept output is only a tail: {:?}",
+        report.said
+    );
+    Ok(())
+}
+
+/// Cudze zdanie na `stderr` nie jest wynikiem testu. Runnery wypisują werdykty na `stdout`;
+/// wszystko, co w tej komendzie napisał ktokolwiek inny, jedzie drugim potokiem.
+#[tokio::test]
+async fn a_line_on_stderr_cannot_pass_for_a_test_result() -> Result<(), Box<dyn Error>> {
+    let report = check(
+        "printf 'test wanted::first ... ok\\n' >&2; printf 'test result: ok. 1 passed\\n'",
+        r"(\d+) passed",
+        &["wanted::first".to_owned()],
+    )
+    .await?;
+    assert!(
+        !report.confirmed,
+        "a sentence written to the complaint stream was accepted as a passing test"
+    );
+    assert!(
+        report.said.contains("did not run") && report.said.contains("wanted::first"),
+        "the check did not report the required test as never run: {:?}",
+        report.said
+    );
+    Ok(())
+}
+
 /// Zdanie musi dojść tam, gdzie czyta je CZŁOWIEK (niezmiennik 29). Prawdziwy bieg,
 /// prawdziwy krok „sprawdź", zapisany `run.json`.
 ///
@@ -258,6 +313,8 @@ fn unreachable_driver() -> std::sync::Arc<dyn loadout_lib::engine::drivers::Agen
 struct Judged {
     confirmed: bool,
     said: String,
+    /// To, co z wyjścia zostało zachowane — czyli ogon, nie cały strumień.
+    kept: String,
 }
 
 /// Prawdziwy sterownik, prawdziwy proces, prawdziwa grupa. Oddaje werdykt i zdanie.
@@ -284,6 +341,7 @@ async fn check(command: &str, proof: &str, required: &[String]) -> Result<Judged
         return Err("the command fixture never completed".into());
     };
     Ok(Judged {
+        kept: report.output.clone(),
         confirmed: report.passed,
         said: report
             .required
