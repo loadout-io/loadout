@@ -6,5 +6,6 @@
 //! się z `loadout_lib` zobaczyłby wtedy „unresolved import", czyli czerwień, która niczego
 //! nie sprawdziła (`AGENTS.md` §2a p. 5).
 
+pub mod agent_generation;
 pub mod agents;
 pub mod definition;

@@ -99,6 +99,7 @@ mod an_agent_compares_the_copies;
 mod an_empty_set_says_the_next_move;
 mod an_interrupted_command_says_so;
 mod an_outcome_field_settles_the_rounds;
+mod an_agent_is_written_by_the_vendor_that_was_asked;
 mod app_logs_keep_the_last_error;
 mod ask_one_agent;
 mod ask_respects_the_pool;

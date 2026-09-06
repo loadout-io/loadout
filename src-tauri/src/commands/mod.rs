@@ -39,6 +39,7 @@ use crate::workflow::file::LoadError;
 /// Ulotna migawka lokalnych aplikacji agentów; nie jest bramą uruchomienia.
 pub mod agent_apps;
 /// Biblioteka agentów: wypisz, zapisz, usuń. Wypełnia T-27.
+pub mod agent_generation;
 pub mod agents;
 /// Rozmowa z orchestratorem — i jedyne miejsce, które NIE umie uruchomić biegu.
 pub mod branch_name;
