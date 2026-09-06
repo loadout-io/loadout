@@ -582,6 +582,12 @@ const IS_WHAT_AN_EARLIER_RUN_LEFT: &str = "what an earlier run left here";
 /// PO ANGIELSKU I BEZ NASZYCH SŁÓW Z DRUTU, tak jak `HANDOFF_INDEX_OPENS` obok (decyzja D5,
 /// niezmiennik 14): „verdict", „loop" i „judge" nie znaczą nic dla kogoś, kto właśnie dostał
 /// robotę do sprawdzenia.
+/// Zdanie kroku, którego zatwierdzone wymagania nie zostały potwierdzone.
+///
+/// Konkret stoi obok, w `run.json`, bo wymienia identyfikatory; to zdanie jest nagłówkiem.
+const WORK_LEFT_A_REQUIREMENT_OPEN: &str =
+    "This work did not confirm every requirement it was given.";
+
 const OUTCOME_ASKED_FOR: &str = "\
 End your answer with a line of its own that says exactly `outcome: pass` when the work you \
 were given is good enough to build on, or `outcome: fail` when it has to be done again. Put \
@@ -4243,6 +4249,9 @@ struct AgentJob {
     /// Zamrożone przy planowaniu, jak wszystko inne w tej strukturze: plik poprawiony w trakcie
     /// biegu nie ma prawa zmienić zasad biegu, który już ruszył.
     handover: Vec<HandoverField>,
+    /// V-02: zatwierdzone wymagania, o które ten krok ma odpowiedzieć. Pusta lista zachowuje
+    /// dotychczasowy kontrakt sędziego pętli.
+    criteria: Vec<crate::workflow::criteria::Criterion>,
     /// Planowana część promptu: notatki, zadanie biegu i instrukcja kafelka, już złożone.
     ///
     /// 2026-08-23 — KOMENTARZ MÓWIŁ „instrukcje kroku, dosłownie z pliku workflow" i przestał
@@ -4791,6 +4800,7 @@ fn ask_workflow(saved: &Agent, ask: &AskRequest, title: &str) -> WorkflowFile {
             /* Nic do nadpisania: nadpisania są różnicą między definicją agenta a tym, czego
              * chce od niego JEDEN kafelek, a tu kafelka nie ma. Agent biegnie taki, jaki jest
              * zapisany — i dlatego wiersz wejścia nie ma czym skłamać o jego ustawieniach. */
+            criteria: Vec::new(),
             overrides: Map::new(),
             vendor_options: BTreeMap::new(),
             copies: 1,
@@ -6180,6 +6190,7 @@ fn plan_agent(
             Handover::Form { fields } => fields.clone(),
             Handover::Plain(_) => Vec::new(),
         },
+        criteria: step.criteria.clone(),
         // Treść zadania, z `{{copy}}` i `{{copies}}` już podstawionymi [T3 §4.3, §4.4].
         // Zadanie kroku POPRZEDZONE tym, co człowiek dopuścił do użytku (`what_the_agents_know`).
         // Bez człowieka blok jest pusty i prompt jest dokładnie zadaniem kroku —
@@ -11242,7 +11253,21 @@ impl Live {
     fn verdict_after(&self, id: StepId, said: &str) -> Option<&'static str> {
         let step = &self.plan.steps[id];
         let (which, the_loop) = self.judging(step)?;
-        let verdict = crate::memory::handoff::verdict_in(said);
+        /* V-02 (incydent I-05): ZATWIERDZONA LISTA BIJE OSTATNI WIERSZ. Krok QA opisał braki
+         * obowiązkowych zachowań i w tej samej odpowiedzi napisał `outcome: pass` — zgodnie
+         * z instrukcją, którą dostał. Kiedy człowiek zatwierdził wymagania, wynik powstaje
+         * z ich kompletności, a nie ze słowa, które model wybrał na końcu. */
+        let approved = match &step.job {
+            Job::Agent(job) => job.criteria.clone(),
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
+        };
+        let judged = (!approved.is_empty())
+            .then(|| crate::workflow::criteria::judge(&approved, said))
+            .filter(|one| one.outcome != crate::workflow::criteria::Outcome::Passed);
+        let verdict = match &judged {
+            Some(_) => crate::memory::handoff::Verdict::Fail,
+            None => crate::memory::handoff::verdict_in(said),
+        };
         // 2026-08-25 (T-100) — zapisujemy to samo rozstrzygnięcie, którym sterujemy pętlą,
         // zanim którakolwiek gałąź wróci. Osobne parsowanie dla `run.json` mogłoby pokazać
         // odmowę i jednocześnie domknąć rundę albo odwrotnie (niezmiennik 13).
@@ -11264,6 +11289,15 @@ impl Live {
          * — i tak zostaje. Dla człowieka to robota do poprawki kontra zepsuty kontrakt, czyli
          * dwie różne czynności. Jedno zdanie na oba stany kazałoby mu zgadywać, którą wykonać.
          */
+        /* ZDANIE O WYMAGANIACH WYGRYWA Z OGÓLNYM „nie przepuścił", bo mówi CO ZROBIĆ:
+         * wymaganie bez odpowiedzi jest brakiem raportu, wymaganie bez pomiaru jest brakiem
+         * środowiska, a wymaganie niespełnione jest robotą do poprawki. Jedno zdanie na
+         * wszystkie trzy kazałoby człowiekowi zgadywać, którą z nich wykonać. */
+        if let Some(judged) = &judged {
+            let said = judged.said();
+            self.update(|book| book.steps[id].error = Some(said.clone()));
+            return Some(WORK_LEFT_A_REQUIREMENT_OPEN);
+        }
         let why = if crate::memory::handoff::said_an_outcome(said) {
             "The tester did not pass this work, and there were no tries left."
         } else {
@@ -14109,9 +14143,22 @@ impl Live {
                         .await;
                 }
                 if self.has_routes(id) {
+                    let not_measured = report.assessment.as_ref().is_some_and(|one| {
+                        one.outcome
+                            == crate::engine::drivers::command::assessment::Outcome::NotJudged
+                    }) || report.required.as_ref().is_some_and(|one| {
+                        !one.did_not_run.is_empty() && one.did_not_pass.is_empty()
+                    });
                     self.remember_evidence(
                         id,
-                        RouteEvidence::Check(if report.passed {
+                        /* V-02: TRZY WYNIKI, NIE DWA. Sprawdzenie, które nie miało czego
+                         * zmierzyć — bo zewnętrzny egzaminator nic nie orzekł albo bo wymagane
+                         * testy w ogóle się nie wykonały — nie jest ani zaliczeniem, ani wadą
+                         * produktu. Nazwane `Failed` wysyłałoby człowieka naprawiać coś,
+                         * czego nikt nie zmierzył. */
+                        RouteEvidence::Check(if not_measured {
+                            CheckOutcome::NotJudged
+                        } else if report.passed {
                             CheckOutcome::Passed
                         } else {
                             CheckOutcome::Failed
@@ -15263,6 +15310,22 @@ impl Live {
     /// Zwykły krok nie dostaje ani bajtu więcej: prośba o wynik skierowana do kogoś, kto nie
     /// jest sędzią, jest poleceniem bez skutku, czyli tym samym, co kontrolka bez handlera.
     fn ask_for_an_outcome(&self, id: StepId, told: &mut Told) {
+        /* V-02: ZATWIERDZONA LISTA WZMACNIA INSTRUKCJĘ TEGO KROKU, nie wszystkich użyć
+         * uniwersalnego bloku o wyniku. Powstaje wyłącznie wtedy, kiedy człowiek naprawdę
+         * zatwierdził wymagania — krok bez listy pyta dokładnie tym samym zdaniem, co dotąd.
+         *
+         * Blok wchodzi także do kroku, którego nikt nie sądzi pętlą: wymagania są umową
+         * o tym, co ma być potwierdzone, a nie mechanizmem domykania rundy. */
+        let approved = match &self.plan.steps[id].job {
+            Job::Agent(job) => job.criteria.clone(),
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
+        };
+        if !approved.is_empty() {
+            told.prompt.push_str("\n\n");
+            told.prompt
+                .push_str(&crate::workflow::criteria::asked_for(&approved));
+            told.prompt.push('\n');
+        }
         if self.judging(&self.plan.steps[id]).is_none() {
             return;
         }

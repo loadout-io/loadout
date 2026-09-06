@@ -292,6 +292,7 @@ fn one_step_for(agent: &Agent, task: &str) -> WorkflowFile {
             id: STEP_KEY.to_owned(),
             name: STEP_NAME.to_owned(),
             agent: agent.id.to_string(),
+            criteria: Vec::new(),
             overrides: serde_json::Map::new(),
             vendor_options: std::collections::BTreeMap::new(),
             copies: 1,

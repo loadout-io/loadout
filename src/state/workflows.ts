@@ -214,9 +214,36 @@ export interface AgentStep {
   projectInstructions?: boolean | null | undefined;
   folder: Folder;
   handover: Handover;
+  /**
+   * V-02: zatwierdzona lista wymagań, o które ten krok ma odpowiedzieć. Lustro
+   * `workflow::AgentStep::criteria`.
+   *
+   * Brak klucza zachowuje dotychczasowy kontrakt kroku: sędzia pętli odpowiada jednym słowem
+   * w ostatnim wierszu. Niepusta zmienia pytanie — wynik powstaje z kompletności i wyników
+   * tej listy. Zmierzone 2026-09-06: krok opisał brak obowiązkowych zachowań i w tej samej
+   * odpowiedzi napisał, że praca przeszła — zgodnie z instrukcją, którą dostał.
+   *
+   * `| undefined` JAWNIE, z tego samego powodu, co przy `borrow` obok.
+   */
+  criteria?: Criterion[] | undefined;
   /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */
   whenItFails?: WhenItFails;
   at: Point;
+}
+
+/** Czym wolno potwierdzić jedno wymaganie. Lustro `workflow::criteria::Method`. */
+export type CriterionMethod = 'automated-test' | 'mocked-ui' | 'full-runtime' | 'human-confirmed';
+
+/** Jedno zatwierdzone wymaganie. Lustro `workflow::criteria::Criterion`. */
+export interface Criterion {
+  /** Stabilny identyfikator — to po nim weryfikator melduje wynik. */
+  id: string;
+  /** Zachowanie widoczne dla CZŁOWIEKA, nie nazwa funkcji. */
+  behaviour: string;
+  /** Czy bez tego wynik nie może być zaliczeniem. Brak znaczy „tak". */
+  required?: boolean;
+  /** Czym wolno to potwierdzić. Brak znaczy test automatyczny. */
+  method?: CriterionMethod;
 }
 
 /** Krok, który zatrzymuje bieg i pyta człowieka [T3 §6.1 punkt 5]. */

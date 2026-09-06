@@ -51,6 +51,7 @@ fn agent_step() -> loadout_lib::workflow::AgentStep {
         id: "s_agent".to_owned(),
         name: "Work out how to start it".to_owned(),
         agent: "0195f0e0-0000-7000-8000-000000000001".to_owned(),
+        criteria: Vec::new(),
         overrides: serde_json::Map::new(),
         vendor_options: std::collections::BTreeMap::new(),
         copies: 1,

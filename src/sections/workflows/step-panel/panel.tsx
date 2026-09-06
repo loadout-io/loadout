@@ -93,6 +93,7 @@ import { StepAppPermissions } from './step-app-permissions';
 import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
 import { BorrowRow, borrowRowStands, nothingBorrowed, useHostMaterial } from './borrow-row';
+import { CriteriaRow } from './criteria-row';
 import { HandoverRow } from './handover-row';
 import { SkillsRow, skillsRowStands } from './skills-row';
 import { WhereItWorks } from './where-it-works';
@@ -109,6 +110,7 @@ export type AgentStepFields = Partial<
     | 'whenItFails'
     | 'borrow'
     | 'handover'
+    | 'criteria'
     | 'projectInstructions'
   >
 >;
@@ -1317,6 +1319,11 @@ function AgentPanel({
      dotyczą tego samego: co wychodzi z tego kafelka i co dostaje ten za nim. Powód, dla którego
      ten wiersz w ogóle powstał, stoi w całości w `./handover-row.tsx`. */
   more.push(<HandoverRow key="handover" value={step.handover} onEditStep={onEditStep} />);
+
+  /* CO TEN KROK MUSI POTWIERDZIĆ. Zaraz za przekazaniem, bo to jest to samo pytanie od drugiej
+     strony: tamto mówi, co ten krok ODDAJE, a to — co ma zostać sprawdzone, zanim odda.
+     Powód, dla którego ten wiersz w ogóle powstał, stoi w całości w `./criteria-row.tsx`. */
+  more.push(<CriteriaRow key="criteria" value={step.criteria} onEditStep={onEditStep} />);
 
   /* Wiersza Skills nie ma przy agencie na Codeksie ani przy pustym katalogu umiejętności —
      powód w całości stoi przy `skillsRowStands`. */

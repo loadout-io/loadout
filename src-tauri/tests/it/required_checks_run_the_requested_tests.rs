@@ -303,6 +303,112 @@ async fn the_run_says_which_required_tests_never_ran() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// V-02: brak pomiaru nie wybiera gałęzi. Graf, który ma drogę dla „przeszło" i dla
+/// „nie przeszło", a dostał wynik „nie zmierzono", zatrzymuje się z wyjaśnieniem.
+///
+/// Bez tego wynik bez pomiaru musiałby udawać jedno z dwóch: nazwany porażką wysyła człowieka
+/// naprawiać produkt, którego nikt nie zmierzył, a nazwany zaliczeniem przepuszcza pracę
+/// bez dowodu.
+///
+/// # Dlaczego kafelek ma tu `stop`, a nie domyślne `carry-on`
+///
+/// Bo skutek odmowy drogi należy do CZŁOWIEKA, nie do tego mechanizmu. T-101 rozstrzygnął, że
+/// `Route::Blocked` jest porażką kroku przechodzącą tymi samymi drzwiami, co każda inna:
+/// routing dostarcza dokładny powód, a `when_it_fails` wybiera skutek
+/// (`a_blocked_way_out_takes_the_chosen_path`). Ustawienie `carry-on` znaczy tam „puść stożek
+/// mimo wszystko" i tak zostaje. Nowe jest to, że wynik BEZ POMIARU w ogóle dociera do wyboru
+/// drogi jako własna wartość, zamiast udawać zaliczenie albo wadę produktu.
+#[tokio::test]
+async fn a_check_nobody_could_measure_picks_no_branch() -> Result<(), Box<dyn Error>> {
+    use loadout_lib::commands::run::run_workflow_inner;
+    use loadout_lib::commands::{Drivers, RunRequest};
+    use loadout_lib::ipc::{AppState, line_channel};
+    use loadout_lib::store::Store;
+    use serde_json::{Value, json};
+
+    let root = tempfile::tempdir()?;
+    let project = root.path().canonicalize()?.join("project");
+    let home = root.path().canonicalize()?.join("home");
+    std::fs::create_dir_all(project.join(".loadout"))?;
+    std::fs::create_dir_all(home.join("workflows"))?;
+    let workflow = home.join("workflows/branch.json");
+    std::fs::write(
+        &workflow,
+        json!({"format":1,"id":"wf-branch","name":"Branch","steps":[
+            {"kind":"check","id":"verify","name":"Verify",
+             "command":"printf 'test result: ok. 1 passed\\n'",
+             "proof":"(\\d+) passed",
+             "requiredTests":["wanted::first"],
+             "whenItFails":"stop",
+             "folder":{"use":"project"},"at":{"x":0,"y":0}},
+            {"kind":"check","id":"good","name":"Good","command":"printf '1 passed\\n'",
+             "proof":"(\\d+) passed","folder":{"use":"fresh-copy"},"at":{"x":200,"y":0}},
+            {"kind":"check","id":"bad","name":"Bad","command":"printf '1 passed\\n'",
+             "proof":"(\\d+) passed","folder":{"use":"fresh-copy"},"at":{"x":200,"y":100}}],
+         "links":[{"from":"verify","to":"good"},{"from":"verify","to":"bad"}],
+         "linkConditions":[
+            {"from":"verify","to":"good","when":{"source":"check","outcome":"passed"}},
+            {"from":"verify","to":"bad","when":{"source":"check","outcome":"failed"}}]})
+        .to_string(),
+    )?;
+    let drivers: Drivers = std::sync::Arc::new(|_| unreachable_driver());
+    let state = AppState::new(
+        home,
+        project.clone(),
+        Store::open(&project.join(".loadout/loadout.db"))?,
+        drivers,
+    );
+    let deps = state.begin_run(&project)?;
+    let (sink, _lines) = line_channel(256);
+    let report = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_workflow_inner(
+            &deps,
+            &RunRequest {
+                workflow,
+                how_many_at_once: 1,
+                task: None,
+                part: None,
+                handoffs_from: None,
+            },
+            sink,
+        ),
+    )
+    .await??;
+    let run: Value = serde_json::from_slice(&std::fs::read(report.dir.join("run.json"))?)?;
+    let steps = run["steps"].as_array().ok_or("run.json has no steps")?;
+    let state_of = |name: &str| {
+        steps
+            .iter()
+            .find(|one| one["name"] == name)
+            .and_then(|one| one["status"].as_str())
+            .unwrap_or("missing")
+            .to_owned()
+    };
+    assert_ne!(
+        state_of("Good"),
+        "succeeded",
+        "a result nobody could measure was read as a pass and let the work through: {}",
+        serde_json::to_string_pretty(&run["steps"]).unwrap_or_default()
+    );
+    assert_ne!(
+        state_of("Bad"),
+        "succeeded",
+        "a result nobody could measure was read as a defect in the product"
+    );
+    let said = steps
+        .iter()
+        .find(|one| one["name"] == "Verify")
+        .and_then(|one| one["error"].as_str())
+        .unwrap_or_default();
+    assert!(
+        said.contains("does not match any next step")
+            || said.contains("did not run 1 of the 1 tests"),
+        "the run took neither branch and said nothing about why: {said:?}"
+    );
+    Ok(())
+}
+
 /// Ten workflow nie ma kroku agenta, więc fabryka sterowników nie ma prawa zostać zawołana.
 fn unreachable_driver() -> std::sync::Arc<dyn loadout_lib::engine::drivers::AgentDriver> {
     panic!("a check-only workflow asked for an agent driver")

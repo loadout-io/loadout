@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 pub mod check;
+pub mod criteria;
 pub mod execution;
 pub mod file;
 pub mod roster;
@@ -190,6 +191,18 @@ pub struct AgentStep {
     pub name: String,
     /// Id zapisanego agenta (`library::agents`).
     pub agent: String,
+    /// V-02: zatwierdzona lista wymagań, o które ten krok ma odpowiedzieć.
+    ///
+    /// Pusta zachowuje dotychczasowy kontrakt kroku: sędzia pętli odpowiada jednym słowem
+    /// w ostatnim wierszu. Niepusta zmienia pytanie — wynik powstaje z **kompletności
+    /// i wyników** tej listy, a nie ze zdania „good enough to build on". Zmierzone 2026-09-06
+    /// (I-05): krok opisał brak obowiązkowych zachowań i w tej samej odpowiedzi napisał
+    /// `outcome: pass`, i było to zgodne z instrukcją, którą dostał.
+    ///
+    /// Listę zatwierdza CZŁOWIEK przy przygotowaniu workflow. Weryfikator nie ma jak jej
+    /// zmienić w trakcie: plik grafu jest zamrożony na czas biegu.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub criteria: Vec<criteria::Criterion>,
     /// Patch RFC 7396 nad definicją agenta: brak klucza znaczy „dziedzicz" [T4 §5.1].
     /// `{}` dla kroku nietkniętego.
     ///
@@ -855,6 +868,16 @@ pub enum Condition {
 pub enum CheckOutcome {
     Passed,
     Failed,
+    /// V-02: sprawdzenie się odbyło, ale nie ma czego zaliczyć ani czego uznać za wadę.
+    ///
+    /// Brak pomiaru, niekompletny raport albo wymagane testy, których nikt nie uruchomił.
+    /// **Nie mapujemy tego ani na `Failed`, ani na zaliczenie**: pierwsze wysłałoby człowieka
+    /// naprawiać produkt, którego nikt nie zmierzył, drugie przepuściłoby pracę bez dowodu.
+    ///
+    /// Stare pliki nie mają tej wartości i nie mogą jej mieć: powstaje wyłącznie w biegu.
+    /// Graf bez jawnie skonfigurowanej drogi dla niej zatrzymuje się z wyjaśnieniem
+    /// (`RouteError::NoMatch`), a nie wybiera przypadkową gałąź.
+    NotJudged,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

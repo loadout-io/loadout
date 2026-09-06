@@ -240,6 +240,7 @@ mod lab_separates_task_failure_from_missing_measurement;
 mod lead_answer_keeps_its_lines;
 mod lead_bridge_pair_is_atomic;
 mod lead_comes_from_the_agent;
+mod mandatory_criteria_survive_the_summary;
 mod lead_controls_only_the_addressed_run;
 mod lead_evidence_is_durable;
 mod lead_finds_and_reads_project_history;

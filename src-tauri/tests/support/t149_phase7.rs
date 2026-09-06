@@ -1486,6 +1486,7 @@ fn agent_step(id: &str, name: &str, agent: &Agent, instructions: &str) -> Step {
         id: id.to_owned(),
         name: name.to_owned(),
         agent: agent.id.to_string(),
+        criteria: Vec::new(),
         overrides: serde_json::Map::new(),
         vendor_options: BTreeMap::new(),
         copies: 1,

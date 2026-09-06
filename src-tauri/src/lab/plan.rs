@@ -183,6 +183,7 @@ fn work_step(case: &Case, variant: &Variant, id: String, at: Point) -> AgentStep
         // Patch wariantu jedzie NIETKNIĘTY. Scalanie z definicją agenta mieszka
         // w `library::agents::resolve` i ma tam zostać — drugie scalanie tutaj rozjechałoby się
         // z tamtym przy pierwszym nowym polu agenta (niezmiennik 23).
+        criteria: Vec::new(),
         overrides: variant.overrides.clone(),
         vendor_options: BTreeMap::new(),
         copies: 1,
