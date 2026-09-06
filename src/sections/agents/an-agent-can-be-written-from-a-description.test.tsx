@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../../state/agents';
 import { createAgentsStore } from '../../state/agents';
 import type { GenerateAgentProps } from './generate-agent';
+import { DraftNotes } from './generate-agent';
 import AgentsScreen from './index';
 import type { GeneratedDraft } from './io';
 
@@ -133,6 +134,25 @@ describe('writing an agent from a description', () => {
       />,
     );
     expect(markup).toContain('It does not run the agent, and nothing is saved until you press Save');
+  });
+
+  it('never lets checked settings read as checked behaviour', () => {
+    const shown = renderToStaticMarkup(<DraftNotes draft={draftOf('codex')} />);
+    expect(
+      shown,
+      'a role written by a model and judged by the same model says only how good its own ' +
+        'prompt was. Without this sentence the green beside the settings reads as a green ' +
+        'beside the behaviour.',
+    ).toContain('not tested');
+    expect(shown).toContain('Save it, then use Evaluate');
+    expect(
+      shown,
+      'the draft claims its behaviour was confirmed by something',
+    ).not.toContain('Test passed');
+    expect(
+      shown,
+      'what the agent asked for and cannot have here has to be visible before Save, not after',
+    ).toContain('screen-control');
   });
 
   it('refuses an empty description at the control, without asking any vendor', async () => {

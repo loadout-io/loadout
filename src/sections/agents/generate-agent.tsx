@@ -174,13 +174,29 @@ export function GenerateAgent({
   );
 }
 
-/** Co szkic mówi o sobie — pokazywane obok formularza, zanim człowiek naciśnie Save. */
+/** Co szkic mówi o sobie — pokazywane obok formularza, zanim człowiek naciśnie Save.
+ *
+ * # Dwie rzeczy, które łatwo pomylić, i dlatego stoją tu osobno
+ *
+ * **Poprawna konfiguracja** to wszystko, co dało się sprawdzić kodem: że wskazane
+ * umiejętności i połączenia naprawdę istnieją, że ustawienia nie kłócą się z vendorem,
+ * że przelotka nie poszerza uprawnień. To jest sprawdzone i widać to niżej.
+ *
+ * **Sprawdzone zachowanie** to coś zupełnie innego i tego nikt tu nie zrobił. Generator nie
+ * jest swoim egzaminatorem: rola napisana przez model, oceniona przez ten sam model, mówi
+ * wyłącznie o jakości własnego promptu. Próbę robi Lab, po zapisaniu roli — dlatego to zdanie
+ * mówi „nie sprawdzone", zamiast pozwolić, żeby zieleń przy konfiguracji przeczytała się jak
+ * zieleń przy działaniu.
+ */
 export function DraftNotes({ draft }: { draft: GeneratedDraft }): ReactElement | null {
-  const anything =
-    draft.assumptions.length + draft.because.length + draft.missing.length + draft.refused.length;
-  if (anything === 0) return null;
   return (
     <div data-row="draft-notes" className="stack">
+      <span className="label">What was checked, and what was not</span>
+      <span className="lead" data-field="draft-status">
+        The settings below were checked against what this computer actually has. How this agent
+        behaves was <strong>not tested</strong>: nothing has run it yet. Save it, then use
+        Evaluate to try it on a real case — that is the only thing that can say it works.
+      </span>
       {draft.missing.length > 0 ? (
         <>
           <span className="label">What this agent asked for and cannot have here</span>
