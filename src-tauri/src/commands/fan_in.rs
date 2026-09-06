@@ -9,15 +9,10 @@
 //! Różnica liczona `git diff` przeniosłaby zmiany w plikach śledzonych i po cichu zgubiła całą
 //! resztę, czyli dałaby krokowi poniżej kopię, która WYGLĄDA na złożoną.
 //!
-//! Bajty porównujemy z **nietkniętą** kopią, do której składamy. Ona jest wspólną bazą, bo
-//! powstała tym samym przepisem, co kopie rodziców ([`super::isolate::make_from`]): ten sam
-//! punkt startu i ta sama niescommitowana praca człowieka. Więc „ten plik różni się od bazy"
-//! znaczy dokładnie „ten krok go zmienił", bez pytania kogokolwiek o deklarację.
-//!
-//! **Wznowienie jest tu świadomie poza zakresem** (2026-08-29). Kopia wznowionego kafelka odbija
-//! się od gałęzi poprzedniego biegu (`commands::run::where_it_left_off`), więc baza kroku
-//! składającego i baza jego rodzica mogą się wtedy rozjechać — i to jest osobna sprawa, nie
-//! przeoczenie tej.
+//! 2026-09-05 (WF-01/02): podstawą porównania jest wspólny, zamrożony obraz wejścia, nie
+//! dzisiejszy HEAD ani katalog konsumenta. Suma ścieżek obrazu i rodzica obejmuje także
+//! usunięcia. Manifest tego samego resolvera zachowuje linki i bit wykonywalności; bajty
+//! plików są czytane strumieniowo, nie przechowywane w pamięci całego planu.
 //!
 //! # Cicha wygrana jednej strony jest gorsza od zatrzymanego kroku
 //!
@@ -36,13 +31,16 @@
 //! Ten moduł nie zna ani biegu, ani okna: dostaje katalog i listę kopii, oddaje fakt. Kto ma
 //! zobaczyć zdanie o niezgodzie, rozstrzyga `commands::run`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use super::isolate::NOT_COPIED;
+use sha2::{Digest as _, Sha256};
+
+use super::input_snapshot::{self, Entry, InputSnapshot};
+use crate::engine::supervisor;
+use crate::engine::supervisor::{PublicationEntryKind, PublicationIdentity, PublicationRoot};
 
 /// Z której próby której pętli jest praca leżąca w kopii.
 ///
@@ -83,7 +81,7 @@ pub struct Parent<'a> {
 /// zdaniem — i każde zdanie mówi, CO Z TYM ZROBIĆ.
 #[derive(Debug)]
 pub enum Trouble {
-    /// Dwie kopie mają dla jednej ścieżki różne bajty.
+    /// Dwie kopie proponują niezgodne stany ścieżki albo jej przodka.
     TwoAnswers {
         /// Ścieżka względem katalogu kopii — tak, jak człowiek widzi ją w swoim projekcie.
         path: String,
@@ -116,7 +114,7 @@ impl fmt::Display for Trouble {
             // coś się nie zgadza, i musi sam znaleźć, co i między kim.
             Self::TwoAnswers { path, one, other } => write!(
                 formatter,
-                "\"{one}\" and \"{other}\" both changed {path}, and they wrote different text. \
+                "\"{one}\" and \"{other}\" both changed {path}, and left different results there. \
                  Loadout will not pick one of them for you, so this step was not started. \
                  Nothing was overwritten: both of them still have their own copy, so you can \
                  open each one and decide what {path} should say."
@@ -149,33 +147,535 @@ impl fmt::Display for Trouble {
 
 impl std::error::Error for Trouble {}
 
-/// Nakłada na `into` wszystko, co rodzice zmienili względem tego katalogu.
-///
-/// **Najpierw cała lista, dopiero potem pierwszy zapis.** Kolejność jest tu całą treścią:
-/// niezgoda znaleziona w połowie nakładania zostawiłaby katalog w stanie, którego nie opisuje
-/// ani jedna kopia — czyli w dokładnie tym, przed czym ta funkcja stoi.
-///
-/// **Pokolenie pytamy przed pierwszym ODCZYTEM**, nie tylko przed pierwszym zapisem: kopie
-/// z dwóch różnych prób nie mają o czym rozmawiać, więc chodzenie po ich drzewach byłoby
-/// liczeniem różnicy, której i tak nikt nie użyje.
-pub fn fold_the_copies<'a>(into: &Path, parents: &[Parent<'a>]) -> Result<(), Trouble> {
+/// Jedna uzgodniona operacja. Brak `after` oznacza usunięcie; rename to dwie operacje.
+#[derive(Debug, Clone)]
+pub struct Change {
+    /// Względna ścieżka pochodząca wyłącznie ze wspólnego skanera, nigdy z promptu.
+    pub path: PathBuf,
+    /// Stan bazowy operacji: origin przy składaniu, bieżący konsument przy odświeżeniu.
+    pub before: Option<Entry>,
+    /// Stan, na który zgodzili się zmienieni rodzice.
+    pub after: Option<Entry>,
+    /// Nazwy kroków, które zaproponowały identyczną zmianę.
+    pub authors: Vec<String>,
+    /// Katalog stabilnego źródła bajtów. Względną ścieżką pliku jest `path`.
+    source_root: PathBuf,
+}
+
+/// Kompletny plan bez bajtów repo w RAM. Samo przygotowanie nie pisze do celu.
+#[derive(Debug, Clone)]
+pub struct MergePlan {
+    /// Zmiany w stabilnej kolejności ścieżek, z pełnymi operacjami plikowymi.
+    pub changes: Vec<Change>,
+    /// Manifesty mają czytelnika w apply: rodzic zmieniony po planie nie jest starym wynikiem.
+    sources: Vec<(PathBuf, BTreeMap<PathBuf, Entry>)>,
+}
+
+impl MergePlan {
+    /// Odświeża wejście następnej rundy, nie nadpisując własnej pracy konsumenta.
+    pub fn refresh(
+        &self,
+        origin: &InputSnapshot,
+        previous: &BTreeMap<PathBuf, Option<Entry>>,
+        consumer: &Path,
+        consumer_name: &str,
+    ) -> Result<Self, Trouble> {
+        // 2026-09-06: reset do nowego wejścia niszczyłby pracę konsumenta, a zapadka po
+        // folderze zostawiała w każdej rundzie wynik pierwszej. Pamiętamy tylko importowaną
+        // deltę: trzy stany pozwalają odświeżyć wejście bez zgadywania właściciela zmian.
+        let current = input_snapshot::inspect(consumer).map_err(Trouble::Reading)?;
+        let new: BTreeMap<_, _> = self.changes.iter().map(|one| (&one.path, one)).collect();
+        let paths: BTreeSet<_> = origin
+            .entries()
+            .keys()
+            .chain(previous.keys())
+            .chain(current.keys())
+            .chain(self.changes.iter().map(|one| &one.path))
+            .collect();
+        let mut result = current.clone();
+        let mut changed = BTreeMap::new();
+        for path in paths {
+            let base = origin.entries().get(path);
+            let old = previous.get(path).map_or(base, Option::as_ref);
+            let incoming = new.get(path).map_or(base, |one| one.after.as_ref());
+            let mine = current.get(path);
+            if incoming == old || incoming == mine {
+                continue;
+            }
+            let author = new
+                .get(path)
+                .and_then(|one| one.authors.first())
+                .map_or("Previous steps", String::as_str);
+            if mine != old {
+                return Err(conflict(path, consumer_name, author));
+            }
+            if let Some(entry) = incoming {
+                result.insert(path.clone(), entry.clone());
+            } else {
+                result.remove(path);
+            }
+            changed.insert(
+                path.clone(),
+                Change {
+                    path: path.clone(),
+                    before: mine.cloned(),
+                    after: incoming.cloned(),
+                    authors: vec![author.to_owned()],
+                    source_root: new
+                        .get(path)
+                        .map_or_else(|| origin.files().clone(), |one| one.source_root.clone()),
+                },
+            );
+        }
+        // Sprawdzamy także zachowane, własne dzieci konsumenta. Sama lista operacji nie
+        // zobaczy pliku pozostającego pod katalogiem, który rodzic właśnie usunął.
+        for path in result.keys() {
+            for ancestor in path
+                .ancestors()
+                .skip(1)
+                .filter(|one| !one.as_os_str().is_empty())
+            {
+                if !matches!(result.get(ancestor), Some(Entry::Directory)) {
+                    let author = changed
+                        .get(ancestor)
+                        .and_then(|one| one.authors.first())
+                        .map_or("Previous steps", String::as_str);
+                    return Err(conflict(path, consumer_name, author));
+                }
+            }
+        }
+        let mut sources = self.sources.clone();
+        sources.push((consumer.to_path_buf(), current));
+        Ok(Self {
+            changes: changed.into_values().collect(),
+            sources,
+        })
+    }
+
+    /// Odcisk semantycznych operacji, nie ścieżki losowego katalogu staging.
+    pub fn digest(&self) -> io::Result<String> {
+        let operations: Vec<_> = self
+            .changes
+            .iter()
+            .map(|one| (&one.path, &one.before, &one.after, &one.authors))
+            .collect();
+        digest_of(&operations)
+    }
+
+    /// Rodzice zapisani w metadanych kopii mają własny odcisk pełnego wyniku.
+    pub fn parents(&self) -> io::Result<Vec<(PathBuf, String)>> {
+        self.sources
+            .iter()
+            .map(|(root, entries)| Ok((root.clone(), digest_of(entries)?)))
+            .collect()
+    }
+}
+
+fn digest_of(value: &impl serde::Serialize) -> io::Result<String> {
+    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Najpierw wszystkie konflikty, dopiero później [`apply_plan`].
+pub fn plan_frozen(parents: &[Parent<'_>], origin: &InputSnapshot) -> Result<MergePlan, Trouble> {
+    plan_entries(origin.entries(), parents)
+}
+
+fn plan_entries(
+    origin: &BTreeMap<PathBuf, Entry>,
+    parents: &[Parent<'_>],
+) -> Result<MergePlan, Trouble> {
     if let Some(trouble) = a_copy_from_another_try(parents) {
         return Err(trouble);
     }
-    let mut changed: BTreeMap<PathBuf, Change<'a>> = BTreeMap::new();
+    let mut changed: BTreeMap<PathBuf, Change> = BTreeMap::new();
+    let mut sources = Vec::with_capacity(parents.len());
     for parent in parents {
-        what_changed(*parent, parent.cwd, Path::new(""), into, &mut changed)?;
-    }
-    for (path, change) in &changed {
-        let to = into.join(path);
-        // Katalog, którego w bazie nie było: praca agenta to zwykle nowy plik w nowym miejscu,
-        // a `fs::write` sam katalogu nie zakłada.
-        if let Some(folder) = to.parent() {
-            fs::create_dir_all(folder).map_err(Trouble::Reading)?;
+        let entries = input_snapshot::inspect(parent.cwd).map_err(Trouble::Reading)?;
+        let paths: BTreeSet<&PathBuf> = origin.keys().chain(entries.keys()).collect();
+        for path in paths {
+            let before = origin.get(path);
+            let after = entries.get(path);
+            if before == after {
+                // Niezmieniony rodzic nie głosuje przeciw zmianie drugiego.
+                continue;
+            }
+            match changed.get_mut(path) {
+                Some(previous) if previous.after.as_ref() == after => {
+                    previous.authors.push(parent.name.to_owned());
+                }
+                Some(previous) => {
+                    return Err(conflict(path, &previous.authors[0], parent.name));
+                }
+                None => {
+                    changed.insert(
+                        path.clone(),
+                        Change {
+                            path: path.clone(),
+                            before: before.cloned(),
+                            after: after.cloned(),
+                            authors: vec![parent.name.to_owned()],
+                            source_root: parent.cwd.to_path_buf(),
+                        },
+                    );
+                }
+            }
         }
-        fs::write(&to, &change.bytes).map_err(Trouble::Reading)?;
+        sources.push((parent.cwd.to_path_buf(), entries));
+    }
+    check_ancestors(&changed)?;
+    Ok(MergePlan {
+        changes: changed.into_values().collect(),
+        sources,
+    })
+}
+
+fn conflict(path: &Path, one: &str, other: &str) -> Trouble {
+    Trouble::TwoAnswers {
+        path: path.display().to_string(),
+        one: one.to_owned(),
+        other: other.to_owned(),
+    }
+}
+
+/// Katalog + nowe dzieci jest zgodą. Usunięcie albo plik/link nad żywym dzieckiem nie jest.
+fn check_ancestors(changed: &BTreeMap<PathBuf, Change>) -> Result<(), Trouble> {
+    for (path, child) in changed {
+        if child.after.is_none() {
+            // Usunięcie katalogu naturalnie usuwa też jego dzieci; nie jest konfliktem ze sobą
+            // ani z drugim rodzicem, który zgadza się usunąć jedno z tych dzieci.
+            continue;
+        }
+        for ancestor in path.ancestors().skip(1) {
+            if let Some(parent) = changed.get(ancestor)
+                && !matches!(parent.after, Some(Entry::Directory))
+            {
+                return Err(conflict(ancestor, &parent.authors[0], &child.authors[0]));
+            }
+        }
     }
     Ok(())
+}
+
+type Identity = (PublicationEntryKind, PublicationIdentity);
+
+/// Anulowanie nie jest błędem I/O ani nieudaną pracą agenta (niezmiennik 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyOutcome {
+    Ready,
+    Cancelled,
+}
+
+/// Wszystkie bajty/linki są już sprawdzone i należą do biegu. Deskryptor celu oraz odciski
+/// jego ścieżek powstają PRZED stagingiem, żeby podmiana podczas odczytu nie dawała uprawnień.
+#[derive(Debug)]
+pub struct StagedPlan {
+    plan: MergePlan,
+    into: PathBuf,
+    destination: PublicationRoot,
+    expected: BTreeMap<PathBuf, Option<Identity>>,
+    storage: PublicationRoot,
+    staging_name: PathBuf,
+    staging_identity: Identity,
+    staging: PublicationRoot,
+    staged: BTreeMap<PathBuf, Identity>,
+}
+
+/// Nie mutuje celu. Odmowa lub przerwanie zachowuje prywatny staging do diagnostyki;
+/// nigdy nie wywołuje rekurencyjnego cleanupu na nazwie, którą mógł podmienić ktoś inny.
+pub fn stage_plan(into: &Path, storage: &Path, plan: &MergePlan) -> Result<StagedPlan, Trouble> {
+    stage_checked(into, storage, plan).map_err(Trouble::Reading)
+}
+
+fn stage_checked(into: &Path, storage: &Path, plan: &MergePlan) -> io::Result<StagedPlan> {
+    let destination = PublicationRoot::open(into)?;
+    let mut expected = BTreeMap::new();
+    for change in &plan.changes {
+        for path in change
+            .path
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            expected
+                .entry(path.to_path_buf())
+                .or_insert(identity_at(&destination, path)?);
+        }
+    }
+    for (root, expected) in &plan.sources {
+        if input_snapshot::inspect(root)? != *expected {
+            return Err(io::Error::other(format!(
+                "the source folder {} changed after its result was read",
+                root.display()
+            )));
+        }
+    }
+    let storage_path = storage.to_path_buf();
+    let storage = PublicationRoot::open(storage)?;
+    let staging_name = PathBuf::from(format!(".fan-in-{}", uuid::Uuid::now_v7()));
+    if storage.entry_identity(&staging_name)?.is_some() {
+        return Err(io::Error::other(
+            "the reserved staging folder already exists",
+        ));
+    }
+    storage.ensure_directory(&staging_name, 0o700)?;
+    let staging_identity = storage
+        .entry_identity(&staging_name)?
+        .ok_or_else(|| io::Error::other("the staging folder disappeared"))?;
+    storage.validate_path_identity(&storage_path)?;
+    let staging = PublicationRoot::open(&storage_path.join(&staging_name))?;
+    let mut staged = BTreeMap::new();
+    for (number, change) in plan.changes.iter().enumerate() {
+        let name = PathBuf::from(number.to_string());
+        match &change.after {
+            None | Some(Entry::Directory) => {}
+            Some(Entry::Symlink { target: link }) => {
+                staging.create_link(&name, link)?;
+                let identity = staging
+                    .entry_identity(&name)?
+                    .ok_or_else(|| io::Error::other("the staged link disappeared"))?;
+                staged.insert(name, identity);
+            }
+            Some(entry @ Entry::File { .. }) => {
+                let source = PublicationRoot::open(&change.source_root)?;
+                let identity = copy_verified(&source, &change.path, &staging, &name, entry)?;
+                source.validate_path_identity(&change.source_root)?;
+                staged.insert(name, identity);
+            }
+        }
+    }
+    destination.validate_path_identity(into)?;
+    Ok(StagedPlan {
+        plan: plan.clone(),
+        into: into.to_path_buf(),
+        destination,
+        expected,
+        storage,
+        staging_name,
+        staging_identity,
+        staging,
+        staged,
+    })
+}
+
+impl StagedPlan {
+    pub fn apply(
+        mut self,
+        after: impl Fn(&Path, usize) -> io::Result<()>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ApplyOutcome, Trouble> {
+        self.apply_checked(after, cancelled)
+            .map_err(Trouble::Reading)
+    }
+
+    fn apply_checked(
+        &mut self,
+        after: impl Fn(&Path, usize) -> io::Result<()>,
+        cancelled: impl Fn() -> bool,
+    ) -> io::Result<ApplyOutcome> {
+        if cancelled() {
+            return Ok(ApplyOutcome::Cancelled);
+        }
+        after(&self.into, 0)?;
+        self.validate_all()?;
+        // Ta sama inode może mieć nowe bajty. Ostatnie sprawdzenie manifestów musi
+        // poprzedzać pierwszy zapis; po nim cel naturalnie przestaje być starym wejściem.
+        for (root, entries) in &self.plan.sources {
+            if input_snapshot::inspect(root)? != *entries {
+                return Err(io::Error::other(
+                    "a working folder changed after input preparation",
+                ));
+            }
+        }
+        let mut removing: Vec<PathBuf> = self
+            .plan
+            .changes
+            .iter()
+            .map(|one| one.path.clone())
+            .collect();
+        removing.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        for path in removing {
+            if cancelled() {
+                return Ok(ApplyOutcome::Cancelled);
+            }
+            self.validate_path(&path)?;
+            if let Some(identity) = self.expected.get(&path).copied().flatten()
+                && !self.destination.remove_entry_if_identity(&path, identity)?
+            {
+                return Err(changed_target(&path));
+            }
+            self.expected.insert(path, None);
+        }
+        for number in 0..self.plan.changes.len() {
+            if cancelled() {
+                return Ok(ApplyOutcome::Cancelled);
+            }
+            let change = &self.plan.changes[number];
+            let name = PathBuf::from(number.to_string());
+            self.validate_path(&change.path)?;
+            let identity = match &change.after {
+                None => None,
+                Some(Entry::Directory) => {
+                    self.destination.ensure_directory(&change.path, 0o700)?;
+                    self.destination.entry_identity(&change.path)?
+                }
+                Some(Entry::Symlink { target }) => {
+                    if self.staging.entry_identity(&name)? != self.staged.get(&name).copied()
+                        || self.staging.read_link(&name)? != *target
+                    {
+                        return Err(io::Error::other("a staged link changed before publication"));
+                    }
+                    self.destination.create_link(&change.path, target)?;
+                    self.destination.entry_identity(&change.path)?
+                }
+                Some(entry @ Entry::File { .. }) => {
+                    if self.staging.entry_identity(&name)? != self.staged.get(&name).copied() {
+                        return Err(io::Error::other("a staged file changed before publication"));
+                    }
+                    Some(copy_verified(
+                        &self.staging,
+                        &name,
+                        &self.destination,
+                        &change.path,
+                        entry,
+                    )?)
+                }
+            };
+            self.expected.insert(change.path.clone(), identity);
+            after(&self.into, number + 1)?;
+        }
+        if cancelled() {
+            return Ok(ApplyOutcome::Cancelled);
+        }
+        self.validate_all()?;
+        // Tylko nasze nadal-identyczne obiekty. Obcy inode lub dodatkowy plik pozostawia
+        // staging na dysku; brak możliwości cleanupu nie zmienia kompletności wejścia.
+        if self.cleanup_staging().is_err() {
+            tracing::debug!(path = %self.staging_name.display(), "the completed staging folder remains for inspection");
+        }
+        Ok(ApplyOutcome::Ready)
+    }
+
+    fn validate_path(&self, path: &Path) -> io::Result<()> {
+        self.destination.validate_path_identity(&self.into)?;
+        for one in path.ancestors().filter(|path| !path.as_os_str().is_empty()) {
+            if identity_at(&self.destination, one)? != self.expected.get(one).copied().flatten() {
+                return Err(changed_target(one));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_all(&self) -> io::Result<()> {
+        for path in self.expected.keys() {
+            self.validate_path(path)?;
+        }
+        self.destination.validate_path_identity(&self.into)
+    }
+
+    fn cleanup_staging(&self) -> io::Result<()> {
+        for (name, identity) in &self.staged {
+            if !self.staging.remove_entry_if_identity(name, *identity)? {
+                return Err(io::Error::other(
+                    "a staged object was replaced; it was not removed",
+                ));
+            }
+        }
+        if !self
+            .storage
+            .remove_entry_if_identity(&self.staging_name, self.staging_identity)?
+        {
+            return Err(io::Error::other(
+                "the staging directory was replaced; it was not removed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn changed_target(path: &Path) -> io::Error {
+    io::Error::other(format!(
+        "{} was replaced while its input was being prepared; nothing else was overwritten",
+        path.display()
+    ))
+}
+
+fn identity_at(root: &PublicationRoot, path: &Path) -> io::Result<Option<Identity>> {
+    match root.entry_identity(path) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        other => other,
+    }
+}
+
+/// Otwarty plik źródłowy nie może zamienić się w symlink między sprawdzeniem a odczytem.
+fn copy_verified(
+    from: &PublicationRoot,
+    source_path: &Path,
+    to: &PublicationRoot,
+    target_path: &Path,
+    entry: &Entry,
+) -> io::Result<Identity> {
+    let Entry::File {
+        digest: expected_digest,
+        bytes: expected_bytes,
+        executable,
+    } = entry
+    else {
+        return Err(io::Error::other("only a regular file has bytes to copy"));
+    };
+    let mut source = from.open_regular_file(source_path)?;
+    let metadata = source.metadata()?;
+    if metadata.len() != *expected_bytes || supervisor::executable_bits(&metadata) != *executable {
+        return Err(io::Error::other(format!(
+            "{} changed before copying",
+            source_path.display()
+        )));
+    }
+    let mut output = to.create_regular(target_path)?;
+    let identity = (
+        PublicationEntryKind::Regular,
+        supervisor::publication_identity(&output)?,
+    );
+    let mut digest = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let chunk = &buffer[..count];
+        copied = copied
+            .checked_add(count as u64)
+            .ok_or_else(|| io::Error::other("file size overflow"))?;
+        if copied > *expected_bytes {
+            return Err(io::Error::other(format!(
+                "{} grew while copying",
+                source_path.display()
+            )));
+        }
+        digest.update(chunk);
+        output.write_all(chunk)?;
+    }
+    if copied != *expected_bytes || format!("{:x}", digest.finalize()) != *expected_digest {
+        return Err(io::Error::other(format!(
+            "{} changed while copying",
+            source_path.display()
+        )));
+    }
+    output.flush()?;
+    supervisor::set_executable_file(&output, *executable)?;
+    output.sync_all()?;
+    if to.entry_identity(target_path)? != Some(identity) {
+        return Err(changed_target(target_path));
+    }
+    Ok(identity)
 }
 
 /// Pierwsza para kopii, które liczy ta sama pętla, a które trzymają różne próby.
@@ -206,94 +706,4 @@ fn a_copy_from_another_try(parents: &[Parent<'_>]) -> Option<Trouble> {
         }
     }
     None
-}
-
-/// Jedna zmiana, którą ktoś proponuje dla jednej ścieżki.
-struct Change<'a> {
-    /// Kto ją napisał. Trzymane po to, żeby zdanie o niezgodzie umiało wymienić OBU.
-    who: &'a str,
-    /// Bajty, które mają stanąć w kopii składanej.
-    bytes: Vec<u8>,
-}
-
-/// Obchodzi jedną kopię i dopisuje do listy wszystko, co różni się od bazy.
-///
-/// Rekurencja, jak w [`super::isolate::copy_tree`] obok i z tego samego powodu: drzewo projektu
-/// jest głębokie na kilkanaście poziomów, a nie na tysiące.
-fn what_changed<'a>(
-    parent: Parent<'a>,
-    at: &Path,
-    rel: &Path,
-    base: &Path,
-    changed: &mut BTreeMap<PathBuf, Change<'a>>,
-) -> Result<(), Trouble> {
-    for entry in fs::read_dir(at).map_err(Trouble::Reading)? {
-        let entry = entry.map_err(Trouble::Reading)?;
-        let name = entry.file_name();
-        // JEDNA LISTA POMIJANYCH NAZW dla kopiowania i dla składania (niezmiennik 13). `.git`
-        // jest tu obowiązkowy, nie kosmetyczny: w drzewie roboczym gita jest PLIKIEM ze ścieżką
-        // do rejestru, więc każda kopia ma tam co innego i każde dwie „nie zgadzałyby się".
-        if NOT_COPIED.iter().any(|skip| name == *skip) {
-            continue;
-        }
-        let from = entry.path();
-        let here = rel.join(&name);
-        // `file_type()` z `DirEntry` NIE podąża za dowiązaniem i o to tu chodzi — ta sama
-        // decyzja, co w `copy_tree`.
-        let kind = entry.file_type().map_err(Trouble::Reading)?;
-        if kind.is_dir() {
-            what_changed(parent, &from, &here, base, changed)?;
-            continue;
-        }
-        if !kind.is_file() {
-            // Dowiązanie, kolejka, gniazdo, urządzenie. Pomijamy w ciszy wobec biegu i głośno
-            // wobec dziennika: dowiązania i bit wykonywalności są świadomie poza zakresem tej
-            // zmiany (2026-08-29), a odmowa na nich zatrzymywałaby każdy bieg w folderze,
-            // w którym stoją.
-            tracing::debug!(path = %from.display(), "this is not a file or a folder; the folded copy does not carry it");
-            continue;
-        }
-        let Some(bytes) = what_it_says_now(&from, &base.join(&here))? else {
-            continue;
-        };
-        match changed.get(&here) {
-            // Ta sama ścieżka, te same bajty: dwa kroki, które napisały to samo, nie są
-            // niezgodą — są jedną zmianą powiedzianą dwa razy.
-            Some(before) if before.bytes == bytes => {}
-            Some(before) => {
-                return Err(Trouble::TwoAnswers {
-                    path: here.display().to_string(),
-                    one: before.who.to_owned(),
-                    other: parent.name.to_owned(),
-                });
-            }
-            None => {
-                changed.insert(
-                    here,
-                    Change {
-                        who: parent.name,
-                        bytes,
-                    },
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Bajty pliku, JEŚLI różni się od tego, co stoi pod tą samą ścieżką w bazie.
-///
-/// `None` znaczy „ten krok tego pliku nie tknął", i to jest odpowiedź, a nie brak odpowiedzi:
-/// kopia rodzica niesie cały projekt, więc bez tego pytania każdy plik byłby „zmianą" i dwie
-/// kopie nie zgadzałyby się na wszystkim, czego człowiek nie ma w commicie.
-fn what_it_says_now(from: &Path, base: &Path) -> Result<Option<Vec<u8>>, Trouble> {
-    let bytes = fs::read(from).map_err(Trouble::Reading)?;
-    match fs::read(base) {
-        Ok(before) if before == bytes => Ok(None),
-        Ok(_) => Ok(Some(bytes)),
-        // Pliku nie było w bazie, więc ten krok go ZAŁOŻYŁ — plik nieśledzony przez gita
-        // wchodzi tędy i tylko tędy.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Some(bytes)),
-        Err(error) => Err(Trouble::Reading(error)),
-    }
 }

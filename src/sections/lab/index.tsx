@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import type { LabState } from '../../state/lab';
-import { useLab } from '../../state/lab';
+import { useLab, workflowPreviewReady } from '../../state/lab';
 import { sectionEntry } from '../../ui/sections';
 import type { Section } from '../../ui/sections';
 import { isDirty, nextColumn, typedOf, withTyped } from './columns';
@@ -23,6 +23,9 @@ import {
 } from './model';
 import { Suggestion } from './suggestion';
 import { Trend } from './trend';
+import { WorkflowColumns } from './workflow-columns';
+import { WorkflowCases } from './workflow-cases';
+import { WorkflowProtection } from './workflow-protection';
 
 /* Ekran Lab: lista zestawów po lewej, jeden bohater i tabela po prawej.
  *
@@ -146,7 +149,11 @@ export default function LabScreen({ store = useLab }: LabScreenProps): ReactElem
                  `cannotRun` — a przycisk, ktory po klikniecu tylko powtarza to zdanie, jest
                  kontrolka bez skutku i drugim miejscem, w ktorym mieszka ten sam fakt
                  (niezmienniki 16 i 13). */
-              disabled={state.busy !== 'idle' || state.board.cannotRun !== null}
+              disabled={
+                state.busy !== 'idle' ||
+                state.board.cannotRun !== null ||
+                !workflowPreviewReady(state)
+              }
               title={RUN_WILL}
               className={theNextMoveIs(state.board.cannotRun) === 'run' ? LEADS : FOLLOWS}
               onClick={() => {
@@ -225,7 +232,13 @@ function Hero({ state }: { readonly state: LabState }): ReactElement {
   const ending = newest === null ? '' : howItEnded(newest);
 
   const eyebrow =
-    board === null ? 'Lab' : board.set.set.subject.kind === 'agent' ? 'Agent' : 'Skill';
+    board === null
+      ? 'Lab'
+      : board.set.set.subject.kind === 'agent'
+        ? 'Agent'
+        : board.set.set.subject.kind === 'workflow'
+          ? 'Workflow'
+          : 'Skill';
   const title =
     board !== null
       ? board.set.set.name
@@ -236,10 +249,12 @@ function Hero({ state }: { readonly state: LabState }): ReactElement {
           : 'Nothing open yet';
   const lead =
     board !== null
-      ? board.set.set.subject.kind === 'agent'
-        ? 'Every case runs in every column, so you can see whether a change to this agent made ' +
-          'its work better.'
-        : 'Every case runs with this skill and without it, so you can see what the skill is worth.'
+      ? board.set.set.subject.kind === 'workflow'
+        ? 'Compare complete workflows on the same cases and starting files. Each repeat runs the actual steps, branches and loops.'
+        : board.set.set.subject.kind === 'agent'
+          ? 'Every case runs in every column, so you can see whether a change to this agent made ' +
+            'its work better.'
+          : 'Every case runs with this skill and without it, so you can see what the skill is worth.'
       : state.busy === 'loading'
         ? ''
         : state.sets.length === 0
@@ -425,7 +440,9 @@ function Board({
       {/* TREND ZARAZ POD TABELĄ, bo to on odpowiada na pytanie, dla którego ta sekcja powstała.
           Krótszy niż dwa przebiegi nie jest linią — i wtedy mówi to zdaniem, zamiast znikać
           bez śladu dokładnie wtedy, gdy człowiek pyta pierwszy raz. */}
-      {trend.length < 2 ? (
+      {board.comparisonNote != null ? (
+        <p className="max-w-160 lead">{board.comparisonNote}</p>
+      ) : trend.length < 2 ? (
         newest === null ? null : (
           <p className="max-w-160 lead">
             This is the first run with something to measure. Run the set again after a change and a
@@ -490,6 +507,18 @@ function Columns({
   const [edited, setEdited] = useState<Record<string, Typed>>({});
   const board = state.board;
   if (board === null) return null;
+  if (board.set.set.subject.kind === 'workflow')
+    return (
+      <>
+        <WorkflowProtection
+          key={'protection:' + board.set.set.id + ':' + board.set.revision}
+          state={state}
+          store={store}
+        />
+        <WorkflowColumns key={'columns:' + board.set.set.id} state={state} store={store} />
+        <WorkflowCases key={'cases:' + board.set.set.id} state={state} store={store} />
+      </>
+    );
   const columns = board.set.set.variants;
 
   const forget = (id: string): void => {

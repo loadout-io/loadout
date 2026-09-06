@@ -91,6 +91,8 @@ pub enum ContextKind {
     /// zastal — i bez tego rozroznienia jedna lista mowilaby „Loadout dal", pokazujac cudze
     /// pliki.
     LoadedByTheApp,
+    /// WF-12: treść i zakres pochodzą ze wspólnego resolvera, nie z raportu autoładowania CLI.
+    ProjectInstruction,
 }
 
 /// Bezpieczny fakt o obrazie. Bajty obrazu nie implementuja tego typu.

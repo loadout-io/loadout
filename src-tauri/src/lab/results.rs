@@ -49,6 +49,11 @@ const NEVER_JUDGED: [&str; 5] = ["pending", "ready", "running", "cancelled", "sk
 /// warstwy komend i jest tam czterema wierszami.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finished {
+    pub cause: Option<crate::workflow::execution::EndCause>,
+    pub executed: bool,
+    pub kind: String,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
     /// Klucz kroku z pliku planu — ten sam, który złożył [`key_for`].
     pub tile: String,
     /// Słowo z drutu: `succeeded`, `failed`, `cancelled`, `skipped`, `running`…
@@ -91,6 +96,7 @@ impl Outcome {
 /// Jedna komórka macierzy razem z tym, co o niej wiadomo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellResult {
+    pub execution: Option<CellExecution>,
     /// Identyfikator przypadku (wiersz).
     pub case: String,
     /// Identyfikator wariantu (kolumna).
@@ -101,6 +107,18 @@ pub struct CellResult {
     pub said: String,
     /// Ile ta komórka kosztowała — praca plus jej sprawdzenie.
     pub cost_usd: Option<f64>,
+}
+
+/// Jawny adres powtórzenia i rzeczywistych kroków, nie rekonstruowanie z nazwy dla okna.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellExecution {
+    pub repeat: usize,
+    pub nodes: Vec<String>,
+    pub output: String,
+    pub grader: String,
+    pub elapsed_ms: Option<u64>,
+    pub cost_partial: bool,
 }
 
 /// Cała macierz jednego przebiegu.
@@ -170,6 +188,7 @@ fn judge(case: &Case, variant: &Variant, by_tile: &BTreeMap<&str, &Finished>) ->
     );
 
     let cell = |outcome: Outcome, said: String| CellResult {
+        execution: None,
         case: case.id.clone(),
         variant: variant.id.clone(),
         outcome,
@@ -316,15 +335,28 @@ pub struct Movement {
 /// jako brak, a tylko drugie jest prawdą.
 #[must_use]
 pub fn moved(now: &Scored, before: &Scored) -> Movement {
-    let earlier: BTreeMap<(&str, &str), Outcome> = before
+    let earlier: BTreeMap<(&str, &str, usize), Outcome> = before
         .cells
         .iter()
-        .map(|cell| ((cell.case.as_str(), cell.variant.as_str()), cell.outcome))
+        .map(|cell| {
+            (
+                (
+                    cell.case.as_str(),
+                    cell.variant.as_str(),
+                    cell.execution.as_ref().map_or(0, |one| one.repeat),
+                ),
+                cell.outcome,
+            )
+        })
         .collect();
 
     let mut movement = Movement::default();
     for cell in &now.cells {
-        let Some(was) = earlier.get(&(cell.case.as_str(), cell.variant.as_str())) else {
+        let Some(was) = earlier.get(&(
+            cell.case.as_str(),
+            cell.variant.as_str(),
+            cell.execution.as_ref().map_or(0, |one| one.repeat),
+        )) else {
             continue;
         };
         if *was == Outcome::NotJudged || cell.outcome == Outcome::NotJudged {

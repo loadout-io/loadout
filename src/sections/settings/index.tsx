@@ -49,6 +49,7 @@ import {
 import { useSectionStore } from '../../ui/shell/section-store';
 import { list as savedAgents } from '../agents/io';
 import { BUDGET_HELP } from '../run/limits/budget';
+import { ProjectInstructions } from './project-instructions';
 
 /**
  * Nazwa kontrolki wyboru.
@@ -541,6 +542,7 @@ export default function SettingsScreen(): ReactElement {
             {LEARN_FROM_RUNS_SAID}
           </p>
         </div>
+        <ProjectInstructions />
       </div>
     </section>
   );

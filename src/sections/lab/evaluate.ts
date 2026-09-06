@@ -17,6 +17,13 @@ import { useSectionStore } from '../../ui/shell/section-store';
 /** Dokąd prowadzi ten czasownik. Jedna nazwa, żeby przejście i rejestr nie rozjechały się. */
 export const LAB: Section = 'lab' as Section;
 
+/** Otwarcie porównania nie zamawia tury modelu; kolumny i kryteria wybiera człowiek. */
+export function evaluateWorkflow(id: string, name: string): Promise<void> {
+  const made = useLab.getState().create(name, { kind: 'workflow', id }, '');
+  useSectionStore.getState().go(LAB);
+  return made;
+}
+
 /**
  * Zakłada zestaw dla tego agenta i przechodzi do Labu.
  *

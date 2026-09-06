@@ -23,6 +23,7 @@ import { identityToken } from '../rail/colour';
 import { authorityOf } from '../rail/say';
 import { Answer, AnswerLine } from './answer';
 import type { HistoryRow } from './model';
+import { RunSourceControl } from './run-source';
 import { runSuggestion, suggestion } from './suggested';
 import { clockOf, initialsOf } from './who';
 
@@ -224,6 +225,7 @@ export const Message = memo(function Message({
         >
           {PROSE.includes(row.kind) ? <AnswerLine text={row.label} /> : row.label}
         </p>
+        {row.source === undefined ? null : <RunSourceControl source={row.source} />}
 
         {row.expanded && row.body.length > 0 ? (
           <div data-line-body className={`mt-1 text-body ${MEASURE}`}>

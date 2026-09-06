@@ -78,6 +78,8 @@ fn forge() -> Result<Agent, Box<dyn Error>> {
         reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
+        service_access: Vec::new(),
+        agent_messages: false,
         write_results_to: "handoffs/build.md".to_string(),
         vendor_options: VendorOptions::new(),
         extra: serde_json::Map::new(),

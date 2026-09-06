@@ -19,7 +19,7 @@
 //!
 //! Scalanie jest sekwencyjne, więc konfliktu nie da się poznać inaczej niż próbą. Ale gałąź
 //! złożona w POŁOWIE opisuje stan, którego nie opisuje żaden krok — a to jest dokładnie ta wada,
-//! przed którą stoi [`super::fan_in::fold_the_copies`]. Kiedy któreś scalenie nie wychodzi, nie
+//! przed którą stoi [`super::fan_in::plan_frozen`]. Kiedy któreś scalenie nie wychodzi, nie
 //! zostaje po nas nic poza zdaniem o tym, co się zderzyło.
 
 use std::path::Path;

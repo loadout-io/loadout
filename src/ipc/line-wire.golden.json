@@ -30,6 +30,31 @@
     "stepId": "s_2"
   },
   {
+    "kind": "stepSession",
+    "agent": "builder",
+    "runId": "saved-run",
+    "nodeKey": "s_2#1",
+    "canReceive": true,
+    "finished": false
+  },
+  {
+    "kind": "questionAnswered",
+    "agent": "Decision",
+    "runId": "saved-run",
+    "checkpointId": "question-generation",
+    "answer": "My own answer"
+  },
+  {
+    "kind": "messageStored",
+    "agent": "Builder",
+    "text": "Builder stored a message for Reviewer.",
+    "runId": "saved-run",
+    "sequence": 1,
+    "fromNode": "builder",
+    "toNode": "reviewer",
+    "body": "Inspect the saved boundary."
+  },
+  {
     "kind": "read",
     "agent": "builder",
     "text": "Read 3 files",
@@ -84,6 +109,35 @@
     "text": "/run easy Make the flaky login test pass — the cookie name is wrong in two places, so Easy will find it in one pass.",
     "command": "/run easy Make the flaky login test pass",
     "auto": false
+  },
+  {
+    "kind": "runRequested",
+    "agent": "lead",
+    "text": "Starting Ship it",
+    "requestId": "session:request",
+    "conversationId": "conversation",
+    "workspace": "/work/project",
+    "title": "Ship it",
+    "fileName": "ship.json",
+    "steps": [
+      {
+        "id": "a",
+        "name": "Build",
+        "kind": "agent",
+        "at": { "x": 0, "y": 0 },
+        "weight": "ordinary"
+      }
+    ],
+    "links": [{ "from": "a", "to": "a", "maxTurns": 2 }]
+  },
+  {
+    "kind": "runSource",
+    "agent": "Loadout",
+    "text": "Parser fix finished successfully.",
+    "workspace": "/work/project",
+    "runId": "saved-run",
+    "runFolder": "20260904-100000__saved-run",
+    "observedAt": "2026-09-05T10:00:00Z"
   },
   {
     "kind": "asked",

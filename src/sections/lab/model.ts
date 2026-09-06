@@ -30,6 +30,9 @@ export interface CellView {
   readonly said: string;
   /** `$0.42`, albo pusty napis, kiedy nikt nie podał ceny. */
   readonly spend: string;
+  readonly elapsed?: string;
+  readonly costNote?: string;
+  readonly source?: { readonly workspace: string; readonly runFolder: string };
 }
 
 /** Jedna rzecz, której ten wiersz żąda: podpis i treść. */
@@ -41,6 +44,7 @@ export interface AsksFor {
 /** Jeden wiersz tabeli. */
 export interface RowView {
   readonly caseId: string;
+  readonly repeat?: number;
   readonly name: string;
   /**
    * Czego ten wiersz żąda — do przeczytania z tabeli, bez otwierania pliku zestawu.
@@ -96,7 +100,18 @@ export function suggestedCases(set: EvalSet): readonly EvalCase[] {
  * naciśnięcia `Run`. Obie liczby stoją w pliku zestawu, więc żadna z nich nie jest zmyślona.
  */
 export function howManyCells(set: EvalSet): number {
-  return runningCases(set).length * set.variants.length;
+  return (
+    runningCases(set).reduce((sum, one) => sum + repetitions(set, one), 0) * set.variants.length
+  );
+}
+
+function repetitions(set: EvalSet, one: EvalCase): number {
+  return set.subject.kind === 'workflow' &&
+    Number.isInteger(one.repeats) &&
+    (one.repeats ?? 0) >= 1 &&
+    (one.repeats ?? 0) <= 20
+    ? one.repeats!
+    : 1;
 }
 
 /**
@@ -182,43 +197,62 @@ export function whatItAsks(one: EvalCase): readonly AsksFor[] {
  * jest dokładnie powód, dla którego żadne kryterium tego nie zobaczyło. Zobaczył git: plik
  * z bajtem zerowym przestaje być tekstem, więc nie ma diffu, nie ma scalania i nie ma recenzji.
  */
-function keyOf(row: string, column: string): string {
-  return JSON.stringify([row, column]);
+function keyOf(row: string, column: string, repeat: number): string {
+  return JSON.stringify([row, column, repeat]);
 }
 
 /**
  * Składa tabelę z zestawu i JEDNEGO przebiegu.
  *
- * Kształt bierze się z ZESTAWU, nie z przebiegu, i to jest treść: tabela ma tyle wierszy, ile
- * ma zestaw dzisiaj. Przebieg sprzed dopisania wiersza pokazuje w nim „nie zmierzono" zamiast
- * znikać — a wtedy człowiek czyta prawdę: ten wiersz jest nowszy niż tamten przebieg.
+ * 2026-09-05: wynik historyczny musi pokazywać historyczne kryteria. Dzisiejszy formularz
+ * jest wejściem przyszłego pomiaru, nie opisem pomiaru już wykonanego.
  *
  * `null` w miejscu przebiegu jest normalnym stanem świeżego zestawu i daje tabelę pustych
  * komórek. Pusta tabela jest lepsza od jej braku: pokazuje, o co Loadout zapyta po Run.
  */
 export function tableFor(set: EvalSet, run: PastEval | null): TableView {
+  const measured = run?.definition ?? set;
   const found = new Map<string, EvalCell>(
-    (run?.cells ?? []).map((cell) => [keyOf(cell.case, cell.variant), cell]),
+    (run?.cells ?? []).map((cell) => [
+      keyOf(cell.case, cell.variant, cell.execution?.repeat ?? 0),
+      cell,
+    ]),
   );
   return {
-    columns: set.variants.map((one) => ({ id: one.id, name: one.name })),
-    rows: runningCases(set).map((one) => ({
-      caseId: one.id,
-      name: one.name,
-      asks: whatItAsks(one),
-      cells: set.variants.map((variant) => {
-        const cell = found.get(keyOf(one.id, variant.id)) ?? null;
-        const outcome: CellOutcome = cell?.outcome ?? 'not-judged';
-        return {
-          caseId: one.id,
-          variantId: variant.id,
-          outcome,
-          mark: MARKS[outcome],
-          said: cell?.said ?? '',
-          spend: spendOf(cell?.costUsd ?? null),
-        };
-      }),
-    })),
+    columns: measured.variants.map((one) => ({ id: one.id, name: one.name })),
+    rows: runningCases(measured).flatMap((one) =>
+      Array.from({ length: repetitions(measured, one) }, (_, repeat) => ({
+        caseId: one.id,
+        repeat,
+        name: one.name + (repetitions(measured, one) > 1 ? ' · Repeat ' + String(repeat + 1) : ''),
+        asks: whatItAsks(one),
+        cells: measured.variants.map((variant) => {
+          const cell = found.get(keyOf(one.id, variant.id, repeat)) ?? null;
+          const outcome: CellOutcome = cell?.outcome ?? 'not-judged';
+          return {
+            caseId: one.id,
+            variantId: variant.id,
+            outcome,
+            mark: MARKS[outcome],
+            said: cell?.said ?? '',
+            spend:
+              (cell?.execution?.costPartial === true && cell.costUsd !== null ? 'At least ' : '') +
+              spendOf(cell?.costUsd ?? null),
+            elapsed:
+              cell?.execution?.elapsedMs == null
+                ? ''
+                : (cell.execution.elapsedMs / 1000).toFixed(1) + ' s',
+            costNote:
+              cell?.execution?.costPartial === true ? 'Some agents did not report a price.' : '',
+            ...(cell?.execution != null && run?.workspace
+              ? {
+                  source: { workspace: run.workspace, runFolder: run.folder },
+                }
+              : {}),
+          };
+        }),
+      })),
+    ),
   };
 }
 
@@ -260,9 +294,11 @@ export function scoreOf(board: EvalBoard): string {
  * z zera narysowane jako zero byłoby spadkiem, którego nie było.
  */
 export function trendOf(runs: readonly PastEval[]): readonly number[] {
+  const fingerprint = runs[0]?.comparisonFingerprint;
+  if (fingerprint == null) return [];
   return [...runs]
     .reverse()
-    .filter((run) => run.judged > 0)
+    .filter((run) => run.judged > 0 && run.comparisonFingerprint === fingerprint)
     .map((run) => run.passed / run.judged);
 }
 

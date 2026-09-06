@@ -63,7 +63,7 @@ import type { Link } from '../../state/workflows';
 import { runFor, stepIsOver, useRun } from '../../state/run';
 import { useSkills } from '../../state/skills';
 import { useWorkspaces } from '../../state/workspaces';
-import { addresseeOf } from './addressee';
+import { sessionAddresseeOf } from './addressee';
 import { saidOf } from './entry/echo';
 import type { WindowLine } from './entry/echo';
 import { IMAGE_SEND_FAILED, IMAGES_TO_LEAD_ONLY } from './entry/images';
@@ -82,11 +82,13 @@ import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
 import { openOneRun, planOfPastRun, theOneThatIsGoing } from './history-command';
 import {
   answerTheLead,
+  answerCheckpoint,
   interruptTheLead,
   listRuns,
   openChat,
   readRun,
-  sayToAgent,
+  sendToStep,
+  stepMessageRecipients,
   sayToOrchestrator,
   stop,
   whatThisFolderCouldForget,
@@ -929,17 +931,37 @@ export default function Run(): ReactElement {
    * dopóki nazwa z tej listy nie stanie na początku linii (`./addressee.ts`). Sam zbiór jest ten
    * sam i musi być ten sam — to z niego Rust buduje swoją odmowę.
    *
-   * Kroki w stanie `running` i tylko one: to jest dokładnie ten sam zbiór, z którego bieg buduje
-   * swoją odpowiedź po stronie Rusta (`RunControl::step_can_hear` rejestruje głos kroku, kiedy on
-   * rusza, i zdejmuje go, kiedy schodzi). Osobne pole „czy można pisać" byłoby drugim opisem tego
-   * samego faktu i pierwszą rzeczą, która rozjechałaby się z odmową (niezmiennik 13).
+   * WF-08: running nie znaczy, że uchwyt ma voice. Lista bierze wyłącznie capabilities
+   * odebrane z runtime; kanał i odmowa korzystają z tego samego rejestru sesji.
    *
    * Nazwa kroku, bo to nią człowiek adresuje zdanie i to ona stoi na kafelku szyny oraz w podpisie
    * każdej linii tego kroku. */
   const listening = useMemo(
-    () => run.steps.filter((step) => step.state === 'running').map((step) => step.name),
-    [run.steps],
+    () => [
+      ...new Set(
+        run.messageSessions
+          .filter((one) => one.canReceive && !one.finished)
+          .map((one) => one.agent),
+      ),
+    ],
+    [run.messageSessions],
   );
+
+  useEffect(() => {
+    const store = runFor(folder);
+    const before = store.getState().messageSessions;
+    let stillHere = true;
+    void stepMessageRecipients(folder)
+      .then((recipients) => {
+        // Zdarzenie przyjęte po zapytaniu wygrywa z wolniejszą migawką. Nie cofamy capability.
+        if (stillHere && store.getState().messageSessions === before)
+          store.getState().rememberStepRecipients(recipients);
+      })
+      .catch(() => undefined);
+    return () => {
+      stillHere = false;
+    };
+  }, [folder, run.workflow, run.steps]);
 
   /* KARTY TEGO ZAKRESU, i tylko tego. Bieg z innego zakresu nie znika i nie zwalnia — ma tylko
    * swoją kartę tam, gdzie pracuje (rozstrzygnięcie właściciela: przełącznik w bocznym menu
@@ -1371,6 +1393,39 @@ export default function Run(): ReactElement {
    */
   function answerQuestion(questionId: number, option: string): void {
     const asked = view.pinned;
+    if (asked?.id === questionId && asked.question !== undefined) {
+      const response = asked.question;
+      if (
+        response.operation === 'continue_run' &&
+        response.questionId === response.checkpointId &&
+        response.runId !== null
+      ) {
+        void answerCheckpoint(folder, response.runId, response.questionId, option)
+          .then((reply) => {
+            if (reply.result === 'answerAccepted')
+              feedFor(canonicalEntryTerminal).answer(questionId, option);
+            else showInStream(saidOf(reply.said));
+          })
+          .catch(() =>
+            showInStream(saidOf('Loadout could not deliver that answer. Please try again.')),
+          );
+        return;
+      }
+      void answerTheLead(onTop, folder, asked.agent, option, response.questionId)
+        .then((accepted) => {
+          if (accepted) feedFor(canonicalEntryTerminal).answer(questionId, option);
+          else
+            showInStream(
+              saidOf(
+                'That question is no longer waiting for an answer. Read the current status and try again.',
+              ),
+            );
+        })
+        .catch(() =>
+          showInStream(saidOf('Loadout could not deliver that answer. Please try again.')),
+        );
+      return;
+    }
     runFeed.answer(questionId, option);
     if (asked === null || asked.id !== questionId) return;
     /* Odmowa jest tu porzucana z rozmysłem: `false` znaczy „nikt na to nie czekał", czyli
@@ -1435,7 +1490,12 @@ export default function Run(): ReactElement {
      * NIE MIAŁO DRUTU: wybór żył w oknie, a Rust rozmawiał zaszytym Claude'em, kimkolwiek by ten
      * wybór nie był. Czytamy je w chwili wysyłki, nie z migawki renderu — zdanie ma pójść do tego
      * lidera, którego widać na pasku teraz. */
-    const going = addresseeOf(text, listening);
+    const going = sessionAddresseeOf(
+      text,
+      run.steps.map((step) => step.name),
+      run.messageSessions,
+    );
+    if (going.to === 'refused') return going.said;
     /* `say_to_agent` nie ma nośnika obrazów. Jawna odmowa przed IPC jest węższa i uczciwsza
      * niż ciche zdjęcie załączników ze szkicu adresowanego nazwą żywego kroku. */
     if (images.length > 0 && going.to === 'agent') return IMAGES_TO_LEAD_ONLY;
@@ -1444,9 +1504,16 @@ export default function Run(): ReactElement {
        * „ten jeden, który pracuje" znaczyło po tamtej stronie „gdziekolwiek", więc zdanie
        * wpisane tutaj potrafiło pójść do agenta z innego workspace'u — turą, za którą ktoś
        * płaci. Ten sam adres, którym stąd zatrzymuje się bieg (`stopRun` niżej). */
-      await (going.to === 'agent'
-        ? sayToAgent(going.text, going.agent, whereTheRunIs(folder))
-        : sayToOrchestrator(going.text, folder, onTop, lead(), images));
+      if (going.to === 'agent') {
+        const reply = await sendToStep(
+          whereTheRunIs(folder),
+          going.target.runId,
+          going.target.nodeKey,
+          going.text,
+        );
+        return reply.result === 'acceptedBySession' ? null : reply.said;
+      }
+      await sayToOrchestrator(going.text, folder, onTop, lead(), images);
       return null;
     } catch (error: unknown) {
       /* Odrzucenie obrazu może nieść stderr vendora albo fragment prywatnego payloadu. Dla tej

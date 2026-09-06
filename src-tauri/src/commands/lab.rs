@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -34,6 +35,7 @@ use uuid::Uuid;
 
 use crate::engine::drivers::{AgentDriver, DecodedEvent, Policy, RunSpec};
 use crate::engine::supervisor::GroupProof;
+use crate::lab::measurement::MeasurementDefinition;
 use crate::lab::{
     self, Case, CaseStatus, EvalSet, Subject, Variant, cases, file, fix, plan, results, slugify,
 };
@@ -42,6 +44,10 @@ use crate::memory::handoff;
 
 use super::skills::{Ended, give_up_after, off_the_wire, one_turn, some_text, the_agent_saved_as};
 use super::{Drivers, Part, RunRequest};
+
+mod preview;
+mod workflow_sources;
+pub use preview::{PreviewRun, preview_run_inner};
 
 /// Ile zdarzeń mieści kanał jednej tury, zanim sterownik zacznie czekać.
 const EVENT_QUEUE: usize = 256;
@@ -171,6 +177,12 @@ pub struct ProposedWire {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PastEvalWire {
+    #[serde(default)]
+    pub workspace: String,
+    /// Kryteria i nazwy z chwili biegu. None nie daje prawa użyć nowych kryteriów.
+    pub definition: Option<EvalSet>,
+    /// Odcisk tych samych wejść, kryteriów i warunków; nie jest odciskiem wariantu.
+    pub comparison_fingerprint: Option<String>,
     /// Nazwa katalogu biegu — adres, którym okno prosi o szczegóły w Historii.
     pub folder: String,
     /// Kiedy ruszył, do przeczytania: `2026-08-31 09:14` (UTC).
@@ -191,6 +203,8 @@ pub struct PastEvalWire {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<results::CellExecution>,
     /// Identyfikator przypadku (wiersz).
     pub case: String,
     /// Identyfikator wariantu (kolumna).
@@ -217,6 +231,8 @@ pub struct MovementWire {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardWire {
+    /// Dlaczego nie wolno narysować różnicy między tymi pomiarami.
+    pub comparison_note: Option<String>,
     /// Zestaw i jego rewizja.
     pub set: OpenSet,
     /// Przebiegi, od najnowszego. Pusta lista znaczy „ten zestaw jeszcze nie biegł".
@@ -280,6 +296,22 @@ pub fn save_set_inner(
     save_set(project, set, expected).map_err(|error| LabError::Unwritable(error.to_string()))
 }
 
+/// WF-19: ustawienie z okna nie może przy okazji przepisać przypadków ani ich akceptacji.
+pub fn save_protection_inner(
+    project: &Path,
+    set_id: &str,
+    protected: bool,
+    expected: Option<&str>,
+) -> Result<OpenSet, LabError> {
+    let open = read_set_inner(project, set_id)?;
+    let mut set = open.set;
+    set.extra
+        .insert("protected".to_owned(), Value::Bool(protected));
+    let expected = expected.or(Some(open.revision.as_str()));
+    let revision = save_set_inner(project, &set, expected)?;
+    Ok(OpenSet { set, revision })
+}
+
 /// 2026-09 (Z-31) — ta sama publikacja z typem konfliktu dla jedynego wołającego, który ponawia.
 fn save_set(
     project: &Path,
@@ -334,6 +366,7 @@ pub fn create_set_inner(
 /// Kolumny, z którymi zestaw się rodzi.
 fn first_columns(subject: &Subject, agent: &str) -> Vec<Variant> {
     match subject {
+        Subject::Workflow { .. } => Vec::new(),
         Subject::Agent { id } => vec![Variant {
             id: "as-it-is".to_owned(),
             name: "As it is".to_owned(),
@@ -402,7 +435,29 @@ pub fn plan_a_run_inner(
     set_id: &str,
     how_many_at_once: usize,
 ) -> Result<Planned, LabError> {
+    plan_a_run_with_library(&project.join(".loadout"), project, set_id, how_many_at_once)
+}
+
+pub fn plan_a_run_with_library(
+    library: &Path,
+    project: &Path,
+    set_id: &str,
+    how_many_at_once: usize,
+) -> Result<Planned, LabError> {
+    plan_a_run_with_expected(library, project, set_id, how_many_at_once, None, None)
+}
+
+/// Te same odczytane wartości są sprawdzane i kompilowane; CAS nie poprzedza reread.
+pub fn plan_a_run_with_expected(
+    library: &Path,
+    project: &Path,
+    set_id: &str,
+    how_many_at_once: usize,
+    expected_revision: Option<&str>,
+    expected_sources: Option<&str>,
+) -> Result<Planned, LabError> {
     let open = read_set_inner(project, set_id)?;
+    preview::check_revision(&open.revision, expected_revision)?;
     if let Some(said) = open.set.why_it_cannot_run() {
         return Err(LabError::NotReady(said));
     }
@@ -411,10 +466,33 @@ pub fn plan_a_run_inner(
     // na sąsiada, i nie dokłada trzeciej kopii algorytmu dni→data, która stoi w tym drzewie już
     // dwa razy (`commands::run::stamp`, `memory::handoff`). Datę tego przebiegu człowiek czyta
     // z nazwy katalogu biegu, a nie z nazwy planu — plan jest plikiem dla maszyny.
-    let plan = plan::compose(
-        &open.set,
-        workflow_id_for(set_id),
-        format!("{} · Lab", open.set.name),
+    let mut plan = if matches!(open.set.subject, Subject::Workflow { .. }) {
+        // I/O pozostaje w komendzie; kompilator Lab dostaje wyłącznie wartości grafów.
+        let catalog = workflow_sources::resolve(library, project, &open.set)?;
+        if expected_sources.is_some_and(|expected| expected != catalog.revision) {
+            return Err(LabError::NotReady("The workflow sources changed after preview. Check this comparison again before running it.".to_owned()));
+        }
+        preview::check_examiners(&open.set).map_err(LabError::NotReady)?;
+        lab::workflow_plan::compose_selected(
+            &catalog.graphs,
+            &open.set,
+            workflow_id_for(set_id),
+            format!("{} · Lab", open.set.name),
+        )
+        .map_err(LabError::NotReady)?
+    } else {
+        plan::compose(
+            &open.set,
+            workflow_id_for(set_id),
+            format!("{} · Lab", open.set.name),
+        )
+    };
+    let definition = MeasurementDefinition::freeze(&open.set, open.revision, &plan)
+        .map_err(|error| LabError::Unwritable(error.to_string()))?;
+    plan.extra.insert(
+        "measurementDefinition".to_owned(),
+        serde_json::to_value(definition)
+            .map_err(|error| LabError::Unwritable(error.to_string()))?,
     );
     let path = lab::project_plans(project).join(format!("{set_id}__{}.json", Uuid::now_v7()));
     let root = path.parent().ok_or_else(|| {
@@ -460,26 +538,57 @@ pub fn read_board_inner(
     set_id: &str,
     how_many: usize,
 ) -> Result<BoardWire, LabError> {
-    let open = read_set_inner(project, set_id)?;
     let wanted = workflow_id_for(set_id);
-
-    let mut runs: Vec<PastEvalWire> = runs_of(project, &wanted, how_many)
+    let past = runs_of(project, &wanted, how_many);
+    let (open, missing) = match read_set_inner(project, set_id) {
+        Ok(open) => (open, false),
+        Err(LabError::NoSuchSet(_)) => {
+            let saved = past
+                .iter()
+                .rev()
+                .find_map(|run| run.definition.as_ref())
+                .ok_or_else(|| LabError::NoSuchSet(set_id.to_owned()))?;
+            (
+                OpenSet {
+                    set: saved.set.clone(),
+                    revision: saved.revision.clone(),
+                },
+                true,
+            )
+        }
+        Err(error) => return Err(error),
+    };
+    let mut runs: Vec<PastEvalWire> = past
         .into_iter()
-        .map(|past| score_one(&open.set, past))
+        .map(|past| score_one(project, &open.set, past))
         .collect();
     // Od najnowszego: człowiek pyta „jak jest teraz", a dopiero potem „czy było lepiej".
     runs.reverse();
 
     let movement = match runs.as_slice() {
-        [newest, before, ..] => Some(MovementWire::from(results::moved(
-            &scored_of(newest),
-            &scored_of(before),
-        ))),
+        [newest, before, ..]
+            if newest.comparison_fingerprint.is_some()
+                && newest.comparison_fingerprint == before.comparison_fingerprint =>
+        {
+            Some(MovementWire::from(results::moved(
+                &scored_of(newest),
+                &scored_of(before),
+            )))
+        }
         _ => None,
     };
 
     Ok(BoardWire {
-        cannot_run: open.set.why_it_cannot_run(),
+        comparison_note: match runs.as_slice() {
+            [newest, ..] if newest.comparison_fingerprint.is_none() => Some(
+                "This run cannot be compared because its saved measurement data is unavailable.".to_owned()),
+            [_, _, ..] if movement.is_none() => Some(
+                "The inputs, criteria or measurement conditions changed. These runs are not compared.".to_owned()),
+            _ => None,
+        },
+        cannot_run: if missing {
+            Some("This set was removed. These are the saved criteria; create a new set to run again.".to_owned())
+        } else { open.set.why_it_cannot_run() },
         set: open,
         runs,
         movement,
@@ -507,6 +616,7 @@ fn scored_of(past: &PastEvalWire) -> results::Scored {
             .cells
             .iter()
             .map(|cell| results::CellResult {
+                execution: cell.execution.clone(),
                 case: cell.case.clone(),
                 variant: cell.variant.clone(),
                 outcome: match cell.outcome.as_str() {
@@ -527,6 +637,10 @@ fn scored_of(past: &PastEvalWire) -> results::Scored {
 /// Bieg projektu, sprowadzony do tego, czego potrzebuje liczenie wyniku.
 #[derive(Debug, Clone)]
 struct PastRun {
+    bindings: Vec<lab::workflow_plan::CellBinding>,
+    definition: Option<MeasurementDefinition>,
+    comparison_fingerprint: Option<String>,
+    invalid: Option<String>,
     folder: String,
     when: String,
     state: String,
@@ -578,6 +692,18 @@ fn runs_of(project: &Path, workflow_id: &str, how_many: usize) -> Vec<PastRun> {
 #[derive(Debug, Deserialize)]
 struct Description {
     #[serde(default)]
+    workflow_snapshot: Value,
+    #[serde(default)]
+    input_snapshot: Value,
+    #[serde(default)]
+    project_instructions: Value,
+    #[serde(default)]
+    concurrency: Option<usize>,
+    #[serde(default)]
+    budget_usd: Option<f64>,
+    #[serde(default)]
+    memory: Value,
+    #[serde(default)]
     workflow_id: String,
     #[serde(default)]
     status: String,
@@ -587,6 +713,16 @@ struct Description {
 
 #[derive(Debug, Deserialize)]
 struct StepDescription {
+    #[serde(default)]
+    end_cause: Option<crate::workflow::execution::EndCause>,
+    #[serde(default)]
+    executed: bool,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    started_at: Option<i64>,
+    #[serde(default)]
+    ended_at: Option<i64>,
     /// Klucz kafelka z pliku planu — po nim poznaje się komórkę.
     #[serde(default)]
     node_key: String,
@@ -605,11 +741,56 @@ struct StepDescription {
 /// Jeden katalog biegu → to, czego potrzebuje liczenie. `None`, kiedy to nie jest bieg tego
 /// zestawu albo kiedy opisu nie da się przeczytać.
 fn one_run(dir: &Path, workflow_id: &str) -> Option<PastRun> {
-    let text = fs::read_to_string(dir.join("run.json")).ok()?;
-    let described: Description = serde_json::from_str(&text).ok()?;
+    let mut bytes = Vec::new();
+    crate::engine::supervisor::open_regular_beneath(dir, Path::new("run.json"))
+        .ok()?
+        .take(64 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return None;
+    }
+    let described: Description = serde_json::from_slice(&bytes).ok()?;
     if described.workflow_id != workflow_id {
         return None;
     }
+    let definition = described
+        .workflow_snapshot
+        .get("measurementDefinition")
+        .and_then(|value| serde_json::from_value::<MeasurementDefinition>(value.clone()).ok())
+        .filter(|definition| definition.valid_for(workflow_id));
+    let mut invalid = None;
+    let comparison_fingerprint = definition.as_ref().and_then(|definition| {
+        if !definition.matches_graph(&described.workflow_snapshot) {
+            invalid = Some("The saved workflow or its result mapping changed. This measurement can no longer be verified.".to_owned());
+            return None;
+        }
+        let input = match super::input_snapshot::read(dir) {
+            Ok(input) if described.input_snapshot.get("id").and_then(Value::as_str) == Some(input.id()) => input,
+            _ => {
+                invalid = Some("Saved input unavailable. This measurement is invalid until its original input can be verified.".to_owned());
+                return None;
+            }
+        };
+        let input = serde_json::to_value(input.entries()).ok()?;
+        let instructions = match crate::inherit::instructions::read_snapshot(dir) {
+            Ok(snapshot) if described.project_instructions.get("id").and_then(Value::as_str) == Some(snapshot.id()) => snapshot,
+            _ => {
+                invalid = Some("Saved instructions unavailable. This measurement is invalid until its original instructions can be verified.".to_owned());
+                return None;
+            }
+        };
+        let conditions = serde_json::json!({
+            "concurrency": described.concurrency,
+            "budgetUsd": described.budget_usd,
+            "memory": described.memory,
+            "instructions": instructions.sources(),
+            "protected": described.workflow_snapshot.get("executionInputs")
+                .and_then(|inputs| inputs.get("isolateContexts"))
+                .and_then(Value::as_bool).unwrap_or(false),
+        });
+        definition.comparison_fingerprint(&input, &conditions).ok()
+    });
 
     // Ciała przekazań, po nazwie kroku, który je zostawił. Nazwa jest kluczem złączenia
     // i dlatego zapis zestawu odmawia dwóch przypadków o jednej nazwie (`lab::plan::work_name`).
@@ -621,12 +802,25 @@ fn one_run(dir: &Path, workflow_id: &str) -> Option<PastRun> {
 
     let folder = dir.file_name()?.to_string_lossy().into_owned();
     Some(PastRun {
+        bindings: described
+            .workflow_snapshot
+            .get("cellBindings")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default(),
+        definition,
+        comparison_fingerprint,
+        invalid,
         when: when_of(&folder),
         state: described.status,
         steps: described
             .steps
             .into_iter()
             .map(|step| results::Finished {
+                cause: step.end_cause,
+                executed: step.executed,
+                kind: step.kind,
+                started_at: step.started_at,
+                ended_at: step.ended_at,
                 // Ciało przekazania, kiedy jest; podsumowanie, kiedy go nie ma. Powód stoi przy
                 // `results::Finished::said`: podsumowanie jest jednym zdaniem przyciętym do
                 // limitu, a oczekiwane pole bywa dziesiątym wierszem odpowiedzi.
@@ -663,14 +857,40 @@ fn when_of(folder: &str) -> String {
     format!("{year}-{month}-{date} {hour}:{}", &minute[..2])
 }
 
-/// Liczy jeden przebieg wobec DZISIEJSZEGO zestawu.
-///
-/// Dzisiejszego, a nie tego sprzed przebiegu, i to jest wybór: tabela ma tyle wierszy, ile ma
-/// zestaw teraz, więc przebieg sprzed dopisania wiersza pokazuje w nim „nie zmierzono", a nie
-/// znika. Człowiek widzi wtedy prawdę — ten wiersz jest nowszy niż tamten przebieg.
-fn score_one(set: &EvalSet, past: PastRun) -> PastEvalWire {
-    let scored = results::score(set, &past.steps);
+/// 2026-09-05: dzisiejszy formularz zmieniał dawny wynik. Tylko zamrożona definicja osądza.
+/// Przy legacy formularz jest wyłącznie etykietą pustych komórek, nigdy wyrocznią.
+fn score_one(project: &Path, set: &EvalSet, past: PastRun) -> PastEvalWire {
+    let mut scored = match &past.definition {
+        Some(definition) if matches!(definition.set.subject, Subject::Workflow { .. }) => {
+            lab::workflow_results::score(
+                &definition.set,
+                &past.bindings,
+                if past.invalid.is_none() {
+                    &past.steps
+                } else {
+                    &[]
+                },
+            )
+        }
+        Some(definition) if past.invalid.is_none() => results::score(&definition.set, &past.steps),
+        Some(definition) => results::score(&definition.set, &[]),
+        None => results::score(set, &[]),
+    };
+    if past.definition.is_none() || past.invalid.is_some() {
+        for cell in &mut scored.cells {
+            cell.said = past.invalid.clone().unwrap_or_else(||
+                "Criteria snapshot unavailable. This run has not been graded with today's criteria.".to_owned());
+        }
+        scored.cost_usd = past
+            .steps
+            .iter()
+            .filter_map(|step| step.cost_usd)
+            .reduce(|total, cost| total + cost);
+    }
     PastEvalWire {
+        workspace: project.to_string_lossy().into_owned(),
+        definition: past.definition.map(|definition| definition.set),
+        comparison_fingerprint: past.comparison_fingerprint,
         folder: past.folder,
         when: past.when,
         state: past.state,
@@ -681,6 +901,7 @@ fn score_one(set: &EvalSet, past: PastRun) -> PastEvalWire {
             .cells
             .into_iter()
             .map(|cell| CellWire {
+                execution: cell.execution,
                 case: cell.case,
                 variant: cell.variant,
                 outcome: cell.outcome.name().to_owned(),

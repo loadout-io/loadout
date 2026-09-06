@@ -21,6 +21,7 @@
 //! zamienia identyfikator na [`NoteId`], a błąd na zdanie dla okna.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -222,6 +223,65 @@ pub fn list_note_catalog_inner(
     // systemu plików, a katalog jest odpowiedzią, którą magazyn podmienia w całości.
     catalog.sort_by(|left, right| (&left.place, &left.id).cmp(&(&right.place, &right.id)));
     Ok(catalog)
+}
+
+/// WF-22: ograniczony katalog przyjętej wiedzy projektu, z tą samą wyrocznią co prompt
+/// kroku. Nie skanujemy biblioteki ani celów symlinków: brief rozmowy A nie ma prawa
+/// wciągnąć notatki B, nawet gdy plik w A wskazuje na B. Brak zapisu/promocji/stempla.
+pub(crate) fn lead_project_notes(project: &Path) -> Result<(Vec<NoteWire>, bool), Error> {
+    use crate::engine::supervisor::{PublicationEntryKind, PublicationRoot};
+
+    const NOTE_BYTES: u64 = 32 * 1024;
+    const NOTE_COUNT: usize = 200;
+    let held = PublicationRoot::open(project)?;
+    let relative = Path::new(".loadout/memory/notes");
+    let entries = match held.list_directory(relative) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), false));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut paths: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| entry.kind == PublicationEntryKind::Regular)
+        .filter(|entry| {
+            Path::new(&entry.name)
+                .extension()
+                .is_some_and(|extension| extension == "md")
+        })
+        .map(|entry| relative.join(entry.name))
+        .collect();
+    paths.sort();
+    let mut omitted = paths.len() > NOTE_COUNT;
+    let mut notes = Vec::new();
+    for path in paths.iter().take(NOTE_COUNT) {
+        let read = (|| -> Result<Note, Error> {
+            let file = held.open_regular_file(path)?;
+            if file.metadata()?.len() > NOTE_BYTES {
+                return Err(
+                    std::io::Error::other("project note exceeds the briefing limit").into(),
+                );
+            }
+            let mut raw = String::new();
+            file.take(NOTE_BYTES + 1).read_to_string(&mut raw)?;
+            if raw.len() as u64 > NOTE_BYTES {
+                return Err(std::io::Error::other("project note changed while reading").into());
+            }
+            crate::memory::notes::parse_note(path, &raw)
+        })();
+        match read {
+            Ok(note) => notes.push(note),
+            Err(_) => omitted = true,
+        }
+    }
+    let allowed = what_you_know(&notes, Budget::of(Scope::ThisProject));
+    omitted |= !allowed.dropped.is_empty();
+    let rows = catalog_rows(&notes, NotePlace::Project)
+        .into_iter()
+        .filter(|row| allowed.used.iter().any(|id| id.to_string() == row.id))
+        .collect();
+    Ok((rows, omitted))
 }
 
 /// Dopina rachunek budżetu do wierszy jednego fizycznego korzenia. Nielegalnie położone

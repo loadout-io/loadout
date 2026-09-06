@@ -62,6 +62,7 @@ pub mod host;
 /// Adres w `drivers/`, choć wczytuje ją bieg: to jest wiedza o vendorach, a nie o biegu, i to
 /// sterownik jest jedynym, kto potrafi powiedzieć, czy da się z niej wycenić jego turę.
 pub mod prices;
+mod protected_state;
 
 /// Jeden rdzeń taniej sondy `--version` dla obu vendorów (niezmiennik 23). Prywatny, bo pytają
 /// o wersję wyłącznie sterowniki, a granicę IPC obsługuje `commands::agent_apps`.
@@ -790,6 +791,35 @@ pub struct StepSettings {
     pub deny: Vec<String>,
 }
 
+/// WF-13: plik wejściowy już zweryfikowanego, prywatnie zamrożonego bundle.
+/// Ten opis nie rozszerza uprawnień i nie wykonuje dołączonych helperów.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSkill {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// Przygotowanie stanu vendora nie przyznaje mu uprawnień. Host dopiero z tych potrzeb
+/// i własnego scope składa `FilesystemFence`, przed startem pierwszego procesu modelu.
+pub struct PreparedProtectedStep {
+    pub driver: Arc<dyn AgentDriver>,
+    pub writable_roots: Vec<PathBuf>,
+    pub readable_roots: Vec<PathBuf>,
+    pub readable_files: Vec<PathBuf>,
+}
+
+impl fmt::Debug for PreparedProtectedStep {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedProtectedStep")
+            .field("vendor", &self.driver.id())
+            .field("writable_roots", &self.writable_roots.len())
+            .field("readable_roots", &self.readable_roots.len())
+            .field("readable_files", &self.readable_files.len())
+            .finish()
+    }
+}
+
 /// Sterownik jednego vendora. Dwie implementacje od pierwszego dnia (decyzja D3): ta jest
 /// pierwszą z dwóch, `CodexDriver` z T-10 jest testem, czy ten trait jest abstrakcją.
 #[async_trait]
@@ -870,6 +900,21 @@ pub trait AgentDriver: Send + Sync {
     /// warunek, pod którym ten plik zostaje „jedynym, którego T-10 nie musi zmienić".
     fn inheriting(&self, _flags: &[String]) -> Option<Arc<dyn AgentDriver>> {
         None
+    }
+
+    /// Natywny transport konkretnego skilla w rozmowie, odrębny od CLI plugin argv.
+    /// Pusta lista wyłącznie pyta o wsparcie; None wymaga jawnej informacji przed Start.
+    fn with_conversation_skills(
+        &self,
+        _skills: &[ConversationSkill],
+    ) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
+    /// Natywna półka skilli w katalogu roboczym kroku. Rdzeń zapisuje ją wyłącznie we własnej
+    /// kopii; ta capability nie zezwala na instalację w projekcie człowieka.
+    fn reads_step_skills_from_its_folder(&self) -> bool {
+        false
     }
 
     /// Ten sam sterownik z prywatnym targetem dowodow tej logicznej sesji.
@@ -957,8 +1002,29 @@ pub trait AgentDriver: Send + Sync {
         None
     }
 
+    /// Podgląd sprawdza możliwości bez tworzenia prywatnego stanu. `None` oznacza
+    /// brak obsługi, nie zgodę; dostępność procesu pod granicą sądzi osobno supervisor.
+    fn protected_readiness(&self) -> Option<anyhow::Result<()>> {
+        None
+    }
+
+    fn prepare_protected_step(
+        &self,
+        _settings: &StepSettings,
+    ) -> Option<anyhow::Result<PreparedProtectedStep>> {
+        None
+    }
+
     /// Klon sterownika skonfigurowany dla zatwierdzonych Connections tego jednego kroku.
     fn configured(&self, _configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
+        None
+    }
+
+    /// Host wybiera granicę raz; adapter wyłącznie przekazuje ją supervisorowi.
+    fn with_filesystem_fence(
+        &self,
+        _fence: &supervisor::FilesystemFence,
+    ) -> Option<Arc<dyn AgentDriver>> {
         None
     }
 

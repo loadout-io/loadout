@@ -24,10 +24,62 @@ import type {
   WorkflowFile,
 } from '../../../state/workflows';
 import { typable } from '../../run/run-command';
+import { loopBody } from '../canvas/connect';
 
 /** Opis, który dostaje agent proszony o wiersz powłoki. Jego słowami, nie naszym żargonem. */
 export const DESCRIBE_THE_COMMAND =
   'the one shell line that starts this, ready to run in this project';
+
+export const DESCRIBE_THE_APP =
+  'one JSON object on one line: command (shell line), subdirectory (relative working folder), ' +
+  'environment (non-secret variables), requiredEnv (required variable names), endpoints ' +
+  '(name, host 127.0.0.1, port, portEnv), readiness ' +
+  '(kind http or tcp, endpoint name, path, timeoutSeconds, expectedStatus). ' +
+  'Inspect this repository and prepare the actual working files first. Never include secrets; ' +
+  'missing preparation or required variables must be reported, not silently installed by the app.';
+
+export interface CommandProducer {
+  key: string;
+  stepId: string;
+  name: string;
+}
+
+/** Opcje formularza, nie plan wykonania: Rust ponownie wiąże dokładny wynik w zamrożonym grafie. */
+export function commandProducers(document: WorkflowFile, serveId: string): CommandProducer[] {
+  const earlier = new Set<string>();
+  const pending = [serveId];
+  for (let child = pending.pop(); child !== undefined; child = pending.pop()) {
+    for (const link of document.links) {
+      if (link.to === child && link.max_turns === undefined && !earlier.has(link.from)) {
+        earlier.add(link.from);
+        pending.push(link.from);
+      }
+    }
+  }
+  const choices: CommandProducer[] = [];
+  for (const step of document.steps) {
+    if (step.kind !== 'agent' || !earlier.has(step.id)) continue;
+    const loop = document.links.find(
+      (link) => link.max_turns !== undefined && loopBody(link.from, link.to, document).has(step.id),
+    );
+    const turns = Math.max(1, Math.min(10, loop?.max_turns ?? 1));
+    const copies = Math.max(1, Math.min(8, step.copies));
+    for (let turn = 0; turn < turns; turn += 1) {
+      for (let copy = 0; copy < copies; copy += 1) {
+        const work = copy === 0 ? step.id : `${step.id}~${copy + 1}`;
+        choices.push({
+          key: turn === 0 ? work : `${work}#${turn}`,
+          stepId: step.id,
+          name:
+            step.name +
+            (copies > 1 ? ` · copy ${copy + 1}` : '') +
+            (turns > 1 ? ` · try ${turn + 1}` : ''),
+        });
+      }
+    }
+  }
+  return choices;
+}
 
 /**
  * Nazwa pola, o które ten kafelek prosi — **liczona RAZ, przy zaznaczeniu, i zapisana**.
@@ -50,6 +102,16 @@ export function fieldNameFor(tile: Pick<ServeStep, 'id' | 'name'>): string {
 
 /** Krok, który po strzałce stoi PRZED tym kafelkiem i jest agentem — albo `null`. */
 export function theStepBefore(document: WorkflowFile, serveId: string): AgentStep | null {
+  const serve = document.steps.find((step) => step.id === serveId);
+  const selected = serve?.kind === 'serve' ? serve.commandFrom?.producer : undefined;
+  if (selected !== undefined) {
+    const choice = commandProducers(document, serveId).find((option) => option.key === selected);
+    return (
+      document.steps.find(
+        (step): step is AgentStep => step.kind === 'agent' && step.id === choice?.stepId,
+      ) ?? null
+    );
+  }
   const before = document.links
     .filter((link) => link.to === serveId)
     .map((link) => document.steps.find((step: Step) => step.id === link.from))
@@ -58,9 +120,17 @@ export function theStepBefore(document: WorkflowFile, serveId: string): AgentSte
 }
 
 /** Czy ten krok jest już proszony o to pole. */
-export function handsOver(step: AgentStep | null, field: string): boolean {
+export function handsOver(
+  step: AgentStep | null,
+  field: string,
+  format?: 'command' | 'launch-description',
+): boolean {
   if (step === null || step.handover === 'notes') return false;
-  return step.handover.fields.some((one) => one.name.trim() === field);
+  return step.handover.fields.some(
+    (one) =>
+      one.name.trim() === field &&
+      (format !== 'launch-description' || one.describe === DESCRIBE_THE_APP),
+  );
 }
 
 /**
@@ -75,16 +145,21 @@ export function askTheStepBefore(
   field: string,
 ): WorkflowFile {
   const before = theStepBefore(document, serveId);
-  if (before === null || handsOver(before, field)) return document;
+  const serve = document.steps.find((step) => step.id === serveId);
+  const format = serve?.kind === 'serve' ? serve.commandFrom?.format : undefined;
+  if (before === null || handsOver(before, field, format)) return document;
 
   const asked: HandoverField = {
     name: field,
-    describe: DESCRIBE_THE_COMMAND,
+    describe: format === 'launch-description' ? DESCRIBE_THE_APP : DESCRIBE_THE_COMMAND,
     /* POTRZEBNE, a nie „miło mieć": bez tego pola kafelek za nim ODMAWIA startu, więc pole
      * nieobowiązkowe byłoby prośbą, której zignorowanie kosztuje bieg. */
     required: true,
   };
-  const already = before.handover === 'notes' ? [] : before.handover.fields;
+  const already =
+    before.handover === 'notes'
+      ? []
+      : before.handover.fields.filter((one) => one.name.trim() !== field);
 
   return {
     ...document,

@@ -43,22 +43,31 @@ pub mod agents;
 /// Rozmowa z orchestratorem — i jedyne miejsce, które NIE umie uruchomić biegu.
 pub mod branch_name;
 pub mod chat;
+pub mod checkpoint;
 /// Allowlistowany raport wsparcia dla aktywnego workspace. Wypelnia T-34.
 pub mod diagnostics;
 /// Praca kilku kroków zniesiona do jednej kopii — i odmowa, kiedy dwa z nich piszą co innego.
-mod fan_in;
+pub mod fan_in;
 /// Przekazania między krokami: co jeden krok oddał następnemu, odczytane z plików.
 pub mod finalize;
 pub mod handoffs;
 /// Historia biegów TEGO projektu: co tu już ruszyło i co z tego zostało na dysku.
 pub mod history;
 pub mod import;
+pub mod input_snapshot;
 pub mod isolate;
+pub mod lead_history;
+pub mod lead_start;
+pub mod replay;
+pub mod result_restore;
+pub mod step_message;
+pub(crate) mod workspace_inputs;
 
 /// Lab: zestawy przypadkow, kandydatki i macierz wynikow.
 pub mod lab;
 /// Pamięć: weź notatkę do użytku i przestań jej używać. Wypełnia T-27.
 pub mod memory;
+pub(crate) mod memory_sources;
 /// Mennica identyfikatorów uuid v7 — jedna dla wszystkich sekcji. Wypełnia T-27.
 pub mod mint;
 /// Rzeczy, które Loadout uruchomił dla człowieka: rejestr, kafelki, dowód śmierci. Wypełnia T-72.
@@ -68,6 +77,7 @@ pub mod processes;
 pub mod reconcile;
 pub mod rerun;
 pub mod run;
+pub mod run_inputs;
 /// Co Loadout robi domyślnie, kiedy człowiek nie powiedział inaczej. Dziś: kto prowadzi rozmowę.
 pub mod settings;
 /// Umiejętności: przeczytaj link, zainstaluj przejrzane. Wypełnia T-27.
@@ -179,9 +189,24 @@ pub struct RunControl {
     inner: Arc<Signals>,
 }
 
+/// Wspólny adres trwałego biegu, niezależny od aktualnej karty i nazwy workflow.
+#[derive(Clone, Debug)]
+pub struct RunAddress {
+    pub id: String,
+    pub directory: PathBuf,
+}
+
 /// Trzy sygnały jednego biegu.
 #[derive(Debug)]
 struct Signals {
+    /// Polityka zamrożonych wejść tego biegu; krótki mutex nigdy nie przeżywa await.
+    external_messages: Mutex<bool>,
+    /// Pytania tylko TEGO biegu. Krótki mutex nigdy przez await; brak globalnego broadcastu zgód.
+    checkpoints: Mutex<BTreeMap<String, checkpoint::Pending>>,
+    /// Końcowy wynik dowodów grup. Krótki mutex, nigdy przez await; samo settle nie jest dowodem.
+    stop_proof: Mutex<StopProof>,
+    /// Tylko ten uchwyt/generacja. Żaden mutex nie przeżywa await (niezmiennik 8).
+    address: Mutex<Option<RunAddress>>,
     /// Token **tego** biegu, nigdy globalny `AtomicBool` (niezmiennik 7): bool przecieka między
     /// biegami, więc drugi bieg po anulowanym startuje jako już anulowany i kończy się
     /// w milisekundach z samymi `Cancelled` — co wygląda jak szybki bieg, a nie jak awaria.
@@ -215,7 +240,7 @@ struct Signals {
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): każde wzięcie mieści się
     /// w jednym wyrażeniu, które kopiuje nadajnik albo listę nazw i oddaje zamek.
-    voices: Mutex<BTreeMap<String, crate::engine::drivers::Voice>>,
+    voices: Mutex<BTreeMap<String, step_message::SessionChannel>>,
     /// Co człowiek napisał, odpowiadając na punkt kontrolny — do odebrania RAZ.
     ///
     /// 2026-08-18 — POWSTAŁO, BO ODPOWIEDŹ NIE DOCHODZIŁA NIGDZIE. `go_on` podbijał licznik
@@ -318,6 +343,10 @@ impl RunControl {
     pub fn sharing(slots: Limiter) -> Self {
         Self {
             inner: Arc::new(Signals {
+                external_messages: Mutex::new(true),
+                checkpoints: Mutex::new(BTreeMap::new()),
+                stop_proof: Mutex::new(StopProof::Unknown),
+                address: Mutex::new(None),
                 cancel: CancellationToken::new(),
                 go_on: watch::Sender::new(0),
                 answer: Mutex::new(None),
@@ -407,6 +436,23 @@ impl RunControl {
         self.inner.cancel.clone()
     }
 
+    pub(crate) fn set_external_messages(&self, allowed: bool) {
+        *self
+            .inner
+            .external_messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = allowed;
+    }
+
+    #[must_use]
+    pub fn external_messages_allowed(&self) -> bool {
+        *self
+            .inner
+            .external_messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Człowiek nacisnął Stop.
     pub fn stop(&self) {
         self.inner.cancel.cancel();
@@ -423,6 +469,24 @@ impl RunControl {
     /// tym, co budzi krok czekający na punkcie kontrolnym, więc odwrotna kolejność ma okno,
     /// w którym krok już ruszył, a odpowiedzi jeszcze nie ma czym odebrać.
     pub fn go_on_with(&self, answer: Option<String>) {
+        // Zaufani wewnętrzni wołający zachowują wygodę pojedynczego pytania. IPC nie używa
+        // tej drogi: jego stara wiadomość nie ma prawa wybrać aktualnej generacji za człowieka.
+        let questions = checkpoint::list(self);
+        if questions.len() == 1
+            && let Some(run) = self.run_address()
+        {
+            let _ = checkpoint::answer(
+                self,
+                &run.id,
+                &questions[0].checkpoint_id,
+                answer.as_deref().unwrap_or_default(),
+            );
+            return;
+        }
+        self.signal_go_on(answer);
+    }
+
+    pub(crate) fn signal_go_on(&self, answer: Option<String>) {
         {
             let mut slot = self
                 .inner
@@ -440,11 +504,77 @@ impl RunControl {
     /// (dubler bez procesu, kafelek kontrolny) po prostu nie ma tu wpisu — a wtedy okno dostaje
     /// odpowiedź „nie da się", nie ciszę.
     pub fn step_can_hear(&self, step: &str, voice: crate::engine::drivers::Voice) {
-        self.inner
-            .voices
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(step.to_owned(), voice);
+        let _ = self.step_session_started(step, step, Some(voice));
+    }
+
+    /// WF-08: runtime zapisuje także żywy uchwyt bez voice. Brak możliwości != koniec pracy.
+    pub(crate) fn step_session_started(
+        &self,
+        node_key: &str,
+        name: &str,
+        voice: Option<crate::engine::drivers::Voice>,
+    ) -> u64 {
+        let external_messages = self.external_messages_allowed();
+        let (generation, can_receive) = {
+            let mut sessions = self
+                .inner
+                .voices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let generation = sessions
+                .get(node_key)
+                .map_or(1, |one| one.generation.saturating_add(1));
+            let can_receive =
+                external_messages && voice.as_ref().is_some_and(|voice| !voice.is_closed());
+            sessions.insert(
+                node_key.to_owned(),
+                step_message::SessionChannel {
+                    name: name.to_owned(),
+                    voice,
+                    finished: false,
+                    generation,
+                },
+            );
+            (generation, can_receive)
+        };
+        if let Some(address) = self.run_address() {
+            let _ = self.show_in_the_run(crate::engine::line::Line::StepSession {
+                agent: name.to_owned(),
+                run_id: address.id,
+                node_key: node_key.to_owned(),
+                can_receive,
+                finished: false,
+            });
+        }
+        generation
+    }
+
+    pub(crate) fn step_session_finished(&self, node_key: &str, generation: u64) {
+        let name = {
+            let mut sessions = self
+                .inner
+                .voices
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let Some(session) = sessions
+                .get_mut(node_key)
+                .filter(|one| one.generation == generation)
+            else {
+                return;
+            };
+            session.voice = None;
+            session.finished = true;
+            session.name.clone()
+        };
+        if let Some(address) = self.run_address() {
+            let _ = self.show_in_the_run(crate::engine::line::Line::StepSession {
+                agent: name,
+                run_id: address.id,
+                node_key: node_key.to_owned(),
+                can_receive: false,
+                finished: true,
+            });
+        }
     }
 
     /// Zdejmuje głos kroku, który zszedł.
@@ -462,12 +592,21 @@ impl RunControl {
     /// Głos tego kroku, jeśli krok jeszcze słucha.
     #[must_use]
     pub fn voice_of(&self, step: &str) -> Option<crate::engine::drivers::Voice> {
-        self.inner
+        let sessions = self
+            .inner
             .voices
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(step)
-            .cloned()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut matching = sessions
+            .values()
+            .filter(|one| one.name == step && !one.finished)
+            .filter_map(|one| one.voice.as_ref());
+        let voice = matching.next()?.clone();
+        if matching.next().is_some() {
+            None
+        } else {
+            Some(voice)
+        }
     }
 
     /// Kroki, które w tej chwili słuchają — po nazwie, w kolejności alfabetycznej.
@@ -477,8 +616,9 @@ impl RunControl {
             .voices
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .cloned()
+            .values()
+            .filter(|one| !one.finished && one.voice.is_some())
+            .map(|one| one.name.clone())
             .collect()
     }
 
@@ -561,12 +701,71 @@ impl RunControl {
     /// Bieg zszedł: wszystkie kroki są rozstrzygnięte i nic po nim nie żyje.
     pub fn settle(&self) {
         self.inner.settled.cancel();
+        self.inner
+            .checkpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        // Nowy Start dostaje nowe Signals, więc koniec starego nie czyści adresu następcy.
+        *self
+            .inner
+            .address
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// Woła wspólny prepare dopiero po trwałym run.json; nie jest przyznaniem kontroli.
+    pub fn set_run_address(&self, id: String, directory: PathBuf) {
+        *self
+            .inner
+            .address
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(RunAddress { id, directory });
+    }
+
+    #[must_use]
+    pub fn run_address(&self) -> Option<RunAddress> {
+        if !self.is_working() {
+            return None;
+        }
+        self.inner
+            .address
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Czeka na dowód z [`RunControl::settle`].
     pub async fn wait_until_settled(&self) {
         self.inner.settled.cancelled().await;
     }
+
+    pub(crate) fn record_stop_proof(&self, proved: bool) {
+        *self
+            .inner
+            .stop_proof
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = if proved {
+            StopProof::Stopped
+        } else {
+            StopProof::StillAlive
+        };
+    }
+
+    pub(crate) fn stop_proof(&self) -> StopProof {
+        *self
+            .inner
+            .stop_proof
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopProof {
+    Unknown,
+    Stopped,
+    StillAlive,
 }
 
 impl Default for RunControl {
@@ -723,6 +922,14 @@ pub struct RunReport {
 /// Każdy wariant jest osobnym zdaniem dla użytkownika, bo każdy naprawia się inaczej.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
+    /// Ten sam komunikat co ścisła wysyłka; stary adapter nie utrzymuje drugiej polityki.
+    #[error("{0}")]
+    MessageRefused(String),
+    /// Dawny Continue bez adresu nie może zwalniać aktualnego ani przyszłego pytania.
+    #[error(
+        "Answer the displayed question directly. This Continue message does not identify which question you answered."
+    )]
+    QuestionNeedsAddress,
     /// Zamknięcie okna czekało na koniec biegu tyle, ile mu wolno, i się nie doczekało.
     ///
     /// Jedyny wariant tego wyliczenia, który mówi o CZASIE, a nie o tym, co się nie udało —

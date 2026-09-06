@@ -131,6 +131,9 @@ pub struct RunWire {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PastRunWire {
+    /// WF-19: zweryfikowany adres wejścia, wybierany w formularzu Lab bez ręcznych ID.
+    pub saved_input: Option<SavedInputWire>,
+    pub saved_input_said: Option<String>,
     /// Nazwa katalogu — ta sama, którą podał wołający.
     pub folder: String,
     /// Kiedy ruszył, do przeczytania.
@@ -159,6 +162,10 @@ pub struct PastRunWire {
     /// Pusta lista dla biegu, po którym nie została ani jedna — i to jest zwykły stan: krok,
     /// który nic nie zmienił, gałęzi nie zostawia (`commands::isolate::finish`).
     pub branches: Vec<BranchWire>,
+    /// Zachowane foldery mają własną ścieżkę; nieukończone wejście nie jest gotowym wynikiem.
+    pub result_folders: Vec<ResultFolderWire>,
+    /// Dokładne wyniki z `copy_results`, nie dzisiejsze gałęzie o podobnej nazwie.
+    pub saved_results: Vec<Value>,
     /// Co prywatna tura Loadouta zrobiła z tym biegiem — albo `None`, kiedy opis o tym milczy.
     ///
     /// `None`, A NIE WYZEROWANY RACHUNEK, i to jest cała treść tego pola. Bieg zapisany zanim
@@ -169,6 +176,13 @@ pub struct PastRunWire {
     pub reflection: Option<ReflectionWire>,
     /// Uczciwe zdanie, kiedy opisu nie dało się przeczytać.
     pub said: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedInputWire {
+    pub source_run_id: String,
+    pub snapshot_id: String,
 }
 
 /// Dlaczego prywatna tura nie została poproszona.
@@ -267,6 +281,15 @@ pub struct BranchWire {
     pub step: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultFolderWire {
+    pub work_key: String,
+    pub step: String,
+    pub path: PathBuf,
+    pub state: String,
+}
+
 /// Krok otwartego biegu.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -318,6 +341,9 @@ pub struct PastStepWire {
     /// Zamrożony receipt wyłącznie TEGO fizycznego kroku. Pusta lista jest jawna także dla
     /// starych biegów, żeby granica TypeScript nie musiała zgadywać, czy pole zaginęło.
     pub memory: Vec<PastMemoryWire>,
+    /// WF-12: dokładne tekstowe źródła ze zwalidowanego, zamrożonego pakietu.
+    /// Nie jest to raport natywnego autoładowania aplikacji agenta.
+    pub project_instructions: Vec<crate::inherit::instructions::InstructionSource>,
     /// Co aplikacja agenta wczytała z folderu tego kroku sama z siebie.
     ///
     /// `None` — a nie pusty rekord — dla każdego kroku, który tego nie ogłosił: kafelka
@@ -440,6 +466,12 @@ pub enum HistoryError {
     /// znaleźć jeden katalog wśród kilkudziesięciu innych.
     #[error("Loadout could not take the folder of this run away: {said}. It is still here: {path}")]
     CouldNotForgetRun { path: String, said: String },
+
+    /// Zwykła retencja i Forget bez osobnej listy potwierdzeń nie usuwają jedynego wyniku.
+    #[error("{said}")]
+    ResultsAreKept { said: String },
+    #[error("Loadout could not open this result folder: {said}")]
+    CouldNotOpenResult { said: String },
 }
 
 /// Wszystkie biegi TEGO projektu, od najnowszego. Projekt bez `runs/` daje pustą listę.
@@ -466,45 +498,34 @@ pub fn list_runs_inner(project: &Path) -> Vec<RunWire> {
 /// (patrz [`HistoryError::NotOneName`]), bo przyjeżdża z okna.
 pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryError> {
     let dir = one_run_dir(project, run)?;
+    let (saved_input, saved_input_said) = saved_input_in(project, &dir);
 
     let workflows = workflow_files();
     let head = summary(&dir, &workflows);
     let described = read_description(&dir);
-    let steps = match &described {
-        Some(file) => file
-            .steps
-            .iter()
-            .map(|step| PastStepWire {
-                id: step.id.clone(),
-                /* Rundy pętli mają wspólny kafelek i różne klucze węzła (`build#2`), więc sufiks
-                 * zdejmuje ta sama warstwa, która go nadała. */
-                tile: crate::commands::run::tile_key_of(&step.node_key).to_owned(),
-                name: step.name.clone(),
-                agent: step.agent.clone(),
-                state: history_state(step),
-                executed: step.executed,
-                summary: step.summary.clone().unwrap_or_default(),
-                error: step.error.clone().unwrap_or_default(),
-                ran_without: step.ran_without.clone(),
-                cost_usd: step.cost_usd,
-                context_per_turn: recorded_context_per_turn(step),
-                memory: memory_for_step(&file.memory, &step.id),
-                what_loadout_did_not_give: what_loadout_did_not_give(
-                    step.loaded_by_the_app.as_ref(),
-                ),
-                loaded_by_the_app: step.loaded_by_the_app.clone(),
-                lines: recorded_lines(
-                    &dir,
-                    &step.id,
-                    &step.name,
-                    step.effective
-                        .as_ref()
-                        .map_or("", |one| one.runs_with.as_str()),
-                ),
-            })
-            .collect(),
-        None => Vec::new(),
+    let (instruction_package, instruction_problem) = if described
+        .as_ref()
+        .is_some_and(|file| file.project_instructions.is_some())
+        || fs::symlink_metadata(dir.join("instructions/manifest.json")).is_ok()
+    {
+        match crate::inherit::instructions::read_snapshot(&dir) {
+            Ok(package) => (Some(package), None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "The saved project instructions could not be verified: {error}"
+                )),
+            ),
+        }
+    } else {
+        (None, None)
     };
+    let steps = past_steps(
+        project,
+        &dir,
+        described.as_ref(),
+        instruction_package.as_ref(),
+    );
     // PO KROKACH, bo gałąź nazywa się kluczem kafelka, a człowiek czyta nazwy. Przed budową
     // struktury, bo `steps` idzie do niej przez przeniesienie.
     let branches = described
@@ -514,12 +535,60 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     // przeczytać, oddaje tu `None` — i to jest ta sama odpowiedź, co dla pliku bez tego klucza:
     // w obu przypadkach po prostu nie wiemy, i tak ma to zabrzmieć na ekranie.
     let reflection = described.as_ref().and_then(|file| file.reflection);
+    let saved_results = described
+        .as_ref()
+        .map(|file| super::result_restore::saved_results(project, &file.id))
+        .transpose()
+        .map_err(|said| HistoryError::ResultsAreKept { said })?
+        .unwrap_or_default();
     let (handoffs, handoffs_said) = match handoffs_of_run(project, &dir) {
         Ok(handed) => (handed, None),
         Err(said) => (Vec::new(), Some(said)),
     };
+    let (result_folders, result_problem) = match super::run::kept_folders_in(&dir) {
+        Ok(folders) => (
+            folders
+                .into_iter()
+                .map(|one| {
+                    let step = steps
+                        .iter()
+                        .find(|step| step.tile == one.work_key)
+                        .map_or_else(|| "Working copy".to_owned(), |step| step.name.clone());
+                    let state = match one.state {
+                        super::run::KeptFolderState::Changed => "changed",
+                        super::run::KeptFolderState::Uncertain => "uncertain",
+                        super::run::KeptFolderState::Incomplete => "incomplete",
+                    }
+                    .to_owned();
+                    ResultFolderWire {
+                        work_key: one.work_key,
+                        step,
+                        path: one.path,
+                        state,
+                    }
+                })
+                .collect(),
+            None,
+        ),
+        Err(error) => (
+            Vec::new(),
+            Some(format!(
+                "Loadout could not read the kept folders: {error}. Nothing was removed."
+            )),
+        ),
+    };
+    let result_problem = match (result_problem, instruction_problem) {
+        (Some(one), Some(other)) => Some(format!("{one} {other}")),
+        (one, other) => one.or(other),
+    };
+    let said = match (head.said, result_problem) {
+        (Some(one), Some(other)) => Some(format!("{one} {other}")),
+        (one, other) => one.or(other),
+    };
 
     Ok(PastRunWire {
+        saved_input,
+        saved_input_said,
         folder: head.folder,
         when: head.when,
         title: head.title,
@@ -533,9 +602,83 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         // fakty złamałoby zasadę jednego miejsca dla jednego faktu (niezmiennik 13).
         handoffs_said,
         branches,
+        result_folders,
+        saved_results,
         reflection,
-        said: head.said,
+        said,
     })
+}
+
+fn saved_input_in(project: &Path, dir: &Path) -> (Option<SavedInputWire>, Option<String>) {
+    match verified_saved_input(project, dir) {
+        Ok(input) => (Some(input), None),
+        Err(detail) => (
+            None,
+            Some(format!(
+                "Saved starting files are unavailable: {detail}. Choose another run."
+            )),
+        ),
+    }
+}
+
+fn verified_saved_input(project: &Path, dir: &Path) -> Result<SavedInputWire, String> {
+    // 2026-09-06: picker nie składa ID z własnej konwencji w JS. Ten sam resolver co replay
+    // sprawdza unikalny katalog i zgodność ID w odczytanych no-follow bajtach run.json.
+    let folder = file_name(dir);
+    let (_, id) = folder
+        .rsplit_once("__")
+        .ok_or_else(|| "this older run has no saved input address".to_owned())?;
+    let source = super::lead_history::source_for(project, id)?;
+    if source.run_folder != folder {
+        return Err("the saved run address no longer matches this folder".to_owned());
+    }
+    let held =
+        crate::engine::supervisor::PublicationRoot::open(dir).map_err(|error| error.to_string())?;
+    let bytes = super::lead_history::source_bytes(project, &source)?;
+    let record: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "the saved description cannot be read".to_owned())?;
+    let expected = record
+        .pointer("/input_snapshot/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "this run did not record its starting files".to_owned())?;
+    if record
+        .pointer("/input_snapshot/manifest")
+        .and_then(Value::as_str)
+        .is_some_and(|manifest| manifest != "input/manifest.json")
+    {
+        return Err("the saved description points to a different input folder".to_owned());
+    }
+    // Ten odczyt sprawdza pełny manifest i wszystkie pliki, nie sam istniejący wpis/UUID.
+    let snapshot = super::input_snapshot::read(dir).map_err(|error| error.to_string())?;
+    if snapshot.id() != expected {
+        return Err("the starting files do not match this run's saved input".to_owned());
+    }
+    held.validate_path_identity(dir)
+        .map_err(|error| error.to_string())?;
+    Ok(SavedInputWire {
+        source_run_id: source.run_id,
+        snapshot_id: snapshot.id().to_owned(),
+    })
+}
+
+/// WF-06: Finder dostaje wyłącznie folder wymieniony przez ten sam rdzeń co historia.
+/// Nie przyjmujemy dowolnej ścieżki z okna i nie rozwiązujemy linku podstawionego pod kopię.
+pub fn result_folder_inner(
+    project: &Path,
+    run: &str,
+    work_key: &str,
+) -> Result<PathBuf, HistoryError> {
+    let dir = one_run_dir(project, run)?;
+    super::run::kept_folders_in(&dir)
+        .map_err(|error| HistoryError::CouldNotOpenResult {
+            said: error.to_string(),
+        })?
+        .into_iter()
+        .find(|one| one.work_key == work_key)
+        .map(|one| one.path)
+        .ok_or_else(|| HistoryError::CouldNotOpenResult {
+            said: "that folder is not a saved result of this run".to_owned(),
+        })
 }
 
 /// Zdejmuje gałęzie, które ten bieg zostawił — i **tylko** jego. Oddaje nazwy tych, których
@@ -561,7 +704,19 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
 /// z nazwy katalogu byłoby drugim źródłem prawdy o tym, jak nazywa się gałąź tego biegu.
 pub fn forget_run_branches_inner(project: &Path, run: &str) -> Result<Vec<String>, HistoryError> {
     let dir = one_run_dir(project, run)?;
-    let Some(prefix) = read_description(&dir).and_then(|file| run_prefix(&file.id)) else {
+    let _held = super::result_restore::removal_guard(&dir).map_err(|error| {
+        HistoryError::ResultsAreKept {
+            said: error.to_string(),
+        }
+    })?;
+    forget_run_branches_while_locked(project, &dir)
+}
+
+fn forget_run_branches_while_locked(
+    project: &Path,
+    dir: &Path,
+) -> Result<Vec<String>, HistoryError> {
+    let Some(prefix) = read_description(dir).and_then(|file| run_prefix(&file.id)) else {
         return Ok(Vec::new());
     };
 
@@ -605,10 +760,60 @@ pub fn forget_run_branches_inner(project: &Path, run: &str) -> Result<Vec<String
 /// biegu), więc po skasowaniu katalogu nie ma z czego go policzyć i gałęzie zostałyby na zawsze,
 /// bez niczego, co je jeszcze wymienia.
 pub fn forget_run_inner(project: &Path, run: &str) -> Result<Vec<String>, HistoryError> {
-    let gone = forget_run_branches_inner(project, run)?;
+    forget_run_with_results_inner(project, run, None)
+}
+
+/// Osobna zgoda zawiera dokładnie obecne ścieżki wyników, nie flagę „force”. Zmiana listy
+/// między pokazaniem a kliknięciem odmawia całej operacji i wymaga świeżego potwierdzenia.
+pub fn forget_run_with_results_inner(
+    project: &Path,
+    run: &str,
+    confirmed: Option<&[PathBuf]>,
+) -> Result<Vec<String>, HistoryError> {
     // Po nazwę katalogu pytamy TĘ SAMĄ funkcję, co wszystko inne w tym module: zapora na
     // wędrówkę po ścieżkach mieszka w jednym miejscu, a ta droga kasuje rekurencyjnie.
     let dir = one_run_dir(project, run)?;
+    if let Some(said) = super::result_restore::removal_blocker(&dir).map_err(|error| {
+        HistoryError::ResultsAreKept {
+            said: error.to_string(),
+        }
+    })? {
+        return Err(HistoryError::ResultsAreKept { said });
+    }
+    if let Some(said) =
+        super::run::copy_lifetime_blocker(&dir).map_err(|error| HistoryError::ResultsAreKept {
+            said: format!("Loadout cannot prove these result folders are safe to remove: {error}"),
+        })?
+    {
+        return Err(HistoryError::ResultsAreKept { said });
+    }
+    let blocked =
+        super::run::retention_blocker(&dir).map_err(|error| HistoryError::ResultsAreKept {
+            said: format!("Loadout cannot prove these result folders are safe to remove: {error}"),
+        })?;
+    if blocked.is_some() || confirmed.is_some() {
+        let said = blocked.unwrap_or_else(|| "The list of saved result folders changed. Open this run again before confirming their removal.".to_owned());
+        if super::run::pending_copy_finalization(&dir).unwrap_or(true) {
+            return Err(HistoryError::ResultsAreKept { said });
+        }
+        let kept =
+            super::run::kept_folders_in(&dir).map_err(|error| HistoryError::ResultsAreKept {
+                said: error.to_string(),
+            })?;
+        let mut expected: Vec<_> = kept.into_iter().map(|one| one.path).collect();
+        expected.sort();
+        let mut confirmed = confirmed.map(<[PathBuf]>::to_vec).unwrap_or_default();
+        confirmed.sort();
+        if confirmed != expected {
+            return Err(HistoryError::ResultsAreKept { said });
+        }
+    }
+    let _held = super::result_restore::removal_guard(&dir).map_err(|error| {
+        HistoryError::ResultsAreKept {
+            said: error.to_string(),
+        }
+    })?;
+    let gone = forget_run_branches_while_locked(project, &dir)?;
     fs::remove_dir_all(&dir).map_err(|error| HistoryError::CouldNotForgetRun {
         path: dir.display().to_string(),
         said: error.to_string(),
@@ -691,6 +896,8 @@ struct Description {
     /// Addytywny receipt T-130. Brak pola w starym pliku jest pustą listą, nie błędem historii.
     #[serde(default)]
     memory: Vec<MemoryDescription>,
+    #[serde(default)]
+    project_instructions: Option<serde_json::Value>,
     /// Rachunek prywatnej tury (T-165). Brak klucza znaczy „ten plik o tym nie mówi", i to jest
     /// inne zdanie niż rachunek zerowy — dlatego `Option`, a nie wartość domyślna struktury.
     #[serde(default)]
@@ -813,6 +1020,59 @@ struct StepDescription {
 }
 
 /// To samo zdanie, które [`crate::engine::line::done_line`] wkłada do widocznego wiersza.
+fn past_steps(
+    project: &Path,
+    dir: &Path,
+    described: Option<&Description>,
+    instruction_package: Option<&crate::inherit::instructions::InstructionSnapshot>,
+) -> Vec<PastStepWire> {
+    match described {
+        Some(file) => file
+            .steps
+            .iter()
+            .map(|step| PastStepWire {
+                id: step.id.clone(),
+                /* Rundy pętli mają wspólny kafelek i różne klucze węzła (`build#2`), więc sufiks
+                 * zdejmuje ta sama warstwa, która go nadała. */
+                tile: crate::commands::run::tile_key_of(&step.node_key).to_owned(),
+                name: step.name.clone(),
+                agent: step.agent.clone(),
+                state: history_state(step),
+                executed: step.executed,
+                summary: step.summary.clone().unwrap_or_default(),
+                error: step.error.clone().unwrap_or_default(),
+                ran_without: step.ran_without.clone(),
+                cost_usd: step.cost_usd,
+                context_per_turn: recorded_context_per_turn(step),
+                memory: memory_for_step(&file.memory, &step.id),
+                project_instructions: instruction_package
+                    .filter(|package| {
+                        step.executed == Some(true)
+                            && package.for_step(crate::commands::run::tile_key_of(&step.node_key))
+                    })
+                    .map_or_else(
+                        Vec::new,
+                        crate::inherit::instructions::InstructionSnapshot::sources,
+                    ),
+                what_loadout_did_not_give: what_loadout_did_not_give(
+                    step.loaded_by_the_app.as_ref(),
+                ),
+                loaded_by_the_app: step.loaded_by_the_app.clone(),
+                lines: recorded_lines(
+                    dir,
+                    &step.id,
+                    &step.name,
+                    step.effective
+                        .as_ref()
+                        .map_or("", |one| one.runs_with.as_str()),
+                    Some((project, &file.id, &step.node_key)),
+                ),
+            })
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
 fn recorded_context_per_turn(step: &StepDescription) -> Option<String> {
     let effective_vendor = step
         .effective
@@ -1179,11 +1439,15 @@ impl Transcript {
 /// w całości. Wzór był bez jednego wyjątku, więc połowa historii tego biegu była niewidoczna.
 ///
 /// Nieznany albo pusty vendor czyta się Claude'em — dokładnie tak, jak czytał się do dziś.
-fn recorded_lines(run_dir: &Path, step: &str, agent: &str, vendor: &str) -> Vec<Line> {
+fn recorded_lines(
+    run_dir: &Path,
+    step: &str,
+    agent: &str,
+    vendor: &str,
+    messages: Option<(&Path, &str, &str)>,
+) -> Vec<Line> {
     let path = run_dir.join(LOGS_DIR).join(format!("agent-{step}.jsonl"));
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
 
     let mut decoder = Transcript::for_vendor(vendor);
     let mut curator = Curator::new();
@@ -1207,6 +1471,16 @@ fn recorded_lines(run_dir: &Path, step: &str, agent: &str, vendor: &str) -> Vec<
     // Ostatnia grupa sklejania nie wyszłaby bez tego nigdy — czyli człowiek zobaczyłby o wiersz
     // mniej, niż się wydarzyło. Najgorszy rodzaj zgubienia, bo cichy.
     out.extend(curator.flush());
+    if let Some((project, run_id, node_key)) = messages {
+        match crate::bridge::messages::history(project, run_dir, run_id, node_key) {
+            Ok(lines) => out.extend(lines),
+            Err(error) => out.push(Line::Problem {
+                agent: agent.to_owned(),
+                text: format!("The saved messages could not be read safely: {error}"),
+                resets_at: None,
+            }),
+        }
+    }
     out
 }
 

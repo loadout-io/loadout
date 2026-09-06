@@ -190,6 +190,73 @@ function changedChip(html: string): number | null {
 }
 
 describe('editing a step edits the step, and the agent it inherits from stays where it was', () => {
+  it('treats an absent messages choice as off when returning to the inherited value', () => {
+    const agent = forge();
+    const store = createWorkflowStore(workflowIo(), file({}));
+    store.getState().editStep('s_build', agent, { agentMessages: true });
+    expect(agentStep(store.getState().document, 's_build').overrides).toEqual({
+      agentMessages: true,
+    });
+    store.getState().editStep('s_build', agent, { agentMessages: false });
+    expect(agentStep(store.getState().document, 's_build').overrides).toEqual({});
+  });
+  it('keeps a messages choice on this step and leaves its parent agent unchanged', () => {
+    const agent = forge();
+    agent.agentMessages = true;
+    const original = structuredClone(agent);
+    const io = workflowIo();
+    const store = createWorkflowStore(io, file({}));
+    store.getState().editStep('s_build', agent, { agentMessages: false });
+    const step = agentStep(store.getState().document, 's_build');
+    expect(step.overrides).toEqual({ agentMessages: false });
+    expect(agent).toEqual(original);
+    expect(io.savedAgents).toEqual([]);
+    const html = renderToStaticMarkup(
+      <StepPanel
+        step={step}
+        agent={agent}
+        agents={[agent]}
+        onChooseAgent={noop}
+        onCreateAgent={noop}
+        onEdit={noop}
+        onEditStep={noop}
+        onReset={noop}
+      />,
+    );
+    expect(html).toContain('Allow messages between steps');
+    expect(html).not.toMatch(/aria-label="Allow messages between steps"[^>]*checked/);
+  });
+  it('keeps a reduced app permission on the step and shows what remains allowed', () => {
+    const agent = forge();
+    agent.serviceAccess = [{ service: 's_preview', operations: ['read', 'stop'] }];
+    const untouched = structuredClone(agent);
+    const io = workflowIo();
+    const store = createWorkflowStore(io, file({}));
+    store.getState().editStep('s_build', agent, {
+      serviceAccess: [{ service: 's_preview', operations: ['read'] }],
+    });
+    const step = agentStep(store.getState().document, 's_build');
+    expect(step.overrides).toEqual({
+      serviceAccess: [{ service: 's_preview', operations: ['read'] }],
+    });
+    expect(agent).toEqual(untouched);
+    expect(io.savedAgents).toEqual([]);
+    const html = renderToStaticMarkup(
+      <StepPanel
+        step={step}
+        agent={agent}
+        agents={[agent]}
+        onChooseAgent={noop}
+        onCreateAgent={noop}
+        onEdit={noop}
+        onEditStep={noop}
+        onReset={noop}
+      />,
+    );
+    expect(html).toContain('Apps this step may use');
+    expect(html).toMatch(/aria-label="Read s_preview"[^>]*checked/);
+    expect(html).not.toMatch(/aria-label="Stop s_preview"[^>]*checked/);
+  });
   it('writes the difference onto the step and touches the agent by neither of the two roads', async () => {
     const library = agentsIo([forge()]);
     const agents = createAgentsStore(library);

@@ -23,6 +23,7 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useSyncExternalStore } from 'react';
+import { anyRunIsActive, subscribeToRunActivity } from '../../../state/run';
 import { saidOf } from '../entry/echo';
 import { runFeed } from '../feed/live';
 import type { RailCard } from './card';
@@ -34,6 +35,7 @@ import {
   openedStarted,
   railGroups,
   refreshStarted,
+  serviceLifetimeSentence,
   startedThings,
   stopStarted,
   subscribeToStarted,
@@ -109,6 +111,11 @@ export function StartedThings(): ReactElement {
    * istnieje. Ten sam zapis stoi w `../session/mount.tsx` i w `../index.tsx`. */
   const started = useSyncExternalStore(subscribeToStarted, startedThings, startedThings);
   const opened = useSyncExternalStore(subscribeToStarted, openedStarted, openedStarted);
+  const workflowIsActive = useSyncExternalStore(
+    subscribeToRunActivity,
+    anyRunIsActive,
+    anyRunIsActive,
+  );
 
   /* PIERWSZE PYTANIE IDZIE ZAWSZE I OD RAZU, nie po sekundzie i nie warunkowo: po przeładowaniu
    * okna magazyn jest pusty, a rejestr po tamtej stronie granicy żyje dalej i wie o wszystkim,
@@ -119,7 +126,7 @@ export function StartedThings(): ReactElement {
    * wołają tędy ani jednego `invoke` — grupa sądzona jest wtedy za to, co jej podano. */
   useEffect(() => {
     void refreshStarted();
-  }, []);
+  }, [workflowIsActive]);
 
   /**
    * Czy jest jeszcze o co pytać: coś stoi na liście albo człowiek patrzy w czyjeś wyjście.
@@ -128,7 +135,7 @@ export function StartedThings(): ReactElement {
    * na liście: to `looking` w `refreshStarted` decyduje, o czyje wyjście pytamy, więc cisza przy
    * otwartym panelu byłaby panelem, który przestał dostawać nowe wiersze.
    */
-  const somethingToAskAbout = started.length > 0 || opened !== null;
+  const somethingToAskAbout = started.length > 0 || opened !== null || workflowIsActive;
 
   /* ODŚWIEŻANIE JEST JEDYNĄ DROGĄ, KTÓRĄ TA GRUPA DOWIADUJE SIĘ O ŚMIERCI. Rzecz uruchomiona
    * komendą nie jest agentem i nie ma w strumieniu czego pisać (niezmiennik 17), więc kanał
@@ -139,11 +146,10 @@ export function StartedThings(): ReactElement {
    * końca życia okna, więc `list_processes` przechodziło granicę raz na sekundę także wtedy, gdy
    * nic nie biegło: godzina otwartego okna to 3600 pytań o pustą listę.
    *
-   * CISZA NAD PUSTĄ LISTĄ NICZEGO NIE GUBI, bo do tego rejestru nie ma jak nic wejść bez tego
-   * okna: jedynym wołającym `start_process` jest `startFromLine` (`./processes.ts`), a ono
-   * dopisuje wpis SAMO i publikuje — czyli odstęp wstaje w tej samej chwili, w której powstaje
-   * pierwsza rzecz do pilnowania. Stan sprzed przeładowania okna wraca pytaniem przy montażu,
-   * wyżej. */
+   * WF-25 (2026-09-05): Serve może dopisać usługę już PO pustym odczycie przy montażu.
+   * Pytamy więc także w czasie dowolnego biegu, nie tylko aktywnego workspace. Zmiana
+   * aktywności zadaje jedno pytanie od razu: koniec szybszy od tyknięcia nie gubi preview.
+   * Puste okno bez workflow nadal nie utrzymuje odstępu. */
   useEffect(() => {
     /* `undefined`, nie gołe `return`: obie gałęzie tej funkcji oddają wartość, więc bramka typów
        (`noImplicitReturns`) nie ma o co pytać. */
@@ -275,6 +281,7 @@ function StartedTile({ card, held }: { card: RailCard; held: Held | null }): Rea
  * biegnących człowiek czyta jedną i patrzy na drugą.
  */
 function StartedOutput({ held }: { held: Held }): ReactElement {
+  const lifetime = serviceLifetimeSentence(held);
   return (
     /* `.enter`: ten panel POJAWIA sie po kliknieciu w kafelek. Sprezyna wylacznie na wejsciu
        (DESIGN §7) i wylacznie na tej jednej powierzchni — jeden region na jedno zdarzenie. */
@@ -306,6 +313,22 @@ function StartedOutput({ held }: { held: Held }): ReactElement {
             tego samego zdania. `.value`, bo komenda jest wartoscia maszynowa — do przepisania
             znak w znak, wiec kroj wchodzi razem ze stopniem (DESIGN §4), a nie obok niego. */}
         <p className="value pb-[9px]">{held.command}</p>
+        {held.cwd == null ? null : (
+          <dl className="pb-[9px]">
+            <dt className="font-mono text-label text-muted">Working folder</dt>
+            <dd className="value break-words">{held.cwd}</dd>
+          </dl>
+        )}
+        {lifetime === null ? null : <p className="pb-[9px] text-body">{lifetime}</p>}
+        {held.readiness == null ? null : (
+          <p className="pb-[9px] text-body">{held.readiness.message}</p>
+        )}
+        {(held.endpoints ?? []).map((endpoint) => (
+          <dl key={endpoint.name} className="pb-[9px]">
+            <dt className="font-mono text-label text-muted">{endpoint.name}</dt>
+            <dd className="value break-words">{endpoint.url}</dd>
+          </dl>
+        ))}
         {held.said === '' ? (
           /* PUSTKA MÓWI, ŻE JEST PUSTA, i mówi to zdaniem, nie kreską: rzecz, która jeszcze nic
              nie napisała, wygląda tak samo jak panel, który nie umie nic pokazać. */

@@ -89,6 +89,7 @@ import type { CheckFields } from './check-panel';
 import { CheckPanel } from './check-panel';
 import { CheckpointPanel } from './checkpoint-panel';
 import { MoreSettings } from './more-settings';
+import { StepAppPermissions } from './step-app-permissions';
 import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
 import { BorrowRow, borrowRowStands, nothingBorrowed, useHostMaterial } from './borrow-row';
@@ -100,7 +101,15 @@ import { WhereItWorks } from './where-it-works';
 export type AgentStepFields = Partial<
   Pick<
     AgentStep,
-    'name' | 'instructions' | 'copies' | 'weight' | 'folder' | 'whenItFails' | 'borrow' | 'handover'
+    | 'name'
+    | 'instructions'
+    | 'copies'
+    | 'weight'
+    | 'folder'
+    | 'whenItFails'
+    | 'borrow'
+    | 'handover'
+    | 'projectInstructions'
   >
 >;
 
@@ -111,7 +120,19 @@ export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>
  *
  * `folder` DOSZŁO 2026-08-23, po pierwszym prawdziwym użyciu: dla serwera to nie jest szczegół,
  * tylko treść. Powód w całości stoi przy `OFFERS` w `./serve-panel.tsx`. */
-export type ServeFields = Partial<Pick<ServeStep, 'name' | 'command' | 'folder' | 'commandFrom'>>;
+export type ServeFields = Partial<
+  Pick<
+    ServeStep,
+    | 'name'
+    | 'command'
+    | 'folder'
+    | 'commandFrom'
+    | 'readiness'
+    | 'endpoints'
+    | 'lifetime'
+    | 'startWhen'
+  >
+>;
 
 /* WARTOWNIKA `create-a-new-agent` TU JUŻ NIE MA, i to jest skutek, nie przeoczenie.
  *
@@ -219,6 +240,10 @@ function agentUses(field: OverridableField, agent: Agent): string {
       return agent.skills.length === 0 ? 'none' : agent.skills.join(', ');
     case 'connections':
       return agent.connections.length === 0 ? 'none' : agent.connections.join(', ');
+    case 'serviceAccess':
+      return agent.serviceAccess?.map((grant) => grant.service).join(', ') || 'No apps allowed';
+    case 'agentMessages':
+      return agent.agentMessages ? 'Messages allowed' : 'Messages off';
     case 'instructions':
       return agent.instructions;
     case 'model':
@@ -234,6 +259,8 @@ const HAS_A_ROW: readonly OverridableField[] = [
   'fileAccess',
   'giveUpAfterMinutes',
   'writeResultsTo',
+  'serviceAccess',
+  'agentMessages',
 ];
 
 /** Zmienione ustawienia, które nie mają własnej kontrolki w żadnym wierszu panelu.
@@ -820,6 +847,7 @@ export function StepPanel({
    * „1 changed", a człowiek nie miałby jak zobaczyć CZEGO ani jak to cofnąć. */
   const grey = noRowOfTheirOwn(changed);
   const brought = more ?? [];
+  const apps = (agent.serviceAccess?.length ?? 0) > 0 || changed.includes('serviceAccess');
 
   return (
     <>
@@ -848,7 +876,10 @@ export function StepPanel({
       {/* WSZYSTKO PONIŻEJ MA DZIAŁAJĄCĄ WARTOŚĆ DOMYŚLNĄ ALBO DZIEDZICZONĄ Z AGENTA, więc krok,
           którego nikt tu nie tknął, biegnie poprawnie. To jest cały warunek, pod którym wolno
           to schować: za pokrywą nie stoi ani jedno pole, które trzeba wypełnić, żeby ruszyć. */}
-      <MoreSettings inside={3 + grey.length + brought.length} changed={changed.length}>
+      <MoreSettings
+        inside={3 + grey.length + brought.length + (apps ? 1 : 0)}
+        changed={changed.length}
+      >
         <div data-row="can-it-change-files" className="stack">
           <div className="flex items-baseline gap-2">
             <label htmlFor="step-file-access" className="label">
@@ -927,6 +958,30 @@ export function StepPanel({
           {wasUsing('writeResultsTo')}
         </div>
 
+        {apps ? (
+          <div className="stack" data-row="serviceAccess">
+            <StepAppPermissions
+              ceiling={agent.serviceAccess ?? []}
+              value={effective.serviceAccess ?? []}
+              onChange={(serviceAccess) => onEdit({ serviceAccess })}
+            />
+            {mark('serviceAccess')}
+            {wasUsing('serviceAccess')}
+          </div>
+        ) : null}
+        <div className="stack" data-row="agentMessages">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label="Allow messages between steps"
+              checked={effective.agentMessages ?? false}
+              onChange={(event) => onEdit({ agentMessages: event.target.checked })}
+            />
+            Allow messages between steps
+          </label>
+          {mark('agentMessages')}
+          {wasUsing('agentMessages')}
+        </div>
         {grey.map((field) => (
           <div key={field} data-row={field} className="flex items-baseline gap-2">
             {mark(field)}
@@ -1044,6 +1099,7 @@ export interface PanelForStepProps {
   stepBefore?: string | null | undefined;
   handsItOver?: boolean | undefined;
   onAskTheStepBefore?: (() => void) | undefined;
+  commandProducers?: import('./serve-panel').ServePanelProps['commandProducers'];
   /**
    * Zmiana pola kafelka „sprawdź". Brak propsu znaczy „ten ekran sprawdzenia nie edytuje".
    *
@@ -1100,6 +1156,7 @@ export function PanelForStep({
   stepBefore,
   handsItOver,
   onAskTheStepBefore,
+  commandProducers,
   onEditCheck,
   onReset,
   onChooseSkills,
@@ -1131,6 +1188,7 @@ export function PanelForStep({
           stepBefore={stepBefore}
           handsItOver={handsItOver}
           onAskTheStepBefore={onAskTheStepBefore}
+          commandProducers={commandProducers}
         />
       </div>
     );
@@ -1226,6 +1284,34 @@ function AgentPanel({
   );
 
   more.push(<HeavyRow key="heavy" value={step.weight} onEditStep={onEditStep} />);
+  more.push(
+    <div key="project-instructions" className="stack" data-gap="2">
+      <label className="label" htmlFor="step-project-instructions">
+        Project instructions
+      </label>
+      <select
+        id="step-project-instructions"
+        className="field"
+        value={
+          step.projectInstructions == null ? 'inherit' : step.projectInstructions ? 'on' : 'off'
+        }
+        onChange={(event) => {
+          onEditStep({
+            projectInstructions:
+              event.target.value === 'inherit' ? undefined : event.target.value === 'on',
+          });
+        }}
+      >
+        <option value="inherit">Use project choice</option>
+        <option value="on">Always use</option>
+        <option value="off">Do not use</option>
+      </select>
+      <p className="caption">
+        The project sources and limits are shown in Settings. This changes only the text supplied by
+        Loadout, not what the agent app loads itself.
+      </p>
+    </div>,
+  );
 
   /* CO TEN KROK PŁACI NASTĘPNEMU. Stoi zaraz za „co, gdy nie przejdzie", bo obie odpowiedzi
      dotyczą tego samego: co wychodzi z tego kafelka i co dostaje ten za nim. Powód, dla którego

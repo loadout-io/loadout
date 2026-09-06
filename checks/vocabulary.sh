@@ -29,7 +29,7 @@ cd "$ROOT"
 command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH" >&2; exit 2; }
 
 exec python3 - "$@" <<'PY'
-import json, os, re, sys
+import json, os, re, subprocess, sys
 
 ROOT = os.getcwd()
 BASELINE = os.path.join(ROOT, "checks", "vocabulary-baseline.json")
@@ -121,34 +121,7 @@ FE_EXT = (".ts", ".tsx")
 RS_DIR = os.path.join("src-tauri", "src")
 FE_DIR = "src"
 
-_STR = re.compile(r"""(['"`])((?:\\.|(?!\1)[^\\])*)\1""")
-_JSX_TEXT = re.compile(r">([^<>{}]{3,})<")
-_ATTR = re.compile(
-    r"""\b(?:aria-[a-z]+|title|placeholder|alt|label)\s*=\s*(?:\{\s*)?["']([^"']+)["']""", re.I)
 _RS_MSG = re.compile(RUST_ERROR_ENUMS + r"::\w+\(\s*(?:format!\()?\s*\"([^\"]{4,})\"")
-
-
-def prose(value):
-    """Czy ten string może być zdaniem dla człowieka, a nie identyfikatorem/ścieżką/klasą."""
-    if not re.search(r"\s", value):
-        return False              # jedno słowo: nazwa klasy, klucz, event name
-    if re.match(r"^[./#@]", value):
-        return False              # ścieżka, selektor, import
-    if not re.search(r"[a-z]{3}", value, re.I):
-        return False
-    return True
-
-
-def visible_ts(source):
-    """Tekst, który użytkownik może zobaczyć w pliku .ts/.tsx."""
-    # Komentarze najpierw. Apostrof w polskim komentarzu otwiera fikcyjny literał
-    # i połyka kilkaset znaków kodu, po czym cały komentarz czyta się jak copy.
-    text = re.sub(r"/\*[\s\S]*?\*/", " ", source)
-    text = re.sub(r"^\s*//.*$", " ", text, flags=re.M)
-    out = [m.group(2) for m in _STR.finditer(text) if prose(m.group(2))]
-    out += [m.group(1).strip() for m in _JSX_TEXT.finditer(text) if prose(m.group(1))]
-    out += [m.group(1) for m in _ATTR.finditer(text)]
-    return out
 
 
 def visible_rs(source):
@@ -167,13 +140,26 @@ def scan():
     hits, scanned, seen = [], 0, set()
     sources = []
     if os.path.isdir(FE_DIR):
-        sources += [(p, visible_ts) for p in walk(FE_DIR, FE_EXT)]
+        # D5 dotyczy produktu, nie opisów testów i ich sztucznych danych. Produkcyjne
+        # komponenty importowane przez test są nadal skanowane we własnym pliku.
+        frontend = [p for p in walk(FE_DIR, FE_EXT)
+                    if not re.search(r"\.(test|spec)\.tsx?$", p)]
+        result = subprocess.run(["node", "checks/vocabulary-ts.cjs"],
+                                input=json.dumps(frontend), text=True, capture_output=True)
+        if result.returncode:
+            print(result.stderr, file=sys.stderr)
+            sys.exit(2)
+        extracted = json.loads(result.stdout)
+        sources += [(p, None) for p in frontend]
     if os.path.isdir(RS_DIR):
         sources += [(p, visible_rs) for p in walk(RS_DIR, (".rs",))]
     for path, extract in sources:
         scanned += 1
-        with open(os.path.join(ROOT, path), encoding="utf-8", errors="replace") as fh:
-            lines = extract(fh.read())
+        if extract is None:
+            lines = extracted[path]
+        else:
+            with open(os.path.join(ROOT, path), encoding="utf-8", errors="replace") as fh:
+                lines = extract(fh.read())
         for line in lines:
             for rx, pat, repl in BANNED:
                 if rx.search(line):

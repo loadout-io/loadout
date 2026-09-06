@@ -46,6 +46,8 @@
 import type { ReactElement } from 'react';
 import type { Agent, Tools } from '../../state/agents';
 import { capability } from './capabilities';
+import { SkillSourcePicker } from '../skills/source-picker';
+import { AppPermissions } from './app-permissions';
 
 export interface MoreSettingsProps {
   value: Agent;
@@ -132,6 +134,7 @@ export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactEleme
           title={skills === 'approximate' ? APPROXIMATE : undefined}
           onChange={(event) => onChange({ ...value, skills: listOf(event.target.value) })}
         />
+        <SkillSourcePicker value={value} onChange={onChange} />
       </div>
 
       <div className="stack">
@@ -149,6 +152,15 @@ export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactEleme
           onChange={(event) => onChange({ ...value, connections: listOf(event.target.value) })}
         />
       </div>
+      <AppPermissions value={value} onChange={onChange} />
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={value.agentMessages ?? false}
+          onChange={(event) => onChange({ ...value, agentMessages: event.target.checked })}
+        />
+        Allow messages between steps
+      </label>
     </div>
   );
 }

@@ -31,6 +31,8 @@ export const OVERRIDABLE: readonly OverridableField[] = [
   'tools',
   'skills',
   'connections',
+  'serviceAccess',
+  'agentMessages',
   'writeResultsTo',
 ];
 
@@ -105,6 +107,12 @@ export function capture(agent: Agent, edited: Agent): Overrides {
    * wypłynąć do patcha, choćby się różniły. Krok, który przestawia vendora, unieważnia połowę
    * reszty [T4 §6.4], a krok, który nadpisuje `id`, nazywa innego agenta. */
   for (const field of OVERRIDABLE) {
+    if (field === 'agentMessages') {
+      if ((agent.agentMessages ?? false) !== (edited.agentMessages ?? false)) {
+        patch.agentMessages = edited.agentMessages ?? false;
+      }
+      continue;
+    }
     if (!same(agent[field], edited[field])) put(patch, field, edited[field]);
   }
 

@@ -14,6 +14,42 @@
  */
 
 /** Wiersz, który niesie tylko tekst. Cztery rodzaje mają dokładnie ten kształt. */
+/** Lustro ServiceRef z commands/processes.rs: serde zachowuje klucze snake_case. */
+export interface StartedServiceReference {
+  readonly workspace: string;
+  readonly run_id: string;
+  readonly node_key: string;
+  readonly service_id: string;
+  readonly generation: number;
+}
+
+/** Addytywne lustro StartedWire. Starsze odpowiedzi nie znały właściciela ani folderu. */
+export interface StartedProcessWire {
+  readonly pgid: number;
+  readonly command: string;
+  readonly alive: boolean;
+  readonly said: string | null;
+  readonly service?: StartedServiceReference | null;
+  readonly readiness?: ServiceReadinessWire | null;
+  readonly endpoints?: readonly ServiceEndpointWire[];
+  readonly cwd?: string | null;
+  readonly lifetime?: 'window' | 'run' | 'unknown';
+}
+
+export interface ServiceReadinessWire {
+  readonly state: 'waiting' | 'ready' | 'failed' | 'stopped' | 'unknown';
+  readonly message: string;
+}
+
+export interface ServiceEndpointWire {
+  readonly service: StartedServiceReference;
+  readonly name: string;
+  readonly host: string;
+  readonly port: number;
+  readonly url: string;
+  readonly state: ServiceReadinessWire['state'];
+}
+
 interface Says<K extends string> {
   kind: K;
   agent: string;
@@ -21,7 +57,67 @@ interface Says<K extends string> {
 }
 
 /** Jeden wiersz historii — jedyna rzecz, którą dostaje widok. */
+export interface RunRequested {
+  kind: 'runRequested';
+  agent: string;
+  text: string;
+  requestId: string;
+  conversationId: string;
+  workspace: string;
+  title: string;
+  fileName: string;
+  steps: Array<{
+    id: string;
+    name: string;
+    kind: 'agent' | 'checkpoint' | 'check' | 'serve';
+    at: { x: number; y: number };
+    weight: 'ordinary' | 'heavy';
+  }>;
+  links: Array<{ from: string; to: string; maxTurns?: number }>;
+}
+
+/** Odczytany fakt ma źródło w konkretnym workspace, nie w aktualnie wybranej karcie. */
+export interface RunSource {
+  workspace: string;
+  runId: string;
+  runFolder: string;
+  observedAt: string;
+}
+
+export interface StepSession {
+  readonly runId: string;
+  readonly nodeKey: string;
+  readonly agent: string;
+  readonly canReceive: boolean;
+  readonly finished: boolean;
+}
+
+export interface StepMessageReply {
+  readonly runId: string;
+  readonly nodeKey: string;
+  readonly result:
+    | 'acceptedBySession'
+    | 'unsupportedDuringRun'
+    | 'recipientFinished'
+    | 'noSuchStep'
+    | 'staleRun'
+    | 'disconnected'
+    | 'fixedInputs';
+  readonly said: string;
+}
+
 export type Line =
+  | RunRequested
+  | (Says<'runSource'> & RunSource)
+  | (Says<'messageStored'> & {
+      runId: string;
+      sequence: number;
+      fromNode: string;
+      toNode: string;
+      body: string;
+    })
+  | ({ kind: 'stepSession' } & StepSession)
+  | { kind: 'questionAnswered'; agent: string; runId: string; checkpointId: string; answer: string }
   | Says<'run'>
   | Says<'step'>
   | Says<'agent'>
@@ -112,7 +208,7 @@ export type Line =
       detail: string[];
       detailId: number | null;
     }
-  | { kind: 'asked'; agent: string; text: string; options: string[] }
+  | { kind: 'asked'; agent: string; text: string; options: string[]; question?: QuestionAddress }
   | { kind: 'memory'; agent: string; text: string; path: string }
   | { kind: 'problem'; agent: string; text: string; resetsAt: number | null }
   | {
@@ -135,12 +231,38 @@ export type Line =
 /** Czy jedna wartość z drutu ma kształt, którego lustro się po niej spodziewa. */
 type Field = (value: unknown) => boolean;
 
+/** Host-issued reply identity; the UI row number never authorizes a mutation. */
+export interface QuestionAddress {
+  readonly questionId: string;
+  readonly runId: string | null;
+  readonly checkpointId: string | null;
+  readonly operation: string;
+}
+
+export interface CheckpointReply {
+  readonly runId: string;
+  readonly checkpointId: string;
+  readonly result: 'answerAccepted' | 'staleRun' | 'staleQuestion';
+  readonly said: string;
+}
+
 const str: Field = (value) => typeof value === 'string';
 /* `Number.isFinite`, nie samo `typeof`: `NaN` i `Infinity` są w JS liczbami, a w JSON-ie nie
  * istnieją — jeśli któreś tu dotarło, to nie przyszło z serde i nie jest tym, na co patrzymy. */
 const num: Field = (value) => typeof value === 'number' && Number.isFinite(value);
 const flag: Field = (value) => typeof value === 'boolean';
 const strs: Field = (value) => Array.isArray(value) && value.every(str);
+const questionAddress: Field = (value) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const one = value as Record<string, unknown>;
+  return (
+    Object.keys(one).length === 4 &&
+    str(one['questionId']) &&
+    str(one['operation']) &&
+    (one['runId'] === null || str(one['runId'])) &&
+    (one['checkpointId'] === null || str(one['checkpointId']))
+  );
+};
 /* `Option<T>` z Rusta jedzie na drut jako `null`, nigdy jako brak klucza — i na tej różnicy
  * stoi całe odrzucanie mutantów niżej: `detailId: null` jest poprawne, a wiersz BEZ `detailId`
  * nie jest, choćby niósł `detail_id` z dokładnie tą samą wartością. */
@@ -161,6 +283,10 @@ const SAYS: Readonly<Record<string, Field>> = { agent: str, text: str };
  */
 const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
   ['run', SAYS],
+  ['runSource', { ...SAYS, workspace: str, runId: str, runFolder: str, observedAt: str }],
+  ['messageStored', { ...SAYS, runId: str, sequence: num, fromNode: str, toNode: str, body: str }],
+  ['stepSession', { agent: str, runId: str, nodeKey: str, canReceive: flag, finished: flag }],
+  ['questionAnswered', { agent: str, runId: str, checkpointId: str, answer: str }],
   ['step', SAYS],
   ['agent', SAYS],
   ['thinking', { agent: str }],
@@ -204,6 +330,46 @@ const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
    * przez przypadek — a lustro porównuje ZESTAW kluczy co do jednego, więc wiersz bez niego ma
    * zostać porzucony głośno, a nie zinterpretowany po cichu. */
   ['suggested', { agent: str, text: str, command: str, auto: flag }],
+  [
+    'runRequested',
+    {
+      agent: str,
+      text: str,
+      requestId: str,
+      conversationId: str,
+      workspace: str,
+      title: str,
+      fileName: str,
+      steps: (value: unknown) =>
+        Array.isArray(value) &&
+        value.every((one: unknown) => {
+          if (typeof one !== 'object' || one === null) return false;
+          const step = one as Record<string, unknown>;
+          const at = step['at'];
+          return (
+            str(step['id']) &&
+            str(step['name']) &&
+            ['agent', 'checkpoint', 'check', 'serve'].includes(String(step['kind'])) &&
+            ['ordinary', 'heavy'].includes(String(step['weight'])) &&
+            typeof at === 'object' &&
+            at !== null &&
+            num((at as Record<string, unknown>)['x']) &&
+            num((at as Record<string, unknown>)['y'])
+          );
+        }),
+      links: (value: unknown) =>
+        Array.isArray(value) &&
+        value.every((one: unknown) => {
+          if (typeof one !== 'object' || one === null) return false;
+          const link = one as Record<string, unknown>;
+          return (
+            str(link['from']) &&
+            str(link['to']) &&
+            (link['maxTurns'] === undefined || num(link['maxTurns']))
+          );
+        }),
+    },
+  ],
   ['asked', { agent: str, text: str, options: strs }],
   ['handoff', SAYS],
   ['memory', { agent: str, text: str, path: str }],
@@ -263,7 +429,13 @@ export function parseLine(value: unknown): Line | null {
   if (typeof kind !== 'string') {
     return null;
   }
-  const shape = SHAPES.get(kind);
+  const originalShape = SHAPES.get(kind);
+  // Both explicit wire versions stay strict: old Asked has no binding, new Asked has exactly
+  // this one additional validated field. No permissive unknown-field fallback.
+  const shape =
+    kind === 'asked' && Object.hasOwn(row, 'question') && originalShape !== undefined
+      ? { ...originalShape, question: questionAddress }
+      : originalShape;
   if (shape === undefined) {
     return null;
   }

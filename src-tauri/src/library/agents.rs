@@ -205,6 +205,25 @@ pub enum Color {
 /// w każdym `git diff`.
 pub type VendorOptions = BTreeMap<String, BTreeMap<String, String>>;
 
+/// WF-28: zamrożone prawo do konkretnej konfiguracji usługi, nie do dowolnej powłoki.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceGrant {
+    pub service: String,
+    pub operations: Vec<ServiceOperation>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceOperation {
+    Read,
+    Start,
+    Restart,
+    Stop,
+    #[serde(other)]
+    Unknown,
+}
+
 /// Domyślna wartość [`Agent::reaches_the_web`] — powód stoi przy tym polu.
 ///
 /// Funkcja, a nie `#[serde(default)]`, bo `bool` domyśla się `false`. Bez niej ta domyślna
@@ -294,6 +313,11 @@ pub struct Agent {
     pub skills: Vec<String>,
     /// Nazwy serwerów narzędziowych. W interfejsie: `Connections`.
     pub connections: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_access: Vec<ServiceGrant>,
+    /// Brak pola nie przyznaje komunikacji; działający krok dostaje zamrożoną decyzję.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_messages: bool,
     /// Ścieżka pliku pamięci; `""` znaczy „nigdzie". Ustawiane **na kroku**, nie w tym
     /// formularzu — ścieżka wyniku należy do kroku, nie do roli (`docs/mockup/index.html`,
     /// panel kroku). W typie zostaje, bo krok nadpisuje pole, którego szablon musi mieć.
@@ -335,6 +359,8 @@ impl Agent {
             reaches_the_web: reaching_the_web(),
             skills: Vec::new(),
             connections: Vec::new(),
+            service_access: Vec::new(),
+            agent_messages: false,
             write_results_to: "handoffs/build.md".to_string(),
             // Pusta i taka ma zostać: niepusta przelotka dokłada szesnasty klucz, a piętnaście
             // jest tu liczbą, nie zaokrągleniem (kryterium 1).
@@ -370,6 +396,10 @@ pub struct Overrides {
     pub skills: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_access: Option<Vec<ServiceGrant>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_messages: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_results_to: Option<String>,
 }
@@ -446,6 +476,15 @@ pub enum AgentError {
 /// kluczy patcha. Wariant „pełna kopia agenta na kroku" (T4 §4.1 A) byłby prostszy
 /// i **fałszywy**: edycja szablonu nigdy nie dotarłaby do workflow.
 pub fn resolve(base: &Agent, overrides: &Overrides) -> Result<Resolved, serde_json::Error> {
+    if overrides
+        .service_access
+        .as_ref()
+        .is_some_and(|requested| !service_access_within(requested, &base.service_access))
+    {
+        return Err(<serde_json::Error as serde::de::Error>::custom(
+            "This step asks for app permissions its agent was not given. Change the agent's app permissions first, or reduce this step's permissions.",
+        ));
+    }
     let patch = serde_json::to_value(overrides)?;
     let mut doc = serde_json::to_value(base)?;
     merge(&mut doc, &patch);
@@ -461,6 +500,20 @@ pub fn resolve(base: &Agent, overrides: &Overrides) -> Result<Resolved, serde_js
     Ok(Resolved {
         agent: serde_json::from_value(doc)?,
         changed,
+    })
+}
+
+/// Ten sam sufit dla nadpisania kroku i Recorded replay; nie ma wildcardów ani prawa domyślnego.
+#[must_use]
+pub fn service_access_within(requested: &[ServiceGrant], ceiling: &[ServiceGrant]) -> bool {
+    requested.iter().all(|grant| {
+        !grant.service.is_empty()
+            && grant.operations.iter().all(|operation| {
+                *operation != ServiceOperation::Unknown
+                    && ceiling.iter().any(|allowed| {
+                        allowed.service == grant.service && allowed.operations.contains(operation)
+                    })
+            })
     })
 }
 
@@ -498,7 +551,7 @@ fn merge(target: &mut Value, patch: &Value) {
 /// przestawia vendora, unieważnia połowę reszty, `tools` na czele [T4 §6.4]. Ta lista jest
 /// filtrem wykonywanym na **wyprodukowanym patchu**, a nie komentarzem obok pętli: sama
 /// długość niczego nie pilnuje, bo `retain`, którego nikt nie zawołał, też ma dziewięć pozycji.
-const OVERRIDABLE: [&str; 9] = [
+const OVERRIDABLE: [&str; 11] = [
     "instructions",
     "model",
     "thinking",
@@ -507,6 +560,8 @@ const OVERRIDABLE: [&str; 9] = [
     "tools",
     "skills",
     "connections",
+    "serviceAccess",
+    "agentMessages",
     "writeResultsTo",
 ];
 
@@ -525,6 +580,14 @@ pub fn capture(base: &Agent, edited: &Agent) -> Result<Overrides, serde_json::Er
                 patch.insert(key.clone(), value.clone());
             }
         }
+    }
+    // WF-11 (2026-09-06): false znika z pełnej definicji dla zgodności starych plików,
+    // ale w nadpisaniu oznacza jawne wyłączenie odziedziczonego dostępu do wiadomości.
+    if base.agent_messages != edited.agent_messages {
+        patch.insert(
+            "agentMessages".to_owned(),
+            Value::Bool(edited.agent_messages),
+        );
     }
     patch.retain(|key, _| OVERRIDABLE.contains(&key.as_str()));
 
@@ -611,7 +674,7 @@ pub fn read_agent_directory(dir: &Path) -> Result<Vec<AgentLibraryEntry>, AgentE
     }
 }
 
-fn read_agent_directory_from_root(
+pub(crate) fn read_agent_directory_from_root(
     root: &PublicationRoot,
     dir: &Path,
 ) -> Result<Vec<AgentLibraryEntry>, AgentError> {
@@ -687,10 +750,16 @@ pub(crate) fn read_agent_snapshot(path: &Path, bytes: &[u8]) -> Result<Agent, Ag
     }
     let agent: Agent = serde_json::from_value(Value::Object(fields))
         .map_err(|error| malformed(path, &error.to_string()))?;
-    if agent.extra.is_empty() {
-        return Ok(agent);
-    }
-    let Some(field) = agent.extra.keys().next().cloned() else {
+    // WF-13 (2026-09-06): wybór znanego źródła jest obsługiwanym polem addytywnym.
+    // Zapis formularza nie może ukryć agenta jako definicji z nowszej wersji aplikacji.
+    crate::skills::bundle::choices(&agent.extra)
+        .map_err(|error| malformed(path, &error.to_string()))?;
+    let Some(field) = agent
+        .extra
+        .keys()
+        .find(|name| name.as_str() != "skillSources")
+        .cloned()
+    else {
         return Ok(agent);
     };
     Err(AgentError::NewerFormat {
@@ -1009,7 +1078,7 @@ pub fn agent_file_name(agent: &Agent) -> String {
 /// struktury. Zapis ma być deterministyczny co do bajtu, żeby `git diff` na katalogu agentów
 /// odpowiadał na pytanie „czy ktoś tego agenta ruszał", a nie na pytanie „czy zapisał go dwa
 /// razy" (`DECISIONS-LOCKED.md` §D6).
-const FRONT_MATTER: [&str; 16] = [
+const FRONT_MATTER: [&str; 19] = [
     "schema",
     "id",
     "name",
@@ -1023,7 +1092,10 @@ const FRONT_MATTER: [&str; 16] = [
     "writeResultsTo",
     "tools",
     "skills",
+    "skillSources",
     "connections",
+    "serviceAccess",
+    "agentMessages",
     "vendorOptions",
     "reachesTheWeb",
 ];

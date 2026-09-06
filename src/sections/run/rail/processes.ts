@@ -48,6 +48,12 @@
  * agentem i nie ma w strumieniu czego pisać (niezmiennik 17).
  */
 import { why } from '../../../ipc/why';
+import type {
+  ServiceEndpointWire,
+  ServiceReadinessWire,
+  StartedProcessWire,
+  StartedServiceReference,
+} from '../../../ipc/types';
 import { activeWorkspace } from '../../../state/workspaces';
 import { listProcesses, startProcess, stopProcess } from '../io';
 import type { RailCard } from './card';
@@ -74,6 +80,21 @@ export interface StartedProcess {
   readonly command: string;
   /** Czy to jeszcze biegnie. `false` znaczy „nie ma kafelka", nie „kafelek na szaro". */
   readonly alive: boolean;
+  readonly service?: StartedServiceReference | null;
+  readonly cwd?: string | null;
+  readonly lifetime?: StartedProcessWire['lifetime'];
+  readonly readiness?: ServiceReadinessWire | null;
+  readonly endpoints?: readonly ServiceEndpointWire[];
+}
+
+/** WF-25: długość życia jest faktem właściciela, nie domysłem z żywego PID. */
+export function serviceLifetimeSentence(one: StartedProcess): string | null {
+  if (one.service == null) return null;
+  if (one.lifetime === 'window') {
+    return 'Keeps running after the workflow ends. Stop it here or close the window.';
+  }
+  if (one.lifetime === 'run') return 'Stops when this workflow ends.';
+  return 'When this stops is not known.';
 }
 
 /** Co lista dostaje: gotowe kafelki agentów i to, co wie okno o rzeczach uruchomionych. */
@@ -300,7 +321,7 @@ export async function stopStarted(id: string): Promise<string | null> {
   if (one === undefined || one.pgid === null) return null;
 
   try {
-    await stopProcess(one.pgid);
+    await stopProcess(one.pgid, one.service);
   } catch (error: unknown) {
     return why(error, 'Loadout could not stop that.');
   }
@@ -353,6 +374,8 @@ export async function refreshStarted(): Promise<void> {
     }
     const fresh = said.get(one.pgid);
     if (fresh === undefined) continue;
+    // 2026-09-06: ten sam PID nie daje nowej generacji starego klikalnego uchwytu.
+    if (!sameService(one.service, fresh.service)) continue;
     said.delete(one.pgid);
     /* Klucz KAFELKA zostaje ten, który okno wybiło: kwadrat tożsamości liczy się z niego
      * (`colour.ts`), więc klucz podmieniony przy odświeżeniu przemalowałby kafelek w trakcie
@@ -363,6 +386,11 @@ export async function refreshStarted(): Promise<void> {
       command: fresh.command,
       alive: fresh.alive,
       said: fresh.said === '' ? one.said : fresh.said,
+      service: fresh.service ?? null,
+      cwd: fresh.cwd ?? null,
+      lifetime: fresh.lifetime,
+      readiness: fresh.readiness ?? null,
+      endpoints: fresh.endpoints ?? [],
     });
   }
   for (const one of said.values()) {
@@ -416,9 +444,50 @@ function sameThings(before: readonly Held[], after: readonly Held[]): boolean {
       now.pgid === one.pgid &&
       now.command === one.command &&
       now.alive === one.alive &&
-      now.said === one.said
+      now.said === one.said &&
+      (now.cwd ?? null) === (one.cwd ?? null) &&
+      now.lifetime === one.lifetime &&
+      now.readiness?.state === one.readiness?.state &&
+      now.readiness?.message === one.readiness?.message &&
+      sameEndpoints(now.endpoints ?? [], one.endpoints ?? []) &&
+      sameService(now.service, one.service)
     );
   });
+}
+
+function sameEndpoints(
+  left: readonly ServiceEndpointWire[],
+  right: readonly ServiceEndpointWire[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((one, at) => {
+      const other = right[at];
+      return (
+        other !== undefined &&
+        sameService(one.service, other.service) &&
+        one.name === other.name &&
+        one.host === other.host &&
+        one.port === other.port &&
+        one.url === other.url &&
+        one.state === other.state
+      );
+    })
+  );
+}
+
+function sameService(
+  left: StartedServiceReference | null | undefined,
+  right: StartedServiceReference | null | undefined,
+): boolean {
+  if (left == null || right == null) return left == null && right == null;
+  return (
+    left.workspace === right.workspace &&
+    left.run_id === right.run_id &&
+    left.node_key === right.node_key &&
+    left.service_id === right.service_id &&
+    left.generation === right.generation
+  );
 }
 
 /**
@@ -441,15 +510,85 @@ type Answered = Held & { readonly pgid: number };
  */
 function wireOf(row: unknown): Answered | null {
   if (typeof row !== 'object' || row === null) return null;
-  const said = row as { pgid?: unknown; command?: unknown; alive?: unknown; said?: unknown };
+  const said = row as Record<string, unknown>;
   if (typeof said.pgid !== 'number' || typeof said.command !== 'string') return null;
   return {
     /* Klucz zastępczy dla wiersza, którego okno nie znało; wołający nadaje mu swój, jeśli go
      * dokłada do listy. Z `pgid`, bo to jedyna rzecz, którą ten wiersz o sobie mówi na pewno. */
     id: 'started-pgid-' + String(said.pgid),
     command: said.command,
+    service: serviceOf(said.service),
+    cwd: typeof said.cwd === 'string' ? said.cwd : null,
+    lifetime: said.lifetime === 'window' || said.lifetime === 'run' ? said.lifetime : 'unknown',
+    readiness: readinessOf(said.readiness),
+    endpoints: endpointsOf(said.endpoints),
     alive: said.alive === true,
     pgid: said.pgid,
     said: typeof said.said === 'string' ? said.said : '',
+  };
+}
+
+function readinessState(value: unknown): ServiceReadinessWire['state'] {
+  return value === 'waiting' || value === 'ready' || value === 'failed' || value === 'stopped'
+    ? value
+    : 'unknown';
+}
+
+function readinessOf(value: unknown): ServiceReadinessWire | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const one = value as Record<string, unknown>;
+  if (typeof one.message !== 'string') return null;
+  return { state: readinessState(one.state), message: one.message };
+}
+
+function endpointsOf(value: unknown): readonly ServiceEndpointWire[] {
+  if (!Array.isArray(value)) return [];
+  const endpoints: ServiceEndpointWire[] = [];
+  for (const entry of value as readonly unknown[]) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const one = entry as Record<string, unknown>;
+    const service = serviceOf(one.service);
+    if (
+      service === null ||
+      typeof one.name !== 'string' ||
+      typeof one.host !== 'string' ||
+      typeof one.url !== 'string' ||
+      typeof one.port !== 'number' ||
+      !Number.isInteger(one.port) ||
+      one.port < 1 ||
+      one.port > 65535
+    )
+      continue;
+    endpoints.push({
+      service,
+      name: one.name,
+      host: one.host,
+      port: one.port,
+      url: one.url,
+      state: readinessState(one.state),
+    });
+  }
+  return endpoints;
+}
+
+function serviceOf(value: unknown): StartedServiceReference | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const one = value as Record<string, unknown>;
+  if (
+    typeof one.workspace !== 'string' ||
+    typeof one.run_id !== 'string' ||
+    typeof one.node_key !== 'string' ||
+    typeof one.service_id !== 'string' ||
+    typeof one.generation !== 'number' ||
+    !Number.isSafeInteger(one.generation) ||
+    one.generation < 1
+  )
+    return null;
+  return {
+    workspace: one.workspace,
+    run_id: one.run_id,
+    node_key: one.node_key,
+    service_id: one.service_id,
+    generation: one.generation,
   };
 }

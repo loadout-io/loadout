@@ -94,6 +94,8 @@ function spying(applied: Applied[]): LabIo {
     stopProposing: () => Promise.resolve(),
     decide: refuse,
     putCase: refuse,
+    saveProtection: refuse,
+    previewRun: refuse,
     putVariant: refuse,
     dropVariant: refuse,
   };

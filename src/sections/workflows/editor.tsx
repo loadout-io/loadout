@@ -39,8 +39,11 @@
  *   w obie strony: człowiek nie wie ani że zapisał, ani (przy odmowie) że właśnie stracił pracę.
  */
 import type { ReactElement } from 'react';
+import { evaluateWorkflow } from '../lab/evaluate';
+import { FreshCopyInputs } from './fresh-copy-inputs';
 import {
   askTheStepBefore,
+  commandProducers,
   fieldWaitedFor,
   handsOver,
   theStepBefore,
@@ -329,6 +332,22 @@ export function WorkflowEditor({
             list.tsx`), a makieta rysowała `Run` w nagłówku od początku. Sam przycisk dalej
             mieszka w `problems.tsx`, bo odpowiedź „czy da się uruchomić" jest tą samą listą uwag,
             co plakietka obok — polityka zostaje w rdzeniu, ekran ją tylko montuje (niezmiennik 23). */}
+        <button
+          type="button"
+          className="btn-quiet"
+          onClick={() => {
+            void store
+              .getState()
+              .saveNow()
+              .then(() => {
+                const saved = store.getState().savedDocument;
+                return evaluateWorkflow(saved.id, saved.name);
+              })
+              .catch(() => undefined);
+          }}
+        >
+          Evaluate workflow
+        </button>
         <RunButton
           notes={state.notes}
           onRun={() => {
@@ -401,6 +420,13 @@ export function WorkflowEditor({
           </div>
         ) : null}
       </header>
+
+      <FreshCopyInputs
+        value={state.document.additionalInputs ?? []}
+        onChoose={(additionalInputs) => {
+          state.commit({ ...state.document, additionalInputs });
+        }}
+      />
 
       {/* PASEK ODMOWY ZAPISU. Nie ma go w makiecie i to jest świadome: makieta nie przewiduje
           stanu „plik na dysku nie jest tym, co widzisz", bo powstała przed pomiarem, który ten
@@ -578,9 +604,11 @@ export function WorkflowEditor({
                  Panel dostaje trzy gotowe odpowiedzi i nie ma jak pomylić się co do tego, który
                  krok jest tym przed (ten sam ruch, co przy `wayBack` wyżej). */
               stepBefore={theStepBefore(state.document, open.id)?.name ?? null}
+              commandProducers={commandProducers(state.document, open.id)}
               handsItOver={handsOver(
                 theStepBefore(state.document, open.id),
                 fieldWaitedFor(state.document, open.id),
+                open.kind === 'serve' ? open.commandFrom?.format : undefined,
               )}
               onAskTheStepBefore={() => {
                 /* JAWNA ZMIANA CUDZEGO KAFELKA, na kliknięcie i tylko na nie. Ta sama droga

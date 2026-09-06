@@ -26,17 +26,21 @@ function suggested(over: Record<string, unknown> = {}): Record<string, unknown> 
     kind: 'suggested',
     agent: 'Lead',
     text: 'Starting Ship a feature',
-    command: '/run ship-a-feature build the parser',
+    command: '/stop',
     auto: true,
     ...over,
   };
 }
 
 describe('a row that starts a run by itself', () => {
-  it('runs the command the lead decided on, signed by the lead', () => {
-    expect(autoStarts([suggested()])).toEqual([
-      { command: '/run ship-a-feature build the parser', agent: 'Lead' },
-    ]);
+  it('never treats a legacy stop row as current human permission', () => {
+    expect(autoStarts([suggested()])).toEqual([]);
+  });
+
+  it('never treats a legacy suggested run command as an addressed start request', () => {
+    expect(autoStarts([suggested({ command: '/run ship-a-feature build the parser' })])).toEqual(
+      [],
+    );
   });
 
   it('never runs a suggestion that came out of prose', () => {
@@ -79,11 +83,11 @@ describe('a row that starts a run by itself', () => {
       autoStarts([null, 42, 'text', undefined, [], suggested()]),
       'one unreadable row must not take the window down with it, and must not stop the row ' +
         'behind it from being read',
-    ).toEqual([{ command: '/run ship-a-feature build the parser', agent: 'Lead' }]);
+    ).toEqual([]);
   });
 
-  it('keeps the order the lines arrived in', () => {
-    const batch = [suggested({ command: '/run first' }), suggested({ command: '/run second' })];
-    expect(autoStarts(batch).map((one) => one.command)).toEqual(['/run first', '/run second']);
+  it('a sequence of old automatic rows remains inert', () => {
+    const batch = [suggested({ agent: 'First' }), suggested({ agent: 'Second' })];
+    expect(autoStarts(batch)).toEqual([]);
   });
 });

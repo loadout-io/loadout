@@ -1056,6 +1056,7 @@ pub struct ClaudeDriver {
     inherited: Vec<String>,
     /// Konfiguracja Connections wyłącznie dla tego kroku; wartości są redagowane przez Debug.
     configuration: DriverConfiguration,
+    filesystem_fence: Option<supervisor::FilesystemFence>,
     /// Znacznik biegu i kroku, wpuszczany do środowiska procesu (2026-09, Z-01d).
     ///
     /// `None` znaczy „ten proces nie należy do żadnego kroku" i tak zostaje: sonda wersji nie ma
@@ -1157,6 +1158,7 @@ impl ClaudeDriver {
             instructions: None,
             inherited: Vec::new(),
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             tag: None,
         }
     }
@@ -1174,6 +1176,7 @@ impl ClaudeDriver {
             instructions: None,
             inherited: Vec::new(),
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             tag: None,
         }
     }
@@ -3333,6 +3336,16 @@ impl AgentDriver for ClaudeDriver {
         ))
     }
 
+    fn with_filesystem_fence(
+        &self,
+        fence: &supervisor::FilesystemFence,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            filesystem_fence: Some(fence.clone()),
+            ..self.clone()
+        }))
+    }
+
     fn with_budget(&self, dollars: f64) -> Option<Arc<dyn AgentDriver>> {
         Some(Arc::new(self.clone().with_price_ceiling(dollars)))
     }
@@ -3489,6 +3502,46 @@ impl AgentDriver for ClaudeDriver {
             Arc::new(Self::with_settings(self.clone(), written)) as Arc<dyn AgentDriver>
         }))
     }
+
+    fn protected_readiness(&self) -> Option<anyhow::Result<()>> {
+        // Adapter umie przygotować prywatny stan bez rozszerzenia granicy. Nie jest
+        // to dowód zalogowania w systemowym keychain; probe/Start sprawdzą resztę.
+        Some(Ok(()))
+    }
+
+    fn prepare_protected_step(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<super::PreparedProtectedStep>> {
+        Some((|| {
+            let (private, held) = super::protected_state::runtime(settings, PRIVATE_STATE_DIR)?;
+            let run = supervisor::PublicationRoot::open(&settings.dir)?;
+            let settings_file = format!("claude-settings-{}.json", settings.work_key);
+            let instructions_file = format!("claude-instructions-{}.txt", settings.work_key);
+            super::protected_state::plain_file(&run, Path::new(&settings_file))?;
+            super::protected_state::plain_file(&run, Path::new(&instructions_file))?;
+            let written = RunSettings::for_step(settings)?;
+            held.ensure_directory(Path::new("tmp"), 0o700)?;
+            let mut driver = Self::with_settings(self.clone(), written);
+            driver
+                .configuration
+                .environment
+                .retain(|(name, _)| name != "TMPDIR");
+            driver
+                .configuration
+                .environment
+                .push(("TMPDIR".to_owned(), private.join("tmp").into_os_string()));
+            Ok(super::PreparedProtectedStep {
+                driver: Arc::new(driver),
+                writable_roots: vec![private.clone()],
+                readable_roots: vec![private],
+                readable_files: vec![
+                    settings.dir.join(settings_file),
+                    settings.dir.join(instructions_file),
+                ],
+            })
+        })())
+    }
 }
 
 impl ClaudeDriver {
@@ -3540,7 +3593,7 @@ impl ClaudeDriver {
             .carrying_instructions_for(&spec)
             .inspect_err(|_error| self.note_incomplete())?;
         let environment = driver.environment_for_spawn();
-        let mut process = supervisor::spawn_tagged(
+        let mut process = supervisor::spawn_tagged_with_fence(
             driver.command(&spec),
             // Prompt wyłącznie tędy (niezmiennik 9). Znak nowej linii jest częścią protokołu:
             // CLI czyta stdin linia po linii i bez niego czekałoby na resztę koperty. `Keep`,
@@ -3550,6 +3603,7 @@ impl ClaudeDriver {
             // Znacznik biegu do środowiska tury (2026-09, Z-01d). `claude` jest tu skryptem
             // powłoki, więc to jego wnuki przeżywają awarię — a środowisko dziedziczą wszystkie.
             driver.tag.as_ref(),
+            driver.filesystem_fence.as_ref(),
         )
         .inspect_err(|_error| self.note_incomplete())?;
 

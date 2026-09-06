@@ -56,6 +56,9 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
    * komunikat aplikacji, czyli ten sam błąd, co kafelek cytujący „3 of 40 checks failed" jako
    * zdanie agenta [FOUNDATIONS §2.2]; podpisana `you` wkładałaby zdanie lidera w Twoje usta. */
   suggested: 'agent',
+  runRequested: 'loadout',
+  runSource: 'loadout',
+  messageStored: 'loadout',
   asked: 'agent',
   handoff: 'loadout',
   problem: 'loadout',
@@ -68,6 +71,8 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
   thinking: 'loadout',
   /* Loadout, nie agent: stan kroku ogłasza planista, a nie ten, kto ten krok wykonuje. */
   stepState: 'loadout',
+  stepSession: 'loadout',
+  questionAnswered: 'you',
   /* Tak samo rozstrzygnięcie „jedź dalej”: ogłasza je scheduler po wyniku kroku. */
   stepCarriedOn: 'loadout',
 };

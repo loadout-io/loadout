@@ -107,6 +107,12 @@ export function WhereItWorks({ group, offers, value, onChoose }: WhereItWorksPro
           </span>
         </label>
       ))}
+      {value.use === 'fresh-copy' ? (
+        <p className="caption">
+          Choose additional input files under Files in fresh copies. Dependencies are not copied:
+          prepare them in an explicit Check, then continue in the same files.
+        </p>
+      ) : null}
     </fieldset>
   );
 }

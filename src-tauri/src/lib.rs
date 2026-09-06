@@ -199,6 +199,31 @@ impl AgentDriver for SearchEnvironmentDriver {
             .map(|inner| self.wrapped(inner))
     }
 
+    fn with_filesystem_fence(
+        &self,
+        fence: &engine::supervisor::FilesystemFence,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        self.inner
+            .with_filesystem_fence(fence)
+            .map(|inner| self.wrapped(inner))
+    }
+
+    fn protected_readiness(&self) -> Option<anyhow::Result<()>> {
+        self.inner.protected_readiness()
+    }
+
+    fn prepare_protected_step(
+        &self,
+        settings: &StepSettings,
+    ) -> Option<anyhow::Result<engine::drivers::PreparedProtectedStep>> {
+        self.inner.prepare_protected_step(settings).map(|result| {
+            result.map(|mut prepared| {
+                prepared.driver = self.wrapped(prepared.driver);
+                prepared
+            })
+        })
+    }
+
     fn with_budget(&self, dollars: f64) -> Option<Arc<dyn AgentDriver>> {
         self.inner
             .with_budget(dollars)

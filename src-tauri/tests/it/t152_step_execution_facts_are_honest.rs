@@ -295,24 +295,28 @@ async fn receipt_records_every_physical_execution_path() -> Result<(), Box<dyn E
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn no_work_and_already_settled_rounds_never_claim_execution() -> Result<(), Box<dyn Error>> {
+async fn no_file_changes_still_run_the_judge_but_settled_rounds_never_claim_execution()
+-> Result<(), Box<dyn Error>> {
     let no_work = Bench::new(true)?;
     let no_work_run = no_work
         .run(
-            no_work.workflow("no-work", &loop_workflow("loop-no-work", "judge-no-work"))?,
+            no_work.workflow("no-work", &loop_workflow("loop-no-work", "judge-pass"))?,
             false,
         )
         .await?;
     assert_facts(row_key(&no_work_run.run_file, "implement")?, true, true);
-    for key in ["judge", "implement#1", "judge#1", "implement#2", "judge#2"] {
+    // 2026-09-05 (WF-04): tekstowy wynik ma sędziego, mimo czystego drzewa. Dopiero
+    // rzeczywisty `pass` pozwala przyszłym próbom zachować executed=false.
+    assert_facts(row_key(&no_work_run.run_file, "judge")?, true, true);
+    for key in ["implement#1", "judge#1", "implement#2", "judge#2"] {
         assert_facts(row_key(&no_work_run.run_file, key)?, false, false);
     }
     assert!(
-        !no_work_run
+        no_work_run
             .starts
             .iter()
-            .any(|prompt| prompt.contains("judge-no-work")),
-        "nothing_to_judge still started a driver"
+            .any(|prompt| prompt.contains("judge-pass")),
+        "the text-only result never reached its judge"
     );
 
     let settled = Bench::new(true)?;

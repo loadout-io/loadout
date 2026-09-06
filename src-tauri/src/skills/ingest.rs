@@ -982,23 +982,17 @@ pub struct Import {
 /// wykonywalności zostaje — zdejmowanie go zamieniłoby cudzą działającą umiejętność
 /// w zepsutą — a to, że nikt tego pliku nie odpala, jest własnością KODU, nie uprawnień.
 pub fn from_folder(dir: &Path) -> Result<Import, FetchError> {
-    // Limit pojedynczego pliku sprawdzony u siebie, na bajtach, które faktycznie przyszły —
-    // `--max-filesize` w argv curla jest deklaracją narzędzia (niezmiennik 20).
-    let raw = read_capped(fs::File::open(dir.join(SKILL_FILE))?, FILE_CAP)?;
-    let raw = String::from_utf8(raw).map_err(|_| FetchError::NotText)?;
-
-    let files = bundled_files(dir)?;
-    let mut sizes = vec![u64::try_from(raw.len()).unwrap_or(u64::MAX)];
-    for file in &files {
-        sizes.push(fs::symlink_metadata(&file.source)?.len());
-    }
-    total_within(&sizes, TOTAL_CAP)?;
+    // WF-13: import nie może usunąć zasobu/linku po cichu. Ten sam pełny odczyt co Borrow.
+    let bundle = super::bundle::Bundle::read(dir)?;
+    let raw = bundle.skill_text()?.to_owned();
+    let files = bundle.resources(dir);
 
     // Potok w jednej kolejności: znormalizuj i przeskanuj CAŁY plik, dopiero potem rozbij na
     // pola. Parsowanie przed skanem znaczyłoby, że skan ogląda ciało, a front-matter
     // z `hooks:` przejeżdża bokiem.
     let reviewed = review(&raw);
-    let skill = skill_from(parse_doc(&reviewed.body), files);
+    let mut skill = skill_from(parse_doc(&reviewed.body), files);
+    skill.frozen_bundle = Some(bundle);
     let scripts = skill
         .files
         .iter()
@@ -1010,38 +1004,6 @@ pub fn from_folder(dir: &Path) -> Result<Import, FetchError> {
         reviewed,
         scripts,
     })
-}
-
-/// Wszystko obok `SKILL.md`, rekurencyjnie, ścieżkami względnymi.
-///
-/// Dowiązania są pomijane, a nie kopiowane: `fs::copy` idzie po dowiązaniu do końca, więc
-/// `references/keys -> ~/.ssh` w cudzej umiejętności zaciągnąłby zawartość katalogu, którego
-/// nikt nie pobierał. Katalog docelowy ma zawierać to, co przyszło z sieci, i nic spoza niego.
-fn bundled_files(dir: &Path) -> Result<Vec<BundledFile>, FetchError> {
-    let mut found = Vec::new();
-    walk_into(dir, Path::new(""), &mut found)?;
-    // Kolejność z systemu plików nie jest ustalona; plan instalacji czyta człowiek.
-    found.sort_by(|left, right| left.relative.cmp(&right.relative));
-    Ok(found)
-}
-
-fn walk_into(dir: &Path, prefix: &Path, found: &mut Vec<BundledFile>) -> Result<(), FetchError> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let source = entry.path();
-        let relative = prefix.join(entry.file_name());
-        let kind = fs::symlink_metadata(&source)?;
-
-        if kind.is_dir() {
-            walk_into(&source, &relative, found)?;
-        } else if kind.is_file() && relative != Path::new(SKILL_FILE) {
-            if kind.len() > FILE_CAP {
-                return Err(FetchError::FileTooBig { limit: FILE_CAP });
-            }
-            found.push(BundledFile { relative, source });
-        }
-    }
-    Ok(())
 }
 
 /// `SKILL.md` → front-matter i ciało, permisywnie (niezmiennik 5).

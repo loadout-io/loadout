@@ -39,7 +39,7 @@ use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Wszystkie osiemnaście rodzajów wiersza, w kolejności deklaracji.
-const KINDS: [LineKind; 18] = [
+const KINDS: [LineKind; 23] = [
     LineKind::Run,
     LineKind::Step,
     LineKind::Agent,
@@ -51,6 +51,9 @@ const KINDS: [LineKind; 18] = [
     // 2026-09-01 — osiemnasty rodzaj: addytywny fakt o wykonanym `carry-on`, oddzielony od
     // ścisłego kształtu `StepState`, żeby starsze okno mogło porzucić tylko nowy fakt.
     LineKind::StepCarriedOn,
+    LineKind::StepSession,
+    LineKind::QuestionAnswered,
+    LineKind::MessageStored,
     LineKind::Read,
     LineKind::Search,
     LineKind::Edit,
@@ -63,6 +66,8 @@ const KINDS: [LineKind; 18] = [
     // z wierszem w zlotym pliku i z lustrem po stronie okna, bo dopisany osobno albo przewraca
     // dlugosc, albo opisuje rodzaj, ktorego okno nie przyjmie.
     LineKind::Suggested,
+    LineKind::RunRequested,
+    LineKind::RunSource,
     LineKind::Asked,
     LineKind::Handoff,
     LineKind::Memory,
@@ -192,10 +197,62 @@ fn sample(kind: LineKind) -> Line {
              * opisywać ten kształt, który przychodzi z rozmowy najczęściej. */
             auto: false,
         },
+        LineKind::RunRequested => Line::RunRequested {
+            agent: "lead".to_owned(),
+            text: "Starting Ship it".to_owned(),
+            request_id: "session:request".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            workspace: "/work/project".to_owned(),
+            title: "Ship it".to_owned(),
+            file_name: "ship.json".to_owned(),
+            steps: vec![loadout_lib::engine::line::RequestedStep {
+                id: "a".to_owned(),
+                name: "Build".to_owned(),
+                kind: "agent",
+                at: loadout_lib::workflow::Point { x: 0.0, y: 0.0 },
+                weight: "ordinary",
+            }],
+            links: vec![loadout_lib::engine::line::RequestedLink {
+                from: "a".to_owned(),
+                to: "a".to_owned(),
+                max_turns: Some(2),
+            }],
+        },
+        LineKind::RunSource => Line::RunSource {
+            agent: "Loadout".to_owned(),
+            text: "Parser fix finished successfully.".to_owned(),
+            workspace: "/work/project".to_owned(),
+            run_id: "saved-run".to_owned(),
+            run_folder: "20260904-100000__saved-run".to_owned(),
+            observed_at: "2026-09-05T10:00:00Z".to_owned(),
+        },
+        LineKind::StepSession => Line::StepSession {
+            agent: "builder".to_owned(),
+            run_id: "saved-run".to_owned(),
+            node_key: "s_2#1".to_owned(),
+            can_receive: true,
+            finished: false,
+        },
         LineKind::Asked => Line::Asked {
+            question: None,
             agent: "lead".to_owned(),
             text: "Which database should this use?".to_owned(),
             options: vec!["SQLite".to_owned(), "Postgres".to_owned()],
+        },
+        LineKind::QuestionAnswered => Line::QuestionAnswered {
+            agent: "Decision".to_owned(),
+            run_id: "saved-run".to_owned(),
+            checkpoint_id: "question-generation".to_owned(),
+            answer: "My own answer".to_owned(),
+        },
+        LineKind::MessageStored => Line::MessageStored {
+            agent: "Builder".to_owned(),
+            text: "Builder stored a message for Reviewer.".to_owned(),
+            run_id: "saved-run".to_owned(),
+            sequence: 1,
+            from_node: "builder".to_owned(),
+            to_node: "reviewer".to_owned(),
+            body: "Inspect the saved boundary.".to_owned(),
         },
         LineKind::Handoff => Line::Handoff {
             agent: "lead".to_owned(),

@@ -38,15 +38,18 @@ import type { Step } from '../../state/run';
  * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc sekcja Bieg nie zyskuje ani
  * jednej zależności W CZASIE WYKONANIA od magazynu otwartego dokumentu. */
 import type { Link } from '../../state/workflows';
-import type { Line } from '../../ipc/types';
+import type { Line, RunRequested, StartedServiceReference } from '../../ipc/types';
+import { parseLine } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
 import { runSuggestion } from './feed/suggested';
 import { autoStarts } from './auto-start';
 import { feedFor } from './feed/live';
-import { takeTheBudget } from './limits/chosen';
+import { atOnce, takeTheBudget } from './limits/chosen';
+import { why } from '../../ipc/why';
+import { cardForRun } from './tabs/store';
 /* SUFIT DLA BIEGU, KTÓREGO NIKT NIE ZAMÓWIŁ Z PASKA — dostawa triggera bierze domyślną kwotę
  * z Settings, a nie to, co akurat trzyma pasek. Powód przy `theCeilingFor` niżej. */
-import { defaultBudgetUsd } from '../../state/settings';
+import { defaultBudgetUsd, learnFromRuns } from '../../state/settings';
 import type { TriggerClaim } from '../triggers/io';
 import { ONE_RUN_AT_A_TIME, aRunIsGoing, holdTheRun, letTheRunGo } from './going';
 
@@ -580,6 +583,8 @@ export function runEvalSet(
   folder: string | null = null,
   name = '',
   budgetUsd?: number | null,
+  expectedRevision?: string | null,
+  expectedSources?: string | null,
 ): Promise<string | null> {
   /* Sufit wydatku jedzie tą samą drogą, co przy Starcie: jest faktem CAŁEJ aplikacji, a nie
    * ustawieniem tej jednej sekcji. Macierz jest zresztą tym miejscem, które najbardziej go
@@ -593,6 +598,10 @@ export function runEvalSet(
       set,
       howManyAtOnce,
       budgetUsd: ceiling,
+      approval: {
+        revision: expectedRevision ?? null,
+        sources: expectedSources ?? null,
+      },
       lines,
     }).then(() => null),
   );
@@ -737,6 +746,22 @@ export function sayToAgent(
   return invoke<void>('say_to_agent', { folder, agent, text });
 }
 
+/** WF-08: adres utrzymany od chwili Enter do odpowiedzi, włącznie z próbą pętli. */
+export function sendToStep(
+  folder: string | null,
+  runId: string,
+  nodeKey: string,
+  text: string,
+): Promise<import('../../ipc/types').StepMessageReply> {
+  return invoke('send_to_step', { folder, runId, nodeKey, text });
+}
+
+export function stepMessageRecipients(
+  folder: string | null,
+): Promise<readonly import('../../ipc/types').StepSession[]> {
+  return invoke('step_message_recipients', { folder });
+}
+
 /**
  * Tożsamość terminalu, do której należy ta rozmowa — z tego, co przysłał wołający.
  *
@@ -795,6 +820,22 @@ export function openChat(
     view.appendLines(stamped);
     session.getState().appendLines(stamped);
 
+    for (const line of batch) {
+      if (line.kind !== 'runRequested') continue;
+      void acceptLeadRequest(line).catch((error: unknown) => {
+        view.appendLines([
+          {
+            kind: 'note',
+            agent: line.agent,
+            text: why(error, 'Loadout could not accept that run. Ask to start it again.'),
+            body: [],
+            id: nextStamp(),
+            at: Date.now(),
+          },
+        ]);
+      });
+    }
+
     /* LIDER, KTÓRY POPROSIŁ O START, DOSTAJE START — rozstrzygnięcie właściciela 2026-08-30
      * („rusza samo"). Wiersz jest już NA EKRANIE, zanim cokolwiek ruszy, i to jest jedyna
      * ochrona człowieka przy tej decyzji: widzi, co się zaczyna, w tej samej sekundzie.
@@ -821,6 +862,178 @@ export function openChat(
 }
 
 /**
+ * WF-07: okno zakłada kanał; decyzja co i gdzie rusza pozostaje w oczekującym żądaniu Rusta.
+ * Promise trwa do końca grafu, lecz odpowiedź dla narzędzia wraca osobnym ack po prestarcie.
+ */
+const leadRequests = new Map<string, Promise<unknown>>();
+
+export interface ReplayPreview {
+  readonly previewId: string;
+  readonly mode: 'recorded' | 'current';
+  readonly source: { readonly workspace: string; readonly runId: string };
+  readonly title: string;
+  readonly copies: number;
+  readonly said: string;
+  readonly limitations: readonly string[];
+  readonly budgetSaid?: string;
+  readonly configurationSaid?: readonly string[];
+  readonly differencesSaid?: readonly string[];
+}
+
+export function copyRecordedWorkflow(
+  folder: string,
+  sourceRunId: string,
+): Promise<{
+  readonly fileName: string;
+  readonly workflowId: string;
+  readonly said: string;
+}> {
+  return invoke('copy_recorded_workflow', { folder, sourceRunId });
+}
+
+/** Historia i Lead używają tego samego backendowego podglądu, bez tury modelu dla kliknięcia. */
+export function prepareReplay(
+  folder: string,
+  sourceRunId: string,
+  mode: ReplayPreview['mode'],
+): Promise<ReplayPreview> {
+  return invoke<ReplayPreview>('prepare_replay', {
+    folder,
+    sourceRunId,
+    selection: { kind: 'all' },
+    mode,
+  });
+}
+
+export interface RestorePreview {
+  readonly previewId: string;
+  readonly source: { readonly workspace: string; readonly runId: string };
+  readonly resultId: string;
+  readonly folder: string;
+  readonly oid: string | null;
+  readonly files: readonly string[];
+  readonly bytes: number;
+  readonly said: string;
+}
+
+export function prepareResultRestore(
+  folder: string,
+  sourceRunId: string,
+  resultId: string,
+): Promise<RestorePreview> {
+  return invoke<RestorePreview>('prepare_result_restore', { folder, sourceRunId, resultId });
+}
+
+export function restoreResult(
+  folder: string,
+  previewId: string,
+  originalIntent: string,
+): Promise<{ readonly folder: string; readonly said: string }> {
+  return invoke('restore_result', { folder, previewId, originalIntent });
+}
+
+export function openRestoredFolder(folder: string, restoredFolder: string): Promise<void> {
+  return invoke('open_restored_folder', { folder, restoredFolder });
+}
+
+export function setResultKept(
+  folder: string,
+  sourceRunId: string,
+  resultId: string,
+  kept: boolean,
+  originalIntent: string,
+): Promise<{ readonly kept: boolean; readonly said: string }> {
+  return invoke('set_result_kept', { folder, sourceRunId, resultId, kept, originalIntent });
+}
+
+export async function startReplay(folder: string, previewId: string): Promise<void> {
+  const raw = await authorizeReplay(folder, previewId, 'Start replay');
+  const request = parseLine(raw);
+  if (request?.kind !== 'runRequested' || request.workspace !== folder) {
+    throw new Error(
+      'The repeat request could not be read safely. Nothing was redirected to another folder.',
+    );
+  }
+  void acceptLeadRequest(request).catch((error: unknown) => {
+    const line = {
+      kind: 'problem' as const,
+      agent: 'Lead',
+      text: why(error, 'Loadout could not start this repeat.'),
+      resetsAt: null,
+      id: nextStamp(),
+      at: Date.now(),
+    };
+    feedFor(folder).appendLines([line]);
+    runFor(folder).getState().appendLines([line]);
+  });
+}
+
+export function authorizeReplay(
+  folder: string,
+  previewId: string,
+  originalIntent: string,
+): Promise<unknown> {
+  return invoke<unknown>('start_replay', { folder, previewId, originalIntent });
+}
+
+function acceptLeadRequest(request: RunRequested): Promise<unknown> {
+  const existing = leadRequests.get(request.requestId);
+  if (existing !== undefined) return existing;
+  const session = runFor(request.workspace);
+  const view = feedFor(request.workspace);
+  const lines = new Channel<unknown[]>();
+  wireChannel(lines, (batch) => {
+    const at = Date.now();
+    const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
+    view.appendLines(stamped);
+    session.getState().appendLines(stamped);
+  });
+  // Nie blokujemy cudzym globalnym paskiem: o zajętości tego workspace rozstrzyga begin_run.
+  const available = session.getState().workflow === '';
+  const putBack = whatWasRunning(session);
+  if (available) {
+    const steps = request.steps.map((step) => ({ ...step, state: 'pending' as const }));
+    const links = request.links.map(({ from, to, maxTurns }) =>
+      maxTurns === undefined ? { from, to } : { from, to, max_turns: maxTurns },
+    );
+    session.getState().nowRunning(request.title, steps, request.workspace, request.fileName, links);
+    cardForRun(request.title, request.workspace);
+  }
+  const running = acceptLeadStart(
+    request.requestId,
+    atOnce(),
+    theCeilingFor(undefined, null),
+    learnFromRuns(),
+    lines,
+  ).finally(() => {
+    // Odmowa zajętego workspace nie może wyczyścić pytania ani paska biegu, który już trwa.
+    if (available) {
+      putBack();
+      view.runEnded();
+    }
+  });
+  leadRequests.set(request.requestId, running);
+  return running;
+}
+
+/** Wyłącznie kabel: adresu ani zawartości backendowego żądania nie da się tu nadpisać. */
+export function acceptLeadStart(
+  requestId: string,
+  howManyAtOnce: number,
+  budgetUsd: number | null,
+  reflectionEnabled: boolean,
+  lines: Channel<unknown[]>,
+): Promise<unknown> {
+  return invoke<unknown>('accept_lead_start', {
+    requestId,
+    howManyAtOnce,
+    budgetUsd,
+    reflectionEnabled,
+    lines,
+  });
+}
+
+/**
  * Człowiek odpowiedział na pytanie przypięte w tym terminalu.
  *
  * # Dlaczego okno woła to przy KAŻDEJ odpowiedzi
@@ -842,12 +1055,23 @@ export function answerTheLead(
   folder: string | null,
   agent: string,
   answer: string,
+  questionId?: string,
 ): Promise<boolean> {
   return invoke<boolean>('answer_the_lead', {
     terminal: terminalOf(terminal, folder),
     agent,
     answer,
+    questionId: questionId ?? null,
   });
+}
+
+export function answerCheckpoint(
+  folder: string | null,
+  runId: string,
+  checkpointId: string,
+  answer: string,
+): Promise<import('../../ipc/types').CheckpointReply> {
+  return invoke('answer_checkpoint', { folder, runId, checkpointId, answer });
 }
 
 /**
@@ -1030,6 +1254,8 @@ export interface PastStep {
    * `read_run` wysyła zawsze listę, także pustą.
    */
   readonly memory?: readonly PastMemory[];
+  /** WF-12: frozen instruction sources supplied by Loadout, not native auto-loading. */
+  readonly projectInstructions?: readonly import('../../state/settings-io').ProjectInstructionSource[];
   /**
    * Co aplikacja agenta wczytała z folderu, zanim ten krok powiedział pierwsze słowo.
    *
@@ -1144,7 +1370,24 @@ export interface PastReflection {
 }
 
 /** Otwarty bieg z historii. Lustro `commands::history::PastRunWire`. */
+export interface PastResultFolder {
+  readonly workKey: string;
+  readonly step: string;
+  readonly path: string;
+  readonly state: 'changed' | 'uncertain' | 'incomplete';
+}
+
 export interface PastRun {
+  readonly savedInput?: { readonly sourceRunId: string; readonly snapshotId: string } | null;
+  readonly savedInputSaid?: string | null;
+  readonly savedResults?: readonly {
+    readonly resultId: string;
+    readonly name: string;
+    readonly kind: string;
+    readonly kept: boolean;
+    readonly available: boolean;
+    readonly cleanupWarning: string;
+  }[];
   /** Nazwa dzisiejszego pliku workflow tego biegu — pusta, kiedy nie ma go już w bibliotece. */
   readonly workflowFile: string;
   readonly folder: string;
@@ -1169,6 +1412,8 @@ export interface PastRun {
    * „ten bieg nic nie zostawił", co jest prawdą także wtedy, gdy nikt nie umiał zapytać.
    */
   readonly branches?: readonly PastBranch[];
+  /** Zachowane kopie non-git; nieukończone wejście pozostaje osobnym stanem. */
+  readonly resultFolders?: readonly PastResultFolder[];
   /**
    * Co prywatna tura Loadouta zrobiła z tym biegiem, albo `null` — kiedy jego opis o tym milczy.
    *
@@ -1207,6 +1452,15 @@ export function readRun(folder: string | null, run: string): Promise<PastRun> {
   return invoke<PastRun>('read_run', { folder, run });
 }
 
+/** Używa zainstalowanego openera i jego istniejącego uprawnienia, bez nowego procesu shell. */
+export function openResultFolder(
+  folder: string | null,
+  run: string,
+  workKey: string,
+): Promise<void> {
+  return invoke<void>('open_result_folder', { folder, run, workKey });
+}
+
 /**
  * Zdejmuje gałęzie, które ten bieg zostawił — i **tylko** jego.
  *
@@ -1236,8 +1490,16 @@ export function forgetRunBranches(folder: string | null, run: string): Promise<r
  * @param folder zakres, w którym ten bieg leży — ta sama ścieżka, którą dostało [`readRun`].
  * @param run nazwa katalogu z `PastRunRow.folder`.
  */
-export function forgetRun(folder: string | null, run: string): Promise<readonly string[]> {
-  return invoke<readonly string[]>('forget_run', { folder, run });
+export function forgetRun(
+  folder: string | null,
+  run: string,
+  confirmedResultFolders?: readonly string[],
+): Promise<readonly string[]> {
+  return invoke<readonly string[]>('forget_run', {
+    folder,
+    run,
+    confirmedResultFolders: confirmedResultFolders ?? null,
+  });
 }
 
 /** Co zejdzie razem z biegami starszymi niż tyle dni, ile człowiek podał. */
@@ -1358,8 +1620,8 @@ export function startProcess(command: string, folder: string | null = null): Pro
  * @param pgid grupa z odpowiedzi [`startProcess`]. Jedyna liczba, którą tę rzecz da się
  *   zaadresować — okno jej nie wylicza i nie ma jak.
  */
-export function stopProcess(pgid: number): Promise<void> {
-  return invoke<void>('stop_process', { pgid });
+export function stopProcess(pgid: number, service?: StartedServiceReference | null): Promise<void> {
+  return invoke<void>('stop_process', { pgid, service: service ?? null });
 }
 
 /**

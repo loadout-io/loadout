@@ -43,6 +43,36 @@ use serde::Serialize;
 
 use super::drivers::{AgentEvent, FinishReason, Outcome, is_unknown_price_notice};
 
+/// Wystawiony przez hosta identyfikator pytania, nie numer wiersza ani zgoda modelu.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionAddress {
+    pub question_id: String,
+    pub run_id: Option<String>,
+    pub checkpoint_id: Option<String>,
+    pub operation: String,
+}
+
+/// Tylko widoczny kształt planu — instrukcje i zadanie nie trafiają do kanału sterującego.
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestedStep {
+    pub id: String,
+    pub name: String,
+    pub kind: &'static str,
+    pub at: crate::workflow::Point,
+    pub weight: &'static str,
+}
+
+/// Lustro strzałki na drucie ma camelCase, niezależnie od formatu pliku workflow.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestedLink {
+    pub from: String,
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
+
 /// Rodzaj wiersza. Czternaście z [T2 §7.2] plus cztery addytywne fakty produktu.
 ///
 /// **Trzy z nich nie są wpisem w historii** i nie stają się nim przez to, że silnik je
@@ -60,6 +90,12 @@ pub enum LineKind {
     Step,
     /// Krok zmienił stan. **Nigdy w historii** — przestawia pasek loadoutu w miejscu.
     StepState,
+    /// WF-08: możliwości konkretnego uchwytu. Bez wiersza historii.
+    StepSession,
+    /// Odpowiedź człowieka została przyjęta do dokładnego pytania.
+    QuestionAnswered,
+    /// Trwały zapis wiadomości, bez twierdzenia o odczycie przez odbiorcę.
+    MessageStored,
     /// Nieudany krok wykonał politykę „jedź dalej”. **Nigdy w historii** — atomowo ustawia
     /// porażkę i dopisuje jej rozstrzygnięcie do kafelka.
     StepCarriedOn,
@@ -81,6 +117,9 @@ pub enum LineKind {
     Told,
     /// Lider proponuje bieg: proza plus gotowa komenda. Powód przy [`Line::Suggested`].
     Suggested,
+    /// Hostowe żądanie startu; nie polecenie odczytane z prozy.
+    RunRequested,
+    RunSource,
     /// Pytanie do człowieka. Przyklejone, bo blokuje bieg.
     Asked,
     /// Przekazanie między agentami.
@@ -118,6 +157,42 @@ pub enum LineKind {
     rename_all_fields = "camelCase"
 )]
 pub enum Line {
+    MessageStored {
+        agent: String,
+        text: String,
+        run_id: String,
+        sequence: u64,
+        from_node: String,
+        to_node: String,
+        body: String,
+    },
+    StepSession {
+        agent: String,
+        run_id: String,
+        node_key: String,
+        can_receive: bool,
+        finished: bool,
+    },
+    RunSource {
+        agent: String,
+        text: String,
+        workspace: String,
+        run_id: String,
+        run_folder: String,
+        observed_at: String,
+    },
+    /// WF-07: tylko most może wystawić request ID. Plan jest wyłącznie opisem dla okna.
+    RunRequested {
+        agent: String,
+        text: String,
+        request_id: String,
+        conversation_id: String,
+        workspace: String,
+        title: String,
+        file_name: String,
+        steps: Vec<RequestedStep>,
+        links: Vec<RequestedLink>,
+    },
     /// `▶ Fix the login bug · Research → Plan → Build`
     Run {
         /// Kto to zrobił.
@@ -422,6 +497,16 @@ pub enum Line {
         text: String,
         /// Odpowiedzi do wyboru; front rysuje je jako przyciski.
         options: Vec<String>,
+        /// Host-issued adres odpowiedzi. Dawne pytania vendora nie nadają zgody na sterowanie.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        question: Option<QuestionAddress>,
+    },
+    /// Aktualizuje istniejące pytanie; nigdy nie wykonuje kolejnego Continue w oknie.
+    QuestionAnswered {
+        agent: String,
+        run_id: String,
+        checkpoint_id: String,
+        answer: String,
     },
     /// `Planner → Implementer`
     Handoff {
@@ -518,6 +603,9 @@ impl Line {
             Self::Run { .. } => LineKind::Run,
             Self::Step { .. } => LineKind::Step,
             Self::StepState { .. } => LineKind::StepState,
+            Self::StepSession { .. } => LineKind::StepSession,
+            Self::QuestionAnswered { .. } => LineKind::QuestionAnswered,
+            Self::MessageStored { .. } => LineKind::MessageStored,
             Self::StepCarriedOn { .. } => LineKind::StepCarriedOn,
             Self::Agent { .. } => LineKind::Agent,
             Self::Thinking { .. } => LineKind::Thinking,
@@ -528,6 +616,8 @@ impl Line {
             Self::Note { .. } => LineKind::Note,
             Self::Told { .. } => LineKind::Told,
             Self::Suggested { .. } => LineKind::Suggested,
+            Self::RunRequested { .. } => LineKind::RunRequested,
+            Self::RunSource { .. } => LineKind::RunSource,
             Self::Asked { .. } => LineKind::Asked,
             Self::Handoff { .. } => LineKind::Handoff,
             Self::Memory { .. } => LineKind::Memory,
@@ -544,6 +634,9 @@ impl Line {
             Self::Run { agent, .. }
             | Self::Step { agent, .. }
             | Self::StepState { agent, .. }
+            | Self::StepSession { agent, .. }
+            | Self::QuestionAnswered { agent, .. }
+            | Self::MessageStored { agent, .. }
             | Self::StepCarriedOn { agent, .. }
             | Self::Agent { agent, .. }
             | Self::Thinking { agent }
@@ -554,6 +647,8 @@ impl Line {
             | Self::Note { agent, .. }
             | Self::Told { agent, .. }
             | Self::Suggested { agent, .. }
+            | Self::RunRequested { agent, .. }
+            | Self::RunSource { agent, .. }
             | Self::Asked { agent, .. }
             | Self::Handoff { agent, .. }
             | Self::Memory { agent, .. }
@@ -570,7 +665,11 @@ impl Line {
             // Trzy rodzaje spoza historii mówią stanem lub faktem, nie zdaniem: „Thinking…”
             // rysuje stały slot, a dwa rodzaje kroku przestawiają kafelek. Tekst dorobiony tutaj
             // byłby drugim brzmieniem tego samego faktu, i to tym, którego nikt nie tłumaczy.
-            Self::Thinking { .. } | Self::StepState { .. } | Self::StepCarriedOn { .. } => "",
+            Self::Thinking { .. }
+            | Self::StepState { .. }
+            | Self::StepCarriedOn { .. }
+            | Self::QuestionAnswered { .. }
+            | Self::StepSession { .. } => "",
             Self::Run { text, .. }
             | Self::Step { text, .. }
             | Self::Agent { text, .. }
@@ -581,6 +680,9 @@ impl Line {
             | Self::Note { text, .. }
             | Self::Told { text, .. }
             | Self::Suggested { text, .. }
+            | Self::RunRequested { text, .. }
+            | Self::RunSource { text, .. }
+            | Self::MessageStored { text, .. }
             | Self::Asked { text, .. }
             | Self::Handoff { text, .. }
             | Self::Memory { text, .. }
@@ -631,12 +733,14 @@ impl Line {
             // `thinking` jest po tej stronie, bo stały slot na dole ekranu jest widoczny —
             // ale to jedyny rodzaj, którego kurator nigdy nie dokłada do historii (reguła 5),
             // więc ta odpowiedź nie dotyczy żadnego wiersza, który ktokolwiek przewinie.
-            Self::Read { .. } | Self::Search { .. } | Self::Edit { .. } | Self::Memory { .. } => {
+            Self::Read { .. } | Self::Search { .. } | Self::Edit { .. } | Self::Memory { .. } | Self::MessageStored { .. } => {
                 false
             }
             Self::Run { .. }
             | Self::Step { .. }
             | Self::StepState { .. }
+            | Self::StepSession { .. }
+            | Self::QuestionAnswered { .. }
             | Self::StepCarriedOn { .. }
             | Self::Agent { .. }
             | Self::Thinking { .. }
@@ -648,6 +752,8 @@ impl Line {
             // Propozycja zwinięta jest propozycją, której nie widać — a wiersz, który trzeba
             // najpierw rozwinąć, żeby zobaczyć w nim przycisk, jest przyciskiem schowanym.
             | Self::Suggested { .. }
+            | Self::RunRequested { .. }
+            | Self::RunSource { .. }
             | Self::Asked { .. }
             | Self::Handoff { .. }
             | Self::Problem { .. }
@@ -1300,6 +1406,7 @@ impl Curator {
             }
             Action::Asked => {
                 let line = Line::Asked {
+                    question: None,
                     agent: seen.agent.to_owned(),
                     text: one_line(target),
                     // Warianty odpowiedzi siedzą w `tool_use.input.options`, a szew

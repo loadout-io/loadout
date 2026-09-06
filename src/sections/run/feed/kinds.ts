@@ -57,6 +57,8 @@ const REGISTRY: Registry = Object.freeze({
    * widać: zdanie lidera i przycisk siedziałyby oba za kliknięciem, o którym nikt nie wie, że
    * trzeba je zrobić — a wtedy „jedno kliknięcie zamiast przepisywania" jest dwoma. */
   suggested: { route: 'history', expanded: true },
+  runRequested: { route: 'history', expanded: true },
+  runSource: { route: 'history', expanded: true },
   asked: { route: 'history', expanded: true },
   handoff: { route: 'history', expanded: true },
   problem: { route: 'history', expanded: true },
@@ -68,6 +70,7 @@ const REGISTRY: Registry = Object.freeze({
   edit: { route: 'history', expanded: false },
   ran: { route: 'history', expanded: false },
   memory: { route: 'history', expanded: false },
+  messageStored: { route: 'history', expanded: false },
 
   /* ── dwa rodzaje, które nie wchodzą do historii [T2 §7.3 reguła 5] ── */
   thinking: { route: 'now', expanded: false },
@@ -76,6 +79,8 @@ const REGISTRY: Registry = Object.freeze({
    * („ready", „running", „succeeded", i to samo dla kopii), czyli ścianą, którą teza z DESIGN §1
    * istnieje żeby skasować: „widok pracy nie przyrasta, aktualizuje się w miejscu". */
   stepState: { route: 'now', expanded: false },
+  stepSession: { route: 'now', expanded: false },
+  questionAnswered: { route: 'now', expanded: false },
   /* Samowystarczalne „failed i jedź dalej” przestawia oba fakty kroku w magazynie. Nie jest
    * zdaniem historii ani nową pracą agenta, więc nie dostaje wiersza ani slotu TERAZ. */
   stepCarriedOn: { route: 'now', expanded: false },

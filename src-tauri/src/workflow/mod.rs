@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 pub mod check;
+pub mod execution;
 pub mod file;
 pub mod roster;
 pub mod unroll;
@@ -63,6 +64,45 @@ pub struct WorkflowFile {
     /// Klucze, których ta wersja nie zna — patrz `extra` na kroku.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl WorkflowFile {
+    /// WF-14: znane dodatkowe wejścia zachowują wcześniejszy round-trip przez `extra`.
+    /// Jedna lista dotyczy całego biegu; różne listy per gałąź unieważniłyby bazę fan-in.
+    pub fn additional_inputs(&self) -> Result<Vec<String>, String> {
+        let patterns: Vec<String> = match self.extra.get("additionalInputs") {
+            None => Vec::new(),
+            Some(value) => serde_json::from_value(value.clone()).map_err(|_| {
+                "Additional inputs must be a list of project-relative paths or patterns.".to_owned()
+            })?,
+        };
+        validate_additional_inputs(&patterns)?;
+        Ok(patterns)
+    }
+}
+
+/// Ten sam rozbiór dla zapisu, podglądu i Startu. Dopasowania sprawdza dopiero snapshot,
+/// ponieważ walidator grafu nie ma i nie powinien zgadywać folderu projektu.
+pub fn validate_additional_inputs(patterns: &[String]) -> Result<(), String> {
+    if patterns.len() > 10_000 {
+        return Err("There are more than 10000 additional input patterns.".to_owned());
+    }
+    for pattern in patterns {
+        if pattern.is_empty()
+            || pattern.len() > 4096
+            || pattern.contains(['\\', '\0'])
+            || std::path::Path::new(pattern).is_absolute()
+            || pattern.split('/').any(|part| part == "..")
+        {
+            return Err(format!(
+                "Additional input \"{pattern}\" must stay inside the project folder."
+            ));
+        }
+        glob::Pattern::new(pattern).map_err(|error| {
+            format!("Additional input \"{pattern}\" is not a valid pattern: {error}")
+        })?;
+    }
+    Ok(())
 }
 
 /// Dwa rodzaje kafelka **wobec vendorów**. To jest cała lista i ma taka zostać
@@ -360,6 +400,25 @@ pub struct CheckStep {
     pub extra: Map<String, Value>,
 }
 
+impl CheckStep {
+    pub fn proof_mode(&self) -> Result<crate::engine::drivers::command::ProofMode, String> {
+        use crate::engine::drivers::command::ProofMode;
+        let mode = self
+            .extra
+            .get("proofMode")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| "This check's evidence setting could not be read.".to_owned())?
+            .unwrap_or(ProofMode::OutputPattern);
+        if mode == ProofMode::Unknown {
+            Err("This kind of check evidence is not supported.".to_owned())
+        } else {
+            Ok(mode)
+        }
+    }
+}
+
 /// Krok, który **uruchamia coś i zostawia to żywe** — dev server, watcher, cokolwiek, co reszta
 /// biegu ma zastać działające.
 ///
@@ -421,6 +480,15 @@ pub struct ServeStep {
     /// w kopii kroku ten wybór jest treścią, nie szczegółem.
     #[serde(default)]
     pub folder: Folder,
+    /// 2026-09-05 (WF-25): wcześniejsze workflow zostawiają usługę do zamknięcia okna.
+    #[serde(default, skip_serializing_if = "ServiceLifetime::is_window")]
+    pub lifetime: ServiceLifetime,
+    #[serde(default, skip_serializing_if = "ServiceStartWhen::is_reached")]
+    pub start_when: ServiceStartWhen,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<ServiceEndpointSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<ReadinessSpec>,
     /// Jak [`AgentStep::at`].
     #[serde(default)]
     pub at: Point,
@@ -429,17 +497,133 @@ pub struct ServeStep {
     pub extra: Map<String, Value>,
 }
 
-/// Które pole przekazania niesie wiersz powłoki.
-///
-/// Typ, a nie goły napis, i to nie jest ozdoba: pole o tej samej nazwie w pliku (`commandFrom`)
-/// musi dać się rozbudować bez zmiany kształtu — a pierwszą rzeczą, o którą ktoś zapyta, jest
-/// „z którego kroku", kiedy rodziców będzie dwóch. Dziś odpowiedź jest jedna (patrz
-/// `commands::run`, `handed_before`) i dlatego pola jest jedno.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceStartWhen {
+    #[default]
+    Reached,
+    Asked,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ServiceStartWhen {
+    #[must_use]
+    pub const fn is_reached(&self) -> bool {
+        matches!(self, Self::Reached)
+    }
+}
+
+/// Nazwany adres procesu. Zero prosi host o port, nigdy o zgadywanie go z logu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceEndpointSpec {
+    pub name: String,
+    #[serde(default = "local_service_host")]
+    pub host: String,
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_env: Option<String>,
+}
+
+fn local_service_host() -> String {
+    "127.0.0.1".to_owned()
+}
+const fn readiness_timeout() -> u64 {
+    30
+}
+const fn readiness_status() -> u16 {
+    200
+}
+fn readiness_path() -> String {
+    "/".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadinessSpec {
+    pub kind: ReadinessKind,
+    pub endpoint: String,
+    #[serde(default = "readiness_path")]
+    pub path: String,
+    #[serde(default = "readiness_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "readiness_status")]
+    pub expected_status: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadinessKind {
+    Http,
+    Tcp,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Kto kończy usługę. Brak pola zachowuje dotychczasowe zachowanie Serve.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceLifetime {
+    #[default]
+    Window,
+    Run,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ServiceLifetime {
+    #[must_use]
+    pub const fn is_window(&self) -> bool {
+        matches!(self, Self::Window)
+    }
+}
+
+/// Dokładny wynik przekazujący komendę. Brak producenta zachowuje stare jednoznaczne grafy,
+/// ale nie pozwala wybrać ostatniej przypadkowej kopii (WF-27, 2026-09-05).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandFrom {
     /// Nazwa pola, które krok przed tym ma oddać wierszem `nazwa: wartość`.
     pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+    #[serde(default, skip_serializing_if = "CommandFormat::is_command")]
+    pub format: CommandFormat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommandFormat {
+    #[default]
+    Command,
+    LaunchDescription,
+    #[serde(other)]
+    Unknown,
+}
+
+impl CommandFormat {
+    #[must_use]
+    pub const fn is_command(&self) -> bool {
+        matches!(self, Self::Command)
+    }
+}
+
+/// Dane agenta, nie nowy graf ani rozszerzenie uprawnień procesu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LaunchDescription {
+    pub command: String,
+    #[serde(default)]
+    pub subdirectory: String,
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub required_env: Vec<String>,
+    #[serde(default)]
+    pub endpoints: Vec<ServiceEndpointSpec>,
+    #[serde(default)]
+    pub readiness: Option<ReadinessSpec>,
 }
 
 /// Gdzie krok pracuje.

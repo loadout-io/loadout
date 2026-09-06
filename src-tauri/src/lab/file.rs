@@ -129,7 +129,7 @@ pub fn load_text(text: &str) -> Result<EvalSet, LoadError> {
     if format > u64::from(CURRENT) {
         return Err(LoadError::TooNew);
     }
-    if format < u64::from(CURRENT) {
+    if format < 1 {
         return Err(LoadError::TooOld);
     }
     serde_json::from_value(document).map_err(LoadError::Malformed)
@@ -166,7 +166,10 @@ pub fn save(set: &EvalSet, path: &Path, expected: Option<&str>) -> Result<String
         return Err(SaveError::Refused(refusal));
     }
 
-    let mut text = serde_json::to_string_pretty(set).map_err(SaveError::Malformed)?;
+    // WF-17: format 1 czytamy bez zapisu. Dopiero świadomy Save pisze format 2.
+    let mut saved = set.clone();
+    saved.format = CURRENT;
+    let mut text = serde_json::to_string_pretty(&saved).map_err(SaveError::Malformed)?;
     // Znak nowej linii na końcu: bez niego każda zmiana ostatniego wiersza niesie w zmianach
     // dodatkowe „\ No newline at end of file", a plik przestaje być zwykłym plikiem tekstowym.
     text.push('\n');
@@ -211,12 +214,18 @@ pub fn save(set: &EvalSet, path: &Path, expected: Option<&str>) -> Result<String
 /// kandydatki kasowałaby całą turę, która ją wypracowała.
 #[must_use]
 pub fn why_it_would_not_hold(set: &EvalSet) -> Option<String> {
+    if !(1..=CURRENT).contains(&set.format) {
+        return Some("This set format is not supported.".to_owned());
+    }
     if set.id.trim().is_empty() {
         return Some("This set has no name to save it under.".to_owned());
     }
 
     let mut names: BTreeSet<String> = BTreeSet::new();
     for case in &set.cases {
+        if let Err(why) = case.repeats() {
+            return Some(why);
+        }
         // NAZWA JEST KLUCZEM ZŁĄCZENIA, nie tylko podpisem w tabeli. Przekazanie zna krok,
         // który je zostawił, wyłącznie po nazwie (`memory::handoff::Meta::from`), a nazwa kroku
         // składa się z nazwy przypadku i nazwy kolumny (`plan::work_name`). Dwa przypadki
@@ -280,7 +289,11 @@ pub fn why_it_would_not_hold(set: &EvalSet) -> Option<String> {
                 variant.id.trim()
             ));
         }
-        if variant.agent.trim().is_empty() {
+        if matches!(set.subject, super::Subject::Workflow { .. }) {
+            if let Err(why) = super::workflow_plan::source(variant) {
+                return Some(why);
+            }
+        } else if variant.agent.trim().is_empty() {
             return Some(format!(
                 "The column \"{}\" does not say which agent does the work.",
                 variant.name.trim()
@@ -317,6 +330,11 @@ fn why_this_id_would_be_ambiguous(id: &str, what: &str) -> Option<String> {
 /// wynikiem, który nic nie znaczy. Przypadek bez komendy i bez pól przechodzi **zawsze** — a
 /// zielony wiersz nad niczym jest dokładnie tą wadą, dla której to repo powstało.
 fn why_this_case_cannot_judge(case: &Case) -> Option<String> {
+    match crate::workflow::execution::Examiner::from_check(&case.extra) {
+        Ok(Some(_)) => return None,
+        Err(reason) => return Some(reason),
+        Ok(None) => {}
+    }
     if case.has_something_to_judge_it() {
         // Komenda bez wzorca spadłaby na sam kod wyjścia, a suita, która nie uruchomiła ani
         // jednego testu, kończy się zerem (niezmiennik 19). Wzorzec bez komendy jest za to

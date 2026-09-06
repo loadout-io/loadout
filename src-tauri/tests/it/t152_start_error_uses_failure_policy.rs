@@ -320,6 +320,7 @@ fn assert_asked(observed: &Observed) -> Result<(), Box<dyn Error>> {
                 agent,
                 text,
                 options,
+                ..
             } => Some((agent, text, options)),
             _ => None,
         })

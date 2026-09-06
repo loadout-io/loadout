@@ -220,15 +220,17 @@ pub(crate) fn read(run_dir: &Path) -> Result<Indexed> {
     // Przekazania nie mają `step_id`: który krok je napisał, mówi konwencja nazwy pliku
     // (`01__research__findings.md`), a ta konwencja jest kontraktem T-16. Zgadywanie jej tutaj
     // byłoby drugim miejscem, w którym mieszka ten sam format nazwy.
-    for path in files_sorted_by_name(&run_dir.join(HANDOFFS_DIR))? {
-        artifacts.push(artifact(
-            run_dir,
-            &run.id,
-            None,
-            KIND_HANDOFF,
-            &path,
-            run.created_at,
-        )?);
+    for directory in crate::memory::handoff::publication_directories(run_dir)? {
+        for path in files_sorted_by_name(&directory.join(HANDOFFS_DIR))? {
+            artifacts.push(artifact(
+                run_dir,
+                &run.id,
+                None,
+                KIND_HANDOFF,
+                &path,
+                run.created_at,
+            )?);
+        }
     }
 
     Ok(Indexed {

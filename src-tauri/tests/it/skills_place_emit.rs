@@ -78,6 +78,7 @@ fn loaded_skill() -> Skill {
         allowed_tools: Some(ALLOWED_TOOLS.to_owned()),
         body: BODY.to_owned(),
         files: Vec::new(),
+        frozen_bundle: None,
         extras: NON_SPEC
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))

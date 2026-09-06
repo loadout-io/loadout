@@ -286,6 +286,49 @@ pub fn make_from(project: &Path, dest: &Path, branch: &str, from: &str) -> Resul
     make_from_after_add(project, dest, branch, from, |_| Ok(()))
 }
 
+/// WF-01: przygotowanie biegu czyta źródło raz, ta droga używa wyłącznie zapisanego wejścia.
+/// `from` jest dokładnym OID wcześniejszego wyniku danej kopii, nie żywą nazwą gałęzi.
+pub fn make_from_snapshot_after_add(
+    project: &Path,
+    dest: &Path,
+    branch: &str,
+    from: Option<&str>,
+    snapshot: &super::input_snapshot::InputSnapshot,
+    after_add: impl FnOnce(&str) -> io::Result<()>,
+) -> Result<Made, Trouble> {
+    snapshot.validate().map_err(Trouble::Copying)?;
+    let Some(head) = from.or_else(|| snapshot.git_oid()) else {
+        snapshot.materialize(dest).map_err(Trouble::Copying)?;
+        return Ok(Made {
+            how: How::Copy,
+            left_behind: snapshot.left_behind().to_vec(),
+        });
+    };
+    git(
+        project,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            branch,
+            &dest.display().to_string(),
+            head,
+        ],
+    )
+    .map_err(Trouble::Git)?;
+    after_add(head).map_err(Trouble::Copying)?;
+    if from.is_none() {
+        snapshot.materialize(dest).map_err(Trouble::Copying)?;
+    }
+    Ok(Made {
+        how: How::Tree {
+            branch: branch.to_owned(),
+        },
+        left_behind: snapshot.left_behind().to_vec(),
+    })
+}
+
 /// Jak [`make_from`], ale oddaje ownership nowego drzewa natychmiast po `git worktree add`.
 ///
 /// 2026-08-28 (T-152): nakładanie WIP i liczenie pominiętych plików nadal może odmówić po
@@ -408,6 +451,18 @@ pub struct Closed {
 }
 
 /// Zamyka drzewo kroku: commit i sprzątanie, kiedy jest co zapisać, samo sprzątanie, kiedy nie ma.
+#[must_use]
+pub fn finish(
+    project: &Path,
+    dest: &Path,
+    branch: &str,
+    message: &str,
+    base: Option<&str>,
+) -> Closed {
+    finish_with_saved(project, dest, branch, message, base, |_| Ok(()))
+}
+
+/// Zamyka drzewo kroku: commit i sprzątanie, kiedy jest co zapisać, samo sprzątanie, kiedy nie ma.
 ///
 /// **Krok, który nic nie zmienił, nie ma prawa zostawić gałęzi.** Po tygodniu biegów `git
 /// branch` byłby nie do przeczytania, a gałęzie niosące pracę ginęłyby wśród pustych.
@@ -445,17 +500,18 @@ pub struct Closed {
 /// git, który nie odpowiada, dają tu ten sam wybór co commit: gałąź zostaje. Odwrotny wybór to ta
 /// sama cicha strata, przed którą stoi cały ten moduł — a jedna zbędna gałąź kosztuje wiersz
 /// w `git branch`.
-pub fn finish(
+pub fn finish_with_saved(
     project: &Path,
     dest: &Path,
     branch: &str,
     message: &str,
     base: Option<&str>,
+    saved: impl FnOnce(&str) -> Result<(), String>,
 ) -> Closed {
     let dirty = git(dest, &["status", "--porcelain"]).is_ok_and(|said| !said.trim().is_empty());
 
-    if dirty {
-        let left_behind = match save(dest, message) {
+    let left_behind = if dirty {
+        match save(dest, message) {
             Ok(left_behind) => left_behind,
             Err(said) => {
                 // Commit się nie udał: drzewo zostaje na dysku razem z pracą, a bieg ma o tym
@@ -475,15 +531,22 @@ pub fn finish(
                     left_behind: None,
                 };
             }
-        };
-        // 2026-09 (Z-8): półka albo ciężki katalog mogą być jedyną zmianą. Po ich wyłączeniu
-        // nie wolno ani robić pustego commita, ani zostawiać pustej gałęzi jako rzekomej pracy.
-        if !committed_over(dest, base) {
-            return close_empty_tree(project, dest, branch, left_behind);
         }
+    } else {
+        None
+    };
+
+    // WF-25, 2026-09-05: sam commit nie zapisuje adresu wyniku w biegu. Callback utrwala
+    // dokładny OID przed usunięciem katalogu/gałęzi; odmowa zostawia odzyskiwalne drzewo.
+    // Ten sam moment obejmuje brak zmian — wtedy za chwilę zniknie tymczasowa gałąź.
+    let published = git(dest, &["rev-parse", "--verify", "HEAD"]).and_then(|oid| saved(oid.trim()));
+    if let Err(said) = published {
         return Closed {
-            kept: Kept::OnABranch(branch.to_owned()),
-            tidied: tidy_away(project, dest, branch),
+            kept: Kept::LeftInPlace {
+                branch: branch.to_owned(),
+                why: could_not_save(branch, dest, &said),
+            },
+            tidied: None,
             left_behind,
         };
     }
@@ -494,11 +557,11 @@ pub fn finish(
         return Closed {
             kept: Kept::OnABranch(branch.to_owned()),
             tidied: tidy_away(project, dest, branch),
-            left_behind: None,
+            left_behind,
         };
     }
 
-    close_empty_tree(project, dest, branch, None)
+    close_empty_tree(project, dest, branch, left_behind)
 }
 
 /// Zdejmuje drzewo i gałąź, kiedy po wyłączeniu własnych albo ciężkich plików nie ma pracy.
@@ -560,10 +623,9 @@ fn tidy_away(project: &Path, dest: &Path, branch: &str) -> Option<String> {
 
 /// Zapisuje pracę z drzewa jako commit na jego gałęzi.
 ///
-/// `add -A` bierze też pliki nowe, ale dwa rodzaje nie należą do wyniku: półka umiejętności,
-/// którą położył Loadout, oraz największe wpisy pierwszego poziomu po przekroczeniu 50 MiB.
-/// Oba wyłączenia powstają tutaj, bo drugi zestaw reguł obok adaptera byłby pierwszym, który
-/// przestanie obowiązywać (niezmiennik 23).
+/// `add -A` bierze też nowe pliki użytkownika pod `.agents/skills`. WF-13: native delivery
+/// usuwa wcześniej jeden rdzeń na podstawie pochodzenia; sama nazwa półki nie jest własnością.
+/// Tutaj zostaje dotychczasowy limit największych wpisów pierwszego poziomu ponad 50 MiB.
 fn save(dest: &Path, message: &str) -> Result<Option<String>, String> {
     let (heavy, left_behind) = what_does_not_belong_in_the_commit(dest)?;
     let mut add = vec![
@@ -571,10 +633,6 @@ fn save(dest: &Path, message: &str) -> Result<Option<String>, String> {
         "-A".to_owned(),
         "--".to_owned(),
         ".".to_owned(),
-        format!(
-            ":(exclude,literal){}",
-            crate::skills::SHELF_THE_OTHER_FIVE_READ
-        ),
     ];
     add.extend(
         heavy
@@ -607,7 +665,6 @@ struct UntrackedTop {
 fn what_does_not_belong_in_the_commit(
     dest: &Path,
 ) -> Result<(Vec<UntrackedTop>, Option<String>), String> {
-    let shelf = Path::new(crate::skills::SHELF_THE_OTHER_FIVE_READ);
     let mut by_top: BTreeMap<String, (u64, bool)> = BTreeMap::new();
     let mut total = 0_u64;
 
@@ -618,11 +675,6 @@ fn what_does_not_belong_in_the_commit(
         .filter(|name| !name.is_empty())
     {
         let relative = Path::new(name);
-        if relative.starts_with(shelf) {
-            // Półka jest własnym plikiem Loadouta, nie pracą ani artefaktem agenta. Zawsze ma
-            // osobny pathspek i nie może sama przepchnąć prawdziwej pracy ponad limit.
-            continue;
-        }
         let metadata = fs::symlink_metadata(dest.join(relative))
             .map_err(|error| format!("could not measure {name}: {error}"))?;
         let Some(top) = relative.components().next() else {

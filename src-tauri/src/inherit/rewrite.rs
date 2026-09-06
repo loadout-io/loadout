@@ -15,9 +15,8 @@
 //! (niezmiennik 21): `commands/`, `hooks/`, `agents/` ani `mcp.json` tu nie powstają, bo S-1
 //! nie zmierzył żadnej z nich [S1 §3].
 //!
-//! Bitu wykonywalności nie wykrywamy — wykrywamy go **nie wykrywając**: ten plik zapisuje
-//! wyłącznie to, co sam postanowił zapisać, więc żaden `PermissionsExt` ani `#[cfg(unix)]` nie
-//! jest tu potrzebny (niezmienniki 3 i 4).
+//! WF-13 (2026-09-05): kompletność katalogu i prawa helperów rozstrzyga wspólny bundle,
+//! a operacje zależne od platformy pozostają w supervisorze. Żaden helper nie jest odpalany.
 //!
 //! 2026-08-22 (T-79) — DRUGI KORZEŃ ŹRÓDŁOWY, TA SAMA DROGA. Katalog pluginu jest jedynym
 //! kanałem, którym Claude Code przyjmuje umiejętność podaną z zewnątrz [S1 §3], a Loadout ma
@@ -27,14 +26,11 @@
 //! tworzy katalogu" są **jedną** wiedzą o tym vendorze — a druga jej kopia byłaby pierwszą
 //! rzeczą, która zostanie stara (niezmiennik 23).
 
-use std::fs;
 use std::io;
 use std::path::Path;
 
-use super::scan;
 use super::{Result, Rewritten};
 use crate::skills::StepSkills;
-use crate::skills::place::copy_the_skill;
 
 /// Poziom, bez którego plugin ładuje się i rejestruje ZERO umiejętności.
 ///
@@ -42,13 +38,6 @@ use crate::skills::place::copy_the_skill;
 /// w `init.plugins` jako pełnoprawny wpis; `<katalog>/skills/alpha/SKILL.md` → M3a, 54 → 56.
 /// Nie ma błędu, nie ma ostrzeżenia, jest zielony wpis w zdarzeniu startowym.
 const SKILLS_LEVEL: &str = "skills";
-
-/// Nazwa pliku umiejętności po NASZEJ stronie granicy.
-///
-/// Ta sama, co u gospodarza, ale nie z tego powodu: to konwencja vendora, którego katalog
-/// budujemy. Gdyby gospodarz nazywał swój plik inaczej, ten tutaj nadal musiałby nazywać się
-/// tak, bo to `claude --plugin-dir` go szuka.
-const SKILL_FILE: &str = "SKILL.md";
 
 /// Manifest pluginu: katalog, plik i cała jego treść.
 ///
@@ -91,7 +80,7 @@ pub(crate) const LIBRARY_PLUGIN: &str = "loadout-skills";
 /// i identyfikator biegu należą do biegu, a nie do dziedziczenia.
 ///
 /// Powstaje `.claude-plugin/plugin.json` oraz `skills/<nazwa>/SKILL.md` na każdą wybraną
-/// umiejętność, bajt w bajt taki, jaki leży u gospodarza — i **ani jednej ścieżki więcej**.
+/// umiejętność wraz ze wszystkimi zasobami względnymi, bajt w bajt jak u gospodarza.
 ///
 /// POZIOM `skills/` JEST OBOWIĄZKOWY i to jest zmierzone: `<katalog>/alpha/SKILL.md` daje
 /// plugin, który się ładuje, pojawia się w `init.plugins` jako pełnoprawny wpis i rejestruje
@@ -107,53 +96,31 @@ pub(crate) const LIBRARY_PLUGIN: &str = "loadout-skills";
 /// przekazany vendorowi to plugin ładujący się z zerem umiejętności, czyli ta sama cicha
 /// zieleń, o którą chodzi wyżej.
 pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Rewritten> {
-    // CZYTAMY WSZYSTKO, ZANIM ZAPISZEMY COKOLWIEK. Obietnica „nie odziedziczono niczego →
-    // katalog nie powstał" jest sprawdzalna tylko wtedy, gdy wiemy, że nie ma czego włożyć,
-    // PRZED pierwszym `create_dir_all`. Pusty katalog przekazany vendorowi to plugin, który
-    // ładuje się i rejestruje zero umiejętności — ta sama cicha zieleń co poziom bez `skills/`.
-    let mut carried: Vec<(&String, Vec<u8>)> = Vec::new();
+    // WF-13: Borrow przenosi ten sam pełny katalog co biblioteka. Kopiowanie helpera
+    // nie jest jego wykonaniem. Wszystkie źródła walidujemy przed pierwszym zapisem.
+    let mut carried = Vec::new();
     for name in selected {
-        // `None` znaczy „to nie jest nazwa jednego katalogu" i wyklucza wpis z obu ścieżek
-        // naraz: czytanej u gospodarza i pisanej u nas. Niżej `join(name)` opiera się na tym,
-        // że do `carried` wchodzą wyłącznie nazwy, które przez ten warunek przeszły.
-        let Some(source) = scan::skill_file(project, name) else {
-            continue;
-        };
-        match fs::read(&source) {
-            Ok(bytes) => carried.push((name, bytes)),
-            // Wybrana umiejętność, której u gospodarza nie ma, jest normalnym stanem cudzego
-            // repozytorium (niezmiennik 5) — człowiek mógł ją odznaczyć przed chwilą w innym
-            // narzędziu. Widać to w `names`: to lista tego, co NAPRAWDĘ pojechało, a nie tego,
-            // o co poproszono, i różnica między nią a `selected` jest jedynym miejscem, w którym
-            // ta strata jest widoczna.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-            // Awaria dysku to co innego: o niej człowiek ma się dowiedzieć.
-            Err(error) => return Err(error.into()),
-        }
+        let source = super::scan::skill_file(project, name)
+            .and_then(|file| file.parent().map(Path::to_path_buf))
+            .ok_or_else(|| io::Error::other("The selected skill name is not valid."))?;
+        carried.push(crate::skills::bundle::from_source(name, &source)?);
     }
 
     let rewritten = Rewritten {
         dir: into.to_path_buf(),
-        names: carried.iter().map(|(name, _)| (*name).clone()).collect(),
+        names: carried.iter().map(|skill| skill.name.clone()).collect(),
     };
     if carried.is_empty() {
         return Ok(rewritten);
     }
 
-    // BAJT W BAJT. Nie przez `place::emit`, bo emiter normalizuje — zdejmuje pola spoza
-    // specyfikacji, przestawia kolejność, przecytowuje skalary — i zwraca poprawny `SKILL.md`,
-    // tylko INNY. Człowiek ma móc porównać `diff` z cudzym plikiem i zobaczyć zero różnic.
-    //
-    // I nie przez `fs::copy`, mimo że to jedna linia mniej: `fs::copy` przenosi uprawnienia
-    // razem z treścią, więc cudzy `SKILL.md` z bitem wykonywalności wylądowałby u nas
-    // wykonywalny. `read` + `write` zapisuje wyłącznie to, co sam postanowił zapisać, i dlatego
-    // ten plik nie potrzebuje ani `PermissionsExt`, ani gałęzi platformowej (niezmienniki 3 i 4).
-    for (name, bytes) in &carried {
-        let dir = into.join(SKILLS_LEVEL).join(name.as_str());
-        fs::create_dir_all(&dir)?;
-        fs::write(dir.join(SKILL_FILE), bytes)?;
+    for skill in &carried {
+        skill
+            .bundle
+            .materialize(&into.join(SKILLS_LEVEL).join(&skill.name))?;
     }
 
+    crate::skills::bundle::write_delivered(into, &carried)?;
     pin_the_name(into, INHERITED_PLUGIN)?;
 
     Ok(rewritten)
@@ -166,11 +133,8 @@ pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Re
 /// „pusty wybór nie tworzy katalogu". Zmienia się to, skąd bierzemy bajty — z `<dane>/skills/`
 /// zamiast z `.claude/skills/` cudzego repozytorium — i to, ile ich bierzemy.
 ///
-/// **CAŁY KATALOG UMIEJĘTNOŚCI, nie sam `SKILL.md`**, i ta jedna różnica jest rozstrzygnięciem,
-/// nie niekonsekwencją. Umiejętność gospodarza Loadout **cytuje**: jego `scripts/` to cudza
-/// maszyneria, której nie przenosimy (nagłówek tego pliku). Umiejętność z biblioteki Loadout
-/// **posiada** — jej pliki dołączone zapisał `place::apply` i są jej częścią, a `SKILL.md`
-/// odsyłający do skryptu, którego przy nim nie ma, jest umiejętnością zepsutą po cichu.
+/// WF-13: cały katalog, tą samą drogą co Borrow. Wcześniejszy podział cytowanie/własność
+/// gubił helpery wyłącznie na jednej ścieżce, choć oba ekrany obiecywały ten sam skill.
 ///
 /// `into` przychodzi argumentem, tak samo jak w [`plugin_dir`], bo katalog kroku należy do biegu,
 /// a nie do rozmieszczania.
@@ -185,9 +149,18 @@ pub fn plugin_dir_from_the_library(skills: &StepSkills, into: &Path) -> Result<R
         return Ok(rewritten);
     }
 
-    for (name, source) in skills.names.iter().zip(&skills.dirs) {
-        copy_the_skill(source, &into.join(SKILLS_LEVEL).join(name))?;
+    let carried = skills
+        .names
+        .iter()
+        .zip(&skills.dirs)
+        .map(|(name, source)| crate::skills::bundle::from_source(name, source))
+        .collect::<io::Result<Vec<_>>>()?;
+    for skill in &carried {
+        skill
+            .bundle
+            .materialize(&into.join(SKILLS_LEVEL).join(&skill.name))?;
     }
+    crate::skills::bundle::write_delivered(into, &carried)?;
     pin_the_name(into, LIBRARY_PLUGIN)?;
 
     Ok(rewritten)
@@ -200,12 +173,17 @@ pub fn plugin_dir_from_the_library(skills: &StepSkills, into: &Path) -> Result<R
 /// pierwszy zostawiłby przy tej samej porażce katalog z nazwą i z zerem umiejętności, czyli
 /// dokładnie ten kształt, który ładuje się na zielono i nic nie wnosi.
 fn pin_the_name(into: &Path, plugin: &str) -> Result<()> {
-    let manifest = into.join(MANIFEST_DIR);
-    fs::create_dir_all(&manifest)?;
-    fs::write(
-        manifest.join(MANIFEST_FILE),
-        format!("{{\n  \"name\": \"{plugin}\"\n}}\n"),
-    )?;
+    // WF-13: create_dir_all + write szły przez podmienione .claude-plugin do cudzych plików.
+    let root = crate::engine::supervisor::PublicationRoot::open(into)?;
+    root.ensure_directory(Path::new(MANIFEST_DIR), 0o700)?;
+    crate::durable_file::DurableFilePublisher::new(into)
+        .atomic_create_if_absent(
+            &into.join(MANIFEST_DIR).join(MANIFEST_FILE),
+            format!("{{\n  \"name\": \"{plugin}\"\n}}\n").as_bytes(),
+            crate::durable_file::ModePolicy::Exact(crate::durable_file::PRIVATE_FILE_MODE),
+        )
+        .map_err(super::super::durable_file::PublishError::into_io)?;
+    root.validate_path_identity(into)?;
     Ok(())
 }
 

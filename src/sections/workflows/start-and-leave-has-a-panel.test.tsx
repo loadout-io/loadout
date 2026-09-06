@@ -83,11 +83,11 @@ const SERVE = freshStep('serve', freshId(START), { x: 24, y: 24 });
 
 const DOC: WorkflowFile = { ...START, steps: [SERVE] };
 
-function editorWith(openStep?: string): string {
+function editorWith(openStep?: string, document: WorkflowFile = DOC): string {
   return renderToStaticMarkup(
     <WorkflowEditor
       path={PATH}
-      document={DOC}
+      document={document}
       agents={[]}
       onClose={noop}
       onRun={noop}
@@ -138,6 +138,95 @@ beforeEach(() => {
 });
 
 describe('a tile that starts something and walks on can be filled in', () => {
+  it('explicitly saves waiting for an allowed agent to start the configured app', async () => {
+    vi.useFakeTimers();
+    try {
+      const markup = editorWith(SERVE.id);
+      expect(markup).toContain('When to start');
+      const choose = onChangeOf(spy.shown.at(0), 'serve-start-when');
+      expect(choose, 'the real editor has no agent-start choice').not.toBeNull();
+      choose?.({ target: { value: 'asked' } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(spy.written.at(-1)?.file.steps.find((step) => step.id === SERVE.id)).toMatchObject({
+        startWhen: 'asked',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('saves an app description source without overwriting the inactive manual command', async () => {
+    vi.useFakeTimers();
+    try {
+      const serve = { ...SERVE, command: COMMAND, commandFrom: { field: 'launch' } };
+      editorWith(SERVE.id, { ...DOC, steps: [serve] });
+      const choose = onChangeOf(spy.shown.at(0), 'serve-command-format');
+      expect(choose, 'the editor cannot select the typed app description').not.toBeNull();
+      choose?.({ target: { value: 'launch-description' } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(spy.written.at(-1)?.file.steps.find((step) => step.id === SERVE.id)).toMatchObject({
+        command: COMMAND,
+        commandFrom: { field: 'launch', format: 'launch-description' },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('offers and saves the exact second copy by its readable step name', async () => {
+    vi.useFakeTimers();
+    try {
+      const prepare = {
+        ...freshStep('agent', 's_prepare', { x: 0, y: 0 }),
+        name: 'Prepare app',
+        copies: 2,
+      };
+      const serve = {
+        ...SERVE,
+        commandFrom: { field: 'launch', format: 'launch-description' as const },
+      };
+      const markup = editorWith(SERVE.id, {
+        ...DOC,
+        steps: [prepare, serve],
+        links: [{ from: prepare.id, to: SERVE.id }],
+      });
+      expect(markup).toContain('Prepare app · copy 2');
+      const choose = onChangeOf(spy.shown.at(0), 'serve-command-producer');
+      expect(choose, 'the real editor has no exact result selector').not.toBeNull();
+      choose?.({ target: { value: 's_prepare~2' } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(spy.written.at(-1)?.file.steps.find((step) => step.id === SERVE.id)).toMatchObject({
+        commandFrom: { field: 'launch', format: 'launch-description', producer: 's_prepare~2' },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('can explicitly wait for HTTP readiness and saves that choice through the actual editor', async () => {
+    vi.useFakeTimers();
+    try {
+      const markup = editorWith(SERVE.id);
+      const choose = onChangeOf(spy.shown.at(0), 'serve-readiness');
+      expect(markup).toContain('Wait until the app responds');
+      expect(choose, 'the real panel has no readiness handler').not.toBeNull();
+      choose?.({ target: { value: 'http' } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      const written = spy.written.at(-1)?.file.steps.find((step) => step.id === SERVE.id);
+      expect(written).toMatchObject({
+        readiness: {
+          kind: 'http',
+          endpoint: 'web',
+          path: '/',
+          timeoutSeconds: 30,
+          expectedStatus: 200,
+        },
+        endpoints: [{ name: 'web', host: '127.0.0.1', port: 3000, portEnv: 'PORT' }],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   /* 2026-08-31 — TO KRYTERIUM ZMIENIŁO ZDANIE, na polecenie właściciela, i tą samą drogą, co
    * bliźniacze kryterium kafelka „sprawdź" (`canvas/check-tile-can-be-placed.test.ts`). Żądało
    * kafelka z pustą komendą i folderem `same-copy`; oba razem znaczyły plik, którego

@@ -26,11 +26,18 @@ use super::host::Answers;
 use super::{Answer, Call};
 use crate::commands::agents::list_agents_inner;
 use crate::commands::chat::LEAD;
-use crate::commands::history::list_runs_inner;
-use crate::commands::workflows::{WorkflowPlace, list_workflow_definitions_inner, typable};
-use crate::engine::line::Line;
+use crate::commands::lead_start::LeadStarts;
+use crate::commands::workflows::{
+    WorkflowPlace, library_workflows, list_workflow_definitions_inner, project_workflows, typable,
+};
+use crate::engine::line::{Line, RequestedStep};
 use crate::ipc::{LineSink, Sent};
 use crate::library::definition::Definition;
+
+mod control;
+mod replay;
+mod result_restore;
+mod services;
 
 /// Workflow tego człowieka — nazwa do wpisania, tytuł, liczba kroków i półka.
 ///
@@ -160,7 +167,56 @@ const fn screen_of(kind: &str) -> &'static str {
 struct ParkedQuestion {
     asker: String,
     ticket: Arc<()>,
+    binding: Option<ConfirmationBinding>,
     answer: tokio::sync::oneshot::Sender<String>,
+}
+
+/// Zakres zgody buduje host, nigdy argument `confirmed` ani odczytana historia.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApprovalSubject {
+    Restore {
+        run: crate::commands::lead_start::RunRef,
+        preview_id: String,
+    },
+    Replay {
+        run: crate::commands::lead_start::RunRef,
+        preview_id: String,
+    },
+    Run(crate::commands::lead_start::RunRef),
+    Service(crate::commands::processes::ServiceRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApprovalScope {
+    pub conversation: uuid::Uuid,
+    pub subject: ApprovalSubject,
+    pub operation: String,
+    pub checkpoint_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ConfirmationBinding {
+    question_id: String,
+    scope: ApprovalScope,
+    affirmative: Option<String>,
+}
+
+struct Consent {
+    token: String,
+    binding: ConfirmationBinding,
+    original: String,
+}
+
+impl std::fmt::Debug for Consent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Consent(private one-use answer)")
+    }
+}
+
+#[derive(Debug, Default)]
+struct WaitingState {
+    question: Option<ParkedQuestion>,
+    consent: Option<Consent>,
 }
 
 #[derive(Debug, Default)]
@@ -169,7 +225,7 @@ pub struct Waiting {
     ///
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): pod nim są wyłącznie
     /// `take` i `replace`.
-    slot: Mutex<Option<ParkedQuestion>>,
+    slot: Mutex<WaitingState>,
 }
 
 impl Waiting {
@@ -179,11 +235,22 @@ impl Waiting {
     /// poprzednie pytanie dostaje odmowę zamiast ciszy. Cisza byłaby turą wiszącą do końca
     /// rozmowy.
     fn park(&self, asker: String) -> (Arc<()>, tokio::sync::oneshot::Receiver<String>) {
+        self.park_bound(asker, None)
+    }
+
+    fn park_bound(
+        &self,
+        asker: String,
+        binding: Option<ConfirmationBinding>,
+    ) -> (Arc<()>, tokio::sync::oneshot::Receiver<String>) {
         let (say, hear) = tokio::sync::oneshot::channel();
         let ticket = Arc::new(());
-        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(ParkedQuestion {
+        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        slot.consent = None;
+        slot.question = Some(ParkedQuestion {
             asker,
             ticket: Arc::clone(&ticket),
+            binding,
             answer: say,
         });
         (ticket, hear)
@@ -196,10 +263,10 @@ impl Waiting {
     /// widocznego pytania tylko dlatego, że oba mają podpis `Lead`.
     fn withdraw(&self, ticket: &Arc<()>) -> bool {
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
-        match slot.take() {
+        match slot.question.take() {
             Some(parked) if Arc::ptr_eq(&parked.ticket, ticket) => true,
             other => {
-                *slot = other;
+                slot.question = other;
                 false
             }
         }
@@ -224,6 +291,7 @@ impl Waiting {
         self.slot
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .question
             .as_ref()
             .is_some_and(|waiting| waiting.asker == asker)
     }
@@ -234,15 +302,75 @@ impl Waiting {
     /// na punkt kontrolny biegu, i musi wiedzieć, czy poszła gdzie indziej.
     pub fn answer(&self, asker: &str, said: String) -> bool {
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
-        match slot.take() {
-            Some(waiting) if waiting.asker == asker => waiting.answer.send(said).is_ok(),
+        match slot.question.take() {
+            Some(waiting) if waiting.asker == asker && waiting.binding.is_none() => {
+                waiting.answer.send(said).is_ok()
+            }
             /* CUDZE PYTANIE WRACA NA MIEJSCE. Zabrane stąd zostawiłoby lidera czekającego bez
              * końca na odpowiedź, którą człowiek dał komu innemu. */
             other => {
-                *slot = other;
+                slot.question = other;
                 false
             }
         }
+    }
+
+    /// Wyłącznie droga prawdziwej odpowiedzi okna. Starszy numer nie zdejmuje nowszego pytania.
+    pub fn answer_exact(&self, asker: &str, question_id: &str, original: String) -> bool {
+        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let matches = slot.question.as_ref().is_some_and(|one| {
+            one.asker == asker
+                && one
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.question_id == question_id)
+        });
+        if !matches {
+            return false;
+        }
+        let Some(waiting) = slot.question.take() else {
+            return false;
+        };
+        if let Some(binding) = waiting.binding
+            && binding
+                .affirmative
+                .as_ref()
+                .is_none_or(|expected| expected == &original)
+        {
+            slot.consent = Some(Consent {
+                token: uuid::Uuid::now_v7().to_string(),
+                binding,
+                original: original.clone(),
+            });
+        }
+        if waiting.answer.send(original).is_ok() {
+            true
+        } else {
+            slot.consent = None;
+            false
+        }
+    }
+
+    fn token_for(&self, question_id: &str) -> Option<String> {
+        self.slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .consent
+            .as_ref()
+            .filter(|consent| consent.binding.question_id == question_id)
+            .map(|consent| consent.token.clone())
+    }
+
+    pub(crate) fn consume(&self, scope: &ApprovalScope, token: &str) -> Option<String> {
+        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if !slot
+            .consent
+            .as_ref()
+            .is_some_and(|consent| consent.token == token && &consent.binding.scope == scope)
+        {
+            return None;
+        }
+        slot.consent.take().map(|consent| consent.original)
     }
 }
 
@@ -276,6 +404,11 @@ pub struct Desk {
     /// Folder zakresu, w którym stoi ta rozmowa. Workflow tego projektu przesłania biblioteczne —
     /// tą samą regułą, którą widzi okno.
     project: PathBuf,
+    starts: Option<Arc<LeadStarts>>,
+    runs: crate::commands::lead_history::LeadRunLookup,
+    services: Option<Arc<crate::commands::processes::services::ServiceAccess>>,
+    /// Aktualna tożsamość prywatnej rozmowy. Krótki mutex, nigdy przez await.
+    conversation: Arc<Mutex<uuid::Uuid>>,
 }
 
 /* RĘCZNIE, bo `LineSink` nie jest `Debug` i nie ma być. Pokazujemy dwa fakty, które cokolwiek
@@ -301,6 +434,10 @@ impl Desk {
             project,
             lines: None,
             waiting: Arc::new(Waiting::default()),
+            starts: None,
+            runs: crate::commands::lead_history::LeadRunLookup::default(),
+            services: None,
+            conversation: Arc::new(Mutex::new(uuid::Uuid::now_v7())),
         }
     }
 
@@ -316,6 +453,110 @@ impl Desk {
     pub fn showing(mut self, lines: Arc<Mutex<LineSink>>) -> Self {
         self.lines = Some(lines);
         self
+    }
+
+    #[must_use]
+    pub fn starting_with(
+        mut self,
+        starts: Arc<LeadStarts>,
+        conversation: Arc<Mutex<uuid::Uuid>>,
+    ) -> Self {
+        self.starts = Some(starts);
+        self.conversation = conversation;
+        self
+    }
+
+    #[must_use]
+    pub fn reading_runs_with(
+        mut self,
+        lookup: crate::commands::lead_history::LeadRunLookup,
+    ) -> Self {
+        self.runs = lookup;
+        self
+    }
+
+    #[must_use]
+    pub fn serving_with(
+        mut self,
+        access: Arc<crate::commands::processes::services::ServiceAccess>,
+    ) -> Self {
+        self.services = Some(access);
+        self
+    }
+
+    /// Lista zamrożona przez hosta; sam model nie dokłada praw do sesji.
+    #[must_use]
+    pub fn tools(&self) -> Value {
+        let mut tools = super::verbs::tool_list(super::Role::Lead);
+        if let (Some(target), Some(access)) = (tools.as_array_mut(), self.services.as_ref())
+            && let Some(extra) = access.tools().as_array()
+        {
+            target.extend(extra.iter().cloned());
+        }
+        tools
+    }
+
+    fn show_history_source(&self, value: &Value) {
+        if let Some(rows) = value.get("runs").and_then(Value::as_array) {
+            for row in rows.iter().take(50) {
+                self.show_history_source(row);
+            }
+            return;
+        }
+        let Some(lines) = &self.lines else {
+            return;
+        };
+        let Some(source) = value.get("source") else {
+            if let Some(said) = value.get("said").and_then(Value::as_str) {
+                let _ = lines
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .send(Line::Note {
+                        agent: "Loadout".to_owned(),
+                        text: said.to_owned(),
+                        body: Vec::new(),
+                    });
+            }
+            return;
+        };
+        let (Some(workspace), Some(run_id), Some(run_folder)) = (
+            source.get("workspace").and_then(Value::as_str),
+            source.get("runId").and_then(Value::as_str),
+            source.get("runFolder").and_then(Value::as_str),
+        ) else {
+            return;
+        };
+        let title = value
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Saved work");
+        let state = value.get("state").and_then(Value::as_str).unwrap_or("");
+        let active = value.get("active").and_then(Value::as_bool) == Some(true);
+        let conclusion = match state {
+            "running" if active => "is running",
+            "paused" if active => "is waiting for an answer",
+            "running" => "was last recorded as running",
+            "paused" => "was last recorded as waiting for an answer",
+            "succeeded" => "finished successfully",
+            "failed" => "did not finish successfully",
+            "cancelled" => "was stopped",
+            _ => "has saved source material",
+        };
+        let _ = lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(Line::RunSource {
+                agent: "Loadout".to_owned(),
+                text: format!("{title} {conclusion}."),
+                workspace: workspace.to_owned(),
+                run_id: run_id.to_owned(),
+                run_folder: run_folder.to_owned(),
+                observed_at: value
+                    .get("observedAt")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            });
     }
 
     /// Zaczyna bieg: sprawdza, co da się sprawdzić TUTAJ, i kładzie wiersz startu na ekran.
@@ -412,6 +653,7 @@ impl Desk {
                 agent: LEAD.to_owned(),
                 text: question.to_owned(),
                 options,
+                question: None,
             });
 
         /* PYTANIE, KTÓRE NIE DOTARŁO NA EKRAN, NIE MOŻE BLOKOWAĆ TURY. Zmierzone 2026-09-01:
@@ -438,7 +680,7 @@ impl Desk {
         }
     }
 
-    fn start(&self, home: &Path, input: &Value) -> Result<Value, String> {
+    async fn start(&self, home: &Path, input: &Value) -> Result<Value, String> {
         let Some(lines) = self.lines.as_ref() else {
             return Err(
                 "Loadout has no stream open for this conversation, so a run would start \
@@ -455,21 +697,24 @@ impl Desk {
             );
         };
         let wanted = typable(wanted);
-
-        let listed = workflows(home, Some(&self.project))?;
-        let rows = listed
-            .get("workflows")
-            .and_then(Value::as_array)
-            .map_or_else(Vec::new, Clone::clone);
-        let names: Vec<&str> = rows
+        let project = std::fs::canonicalize(&self.project).map_err(|_| {
+            "Nothing started: this conversation's project is no longer available.".to_owned()
+        })?;
+        let catalog = list_workflow_definitions_inner(home, Some(&project))
+            .map_err(|error| format!("Loadout could not read your workflows: {error}"))?;
+        let names: Vec<String> = catalog
             .iter()
-            .filter_map(|row| row.get("name").and_then(Value::as_str))
+            .filter_map(|one| match one {
+                Definition::Healthy { value, .. } => Some(typable(&value.workflow.name)),
+                Definition::DefinitionProblem { .. } => None,
+            })
             .collect();
-
-        let Some(found) = rows
-            .iter()
-            .find(|row| row.get("name").and_then(Value::as_str) == Some(wanted.as_str()))
-        else {
+        let Some((found, revision)) = catalog.into_iter().find_map(|one| match one {
+            Definition::Healthy { value, revision } if typable(&value.workflow.name) == wanted => {
+                Some((value, revision))
+            }
+            _ => None,
+        }) else {
             /* WYMIENIA NAZWY, i to jest cała treść tej odmowy. „Unknown workflow" zostawia lidera
              * dokładnie tam, gdzie był, a nazw, których nie widzi, nie ma jak zgadnąć — więc
              * następnym ruchem jest zgadywanie kolejnej. To samo zdanie i ten sam powód, co
@@ -479,154 +724,152 @@ impl Desk {
                 names.join(", ")
             ));
         };
-        let title = found
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or(wanted.as_str());
-
         let task = input
             .get("task")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|task| !task.is_empty());
-
-        /* KOMENDA ZNAK W ZNAK TAKA, JAKĄ WPISAŁBY CZŁOWIEK. Okno rozbiera ją tą samą funkcją,
-         * którą rozbiera Enter (`startFromLine`), więc „który workflow, ile naraz, w którym
-         * folderze" ma dalej JEDNĄ odpowiedź (niezmiennik 23). Druga droga startu rozjechałaby
-         * się po cichu: liczba „ile naraz" byłaby wczytywana, logowana i inna. */
-        let command = match task {
-            Some(task) => format!("/run {wanted} {task}"),
-            None => format!("/run {wanted}"),
+            .filter(|task| !task.is_empty())
+            .map(str::to_owned);
+        let starts = self.starts.as_ref().ok_or_else(||
+            "Nothing started: this conversation has no connection to the run manager. Reopen the work screen and ask again.".to_owned())?;
+        let root = match found.place {
+            WorkflowPlace::Project => project_workflows(&project),
+            WorkflowPlace::Library => library_workflows(home),
         };
-        let text = match task {
-            Some(task) => format!("Starting {title} — {task}"),
-            None => format!("Starting {title}"),
-        };
-
-        let line = Line::Suggested {
+        let conversation = self
+            .conversation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .to_string();
+        let request = starts.register(
+            conversation,
+            project,
+            root.join(&found.path),
+            revision,
+            task,
+        )?;
+        let steps = found.workflow.steps.iter().map(requested_step).collect();
+        let line = Line::RunRequested {
             agent: LEAD.to_owned(),
-            text,
-            auto: true,
-            command,
+            text: format!("Starting {}", found.workflow.name),
+            request_id: request.origin.request_id.clone(),
+            conversation_id: request.origin.conversation_id.clone(),
+            workspace: request.workspace.to_string_lossy().into_owned(),
+            title: found.workflow.name,
+            file_name: found.path,
+            steps,
+            links: found
+                .workflow
+                .links
+                .into_iter()
+                .map(|link| crate::engine::line::RequestedLink {
+                    from: link.from,
+                    to: link.to,
+                    max_turns: link.max_turns,
+                })
+                .collect(),
         };
-        let _ = lines
+        let sent = lines
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .send(line);
-
-        Ok(json!({
-            "asked": true,
-            "workflow": wanted,
-            "note": "Loadout is starting it. What happens next — including a refusal, if it \
-                     cannot start right now — appears in the stream this person is watching.",
-        }))
-    }
-
-    /// Zatrzymuje bieg tego folderu — po tym, jak człowiek się na to zgodził.
-    ///
-    /// # Po co ten czasownik istnieje (2026-09, Z-39)
-    ///
-    /// Bieg meetnotes `20260901-150035`. Lider zapytał człowieka, czy ubić bieg, dostał zgodę —
-    /// i nie miał czym. Most znał wtedy cztery czasowniki i ani jeden z nich nie kończył pracy,
-    /// więc lider zrobił to, co potrafił: przeczytał `pgid` z `run.json` i wykonał
-    /// `kill -TERM -38475 -38476` narzędziem Bash, a 34 minuty później to samo na drugiej parze.
-    /// Z punktu widzenia Loadouta nie stało się nic — dwa kroki po prostu przestały odpowiadać,
-    /// `carry-on` puścił bieg dalej i człowiek zapłacił za 17 minut Codeksa nad pustym miejscem.
-    ///
-    /// # Dlaczego `confirmed` jest w SCHEMACIE, a nie tylko w prompcie
-    ///
-    /// Niezmiennik 28: najpierw to, co da się wyegzekwować. Zdanie „zapytaj najpierw" w prompcie
-    /// jest miękkie — model może je zignorować i nikt się o tym nie dowie. Wymagany klucz jest
-    /// twardy: wywołanie bez niego odbija się od schematu, a wywołanie z `false` odbija się tutaj,
-    /// zdaniem, które mówi, co konkretnie by zeszło. Miękka zostaje wyłącznie ta połowa, której
-    /// skryptem sprawdzić się nie da — czy człowiek naprawdę odpowiedział.
-    ///
-    /// # Czego ta odpowiedź NIE OBIECUJE
-    ///
-    /// Że bieg już zszedł. Wiersz jedzie na ekran tą samą drogą, co start (`Line::Suggested`
-    /// z `auto`), a Stop schodzi po dowodzie z niezmiennika 6 — czyli sekundy później. To jest ten
-    /// sam znany dług, który opisuje u siebie [`Desk::start`], i ma go zamknąć osobna droga
-    /// meldunku, nie zegar w tym miejscu. Że wiersz naprawdę kładzie bieg, dowodzi
-    /// `tests/it/z39_the_lead_stops_a_run.rs` — na żywej grupie procesów i na `ESRCH`.
-    fn stop(&self, input: &Value) -> Result<Value, String> {
-        let Some(lines) = self.lines.as_ref() else {
-            return Err(
-                "Loadout has no stream open for this conversation, so stopping a run would leave \
-                 nothing on screen. Reopen the work screen and ask again."
-                    .to_owned(),
-            );
-        };
-
-        let here = self
-            .project
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        /* CO NAPRAWDĘ BIEGNIE, PYTAMY DYSKU, nie pamięci rozmowy: `list_runs_inner` jest tą samą
-         * funkcją, z której czyta to okno (niezmiennik 13). Lider trzymający własną pamięć o tym,
-         * co ruszył, twierdziłby „zatrzymałem" nad biegiem, który skończył się sam pół godziny
-         * temu — i odwrotnie. */
-        let Some(going) = list_runs_inner(&self.project)
-            .into_iter()
-            .find(|run| matches!(run.state.as_str(), "running" | "paused"))
-        else {
-            /* PRZED PYTANIEM O ZGODĘ, choć schemat wymaga jej zawsze. Kiedy nie ma czego
-             * zatrzymać, „zapytaj najpierw" wysyłałoby lidera do człowieka po zgodę na czynność
-             * bez skutku — a to jest pytanie, którego nie ma o co zadać. Zdanie jest to samo,
-             * którym okno odpowiada na `/stop` (`entry.tsx`, `whatStopSaid`). */
-            return Err(format!("Nothing is running in {here}."));
-        };
-        let title = if going.title.is_empty() {
-            going.folder.clone()
-        } else {
-            going.title.clone()
-        };
-        let steps = if going.steps == 1 {
-            "1 step".to_owned()
-        } else {
-            format!("{} steps", going.steps)
-        };
-
-        if input.get("confirmed").and_then(Value::as_bool) != Some(true) {
-            /* ODMOWA NAZYWA, CO BY ZESZŁO. „Ask first" bez nazwy zostawia lidera przy pytaniu,
-             * którego nie umie zadać konkretnie — a człowiek dostaje wtedy „czy zatrzymać?" bez
-             * ani jednego faktu o tym, co straci. */
-            return Err(format!(
-                "Ask this person first, with ask_the_person, and call this again with confirmed \
-                 only after they say yes. This would stop \"{title}\" ({steps}), the run going in \
-                 {here}, and the work its steps have not finished is lost."
-            ));
+        if sent != Sent::Queued {
+            starts.refuse(&request.origin.request_id,
+                "Nothing started: the conversation's window could not receive this request. Reopen it and ask again.".to_owned());
         }
+        let receipt = starts.wait(&request.origin.request_id).await?;
+        Ok(
+            json!({ "started": true, "requestId": receipt.request_id, "run": receipt.run,
+            "note": "Loadout accepted this run. Its steps may still be starting; this is not a completed result." }),
+        )
+    }
+}
 
-        /* KOMENDA ZNAK W ZNAK TAKA, JAKĄ WPISAŁBY CZŁOWIEK — ten sam powód, co przy starcie:
-         * „w którym folderze" ma jedną odpowiedź, a druga droga zatrzymania rozjechałaby się
-         * po cichu (niezmiennik 23). */
-        let line = Line::Suggested {
-            agent: LEAD.to_owned(),
-            text: format!("Stopping {title}"),
-            auto: true,
-            command: "/stop".to_owned(),
-        };
-        let _ = lines
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .send(line);
-
-        Ok(json!({
-            "asked": true,
-            "run": going.folder,
-            "note": format!(
-                "Loadout is stopping \"{title}\" ({steps}), the run going in {here}. It brings \
-                 down everything the run started and makes sure it is gone; what each step ended \
-                 with appears in the stream this person is watching."
-            ),
-        }))
+fn requested_step(step: &crate::workflow::Step) -> RequestedStep {
+    use crate::workflow::Step;
+    let (kind, at, weight) = match step {
+        Step::Agent(one) => (
+            "agent",
+            one.at,
+            match one.weight {
+                crate::workflow::Weight::Heavy => "heavy",
+                crate::workflow::Weight::Ordinary => "ordinary",
+            },
+        ),
+        Step::Checkpoint(one) => ("checkpoint", one.at, "ordinary"),
+        Step::Check(one) => ("check", one.at, "heavy"),
+        Step::Serve(one) => ("serve", one.at, "ordinary"),
+    };
+    RequestedStep {
+        id: step.id().to_owned(),
+        name: step.name().to_owned(),
+        kind,
+        at,
+        weight,
     }
 }
 
 #[async_trait]
 impl Answers for Desk {
     async fn answer(&self, call: Call) -> Answer {
+        if services::accepts(&call.call) {
+            return self.show_control_reply(self.service_call(&call).await);
+        }
+        match call.call.as_str() {
+            "prepare_replay" => {
+                return self.show_control_reply(self.prepare_replay(&call.input).await);
+            }
+            "rerun_step" => return self.show_control_reply(self.rerun_step(&call.input).await),
+            "prepare_result_restore" => {
+                return self.show_control_reply(self.prepare_result_restore(&call.input).await);
+            }
+            "restore_result" => {
+                return self.show_control_reply(self.restore_result(&call.input).await);
+            }
+            "start_replay" => return self.show_control_reply(self.start_replay(&call.input).await),
+            "stop_run" => return self.show_control_reply(self.stop_addressed(&call.input).await),
+            "continue_run" => return self.show_control_reply(self.continue_addressed(&call.input)),
+            "send_to_step" => {
+                return self.show_control_reply(self.send_addressed(&call.input).await);
+            }
+            "ask_the_person" if call.input.get("operation").is_some() => {
+                if call
+                    .input
+                    .get("operation")
+                    .and_then(Value::as_str)
+                    .is_some_and(services::accepts)
+                {
+                    return self.show_control_reply(self.ask_service(&call.input).await);
+                }
+                if call.input.get("operation").and_then(Value::as_str) == Some("start_replay") {
+                    return self.show_control_reply(self.ask_replay(&call.input).await);
+                }
+                if call.input.get("operation").and_then(Value::as_str) == Some("restore_result") {
+                    return self.show_control_reply(self.ask_restore(&call.input).await);
+                }
+                return self.show_control_reply(self.ask_control(&call.input).await);
+            }
+            _ => {}
+        }
+        if crate::commands::lead_history::accepts(&call.call) {
+            let project = self.project.clone();
+            let lookup = self.runs.clone();
+            let verb = call.call;
+            let input = call.input;
+            let result = tokio::task::spawn_blocking(move || {
+                crate::commands::lead_history::answer(&project, &lookup, &verb, &input)
+            })
+            .await
+            .map_err(|_| "Loadout could not finish reading that saved history.".to_owned())
+            .and_then(std::convert::identity);
+            return match result {
+                Ok(value) => {
+                    self.show_history_source(&value);
+                    Answer::Ok(value)
+                }
+                Err(said) => Answer::Refused(said),
+            };
+        }
         let Some(home) = self.home.as_deref() else {
             /* ZDANIE, NIE ZGADNIĘTA ŚCIEŻKA. Biblioteka odgadnięta tutaj z `HOME` znaczyłaby, że
              * każde kryterium rozmawia z prawdziwą biblioteką człowieka — ten sam wybór i ten sam
@@ -641,8 +884,7 @@ impl Answers for Desk {
         let said = match call.call.as_str() {
             "list_workflows" => workflows(home, Some(&self.project)),
             "list_agents" => agents(home),
-            "start_workflow" => self.start(home, &call.input),
-            "stop_run" => self.stop(&call.input),
+            "start_workflow" => self.start(home, &call.input).await,
             /* CZEKANIE JEST TU, A NIE W TABELI: to jedyny czasownik, który nie odpowiada od razu,
              * i dlatego jako jedyny ma własną gałąź poza `match`em wartości. */
             "ask_the_person" => return self.ask(&call.input).await,

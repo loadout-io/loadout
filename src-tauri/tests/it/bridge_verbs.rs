@@ -41,14 +41,26 @@ fn a_lead_gets_the_library_and_the_start() {
             "list_workflows",
             "list_agents",
             "start_workflow",
-            "stop_run"
+            "stop_run",
+            "get_run_status",
+            "list_runs",
+            "read_run_summary",
+            "list_handoffs",
+            "read_handoff",
+            "rerun_step",
+            "prepare_replay",
+            "start_replay",
+            "send_to_step",
+            "prepare_result_restore",
+            "restore_result",
+            "continue_run",
         ],
         "the lead is the orchestrator: it has to be able to ask when it does not know, to see \
          what this person built, to start it, and to end it. These names travel to the model, so \
          they are part of the contract and not an implementation detail.\n\n\
          `ask_the_person` stands FIRST on purpose: it is the one a model reaches for before it \
-         guesses, and the order of this list is the order it reads them in. `stop_run` stands \
-         LAST for the mirror reason: after it, nothing is running any more"
+         guesses, and the order of this list is the order it reads them in. Read-only history \
+         does not grant a step the power to start or stop work"
     );
 }
 
@@ -69,7 +81,11 @@ fn the_tool_list_is_shaped_the_way_mcp_asks_for_it() {
         .as_array()
         .expect("the verb table is an array of tool definitions");
 
-    assert_eq!(tools.len(), 5, "five verbs, five entries");
+    assert_eq!(
+        tools.len(),
+        verbs::for_role(Role::Lead).len(),
+        "the exact host table above is mirrored without dropping any capability"
+    );
 
     let first = tools.first().expect("the array carries the first verb");
     assert_eq!(

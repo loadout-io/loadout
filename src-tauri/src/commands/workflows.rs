@@ -267,13 +267,40 @@ pub fn list_workflow_definitions_inner(
     home: &Path,
     project: Option<&Path>,
 ) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
+    list_from_shelves(home, project, shelf)
+}
+
+/// WF-19 (2026-09-06): podgląd nie może usuwać tempów przerwanej publikacji. Korzysta
+/// z tego samego skanera i przesłaniania półek, ale bez zapisywalnej fazy recovery.
+pub(crate) fn list_workflow_definitions_readonly(
+    home: &Path,
+    project: Option<&Path>,
+) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
+    list_from_shelves(home, project, |dir, place| {
+        let root = match PublicationRoot::open(dir) {
+            Ok(root) => root,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(LoadError::Unreadable(error)),
+        };
+        let definitions = list_workflow_definitions_from_root(&root, dir, place)?;
+        root.validate_path_identity(dir)
+            .map_err(LoadError::Unreadable)?;
+        Ok(definitions)
+    })
+}
+
+fn list_from_shelves(
+    home: &Path,
+    project: Option<&Path>,
+    read_shelf: impl Fn(&Path, WorkflowPlace) -> Result<Vec<Definition<WorkflowEntry>>, LoadError>,
+) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
     let mut catalog = match project {
-        Some(project) => shelf(&project_workflows(project), WorkflowPlace::Project)?,
+        Some(project) => read_shelf(&project_workflows(project), WorkflowPlace::Project)?,
         None => Vec::new(),
     };
     let taken: std::collections::BTreeSet<String> = catalog.iter().map(named).collect();
     catalog.extend(
-        shelf(&library_workflows(home), WorkflowPlace::Library)?
+        read_shelf(&library_workflows(home), WorkflowPlace::Library)?
             .into_iter()
             // APFS jest domyślnie NIEwrażliwy na wielkość liter, więc `Ship.JSON` i `ship.json`
             // są tam jednym plikiem i muszą być jednym wierszem także tutaj.

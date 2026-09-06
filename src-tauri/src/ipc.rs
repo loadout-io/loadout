@@ -57,6 +57,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 use base64::Engine as _;
+use serde_json::Value;
 use tauri::State;
 use tauri::ipc::{Channel, Invoke};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -525,7 +526,7 @@ pub struct AppState {
     /// czytał uchwyt DRUGIEGO biegu, pierwszy pracował dalej i dalej płacił, i nie było już
     /// nikogo, kto mógłby zażądać od niego dowodu śmierci grupy (niezmienniki 6 i 11). Kto teraz
     /// odmawia i dlaczego jednym ciałem, stoi przy [`AppState::begin_run`].
-    live: Mutex<Vec<Live>>,
+    live: Arc<Mutex<Vec<Live>>>,
     /// Wątki lidera — po jednym na TERMINAL, wszystkie w jednym rejestrze.
     ///
     /// # Dlaczego nie ma tu globalnego zamka asynchronicznego
@@ -750,6 +751,20 @@ impl AppState {
          * przy Starcie, więc ustawia ją pierwszy bieg (`commands::run::run_workflow_inner`).
          * Wpisanie tu ósemki dałoby okno, w którym pula jest szersza niż suwak. */
         let slots = Limiter::with_heavy(1, 1);
+        let live = Arc::new(Mutex::new(Vec::<Live>::new()));
+        let leads = commands::chat::Threads::new();
+        let started = Arc::new(commands::processes::Processes::new());
+        leads.services_are_found_with(Arc::clone(&started));
+        let existing_runs = Arc::clone(&live);
+        leads.runs_are_found_with(commands::lead_history::LeadRunLookup::new(move |project| {
+            let at = crate::workspace::WorkspaceId::for_folder(project);
+            existing_runs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .find(|run| run.at == at)
+                .map(|run| run.control.clone())
+        }));
         Self {
             home,
             project,
@@ -757,12 +772,12 @@ impl AppState {
             drivers,
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
             slots,
-            live: Mutex::new(Vec::new()),
-            leads: commands::chat::Threads::new(),
+            live,
+            leads,
             drafting: commands::skills::Drafting::new(),
             comparing: commands::import::Comparing::new(),
             proposing: commands::lab::Proposing::new(),
-            started: std::sync::Arc::new(commands::processes::Processes::new()),
+            started,
         }
     }
 
@@ -1322,7 +1337,7 @@ impl AppState {
         project: &Path,
         answer: Option<String>,
     ) -> Result<(), commands::RunError> {
-        commands::run::continue_run_inner(&self.deps_in(project), answer).await
+        commands::run::continue_unaddressed(&self.deps_in(project), answer).await
     }
 
     /// „Powiedz coś agentowi, który pracuje" — agentowi biegu TEGO folderu.
@@ -1340,6 +1355,36 @@ impl AppState {
     ) -> Result<(), commands::RunError> {
         let deps = self.deps_in(project);
         commands::run::say_to_agent_inner(&deps.control, agent, text).await
+    }
+
+    /// WF-08: ścisły adres z widoku albo mostu, nigdy wybór nowego odbiorcy po await.
+    pub fn answer_checkpoint_in(
+        &self,
+        project: &Path,
+        run_id: &str,
+        checkpoint_id: &str,
+        original: &str,
+    ) -> commands::checkpoint::CheckpointReply {
+        let deps = self.deps_in(project);
+        commands::checkpoint::answer(&deps.control, run_id, checkpoint_id, original)
+    }
+
+    pub async fn send_to_step_in(
+        &self,
+        project: &Path,
+        run_id: &str,
+        node_key: &str,
+        text: &str,
+    ) -> commands::step_message::StepMessageReply {
+        let deps = self.deps_in(project);
+        commands::step_message::send(&deps.control, run_id, node_key, text).await
+    }
+
+    pub fn step_message_recipients_in(
+        &self,
+        project: &Path,
+    ) -> Vec<commands::step_message::StepRecipient> {
+        commands::step_message::recipients(&self.deps_in(project).control)
     }
 
     /// Przy zamykaniu okna: każdy żywy folder, ale z sufitem czasu na folder.
@@ -1503,6 +1548,149 @@ impl AppState {
         }
         self.settle_what_the_last_window_left(&project).await;
         Ok(project)
+    }
+
+    /// Ten sam rejestr, z którego korzystają mosty wszystkich rozmów tej aplikacji.
+    pub fn lead_starts(&self) -> Arc<commands::lead_start::LeadStarts> {
+        self.leads.lead_starts()
+    }
+
+    fn replay_desk(&self, project: PathBuf) -> crate::bridge::library::Desk {
+        let starts = self.lead_starts();
+        let identity = starts.ui_identity();
+        crate::bridge::library::Desk::at(Some(self.home.clone()), project)
+            .starting_with(starts, Arc::new(Mutex::new(identity)))
+    }
+
+    /// Historia ma tę samą politykę co most, lecz znane kliknięcie nie uruchamia modelu.
+    pub async fn prepare_replay_inner(
+        &self,
+        folder: &str,
+        source_run_id: &str,
+        selection: Value,
+        mode: &str,
+    ) -> Result<Value, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.replay_desk(project)
+            .prepare_replay(&serde_json::json!({
+                "source_run_id":source_run_id,"selection":selection,"mode":mode,
+            }))
+            .await
+    }
+
+    pub async fn copy_recorded_workflow_inner(
+        &self,
+        folder: &str,
+        source_run_id: &str,
+    ) -> Result<Value, String> {
+        let project = self.project_for(Some(folder)).await?;
+        let home = self.home.clone();
+        let source_run_id = source_run_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            commands::replay::copy_recorded_workflow(&home, &project, &source_run_id)
+        })
+        .await
+        .map_err(|error| did_not_finish("saving a new workflow copy", &error))?
+    }
+
+    /// Zaufana intencja przycisku: tylko Tauri, nigdy czasownik udostępniony agentowi.
+    pub async fn authorize_replay_inner(
+        &self,
+        folder: &str,
+        preview_id: &str,
+        original_intent: String,
+    ) -> Result<Line, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.replay_desk(project)
+            .start_replay_from_ui(preview_id, original_intent)
+    }
+
+    pub async fn prepare_result_restore_inner(
+        &self,
+        folder: &str,
+        source_run_id: &str,
+        result_id: &str,
+    ) -> Result<Value, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.replay_desk(project)
+            .prepare_result_restore(
+                &serde_json::json!({"source_run_id":source_run_id,"result_id":result_id}),
+            )
+            .await
+    }
+
+    pub async fn restore_result_inner(
+        &self,
+        folder: &str,
+        preview_id: &str,
+        original_intent: String,
+    ) -> Result<Value, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.replay_desk(project)
+            .restore_result_from_ui(preview_id, original_intent)
+            .await
+    }
+
+    /// Okno daje wyłącznie capability ID: folder, zadanie i rewizja zostają po stronie hosta.
+    pub async fn accept_lead_start_inner(
+        &self,
+        request_id: &str,
+        how_many_at_once: usize,
+        budget_usd: Option<f64>,
+        reflection_enabled: bool,
+        lines: LineSink,
+    ) -> Result<commands::lead_start::StartReceipt, String> {
+        let starts = self.lead_starts();
+        let Some(start) = starts.claim(request_id)? else {
+            return starts.wait(request_id).await;
+        };
+        let _acceptance =
+            commands::lead_start::AcceptanceGuard::new(Arc::clone(&starts), request_id.to_owned());
+        let result = async {
+            let folder = start.workspace.to_str().ok_or_else(|| {
+                "Nothing started: this folder name cannot be used by Loadout.".to_owned()
+            })?;
+            let project = self.project_for(Some(folder)).await?;
+            // 2026-09: zmienione ustawienie okna nie może podnieść zatwierdzonego limitu replay.
+            // Normalny Start nadal bierze swój limit z okna; preview wiąże także jawne None.
+            let budget_usd = start
+                .replay
+                .as_ref()
+                .map_or(budget_usd, |replay| replay.budget_usd);
+            let request = RunRequest {
+                workflow: start.workflow,
+                how_many_at_once,
+                task: start.task,
+                part: start.replay.as_ref().and_then(|replay| replay.part.clone()),
+                handoffs_from: start
+                    .replay
+                    .as_ref()
+                    .and_then(|replay| replay.handoffs_from()),
+            };
+            let mut acceptance = commands::lead_start::LeadStart::new(
+                Arc::clone(&starts),
+                start.origin,
+                start.revision,
+            );
+            acceptance.replay = start.replay;
+            run_workflow_in_project_with_lead_start(
+                self,
+                &project,
+                &request,
+                budget_usd,
+                reflection_enabled,
+                None,
+                Some(acceptance),
+                lines,
+            )
+            .await
+        }
+        .await;
+        if let Err(said) = result {
+            starts.refuse(request_id, said.clone());
+            return Err(said);
+        }
+        starts.wait(request_id).await
     }
 
     /// Sprząta po poprzednim oknie we **wszystkich** znanych folderach, raz, przy starcie.
@@ -2306,6 +2494,38 @@ pub async fn put_eval_case(
     })
 }
 
+/// WF-19: okno zapisuje tylko zakres oceny, bez autorytetu nad cudzymi przypadkami.
+#[tauri::command]
+pub async fn save_eval_protection(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    protected: bool,
+    expected_revision: Option<&str>,
+) -> Result<commands::lab::OpenSet, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let set = set.to_owned();
+    let expected_revision = expected_revision.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        commands::lab::save_protection_inner(
+            &project,
+            &set,
+            protected,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("saving this evaluation scope", &error))?
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
+}
+
 /// Dopisuje albo poprawia jedną kolumnę.
 #[tauri::command]
 pub async fn put_eval_variant(
@@ -2361,6 +2581,37 @@ pub async fn drop_eval_variant(
     })
 }
 
+/// Czyta wspólny rozmiar i dostępność wykonawców; nie publikuje planu ani nie zaczyna biegu.
+#[tauri::command]
+pub async fn preview_eval_run(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    set: &str,
+    expected_revision: Option<&str>,
+) -> Result<commands::lab::PreviewRun, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    commands::lab::preview_run_inner(
+        &state.home,
+        &project,
+        set,
+        expected_revision,
+        &state.drivers,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Rewizje zatwierdzone razem w podglądzie przed uruchomieniem pomiaru.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EvalApproval {
+    revision: Option<String>,
+    sources: Option<String>,
+}
+
 /// Puszcza cały zestaw jako **zwykły bieg**.
 ///
 /// Plan schodzi na dysk obok zestawu, a stąd dalej idzie tą samą drogą, co Start z płótna:
@@ -2374,6 +2625,7 @@ pub async fn run_eval_set(
     set: &str,
     how_many_at_once: usize,
     budget_usd: Option<f64>,
+    approval: EvalApproval,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
     let project = state
@@ -2382,9 +2634,19 @@ pub async fn run_eval_set(
         .inspect_err(refused)?;
     let planned = {
         let at = project.clone();
+        let library = state.home.clone();
         let set = set.to_owned();
+        let expected_revision = approval.revision;
+        let expected_sources = approval.sources;
         tokio::task::spawn_blocking(move || {
-            commands::lab::plan_a_run_inner(&at, &set, how_many_at_once)
+            commands::lab::plan_a_run_with_expected(
+                &library,
+                &at,
+                &set,
+                how_many_at_once,
+                expected_revision.as_deref(),
+                expected_sources.as_deref(),
+            )
         })
         .await
         .map_err(|error| did_not_finish("planning that set's run", &error))?
@@ -2649,6 +2911,24 @@ pub fn install_reviewed_skill(
 /// 2026-08-19 — FOLDER, BO LISTA ODPOWIADA NA PYTANIE „CO WIDZI AGENT PRACUJĄCY TUTAJ". Bez niego
 /// umiejętność zapisana „w tym projekcie" nie pojawiłaby się na ekranie, więc człowiek nie miałby
 /// jak jej zabrać — droga zapisu bez drogi odczytu jest gorsza niż brak funkcji.
+#[tauri::command]
+pub async fn list_skill_sources(
+    folder: Option<&str>,
+    names: Vec<String>,
+) -> Result<Vec<crate::skills::bundle::SkillSources>, String> {
+    let project = project_folder(folder)?;
+    tokio::task::spawn_blocking(move || {
+        commands::skills::list_skill_sources_inner(
+            &crate::loadout_dir(),
+            project.as_deref(),
+            &names,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the selected skill sources", &error))?
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn list_skills(
     folder: Option<&str>,
@@ -2937,34 +3217,62 @@ pub async fn forget_run_branches(
     })
 }
 
+/// WF-06: pokazuje istniejący wynik wskazanego biegu w Finderze, bez dowolnej ścieżki z okna.
+#[tauri::command]
+pub async fn open_result_folder(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    run: String,
+    work_key: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    tokio::task::spawn_blocking(move || {
+        let path = commands::history::result_folder_inner(&project, &run, &work_key)
+            .map_err(|error| error.to_string())?;
+        app.opener()
+            .reveal_item_in_dir(path)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| did_not_finish("opening that result folder", &error))?
+    .inspect_err(refused)
+}
+
 /// Zdejmuje CAŁY bieg: jego gałęzie i jego katalog. Oddaje nazwy zdjętych gałęzi.
 ///
-/// 2026-09 (Z-9) — DRUGA POŁOWA TEGO, CO ZOSTAWAŁO NA ZAWSZE. Gałęzie biegu dało się zdjąć od
-/// T-95 ([`forget_run_branches`]); jego katalog — ze strumieniami agentów, przekazaniami i kopiami
-/// notatek — nie schodził **niczym**. Zmierzone u właściciela 2026-09-02: 87 katalogów biegów
-/// w jednym projekcie, 3,8 GB, jedyną drogą było `rm -rf` z terminala.
-///
-/// Ta sama ostrożność, co przy gałęziach, i ta sama całościowość: kiedy którakolwiek gałąź tego
-/// biegu jest w tej chwili otwarta do pracy w innym folderze, nie znika ANI JEDNA rzecz — ani
-/// gałąź, ani katalog. Powód i kolejność w całości stoją przy `history::forget_run_inner`.
+/// 2026-09 (Z-9): u właściciela zostało 87 katalogów biegów (3,8 GB), bez drogi usunięcia.
+/// WF-06 dopowiada osobną zgodę na dokładną listę zachowanych wyników. Żywa kopia/usługa
+/// ani oczekujący finalizer nie podlegają tej zgodzie. Cała polityka mieszka w history/run.
 #[tauri::command]
 pub async fn forget_run(
     state: State<'_, AppState>,
     folder: Option<String>,
     run: String,
+    confirmed_result_folders: Option<Vec<std::path::PathBuf>>,
 ) -> Result<Vec<String>, String> {
     let project = state
         .project_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    tokio::task::spawn_blocking(move || commands::history::forget_run_inner(&project, &run))
-        .await
-        .map_err(|error| did_not_finish("taking that run away", &error))?
-        .map_err(|error| {
-            let said = error.to_string();
-            refused(&said);
-            said
-        })
+    tokio::task::spawn_blocking(move || {
+        commands::history::forget_run_with_results_inner(
+            &project,
+            &run,
+            confirmed_result_folders.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("taking that run away", &error))?
+    .map_err(|error| {
+        let said = error.to_string();
+        refused(&said);
+        said
+    })
 }
 
 /// Co ten folder mógłby zapomnieć: leżaki po starych biegach i biegi starsze niż tyle dni.
@@ -3373,6 +3681,51 @@ pub async fn save_settings(
 }
 
 // ── TRZY KOMENDY BIEGU ─────────────────────────────────────────────────────────────────────
+/// WF-14: ten sam wybór i te same limity co przy tworzeniu obrazu wejściowego biegu.
+#[tauri::command]
+pub async fn preview_additional_inputs(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    patterns: Vec<String>,
+) -> Result<commands::input_snapshot::AdditionalInputPreview, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || {
+        commands::input_snapshot::preview_additional_inputs(&project, &patterns)
+    })
+    .await
+    .map_err(|error| did_not_finish("previewing the selected files", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// WF-12: ustawienia dotyczą wskazanego projektu, nigdy globalnych ustawień vendora.
+#[tauri::command]
+pub async fn read_project_settings(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<crate::inherit::instructions::SettingsView, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || crate::inherit::instructions::settings_view(&project))
+        .await
+        .map_err(|error| did_not_finish("reading this project's instructions", &error))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn save_project_settings(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    patch: serde_json::Value,
+) -> Result<crate::inherit::instructions::SettingsView, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || {
+        crate::inherit::instructions::save_settings(&project, &patch)?;
+        crate::inherit::instructions::settings_view(&project)
+    })
+    .await
+    .map_err(|error| did_not_finish("saving this project's instructions", &error))?
+    .map_err(|error| error.to_string())
+}
+
 //
 // Te trzy wyglądają inaczej niż czternaście wyżej i różnica jest jedna: biegu nie da się
 // obsłużyć bez stanu. Stop musi sięgnąć do środka biegu, który zaczęła INNA komenda, więc
@@ -3421,6 +3774,117 @@ pub async fn run_workflow(
         pump_into(lines),
     )
     .await
+}
+
+/// Transport istniejącego Startu. Odpowiedź narzędzia dociera przez rejestr już po prepare;
+/// ta komenda nadal posiada zwykłe wykonanie grafu aż do jego zakończenia.
+#[tauri::command]
+pub async fn accept_lead_start(
+    state: State<'_, AppState>,
+    request_id: &str,
+    how_many_at_once: usize,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+    lines: Channel<Vec<Line>>,
+) -> Result<commands::lead_start::StartReceipt, String> {
+    state
+        .accept_lead_start_inner(
+            request_id,
+            how_many_at_once,
+            budget_usd,
+            reflection_enabled,
+            pump_into(lines),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn prepare_replay(
+    state: State<'_, AppState>,
+    folder: &str,
+    source_run_id: &str,
+    selection: Value,
+    mode: &str,
+) -> Result<Value, String> {
+    state
+        .prepare_replay_inner(folder, source_run_id, selection, mode)
+        .await
+}
+
+#[tauri::command]
+pub async fn copy_recorded_workflow(
+    state: State<'_, AppState>,
+    folder: &str,
+    source_run_id: &str,
+) -> Result<Value, String> {
+    state
+        .copy_recorded_workflow_inner(folder, source_run_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn start_replay(
+    state: State<'_, AppState>,
+    folder: &str,
+    preview_id: &str,
+    original_intent: String,
+) -> Result<Line, String> {
+    state
+        .authorize_replay_inner(folder, preview_id, original_intent)
+        .await
+}
+
+#[tauri::command]
+pub async fn prepare_result_restore(
+    state: State<'_, AppState>,
+    folder: &str,
+    source_run_id: &str,
+    result_id: &str,
+) -> Result<Value, String> {
+    state
+        .prepare_result_restore_inner(folder, source_run_id, result_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn restore_result(
+    state: State<'_, AppState>,
+    folder: &str,
+    preview_id: &str,
+    original_intent: String,
+) -> Result<Value, String> {
+    state
+        .restore_result_inner(folder, preview_id, original_intent)
+        .await
+}
+
+#[tauri::command]
+pub async fn set_result_kept(
+    state: State<'_, AppState>,
+    folder: &str,
+    source_run_id: &str,
+    result_id: &str,
+    kept: bool,
+    original_intent: &str,
+) -> Result<Value, String> {
+    let project = state.project_for(Some(folder)).await?;
+    commands::result_restore::set_kept(&project, source_run_id, result_id, kept, original_intent)
+        .await
+}
+
+#[tauri::command]
+pub async fn open_restored_folder(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    folder: &str,
+    restored_folder: &str,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let project = state.project_for(Some(folder)).await?;
+    let path = commands::result_restore::restored_folder(&project, Path::new(restored_folder))?;
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|error| error.to_string())
 }
 
 /// Jedna produkcyjna krawędź przed wyborem projektu: komenda Tauri i sędzia podają tu te same
@@ -3621,6 +4085,33 @@ async fn run_workflow_in_project(
     claim: Option<&commands::triggers::TriggerClaim>,
     lines: LineSink,
 ) -> Result<(), String> {
+    run_workflow_in_project_with_lead_start(
+        state,
+        project,
+        request,
+        budget_usd,
+        reflection_enabled,
+        claim,
+        None,
+        lines,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "wspólna krawędź istniejących dróg Startu"
+)]
+async fn run_workflow_in_project_with_lead_start(
+    state: &AppState,
+    project: &Path,
+    request: &RunRequest,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+    claim: Option<&commands::triggers::TriggerClaim>,
+    lead_start: Option<commands::lead_start::LeadStart>,
+    lines: LineSink,
+) -> Result<(), String> {
     let result = if let Some(claim) = claim {
         // 2026-08-29 — SUFIT JEDZIE TAKŻE TĄ GAŁĘZIĄ. Do tego dnia okno wysyłało `budget_usd`
         // przy każdym Starcie, a bieg z dostawy triggera wbijał tu `None` i leciał bez
@@ -3635,6 +4126,17 @@ async fn run_workflow_in_project(
             claim,
             lines,
             budget_usd,
+        )
+        .await
+        .map(|_| ())
+    } else if let Some(lead_start) = lead_start {
+        commands::run::run_workflow_with_lead_start(
+            &state.begin_run(project).inspect_err(refused)?,
+            request,
+            lines,
+            budget_usd,
+            reflection_enabled,
+            lead_start,
         )
         .await
         .map(|_| ())
@@ -3830,7 +4332,13 @@ pub async fn answer_the_lead(
     terminal: &str,
     agent: &str,
     answer: &str,
+    question_id: Option<String>,
 ) -> Result<bool, String> {
+    if let Some(question_id) = question_id {
+        return Ok(state
+            .leads
+            .answer_exact_in(terminal, agent, &question_id, answer.to_owned()));
+    }
     Ok(state.leads.answer_in(terminal, agent, answer.to_owned()))
 }
 
@@ -4025,6 +4533,22 @@ pub async fn continue_run(
         })
 }
 
+/// Oryginalna odpowiedź człowieka do dokładnej generacji pytania w dokładnym biegu.
+#[tauri::command]
+pub async fn answer_checkpoint(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    run_id: &str,
+    checkpoint_id: &str,
+    answer: &str,
+) -> Result<commands::checkpoint::CheckpointReply, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    Ok(state.answer_checkpoint_in(&project, run_id, checkpoint_id, answer))
+}
+
 /// „Powiedz coś agentowi, który pracuje" — kolejna tura w jego żywej sesji.
 ///
 /// Cała polityka — wybór adresata i pięć różnych odmów — stoi w
@@ -4055,6 +4579,29 @@ pub async fn say_to_agent(
             refused(&said);
             said
         })
+}
+
+#[tauri::command]
+pub async fn send_to_step(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    run_id: &str,
+    node_key: &str,
+    text: &str,
+) -> Result<commands::step_message::StepMessageReply, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    Ok(state
+        .send_to_step_in(&project, run_id, node_key, text)
+        .await)
+}
+
+#[tauri::command]
+pub async fn step_message_recipients(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<Vec<commands::step_message::StepRecipient>, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    Ok(state.step_message_recipients_in(&project))
 }
 
 /* ── RZECZY ZAMÓWIONE KOMENDĄ ────────────────────────────────────────────────────────────────
@@ -4097,6 +4644,13 @@ pub struct StartedWire {
     /// cztery panele, których nikt nie ma otwartych. Otwarty jest zawsze najwyżej jeden, więc
     /// pyta o niego okno, podając jego `pgid`.
     pub said: Option<String>,
+    /// Właściciel trwałej usługi; brak dla starszych ręcznych komend.
+    pub service: Option<commands::processes::ServiceRef>,
+    pub readiness: Option<commands::processes::ServiceReadiness>,
+    pub endpoints: Vec<commands::processes::ServiceEndpoint>,
+    /// Rzeczywisty katalog, którego usługa nadal używa.
+    pub cwd: Option<PathBuf>,
+    pub lifetime: crate::workflow::ServiceLifetime,
 }
 
 /// `/start <komenda>`: uruchamia rzecz, która ma **zostać**, i oddaje jej grupę.
@@ -4169,8 +4723,21 @@ pub async fn start_process(
 /// Grupa, której rejestr już nie zna, to `Ok(())`, nie odmowa: rzecz, która zeszła sama między
 /// odświeżeniem listy a kliknięciem, nie jest awarią (niezmiennik 7).
 #[tauri::command]
-pub async fn stop_process(state: State<'_, AppState>, pgid: i32) -> Result<(), String> {
-    match state.started.stop(pgid).await {
+pub async fn stop_process(
+    state: State<'_, AppState>,
+    pgid: i32,
+    service: Option<commands::processes::ServiceRef>,
+) -> Result<(), String> {
+    let proof = if let Some(reference) = service {
+        state
+            .started
+            .stop_service(&reference)
+            .await
+            .map_err(|why| why.to_string())?
+    } else {
+        state.started.stop(pgid).await
+    };
+    match proof {
         None | Some(crate::engine::supervisor::GroupProof::Dead { .. }) => Ok(()),
         Some(crate::engine::supervisor::GroupProof::Alive { .. }) => {
             // Odmowa, nie cisza: bez tej gałęzi okno zdjęłoby kafelek nad czymś, co dalej biegnie,
@@ -4348,6 +4915,11 @@ pub async fn list_processes(
             pgid: one.pgid,
             command: one.command,
             alive: one.alive,
+            service: one.service,
+            cwd: one.cwd,
+            lifetime: one.lifetime,
+            readiness: one.readiness,
+            endpoints: one.endpoints,
         })
         .collect())
 }
@@ -4364,6 +4936,10 @@ pub async fn list_processes(
 /// (`docs/ARCHITECTURE.md` §3, niezmiennik 1).
 pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        accept_lead_start,
+        prepare_replay,
+        copy_recorded_workflow,
+        start_replay,
         answer_the_lead,
         apply_eval_fix,
         apply_setup,
@@ -4374,6 +4950,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         close_terminal,
         compare_import_copies,
         continue_run,
+        answer_checkpoint,
         copy_diagnostics,
         create_eval_set,
         create_trigger,
@@ -4389,6 +4966,11 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         drop_eval_variant,
         forget_run_branches,
         forget_run,
+        open_result_folder,
+        open_restored_folder,
+        prepare_result_restore,
+        restore_result,
+        set_result_kept,
         forget_runs_older_than,
         forget_what_the_old_runs_left,
         install_skill,
@@ -4401,6 +4983,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         list_processes,
         list_runs,
         list_skills,
+        list_skill_sources,
         list_triggers,
         list_workflows,
         fold_run_into_branch,
@@ -4411,6 +4994,7 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         move_note_to_project,
         new_id,
         open_chat,
+        preview_eval_run,
         propose_eval_cases,
         propose_eval_fix,
         put_eval_case,
@@ -4419,6 +5003,8 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         read_eval_board,
         read_run,
         read_settings,
+        read_project_settings,
+        preview_additional_inputs,
         rerun_step,
         resume_run,
         resume_trigger,
@@ -4428,10 +5014,14 @@ pub fn command_handler() -> impl Fn(Invoke<tauri::Wry>) -> bool + Send + Sync + 
         run_eval_set,
         run_workflow,
         save_agent,
+        save_eval_protection,
         save_settings,
+        save_project_settings,
         save_workflow,
         save_workspace,
         say_to_agent,
+        send_to_step,
+        step_message_recipients,
         say_to_orchestrator,
         scan_setup,
         set_trigger_enabled,

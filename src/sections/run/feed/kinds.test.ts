@@ -32,7 +32,7 @@ const EXPECTED = [...WIRE_KINDS].sort();
  * Trzy i każdy odpowiada na inne pytanie: `thinking` mówi, co agent robi, `stepState` — na
  * czym stoi krok, a `stepCarriedOn` — czy scheduler wykonał dla jego porażki „jedź dalej”.
  */
-const LIVE = ['stepCarriedOn', 'stepState', 'thinking'];
+const LIVE = ['questionAnswered', 'stepCarriedOn', 'stepSession', 'stepState', 'thinking'];
 
 /** Enumy prosto z drutu — dokładnie to, co przyjdzie, gdy vendor doda typ zdarzenia. */
 const FOREIGN = ['tool_use', 'stream_event'];
@@ -69,7 +69,7 @@ describe('the view knows exactly the kinds the wire can send', () => {
     ).toEqual(EXPECTED);
   });
 
-  it('keeps the standing slot to the two facts that belong there, and history for the rest', () => {
+  it('keeps state updates out of new history rows, and history for the rest', () => {
     const registry = kinds();
     const live = Object.entries(registry)
       .filter(([, entry]) => entry.route === 'now')
@@ -79,7 +79,7 @@ describe('the view knows exactly the kinds the wire can send', () => {
     expect(
       live,
       'Thinking… is a status, not a line [T2 §7.3 rule 5], and so is which step the run stands ' +
-        'on, and whether its failure explicitly carried on. These are state facts, never rows ' +
+        'on, whether its failure carried on, which session can hear, and which question was answered. These are state facts, never rows ' +
         'of history (invariant 13).',
     ).toEqual(LIVE);
 

@@ -64,6 +64,11 @@ fn a_set(expect: Vec<Expect>, command: &str) -> EvalSet {
 
 fn step(half: Half, state: &str, said: &str) -> Finished {
     Finished {
+        cause: None,
+        executed: true,
+        kind: "agent".to_owned(),
+        started_at: None,
+        ended_at: None,
         tile: key_for(CASE, COLUMN, half),
         state: state.to_owned(),
         cost_usd: Some(0.5),

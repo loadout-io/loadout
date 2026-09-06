@@ -27,6 +27,7 @@
 
 pub mod host;
 pub mod library;
+pub(crate) mod messages;
 pub mod serve;
 pub mod verbs;
 

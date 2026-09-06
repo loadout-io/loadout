@@ -8,6 +8,7 @@ import type {
   EvalBoard,
   EvalCase,
   EvalFix,
+  EvalRunPreview,
   EvalSet,
   EvalSubject,
   EvalVariant,
@@ -48,6 +49,8 @@ export interface LabState {
   readonly openId: string | null;
   /** Wszystko, co ekran rysuje dla otwartego zestawu. */
   readonly board: EvalBoard | null;
+  readonly preview: EvalRunPreview | null;
+  readonly previewSaid: string | null;
   readonly busy: LabBusy;
   /**
    * Zdanie dla człowieka — odmowa albo wynik, który warto powiedzieć.
@@ -73,6 +76,7 @@ export interface LabState {
   stopProposing(): Promise<void>;
   decide(caseId: string, keep: boolean): Promise<void>;
   putCase(one: EvalCase): Promise<void>;
+  saveProtection(protectedFiles: boolean): Promise<void>;
   putVariant(variant: EvalVariant): Promise<void>;
   dropVariant(variantId: string): Promise<void>;
   run(): Promise<void>;
@@ -94,6 +98,24 @@ function folder(): string | null {
   return activeWorkspace()?.folder ?? null;
 }
 
+/** Run i jego przycisk pytają tę samą zaporę; liczby liczy wyłącznie Rust. */
+export function workflowPreviewReady(state: LabState): boolean {
+  const board = state.board;
+  if (board === null) return false;
+  if (board.set.set.subject.kind !== 'workflow') return true;
+  const preview = state.preview;
+  return (
+    preview !== null &&
+    state.previewSaid === null &&
+    preview.cannotRun === null &&
+    preview.set === board.set.set.id &&
+    preview.revision === board.set.revision &&
+    preview.sourceRevision !== null &&
+    preview.sourceRevision !== '' &&
+    preview.size !== null
+  );
+}
+
 /**
  * Magazyn sekcji Lab. `io` wchodzi argumentem, żeby kryteria mogły podać własną krawędź —
  * ta sama zasada, co w magazynie triggerów.
@@ -102,11 +124,14 @@ export function createLabStore(
   io: LabIo = labIo,
   launch: typeof runEvalSet = runEvalSet,
 ): UseBoundStore<StoreApi<LabState>> {
+  let opened = 0;
   return create<LabState>((set, get) => ({
     sets: [],
     agents: [],
     openId: null,
     board: null,
+    preview: null,
+    previewSaid: null,
     busy: 'idle',
     said: null,
     fix: null,
@@ -125,10 +150,35 @@ export function createLabStore(
     },
 
     async open(id: string): Promise<void> {
-      set({ busy: 'loading', openId: id, said: null });
+      const generation = ++opened;
+      const project = folder();
+      const current = (): boolean => generation === opened && project === folder();
+      set({ busy: 'loading', openId: id, said: null, preview: null, previewSaid: null });
       try {
-        set({ board: await io.board(folder(), id, HOW_MANY_RUNS), busy: 'idle' });
+        const board = await io.board(project, id, HOW_MANY_RUNS);
+        if (!current()) return;
+        set({ board });
+        if (board.set.set.subject.kind !== 'workflow' || board.cannotRun !== null) {
+          set({ busy: 'idle' });
+          return;
+        }
+        try {
+          const preview = await io.previewRun(project, id, board.set.revision);
+          if (!current()) return;
+          if (preview == null || preview.set !== id || preview.revision !== board.set.revision)
+            throw new Error(
+              'This preview no longer matches the saved set. Check again before running it.',
+            );
+          set({ preview, busy: 'idle' });
+        } catch (error: unknown) {
+          if (!current()) return;
+          set({
+            busy: 'idle',
+            previewSaid: why(error, 'Loadout could not check this comparison before Start.'),
+          });
+        }
       } catch (error: unknown) {
+        if (!current()) return;
         set({
           busy: 'idle',
           board: null,
@@ -208,6 +258,22 @@ export function createLabStore(
       }
     },
 
+    async saveProtection(protectedFiles: boolean): Promise<void> {
+      const id = get().openId;
+      const board = get().board;
+      if (id === null || board === null || get().busy !== 'idle') return;
+      const project = folder();
+      set({ busy: 'saving', said: null });
+      try {
+        await io.saveProtection(project, id, protectedFiles, board.set.revision);
+        if (get().openId !== id || folder() !== project) return;
+        await get().open(id);
+      } catch (error: unknown) {
+        if (get().openId !== id || folder() !== project) return;
+        set({ busy: 'idle', said: why(error, 'Loadout could not save this evaluation scope.') });
+      }
+    },
+
     async putCase(one: EvalCase): Promise<void> {
       const id = get().openId;
       const board = get().board;
@@ -262,9 +328,22 @@ export function createLabStore(
        * (niezmiennik 13, zmierzone na zywym ekranie 2026-08-31). Przycisk Run jest przy tym
        * stanie wygaszony, wiec ta galaz jest ostatnia zapora, nie glowna droga. */
       if (board.cannotRun !== null) return;
+      if (!workflowPreviewReady(get())) return;
+      const preview = get().preview;
       set({ busy: 'running', said: null });
       try {
-        const refused = await launch(id, chosenAtOnce(), folder(), board.set.set.name);
+        const refused =
+          board.set.set.subject.kind === 'workflow' && preview !== null
+            ? await launch(
+                id,
+                chosenAtOnce(),
+                folder(),
+                board.set.set.name,
+                undefined,
+                preview.revision,
+                preview.sourceRevision,
+              )
+            : await launch(id, chosenAtOnce(), folder(), board.set.set.name);
         // Ta sama kolejność i ten sam powód, co przy `propose`: `open` czyści zdanie.
         await get().open(id);
         set({ busy: 'idle', said: refused });

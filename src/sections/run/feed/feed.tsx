@@ -118,7 +118,7 @@ export function Asked({ question, onAnswer }: AskedProps): ReactElement {
     /* Puste Enter nie jest odpowiedzią. Wysłane, zdjęłoby pytanie z ekranu i zostawiło bieg
      * stojący na czymś, o czym okno już nie mówi. */
     if (typed.trim() === '') return;
-    onAnswer(question.id, typed.trim());
+    onAnswer(question.id, question.question === undefined ? typed.trim() : typed);
     setTyped('');
   }
 

@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use super::isolate;
+use super::processes::{ServiceRecord, ServiceState, read_service_records, save_service_record};
 use crate::durable_file::{DEFINITION_FILE_MODE, DurableFilePublisher, ModePolicy};
 use crate::engine::supervisor;
 use crate::recovery::{self, Machine, RecoveryRow};
@@ -285,15 +286,25 @@ fn close_what_the_runs_left(project: &Path) -> usize {
         if !is_over(&run) {
             continue;
         }
+        let mut said = service_blocker_notes(project, &dir, &run);
+        if let Err(why) = super::run::recover_recorded_results(project, &dir) {
+            tracing::warn!(run = %dir.display(), %why, "saved results could not be recovered; working folders were kept");
+            publish_step_notes(&dir, &said);
+            continue;
+        }
         let title = run
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let mut said: BTreeMap<String, String> = BTreeMap::new();
         for tree in crate::commands::run::trees_left_in(&dir) {
+            // WF-25: koniec kafelka Serve nie kończy jego usługi. Także niezrozumiały
+            // rekord jest brakiem dowodu, nigdy pustą listą właścicieli katalogu.
+            if services_protect_copy(project, &dir, &run, &tree.cwd) {
+                continue;
+            }
             let step = the_step_called(&run, &tree.key);
-            let isolate::Closed { kept, tidied, .. } = isolate::finish(
+            let isolate::Closed { kept, tidied, .. } = isolate::finish_with_saved(
                 project,
                 &tree.cwd,
                 &tree.branch,
@@ -304,6 +315,10 @@ fn close_what_the_runs_left(project: &Path) -> usize {
                     step.as_ref().map_or(&tree.key, |one| &one.name)
                 ),
                 Some(tree.head.as_str()),
+                |oid| {
+                    super::run::save_recovered_git_result(project, &dir, &tree, oid)
+                        .map_err(|why| format!("the recovered result could not be saved: {why}"))
+                },
             );
             closed += 1;
             let mut says: Vec<String> = Vec::new();
@@ -319,15 +334,58 @@ fn close_what_the_runs_left(project: &Path) -> usize {
                 said.insert(step.id, says.join(" "));
             }
         }
-        if !said.is_empty() {
-            let rows: BTreeMap<&str, &str> = said
-                .iter()
-                .map(|(id, one)| (id.as_str(), one.as_str()))
-                .collect();
-            note_on_steps(&dir, &rows);
+        if let Err(why) = super::run::recover_recorded_results(project, &dir) {
+            tracing::warn!(run = %dir.display(), %why, "the newly saved folder result could not be recorded in the run");
         }
+        publish_step_notes(&dir, &said);
     }
     closed
+}
+
+fn publish_step_notes(dir: &Path, said: &BTreeMap<String, String>) {
+    if said.is_empty() {
+        return;
+    }
+    let rows = said
+        .iter()
+        .map(|(id, one)| (id.as_str(), one.as_str()))
+        .collect();
+    note_on_steps(dir, &rows);
+}
+
+/// WF-25: bezpiecznie pozostawiony folder musi mieć wyjaśnienie w prawdziwej historii.
+/// Zbieramy je także przed recovery receiptów: uszkodzony record usługi potrafi odmówić
+/// tamtego odczytu, zanim pętla cleanupu w ogóle dojdzie do swojej blokady.
+fn service_blocker_notes(project: &Path, dir: &Path, run: &Value) -> BTreeMap<String, String> {
+    let mut notes = BTreeMap::new();
+    for tree in super::run::trees_left_in(dir) {
+        if !services_protect_copy(project, dir, run, &tree.cwd) {
+            continue;
+        }
+        let Some(step) = the_step_called(run, &tree.key) else {
+            continue;
+        };
+        let sentence = format!(
+            "Loadout could not prove that all services using this working folder have stopped, so the folder was kept: {}",
+            tree.cwd.display()
+        );
+        let previous = run
+            .get("steps")
+            .and_then(Value::as_array)
+            .and_then(|steps| steps.iter().find(|one| text(one, "id") == step.id))
+            .and_then(|one| one.get("error"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let said = if previous.is_empty() {
+            sentence
+        } else if previous.contains(&sentence) {
+            previous.to_owned()
+        } else {
+            format!("{previous} {sentence}")
+        };
+        notes.insert(step.id, said);
+    }
+    notes
 }
 
 /// Czy tego biegu nikt już nie prowadzi.
@@ -351,7 +409,11 @@ fn the_step_called(run: &Value, work_key: &str) -> Option<NamedStep> {
     run.get("steps")
         .and_then(Value::as_array)?
         .iter()
-        .find(|one| one.get("node_key").and_then(Value::as_str) == Some(work_key))
+        .find(|one| {
+            one.get("node_key")
+                .and_then(Value::as_str)
+                .is_some_and(|node| super::run::work_key_of(node) == work_key)
+        })
         .map(|one| NamedStep {
             id: text(one, "id"),
             name: text(one, "name"),
@@ -533,7 +595,7 @@ pub fn with_reaper<F>(project: &Path, reap: F) -> Reconciled
 where
     F: Fn(&recovery::ReapTarget) -> recovery::ReapOutcome + Clone + Send,
 {
-    let (rows, where_they_live) = rows_from_files(project);
+    let (rows, where_they_live, services) = rows_from_files(project);
     /* PUSTA LISTA NIE KOŃCZY TEGO PRZEBIEGU, i kryterium złapało tu prawdziwy błąd. „Nie ma
      * czego dobijać" nie znaczy „nie ma czego sprzątać": folder, w którym stoi wyłącznie bieg
      * zaparkowany na pytaniu, ma zero kroków w `running` — czyli dokładnie ten przypadek, dla
@@ -559,6 +621,7 @@ where
     // SIGTERM czeka tu obok siebie, a nie pięć okien łaski jedno po drugim — cała ta droga biegnie
     // w `spawn_blocking`, na wątku, na którym okno czeka na odpowiedź.
     let report = reap_each_group_apart(&plan, reap);
+    record_service_outcomes(&services, &plan, &report);
     // 2026-08-27: sam licznik `unproven` ukrywał finansowo istotną sierotę przed człowiekiem.
     // Łączymy wynik domykacza z oryginalnym wierszem, bo tylko plik niesie oba identyfikatory,
     // które pozwalają rozpoznać ocalały proces bez zgadywania po samym PGID.
@@ -784,11 +847,18 @@ fn write_back_with_reason(dir: &Path, run_status: &str, why: &str) -> bool {
 /// stoi w `running` albo `paused`, **albo** żywy krok (`ready`/`running`) z biegu o innym statusie.
 /// Rozjazd tych dwóch warunków znaczyłby, że po skasowaniu bazy odzyskiwanie sądzi inny zbiór niż
 /// przed nim.
-fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBuf>) {
+fn rows_from_files(
+    project: &Path,
+) -> (
+    Vec<RecoveryRow>,
+    BTreeMap<String, PathBuf>,
+    Vec<SavedService>,
+) {
     let mut rows = Vec::new();
     let mut where_they_live = BTreeMap::new();
+    let mut services = Vec::new();
     let Ok(entries) = std::fs::read_dir(project.join(RUNS_DIR)) else {
-        return (rows, where_they_live);
+        return (rows, where_they_live, services);
     };
     for entry in entries.flatten() {
         let dir = entry.path();
@@ -810,6 +880,9 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
         let Some(steps) = run.get("steps").and_then(Value::as_array) else {
             continue;
         };
+        if add_service_rows(project, &dir, &run, &mut rows, &mut services) {
+            where_they_live.insert(run_id.clone(), dir.clone());
+        }
         let has_cut_off_work = matches!(run_status.as_str(), "running" | "paused")
             || steps.iter().any(|one| {
                 matches!(
@@ -847,7 +920,162 @@ fn rows_from_files(project: &Path) -> (Vec<RecoveryRow>, BTreeMap<String, PathBu
             });
         }
     }
-    (rows, where_they_live)
+    (rows, where_they_live, services)
+}
+
+/// Tylko migawka jednego przebiegu recovery, nie drugi rejestr żywych usług.
+struct SavedService {
+    dir: PathBuf,
+    record: ServiceRecord,
+}
+
+/// Osobne źródło tych samych `RecoveryRow`, nie druga polityka spawnu ani kill.
+/// Zakończony Serve nie ma pgids w starym kroku; trwałe usługi mają własny zapis.
+fn add_service_rows(
+    project: &Path,
+    dir: &Path,
+    run: &Value,
+    rows: &mut Vec<RecoveryRow>,
+    services: &mut Vec<SavedService>,
+) -> bool {
+    let before = rows.len();
+    match services_bound_to_run(project, dir, run) {
+        Ok(records) => {
+            for record in records {
+                if record.state == ServiceState::Dead
+                    || record.state == ServiceState::Unknown
+                    || record.lifetime == crate::workflow::ServiceLifetime::Unknown
+                {
+                    continue;
+                }
+                rows.push(RecoveryRow {
+                    step_id: record.step_id.clone(),
+                    run_id: text(run, "id"),
+                    run_status: text(run, "status"),
+                    // Ten wiersz dokłada WYŁĄCZNIE grupę pozostawioną po spawnie. Stan samego
+                    // kafelka sądzi jego zwykły wiersz; Running tutaj liczyłoby go dwa razy.
+                    step_status: "succeeded".to_owned(),
+                    run_boot_id: run
+                        .get("boot_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    pid: None,
+                    pgid: record.pgid,
+                    pgids: record.pgid.into_iter().collect(),
+                    death_proof: false,
+                });
+                services.push(SavedService {
+                    dir: dir.to_path_buf(),
+                    record,
+                });
+            }
+        }
+        Err(error) => tracing::warn!(run = %text(run, "id"), %error,
+            "the saved services could not be identified; their folders remain protected"),
+    }
+    rows.len() != before
+}
+
+/// Spójność plikowych adresów musi być sprawdzona PRZED oddaniem jakiegokolwiek PGID
+/// do polityki recovery. Cudzy record nie otrzymuje tożsamości z aktualnego workspace.
+pub(super) fn services_bound_to_run(
+    project: &Path,
+    dir: &Path,
+    run: &Value,
+) -> std::io::Result<Vec<ServiceRecord>> {
+    let records = read_service_records(dir)?;
+    let workspace = supervisor::publication_root_key(project)?;
+    let id = text(run, "id");
+    let steps = run.get("steps").and_then(Value::as_array);
+    for record in &records {
+        // Historyczne rekordy mogą nazywać systemowy alias /var. Klucz służy
+        // porównaniu, nigdy jako dowód własności podmienionego katalogu.
+        let record_workspace = supervisor::publication_root_key(&record.reference.workspace)?;
+        let record_cwd = supervisor::publication_root_key(&record.cwd)?;
+        supervisor::PublicationRoot::open(&record.reference.workspace)?;
+        match supervisor::PublicationRoot::open(&record.cwd) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let step_matches = steps.is_some_and(|steps| {
+            steps.iter().any(|step| {
+                text(step, "id") == record.step_id
+                    && text(step, "node_key") == record.reference.node_key
+            })
+        });
+        if record_workspace != workspace
+            || record.reference.run_id != id
+            || record.reference.generation == 0
+            || !step_matches
+            || !record.cwd.is_absolute()
+            || !record_cwd.starts_with(&workspace)
+            || record
+                .cwd
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(std::io::Error::other(
+                "the saved service does not belong to this run and folder",
+            ));
+        }
+    }
+    Ok(records)
+}
+
+fn record_service_outcomes(
+    services: &[SavedService],
+    plan: &recovery::RecoveryPlan,
+    report: &recovery::RecoveryReport,
+) {
+    for saved in services {
+        let Some(pgid) = saved.record.pgid else {
+            continue;
+        };
+        if !plan
+            .reap
+            .iter()
+            .any(|target| target.pgid == pgid && target.run_id == saved.record.reference.run_id)
+        {
+            continue;
+        }
+        let state = if report.reaped.contains(&pgid) {
+            ServiceState::Dead
+        } else if report.unproven.contains(&pgid) || report.foreign.contains(&pgid) {
+            ServiceState::Unproven
+        } else {
+            // Brak boot, inny boot albo nieużywalny numer nie są ESRCH dla tej grupy.
+            // Bez dowodu nie zwalniamy kopii i nie wymyślamy nowego adresu procesu.
+            continue;
+        };
+        if saved.record.state == state {
+            continue;
+        }
+        let mut record = saved.record.clone();
+        record.state = state;
+        if let Err(error) = save_service_record(&saved.dir, &record) {
+            // Stary plik nadal blokuje cleanup: samo wysłanie sygnału nie publikuje Dead.
+            tracing::error!(service = %record.reference.service_id, %error,
+                "the recovered service proof could not be saved");
+        }
+    }
+}
+
+fn services_protect_copy(project: &Path, dir: &Path, run: &Value, cwd: &Path) -> bool {
+    let Ok(records) = services_bound_to_run(project, dir, run) else {
+        return true;
+    };
+    records.iter().any(|record| {
+        let same_path = record.cwd == cwd
+            || supervisor::publication_root_key(&record.cwd)
+                .ok()
+                .zip(supervisor::publication_root_key(cwd).ok())
+                .is_some_and(|(owned, actual)| owned == actual);
+        same_path
+            && (record.keeps_copy()
+                || !supervisor::PublicationRoot::open(cwd)
+                    .is_ok_and(|root| root.identity() == record.copy_identity))
+    })
 }
 
 /// Wpisuje rozstrzygnięcie z powrotem do `run.json` — **w miejsce**, bez gubienia pól.

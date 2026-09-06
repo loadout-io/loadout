@@ -61,6 +61,8 @@ function spying(saved: EvalVariant[], dropped: string[]): LabIo {
     stopProposing: () => Promise.resolve(),
     decide: refuse,
     putCase: refuse,
+    saveProtection: refuse,
+    previewRun: refuse,
     putVariant: (_folder, _set, variant) => {
       saved.push(variant);
       return Promise.resolve(aBoard([ONE]).set);

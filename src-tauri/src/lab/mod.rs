@@ -46,8 +46,12 @@ use serde_json::{Map, Value};
 pub mod cases;
 pub mod file;
 pub mod fix;
+pub mod measurement;
 pub mod plan;
 pub mod results;
+mod workflow_inputs;
+pub mod workflow_plan;
+pub mod workflow_results;
 
 /// Katalog zestawów wewnątrz projektu: `<projekt>/.loadout/evals/`.
 ///
@@ -72,7 +76,7 @@ pub const PLANS_DIR: &str = "plans";
 ///
 /// Jedna wersja, dopóki nie ma drugiej (niezmiennik 25). Migracja „na przyszłość" jest tu
 /// zakazana tak samo, jak w `workflow::file`.
-pub const CURRENT: u32 = 1;
+pub const CURRENT: u32 = 2;
 
 /// `<projekt>/.loadout/evals/`.
 #[must_use]
@@ -179,6 +183,8 @@ pub enum Subject {
     Agent { id: String },
     /// Nazwa katalogu umiejętności — ta sama, którą niesie `workflow::Skills`.
     Skill { name: String },
+    /// Cały graf; źródło każdej kolumny jest jawne, nie zakodowane w polu agent.
+    Workflow { id: String },
 }
 
 impl Subject {
@@ -186,8 +192,8 @@ impl Subject {
     #[must_use]
     pub fn said(&self) -> &str {
         match self {
-            Self::Agent { id } => id,
             Self::Skill { name } => name,
+            Self::Agent { id } | Self::Workflow { id } => id,
         }
     }
 }
@@ -230,6 +236,16 @@ pub struct Case {
 }
 
 impl Case {
+    pub fn repeats(&self) -> Result<usize, String> {
+        match self.extra.get("repeats") {
+            None => Ok(1),
+            Some(value) => value
+                .as_u64()
+                .filter(|n| (1..=20).contains(n))
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or_else(|| "A case must run between 1 and 20 times.".to_owned()),
+        }
+    }
     /// Czy ten przypadek ma czym orzec.
     ///
     /// Koniunkcja, nie alternatywa: komenda bez wzorca spadłaby na sam kod wyjścia, a suita,
@@ -238,6 +254,11 @@ impl Case {
     /// `commands::run::missing_a_required_field`, po stronie biegu, tą samą drogą co zawsze.
     #[must_use]
     pub fn has_something_to_judge_it(&self) -> bool {
+        if crate::workflow::execution::Examiner::from_check(&self.extra)
+            .is_ok_and(|one| one.is_some())
+        {
+            return true;
+        }
         let by_command = !self.command.trim().is_empty() && !self.proof.trim().is_empty();
         by_command || !self.expect.is_empty()
     }
@@ -296,6 +317,7 @@ pub struct Variant {
     /// Nagłówek kolumny: „Reviewer · opus · deepest".
     pub name: String,
     /// Identyfikator agenta z biblioteki.
+    #[serde(default)]
     pub agent: String,
     /// Patch nad jego definicją. `{}` znaczy „ten wariant bierze agenta, jaki jest".
     #[serde(default)]

@@ -22,10 +22,9 @@
 //!
 //! # Dlaczego zgoda jest sprawdzana TUTAJ, a nie tylko w prompcie
 //!
-//! Niezmiennik 28. Zdanie „zapytaj najpierw" w prompcie jest miękkie: model może je pominąć
-//! i nikt się o tym nie dowie. Wymagany klucz `confirmed` jest twardy — i to on jest sądzony.
-//! Miękka zostaje wyłącznie ta połowa, której skryptem sprawdzić się nie da: czy człowiek
-//! naprawdę odpowiedział.
+//! 2026-09-06 WF-10: confirmed od modelu nie dowodzi niczyjej zgody. Kryterium odpowiada
+//! prawdziwą drogą człowieka do Waiting, odbiera jednorazowy token i używa go w `Desk.stop_run`.
+//! Nie symuluje już wykonania Suggested przez okno; backend musi sam zakończyć istniejący bieg.
 //!
 //! Testy odpalają prawdziwe procesy i **nie są** `#[ignore]`: cel z samymi pominiętymi testami
 //! melduje „0 passed", a to nie jest dowód (niezmiennik 19).
@@ -46,9 +45,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use loadout_lib::bridge::host::Answers;
-use loadout_lib::bridge::library::Desk;
+use loadout_lib::bridge::library::{Desk, Waiting};
 use loadout_lib::bridge::{Answer, Call, Role, verbs};
-use loadout_lib::commands::run::{run_workflow_inner, stop_if_anything_is_going};
+use loadout_lib::commands::lead_history::LeadRunLookup;
+use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, Outcome, RunControl, RunDeps, RunRequest};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentHandle, DecodedEvent, FinishReason, Outcome as TurnOutcome, Probe, RunSpec,
@@ -216,10 +216,8 @@ fn the_lead_can_see_the_verb_at_all() {
         .collect();
     assert_eq!(
         required,
-        vec!["confirmed"],
-        "the person's answer has to be part of the SHAPE of this call, not an instruction in a \
-         prompt (invariant 28): a prompt can be ignored and nobody finds out, a required key \
-         cannot"
+        vec!["run_id", "approval_token"],
+        "the call must name the exact run and a token obtained from a real human answer"
     );
     assert!(
         stop.describe.contains("kill"),
@@ -237,27 +235,29 @@ async fn stop_run_refuses_until_the_person_confirmed() -> Result<(), Box<dyn Err
     a_run_is_going(project.path())?;
     let (desk, mut stream) = desk_that_shows(home.path(), project.path());
 
-    match stop_run(&desk, serde_json::json!({})).await {
+    match stop_run(
+        &desk,
+        serde_json::json!({"run_id":"01990000-0000-7000-8000-0000000039a1"}),
+    )
+    .await
+    {
         Answer::Refused(said) => {
             assert!(
-                said.contains(TITLE),
-                "the refusal has to name what would go down, so the lead can ask about THIS run \
-                 and not about \"the run\". It said: {said}"
+                said.contains("no longer active"),
+                "a saved running file is not a live process owner: {said}"
             );
             assert!(
-                said.contains("ask_the_person"),
-                "and it has to name the move that unblocks it. A refusal that says only 'not \
-                 allowed' leaves the lead where it was, and it went to kill from there. It said: \
-                 {said}"
+                said.contains("status"),
+                "the refusal must say how to find the actual addressed run: {said}"
             );
+            assert!(matches!(stream.try_next(), Some(Line::Problem { text, .. }) if text == said));
         }
         Answer::Ok(value) => panic!("a run must never go down unasked: {value}"),
     }
 
     assert!(
         stream.try_next().is_none(),
-        "something reached the screen even though the stop was refused. The row is the thing that \
-         stops the run, so a refusal that still puts it there refuses in words only"
+        "the refusal must not also emit a mutating Suggested row"
     );
 
     // `false` jest KLUCZEM, którego schemat wymaga, i to jest inna droga niż brak klucza:
@@ -324,9 +324,20 @@ async fn a_confirmed_stop_brings_the_run_down_and_names_what_it_stopped()
      * swoim (`commands::chat`, „biurko widzi ten sam strumień, co rozmowa"). Okno skleja je
      * dopiero po swojej stronie, w jednym terminalu. */
     let (desk, mut conversation) = desk_that_shows(bench.home.path(), bench.project.path());
+    let waiting = Arc::new(Waiting::default());
+    let fixed = deps.control.clone();
+    let desk = desk
+        .hearing(Arc::clone(&waiting))
+        .reading_runs_with(LeadRunLookup::new(move |_| Some(fixed.clone())));
 
-    let watching =
-        the_lead_stops_it_and_the_kernel_agrees(&desk, &mut conversation, &deps, &started, &ready);
+    let watching = the_lead_stops_it_and_the_kernel_agrees(
+        &desk,
+        &waiting,
+        &mut conversation,
+        &deps,
+        &started,
+        &ready,
+    );
 
     let (ran, checked) = tokio::time::timeout(PATIENCE, async {
         tokio::join!(run_workflow_inner(&deps, &request, run_sink), watching)
@@ -358,6 +369,7 @@ async fn a_confirmed_stop_brings_the_run_down_and_names_what_it_stopped()
 /// jest zdaniem o żywym procesie, nie o treści odmowy.
 async fn the_lead_stops_it_and_the_kernel_agrees(
     desk: &Desk,
+    waiting: &Waiting,
     conversation: &mut LineSource,
     deps: &RunDeps<'_>,
     started: &Mutex<Option<GroupId>>,
@@ -378,7 +390,12 @@ async fn the_lead_stops_it_and_the_kernel_agrees(
     );
 
     // ── (a) BEZ ZGODY NIC NIE SCHODZI, i to jest zdanie o żywym procesie ───────────────────
-    match stop_run(desk, serde_json::json!({})).await {
+    let run_id = deps
+        .control
+        .run_address()
+        .ok_or("the running step has no durable identity")?
+        .id;
+    match stop_run(desk, serde_json::json!({"run_id":run_id,"confirmed":true})).await {
         Answer::Refused(said) => assert!(
             said.contains("ask_the_person"),
             "the refusal has to name the move that unblocks it: {said}"
@@ -397,14 +414,20 @@ async fn the_lead_stops_it_and_the_kernel_agrees(
     );
 
     // ── (b) ZE ZGODĄ — odpowiedź dla modelu i wiersz dla człowieka ────────────────────────
-    let value = match stop_run(desk, serde_json::json!({ "confirmed": true })).await {
+    let approval = actual_human_confirmation(desk, waiting, conversation, &run_id).await?;
+    let value = match stop_run(
+        desk,
+        serde_json::json!({ "run_id":run_id,"approval_token":approval }),
+    )
+    .await
+    {
         Answer::Ok(value) => value,
         Answer::Refused(sentence) => {
             panic!("the person said yes and the run still did not go down: {sentence}")
         }
     };
     let note = value
-        .get("note")
+        .get("said")
         .and_then(Value::as_str)
         .expect("the answer carries a sentence for the model");
     assert!(
@@ -419,27 +442,23 @@ async fn the_lead_stops_it_and_the_kernel_agrees(
     );
 
     // ── (c) TO, CO OKNO ROBI Z TYM WIERSZEM ───────────────────────────────────────────────
-    let command = what_the_window_would_run(conversation)
-        .ok_or("asking for a stop has to put a row the window will act on onto the screen")?;
-    assert_eq!(
-        command, "/stop",
-        "the command is byte for byte what a person would type, because the window takes it apart \
-         the same way (invariant 23). A second stop path would drift in silence: the folder it \
-         aims at would be read, logged, and different"
-    );
-    /* RDZEŃ, DO KTÓREGO TRAFIA `/stop`, i nie ma tu ani jednego skrótu: komenda Tauri
-     * `ipc::stop_run` wybiera projekt po folderze i woła DOKŁADNIE to (niezmienniki 1 i 23,
-     * „tutaj zostaje wyłącznie transport"). Atrapa w tym miejscu byłaby zieloną asercją nad
-     * biegiem, który dalej pali limit. */
-    let stopped = tokio::time::timeout(PATIENCE, stop_if_anything_is_going(deps))
-        .await
-        .map_err(|_| {
-            format!("the stop the lead asked for never came back within {PATIENCE:?}")
-        })??;
+    let mut receipt = false;
+    while let Some(line) = conversation.try_next() {
+        assert!(
+            !matches!(line, Line::Suggested { auto: true, .. }),
+            "the host delegated control back to an unaddressed UI command"
+        );
+        if matches!(line, Line::Note { text, .. } if text == note) {
+            receipt = true;
+        }
+    }
     assert!(
-        stopped,
-        "the core answered that there was nothing to stop, while the step's group was answering \
-         signal zero one line above"
+        receipt,
+        "the person did not see the same final receipt as the Lead"
+    );
+    assert!(
+        !deps.control.is_working(),
+        "the receipt preceded the real run settling"
     );
 
     // ── (d) DOWÓD Z JĄDRA (niezmiennik 6) ─────────────────────────────────────────────────
@@ -473,7 +492,12 @@ async fn a_folder_with_nothing_going_says_so_instead_of_asking() -> Result<(), B
         .expect("a temporary folder has a name")
         .to_string_lossy()
         .into_owned();
-    match stop_run(&desk, serde_json::json!({ "confirmed": true })).await {
+    match stop_run(
+        &desk,
+        serde_json::json!({ "run_id":"01990000-0000-7000-8000-0000000039a1", "confirmed": true }),
+    )
+    .await
+    {
         Answer::Refused(said) => assert!(
             said.contains(&here),
             "the sentence has to name the folder it looked in: with two cards open, \"nothing is \
@@ -483,8 +507,8 @@ async fn a_folder_with_nothing_going_says_so_instead_of_asking() -> Result<(), B
         Answer::Ok(value) => panic!("nothing was running, so nothing could be stopped: {value}"),
     }
     assert!(
-        stream.try_next().is_none(),
-        "and nothing reached the screen, because nothing happened"
+        matches!(stream.try_next(), Some(Line::Problem { .. })),
+        "the person must see why nothing could be stopped"
     );
     Ok(())
 }
@@ -522,22 +546,44 @@ async fn a_desk_with_no_screen_refuses_to_stop_anything() -> Result<(), Box<dyn 
 /// `auto == true` i niepusta komenda, plus podpis, bez którego okno porzuca wiersz w ciszy. Wiersz,
 /// który któregokolwiek z nich nie spełnia, jest zatrzymaniem, które nigdy się nie wydarzy —
 /// i dlatego to kryterium pyta o nie tutaj, a nie sięga po pole wariantu na siłę.
-fn what_the_window_would_run(stream: &mut LineSource) -> Option<String> {
-    while let Some(line) = stream.try_next() {
-        if let Line::Suggested {
-            agent,
-            auto,
-            command,
-            ..
-        } = line
-            && auto
-            && !command.trim().is_empty()
-            && !agent.is_empty()
-        {
-            return Some(command);
+async fn actual_human_confirmation(
+    desk: &Desk,
+    waiting: &Waiting,
+    stream: &mut LineSource,
+    run_id: &str,
+) -> Result<String, Box<dyn Error>> {
+    let ask = desk.answer(Call {
+        id: Value::from(2),
+        call: "ask_the_person".to_owned(),
+        input: serde_json::json!({"operation":"stop_run","run_id":run_id}),
+    });
+    tokio::pin!(ask);
+    let human = async {
+        loop {
+            if let Some(Line::Asked {
+                text,
+                question: Some(question),
+                ..
+            }) = stream.try_next()
+            {
+                assert!(text.contains(RUN_TITLE));
+                assert!(waiting.answer_exact("Lead", &question.question_id, "Stop run".to_owned()));
+                return;
+            }
+            tokio::time::sleep(PROBE_POLL).await;
         }
+    };
+    tokio::select! {
+        reply = &mut ask => panic!("the host did not ask the human before stopping: {reply:?}"),
+        () = human => {},
     }
-    None
+    match ask.await {
+        Answer::Ok(value) => value["approvalToken"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "human answer produced no token".into()),
+        Answer::Refused(said) => Err(said.into()),
+    }
 }
 
 /// Pyta jądro, czy w grupie `pgid` jest jeszcze ktokolwiek — **nie wysyłając sygnału**.

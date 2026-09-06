@@ -55,6 +55,14 @@ const INCOMING_DIR: &str = "incoming";
 /// Nazwa pliku umiejętności. Ta sama po obu stronach pobrania.
 const SKILL_FILE: &str = "SKILL.md";
 
+pub fn list_skill_sources_inner(
+    library: &Path,
+    project: Option<&Path>,
+    names: &[String],
+) -> std::io::Result<Vec<crate::skills::bundle::SkillSources>> {
+    crate::skills::bundle::sources(&roots_for(library, project), names)
+}
+
 /// Plik, w którym Loadout notuje, skąd wzięła się umiejętność o danej nazwie.
 ///
 /// Leży OBOK kopii kanonicznych, w tym samym katalogu, co sidecar instalacji — bo to jest zapis

@@ -14,13 +14,26 @@
  */
 import type { ReactElement } from 'react';
 import { fieldNameFor } from './hands-over-the-command';
+import type { CommandProducer } from './hands-over-the-command';
 import { WhereItWorks } from './where-it-works';
 import type { ServeStep } from '../../../state/workflows';
 
 export interface ServePanelProps {
   step: ServeStep;
   onEditStep: (
-    fields: Partial<Pick<ServeStep, 'name' | 'command' | 'folder' | 'commandFrom'>>,
+    fields: Partial<
+      Pick<
+        ServeStep,
+        | 'name'
+        | 'command'
+        | 'folder'
+        | 'commandFrom'
+        | 'readiness'
+        | 'endpoints'
+        | 'lifetime'
+        | 'startWhen'
+      >
+    >,
   ) => void;
   /**
    * Nazwa kroku, który po strzałce stoi przed tym kafelkiem, albo `null`.
@@ -33,6 +46,7 @@ export interface ServePanelProps {
   handsItOver?: boolean | undefined;
   /** Człowiek prosi krok przed tym o to pole — jawnym kliknięciem, nie efektem ubocznym. */
   onAskTheStepBefore?: (() => void) | undefined;
+  commandProducers?: readonly CommandProducer[] | undefined;
 }
 
 /* GDZIE TO WSTAJE — DWA wyjścia, bo tylko dwa mają dla serwera sens.
@@ -63,6 +77,7 @@ export function ServePanel({
   stepBefore = null,
   handsItOver = false,
   onAskTheStepBefore = () => undefined,
+  commandProducers = [],
 }: ServePanelProps): ReactElement {
   return (
     <>
@@ -78,6 +93,31 @@ export function ServePanel({
             onEditStep({ name: event.target.value });
           }}
         />
+      </div>
+
+      <div className="stack">
+        <label className="label" htmlFor="serve-start-when">
+          When to start
+        </label>
+        <select
+          id="serve-start-when"
+          className={FIELD}
+          value={step.startWhen ?? 'reached'}
+          onChange={(event) => {
+            if (event.target.value === 'reached' || event.target.value === 'asked') {
+              onEditStep({ startWhen: event.target.value });
+            }
+          }}
+        >
+          <option value="reached">When the workflow reaches this step</option>
+          <option value="asked">When an allowed agent asks to start it</option>
+        </select>
+        {step.startWhen === 'asked' ? (
+          <span className="lead">
+            This step prepares the app description but does not start the app. Only an agent
+            explicitly allowed to use this app can start it.
+          </span>
+        ) : null}
       </div>
 
       <div className="stack">
@@ -120,6 +160,55 @@ export function ServePanel({
           Let the step before this one work out the command
         </label>
         {step.commandFrom === undefined ? null : (
+          <>
+            <label className="label" htmlFor="serve-command-format">
+              What the agent hands over
+            </label>
+            <select
+              id="serve-command-format"
+              className={FIELD}
+              value={step.commandFrom.format ?? 'command'}
+              onChange={(event) => {
+                if (
+                  step.commandFrom === undefined ||
+                  (event.target.value !== 'command' && event.target.value !== 'launch-description')
+                )
+                  return;
+                onEditStep({ commandFrom: { ...step.commandFrom, format: event.target.value } });
+              }}
+            >
+              <option value="command">A command only</option>
+              <option value="launch-description">
+                An app description with folder, variables and addresses
+              </option>
+            </select>
+            <label className="label" htmlFor="serve-command-producer">
+              Use this earlier result
+            </label>
+            <select
+              id="serve-command-producer"
+              className={FIELD}
+              value={step.commandFrom.producer ?? ''}
+              onChange={(event) => {
+                if (step.commandFrom === undefined) return;
+                onEditStep({
+                  commandFrom: { ...step.commandFrom, producer: event.target.value || undefined },
+                });
+              }}
+            >
+              <option value="">The only matching result — refuse if there is more than one</option>
+              {commandProducers.map((choice) => (
+                <option key={choice.key} value={choice.key}>
+                  {choice.name}
+                </option>
+              ))}
+            </select>
+            <span className="lead">
+              A missing result stops this step. The saved manual command is not used instead.
+            </span>
+          </>
+        )}
+        {step.commandFrom === undefined ? null : (
           /* TRZY STANY, NIE JEDEN NAPIS. „Poproś go" bez powiedzenia, czy już poproszono, każe
              człowiekowi sprawdzać drugi kafelek za każdym razem; a kafelek bez poprzednika
              odsyła go do kroku, którego nie ma. */
@@ -152,10 +241,58 @@ export function ServePanel({
             trzymający port. „Started" jest nazwą TEJ SEKCJI z ekranu biegu (`rail.tsx`), nie
             naszym słowem — człowiek ma szukać tego, co widzi (niezmiennik 13). */}
         <span className="lead">
-          The steps after this one start right away, without waiting for it to finish. It stays
-          alive under Started on the right until you stop it there or close Loadout.
+          {step.startWhen === 'asked'
+            ? 'The workflow continues once this app is configured. Starting it later waits for the requested response. '
+            : step.commandFrom?.format === 'launch-description'
+              ? 'The app description chooses which response the next steps wait for. '
+              : step.readiness === undefined
+                ? 'The steps after this one start right away, without waiting for it to finish. '
+                : 'The steps after this one wait until the app responds as requested. '}
+          {step.lifetime === 'run'
+            ? 'It stops when this workflow ends.'
+            : 'It stays alive under Started on the right until you stop it there or close Loadout.'}
         </span>
       </div>
+
+      {step.commandFrom?.format === 'launch-description' ? null : (
+        <div className="stack">
+          <label htmlFor="serve-readiness" className="label">
+            Wait until the app responds
+          </label>
+          <select
+            id="serve-readiness"
+            className={FIELD}
+            value={step.readiness?.kind ?? ''}
+            onChange={(event) => {
+              const kind = event.target.value;
+              onEditStep({
+                readiness:
+                  kind === 'http' || kind === 'tcp'
+                    ? {
+                        kind,
+                        endpoint: step.readiness?.endpoint ?? 'web',
+                        path: step.readiness?.path ?? '/',
+                        timeoutSeconds: step.readiness?.timeoutSeconds ?? 30,
+                        expectedStatus: step.readiness?.expectedStatus ?? 200,
+                      }
+                    : undefined,
+                ...(kind === '' || (step.endpoints?.length ?? 0) > 0
+                  ? {}
+                  : {
+                      endpoints: [{ name: 'web', host: '127.0.0.1', port: 3000, portEnv: 'PORT' }],
+                    }),
+              });
+            }}
+          >
+            <option value="">Do not check — only start it</option>
+            <option value="http">An HTTP response</option>
+            <option value="tcp">An open connection</option>
+          </select>
+          {step.readiness === undefined ? null : (
+            <ReadinessFields step={step} onEditStep={onEditStep} />
+          )}
+        </div>
+      )}
 
       <WhereItWorks
         group="serve-where"
@@ -165,6 +302,149 @@ export function ServePanel({
           onEditStep({ folder });
         }}
       />
+    </>
+  );
+}
+
+function ReadinessFields({
+  step,
+  onEditStep,
+}: Pick<ServePanelProps, 'step' | 'onEditStep'>): ReactElement {
+  const readiness = step.readiness;
+  if (readiness === undefined) return <></>;
+  return (
+    <>
+      {(step.endpoints ?? []).map((endpoint, index) => (
+        <div className="stack" key={index}>
+          <label className="label">
+            Address name
+            <input
+              className={FIELD}
+              value={endpoint.name}
+              onChange={(event) => {
+                const name = event.target.value;
+                onEditStep({
+                  endpoints: step.endpoints?.map((one, at) =>
+                    at === index ? { ...one, name } : one,
+                  ),
+                  readiness:
+                    readiness.endpoint === endpoint.name
+                      ? { ...readiness, endpoint: name }
+                      : readiness,
+                });
+              }}
+            />
+          </label>
+          <label className="label">
+            Port (0 chooses one)
+            <input
+              type="number"
+              min={0}
+              max={65535}
+              className={FIELD}
+              value={endpoint.port}
+              onChange={(event) =>
+                onEditStep({
+                  endpoints: step.endpoints?.map((one, at) =>
+                    at === index ? { ...one, port: Number(event.target.value) } : one,
+                  ),
+                })
+              }
+            />
+          </label>
+          <label className="label">
+            Port variable
+            <input
+              className={FIELD}
+              value={endpoint.portEnv ?? ''}
+              onChange={(event) =>
+                onEditStep({
+                  endpoints: step.endpoints?.map((one, at) =>
+                    at === index ? { ...one, portEnv: event.target.value } : one,
+                  ),
+                })
+              }
+            />
+          </label>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="btn-quiet"
+        onClick={() =>
+          onEditStep({
+            endpoints: [
+              ...(step.endpoints ?? []),
+              {
+                name: `address${String((step.endpoints?.length ?? 0) + 1)}`,
+                host: '127.0.0.1',
+                port: 0,
+                portEnv: `PORT_${String((step.endpoints?.length ?? 0) + 1)}`,
+              },
+            ],
+          })
+        }
+      >
+        Add another address
+      </button>
+      <label className="label">
+        Address to check
+        <select
+          className={FIELD}
+          value={readiness.endpoint}
+          onChange={(event) =>
+            onEditStep({ readiness: { ...readiness, endpoint: event.target.value } })
+          }
+        >
+          {(step.endpoints ?? []).map((endpoint) => (
+            <option key={endpoint.name} value={endpoint.name}>
+              {endpoint.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {readiness.kind !== 'http' ? null : (
+        <>
+          <label className="label">
+            Path
+            <input
+              className={FIELD}
+              value={readiness.path}
+              onChange={(event) =>
+                onEditStep({ readiness: { ...readiness, path: event.target.value } })
+              }
+            />
+          </label>
+          <label className="label">
+            Expected response
+            <input
+              type="number"
+              min={100}
+              max={599}
+              className={FIELD}
+              value={readiness.expectedStatus}
+              onChange={(event) =>
+                onEditStep({
+                  readiness: { ...readiness, expectedStatus: Number(event.target.value) },
+                })
+              }
+            />
+          </label>
+        </>
+      )}
+      <label className="label">
+        Wait at most (seconds)
+        <input
+          type="number"
+          min={1}
+          max={120}
+          className={FIELD}
+          value={readiness.timeoutSeconds}
+          onChange={(event) =>
+            onEditStep({ readiness: { ...readiness, timeoutSeconds: Number(event.target.value) } })
+          }
+        />
+      </label>
     </>
   );
 }

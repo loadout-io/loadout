@@ -80,6 +80,15 @@ impl Bridge {
     /// `role` rozstrzyga, co most dostanie w powitaniu — czyli **całą** powierzchnię tej sesji.
     /// Liczone tutaj, po stronie, która zna człowieka, i nigdy przez most.
     pub async fn open(directory: &Path, role: Role, answers: Arc<dyn Answers>) -> io::Result<Self> {
+        Self::open_with_tools(directory, verbs::tool_list(role), answers).await
+    }
+
+    /// Lista jest zamrożona przez hosta z roli i przyznanych praw, nigdy z wywołania modelu.
+    pub async fn open_with_tools(
+        directory: &Path,
+        tools: Value,
+        answers: Arc<dyn Answers>,
+    ) -> io::Result<Self> {
         tokio::fs::create_dir_all(directory).await?;
 
         /* NAZWA WŁASNA NA SESJĘ, nie stała `bridge.sock`. Dwa powody, oba realne:
@@ -87,7 +96,12 @@ impl Bridge {
          * gniazdo; i gniazdo po sesji, która nie zdążyła posprzątać, przewracałoby `bind` na
          * `EADDRINUSE` u następnej. Identyfikator jest tu tańszy niż obie te naprawy. */
         let name = uuid::Uuid::now_v7().simple().to_string();
-        let at = directory.join(format!("loadout-{}.sock", &name[..NAME_LENGTH]));
+        // 2026-09-06 — prefiks v7 jest głównie czasem: 256 równoczesnych hostów dostało
+        // tylko 3 adresy. Ogon zachowuje 62 bity losowe/licznika i ten sam limit długości.
+        let at = directory.join(format!(
+            "loadout-{}.sock",
+            &name[name.len() - NAME_LENGTH..]
+        ));
 
         let listener = UnixListener::bind(&at)?;
         /* PRAWO DO PLIKU JEST ZDOLNOŚCIĄ: kto otworzy to gniazdo, ten dostaje czasowniki tej
@@ -96,7 +110,6 @@ impl Bridge {
          * dotyczy także napisania jej nazwy w komentarzu. */
         crate::engine::supervisor::owner_only(&at)?;
 
-        let tools = verbs::tool_list(role);
         let accepting = tokio::spawn(accept_forever(listener, tools, answers));
         Ok(Self { at, accepting })
     }
@@ -178,6 +191,12 @@ async fn talk(stream: UnixStream, tools: Value, answers: Arc<dyn Answers>) -> an
 
     /* APLIKACJA ODZYWA SIĘ PIERWSZA. Powód w całości stoi przy `Greeting`: most, który liczyłby
      * własną listę, mógłby sam sobie nadać uprawnienia. */
+    let allowed: std::collections::BTreeSet<String> = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect();
     let greeting = Greeting { tools };
     write_line(&mut writing, &serde_json::to_value(&greeting)?).await?;
 
@@ -192,7 +211,13 @@ async fn talk(stream: UnixStream, tools: Value, answers: Arc<dyn Answers>) -> an
             continue;
         };
         let id = call.id.clone();
-        let answer = answers.answer(call).await;
+        // WF-28: przedtem tools/list ukrywało czasownik, ale bezpośrednie wywołanie
+        // nadal dochodziło do Desk. Dopiero ten sam grant na ścieżce call jest odmową.
+        let answer = if allowed.contains(&call.call) {
+            answers.answer(call).await
+        } else {
+            Answer::Refused("That tool is not available to this session.".to_owned())
+        };
         /* JEDEN TYP NA CAŁĄ LINIĘ, a nie doklejanie klucza do zserializowanego enuma. Powód
          * w całości stoi przy `Reply`: enum z zewnętrznym tagiem jest obiektem o dokładnie
          * jednym kluczu, więc dopisane obok `id` czyniło tę linię nieczytelną dla mostu —

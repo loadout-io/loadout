@@ -228,6 +228,22 @@ impl StepSkills {
         step: Option<&[String]>,
         step_name: &str,
     ) -> std::result::Result<Found, Missing> {
+        Self::from_selected_sources(
+            roots,
+            agent,
+            step,
+            step_name,
+            &std::collections::BTreeMap::new(),
+        )
+    }
+
+    pub fn from_selected_sources(
+        roots: &Roots,
+        agent: &[String],
+        step: Option<&[String]>,
+        step_name: &str,
+        selected: &std::collections::BTreeMap<String, PathBuf>,
+    ) -> std::result::Result<Found, Missing> {
         let refuse = |skill: &str, why: Why| Missing {
             step: step_name.to_owned(),
             skill: skill.to_owned(),
@@ -269,44 +285,23 @@ impl StepSkills {
                 return Err(refuse(name, Why::NotInTheLibrary));
             }
 
-            // DWA RÓŻNE STANY, DWA RÓŻNE ZDANIA, i po dołożeniu półek trzeba je liczyć nad CAŁĄ
-            // listą, a nie nad pierwszym katalogiem: nazwa, której nigdzie nie ma, jest innym
-            // brakiem niż nazwa, która stoi w trzech miejscach i w żadnym nie jest umiejętnością.
-            let mut usable: Vec<PathBuf> = Vec::new();
-            let mut stood_somewhere = false;
-            for dir in shelves_of(roots, name) {
-                // `symlink_metadata`, nie `exists()`: dowiązanie w tym miejscu też jest czymś,
-                // co tam stoi.
-                if fs::symlink_metadata(&dir).is_err() {
-                    continue;
-                }
-                stood_somewhere = true;
-                let Ok(text) = fs::read_to_string(dir.join(SKILL_FILE)) else {
-                    continue;
-                };
-                // PYTAMY „CZY TO JEST UMIEJĘTNOŚĆ", NIE „CZY TRZYMA SIĘ SPECYFIKACJI". Powód
-                // w całości stoi przy [`validate_usable`]: reguła wydawnicza w tym miejscu
-                // wywracała bieg na pliku, który jest poprawną umiejętnością Claude Code
-                // i różni się od specyfikacji jednym polem w nagłówku (niezmiennik 5).
-                if validate_usable(name, &read_doc(&text)).is_err() {
-                    continue;
-                }
-                usable.push(dir);
-            }
-
-            // PIERWSZY UŻYWALNY WYGRYWA, bo [`shelves_of`] pyta od najbliższego. Katalog, który
-            // stoi, ale umiejętnością nie jest, nie odbiera miejsca temu, który nią jest —
-            // inaczej cudzy `pdf/` w katalogu domowym unieruchamiałby własny w repozytorium.
-            let Some(dir) = usable.first().cloned() else {
-                return Err(refuse(
-                    name,
-                    if stood_somewhere {
-                        Why::Unusable
-                    } else {
-                        Why::NotInTheLibrary
-                    },
-                ));
-            };
+            // WF-13 (2026-09-05): pełny katalog rozstrzyga konflikt, także gdy SKILL.md
+            // jest identyczny. Jawna ścieżka jest sprawdzana względem znanych półek.
+            let resolved =
+                super::bundle::resolve(roots, name, selected.get(name).map(PathBuf::as_path))
+                    .map_err(|error| {
+                        refuse(
+                            name,
+                            match error.kind() {
+                                std::io::ErrorKind::NotFound => Why::NotInTheLibrary,
+                                std::io::ErrorKind::InvalidData => Why::Unusable,
+                                _ => Why::IncompleteSource {
+                                    reason: error.to_string(),
+                                },
+                            },
+                        )
+                    })?;
+            let dir = resolved.source;
             let from_the_library = dir == roots.data.join(SKILLS_DIR).join(name);
             whence.push(Whence {
                 name: name.clone(),
@@ -314,7 +309,10 @@ impl StepSkills {
                 from_the_library,
                 // Wszystko poza zwycięzcą, w kolejności pytania: to jest lista miejsc, o których
                 // człowiek ma usłyszeć, zamiast domyślać się, którą kopię dostał.
-                also: usable.split_off(1),
+                also: shelves_of(roots, name)
+                    .into_iter()
+                    .filter(|path| path != &dir && path.exists())
+                    .collect(),
             });
             dirs.push(dir);
         }
@@ -404,24 +402,7 @@ impl StepSkills {
 /// to, co sami postanowiliśmy zapisać, a dowiązanie wskazuje poza katalog, który kopiujemy
 /// (niezmienniki 3 i 4).
 pub fn copy_the_skill(from: &Path, into: &Path) -> std::io::Result<()> {
-    let mut stack = vec![(from.to_path_buf(), into.to_path_buf())];
-    while let Some((source, target)) = stack.pop() {
-        fs::create_dir_all(&target)?;
-        for entry in fs::read_dir(&source)? {
-            let entry = entry?;
-            let path = entry.path();
-            let landing = target.join(entry.file_name());
-            // `symlink_metadata`, nie `metadata`: `metadata` przechodzi dowiązanie na wylot
-            // i skopiowałoby treść pliku, który leży gdzie indziej.
-            let kind = fs::symlink_metadata(&path)?;
-            if kind.is_dir() {
-                stack.push((path, landing));
-            } else if kind.is_file() {
-                fs::copy(&path, &landing)?;
-            }
-        }
-    }
-    Ok(())
+    super::bundle::Bundle::read(from)?.materialize(into)
 }
 
 /// Czym ten katalog umiejętności JEST w tej chwili: odcisk jego plików i ich łączna długość.
@@ -439,47 +420,10 @@ pub fn copy_the_skill(from: &Path, into: &Path) -> std::io::Result<()> {
 /// FNV-1a, ta sama, co przy odcisku pliku workflow (`commands::run::fingerprint`): pytanie brzmi
 /// „czy to jest to samo", a nie „czy ktoś to podrobił", a `sha2` nie jest zależnością tego drzewa.
 pub fn material_of(dir: &Path) -> std::io::Result<Material> {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new();
-    let mut stack = vec![(dir.to_path_buf(), PathBuf::new())];
-    while let Some((source, under)) = stack.pop() {
-        for entry in fs::read_dir(&source)? {
-            let entry = entry?;
-            let path = entry.path();
-            let at = under.join(entry.file_name());
-            let kind = fs::symlink_metadata(&path)?;
-            if kind.is_dir() {
-                stack.push((path, at));
-            } else if kind.is_file() {
-                files.push((at, path));
-            }
-        }
-    }
-    files.sort();
-
-    let mut hash = OFFSET;
-    let mut bytes = 0u64;
-    for (at, path) in &files {
-        // `to_string_lossy`, nie `to_str().ok_or(..)`: ścieżka spoza UTF-8 ma nie wywrócić
-        // rachunku. Zapis jest wtedy stratny w ten sam sposób przy każdym odczycie, więc dwa
-        // biegi nad tym samym katalogiem dalej dostają ten sam odcisk (ten sam powód stoi
-        // przy [`write_sidecar`]).
-        let named = at.to_string_lossy();
-        let content = fs::read(path)?;
-        // Bajt zerowy rozdziela ścieżkę od treści: bez niego `ab/` + `c` i `a/` + `bc` są jednym
-        // ciągiem bajtów, czyli dwa różne katalogi mają jeden odcisk.
-        for byte in named.as_bytes().iter().chain(&[0_u8]).chain(content.iter()) {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(PRIME);
-        }
-        bytes += u64::try_from(content.len()).unwrap_or(u64::MAX);
-    }
-
+    let bundle = super::bundle::Bundle::read(dir)?;
     Ok(Material {
-        hash: format!("{hash:016x}"),
-        bytes,
+        hash: bundle.digest,
+        bytes: bundle.bytes,
     })
 }
 
@@ -590,7 +534,7 @@ pub fn destinations(scope: Scope, home: &Path, project: Option<&Path>) -> [PathB
 /// roboczym procesu aplikacji, nie żadnym repozytorium. Dlatego pytamy o niego dopiero wtedy, gdy
 /// korzeń naprawdę jest; to ta sama ostrożność, którą [`plan`] wyraża zwrotem
 /// [`Error::NoProjectRoot`].
-fn shelves_of(roots: &Roots, name: &str) -> Vec<PathBuf> {
+pub(super) fn shelves_of(roots: &Roots, name: &str) -> Vec<PathBuf> {
     let mut shelves: Vec<PathBuf> = Vec::new();
     if roots.project.is_some() {
         shelves.extend(destinations(
@@ -768,7 +712,7 @@ pub fn validate_usable(dir_name: &str, doc: &SkillDoc) -> Result<(), Vec<String>
 /// `^[a-z0-9]+(-[a-z0-9]+)*$`, przepisane bez zależności na wyrażenia regularne.
 ///
 /// Trzy warunki na łączniku to całe wyrażenie: bez wiodącego, bez końcowego, bez podwójnego.
-fn is_slug(name: &str) -> bool {
+pub(super) fn is_slug(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
         && !name.ends_with('-')
@@ -1073,6 +1017,10 @@ pub fn apply(plan: &InstallPlan, skill: &Skill) -> Result<()> {
     let (doc, _) = emit(skill);
 
     for dir in &plan.writes {
+        if let Some(bundle) = &skill.frozen_bundle {
+            bundle.with_document(&doc)?.install(dir)?;
+            continue;
+        }
         fs::create_dir_all(dir)?;
         fs::write(dir.join(SKILL_FILE), &doc)?;
 

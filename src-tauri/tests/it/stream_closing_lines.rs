@@ -65,6 +65,7 @@ fn structure_samples() -> Vec<Line> {
             body: Vec::new(),
         },
         Line::Asked {
+            question: None,
             agent: AGENT.to_owned(),
             text: "Needs your answer: which database?".to_owned(),
             options: vec!["Postgres".to_owned(), "SQLite".to_owned()],

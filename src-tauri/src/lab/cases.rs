@@ -63,6 +63,9 @@ pub fn ask_for_cases(subject: &Subject, how_many: usize) -> String {
         Subject::Skill { .. } => {
             "You are writing test cases for a skill that another agent will have in this project."
         }
+        Subject::Workflow { .. } => {
+            "You are writing independent test cases for an automatic workflow that works in this project."
+        }
     };
     format!(
         "{about}

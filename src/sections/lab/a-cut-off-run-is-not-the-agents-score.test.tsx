@@ -47,6 +47,8 @@ const NEVER: LabIo = {
   stopProposing: () => Promise.resolve(),
   decide: () => Promise.reject(new Error('the screen under test never reads the disk')),
   putCase: () => Promise.reject(new Error('the screen under test never reads the disk')),
+  saveProtection: () => Promise.reject(new Error('the screen under test never reads the disk')),
+  previewRun: () => Promise.reject(new Error('the screen under test never reads the disk')),
   putVariant: () => Promise.reject(new Error('the screen under test never reads the disk')),
   dropVariant: () => Promise.reject(new Error('the screen under test never reads the disk')),
 };

@@ -148,6 +148,7 @@ export interface HistoryRow {
    * rodzaju.
    */
   readonly command?: string | undefined;
+  readonly source?: import('../../../ipc/types').RunSource;
 }
 
 /** Pytanie do człowieka. Przyklejone, dopóki nie ma odpowiedzi [T2 §7.2 wiersz 10]. */
@@ -165,6 +166,7 @@ export interface Question {
    * odblokowywałaby przy okazji pytanie lidera, zdaniem, które go nie dotyczy.
    */
   readonly agent: string;
+  readonly question?: import('../../../ipc/types').QuestionAddress;
 }
 
 /** Czyja jest teraz kolej. `you` maluje się kolorem `--attend` [DESIGN §3]. */
@@ -699,9 +701,19 @@ export function rowFor(line: FeedLine): HistoryRow {
      * `headline_and_body`), bo tam mieszka kuracja (niezmiennik 15). Okno, które liczyłoby to
      * samo po swojej stronie, byłoby drugim miejscem, w którym ta reguła żyje — i rozjechałoby
      * się z pierwszym przy pierwszej zmianie sufitu. */
-    body: line.kind === 'note' ? line.body : [],
+    body: line.kind === 'note' ? line.body : line.kind === 'messageStored' ? [line.body] : [],
     detailId: detailOf(line),
     command: commandOf(line),
+    ...(line.kind === 'runSource'
+      ? {
+          source: {
+            workspace: line.workspace,
+            runId: line.runId,
+            runFolder: line.runFolder,
+            observedAt: line.observedAt,
+          },
+        }
+      : {}),
     /* Klucz jedzie TYLKO z linii, która go niesie: dopisanie `ended: undefined` do każdego
      * wiersza dałoby pole, którego znaczenie jest „nie wiem", tam gdzie nie ma o czym mówić. */
     ...(line.kind === 'done' ? { ended: line.ended } : {}),
@@ -906,6 +918,17 @@ export function createFeed(scroller: Scroller): Feed {
       // `stepCarriedOn` jest pełnym faktem schedulera o zakończonym kroku, nie nową pracą
       // agenta. Sam zdejmuje go ze strefy TERAZ niżej; dodanie tutaj zostawiałoby go jako
       // pracującego już po końcu kroku.
+      if (line.kind === 'stepSession') continue;
+      if (line.kind === 'questionAnswered') {
+        const question = waiting.find(
+          (one) =>
+            one.question?.runId === line.runId &&
+            one.question.checkpointId === line.checkpointId &&
+            one.question.questionId === line.checkpointId,
+        );
+        if (question !== undefined) recordAnswer(question.id, line.answer);
+        continue;
+      }
       if (atWork && line.kind !== 'stepCarriedOn' && !doing.has(line.agent)) {
         doing.set(line.agent, '');
       }
@@ -1027,11 +1050,17 @@ export function createFeed(scroller: Scroller): Feed {
          * a odpowiedź na młodsze nie ma prawa go zdjąć. */
         waiting = [
           ...waiting,
-          { id: line.id, text: line.text, options: [...line.options], agent: line.agent },
+          {
+            id: line.id,
+            text: line.text,
+            options: [...line.options],
+            agent: line.agent,
+            ...(line.question === undefined ? {} : { question: line.question }),
+          },
         ];
         /* Pytanie agenta zatrzymuje CAŁY bieg, nie sam krok (`commands::run::wait_for_a_person`),
          * więc ta linia jest zarazem jedyną wiadomością „stoimy", jaką okno dostaje. */
-        parked = true;
+        if (line.question === undefined) parked = true;
       }
     }
 
@@ -1079,6 +1108,15 @@ export function createFeed(scroller: Scroller): Feed {
   }
 
   function answer(questionId: number, option: string): void {
+    recordAnswer(questionId, option);
+    publish();
+  }
+
+  function recordAnswer(questionId: number, option: string): void {
+    const found = waiting.find((question) => question.id === questionId);
+    // IPC reply and the run event can arrive in either order. One accepted answer is one row.
+    if (found === undefined) return;
+    const bound = found.question;
     waiting = waiting.filter((question) => question.id !== questionId);
     /* `who: 'you'` — trzy autorytety w całej aplikacji, nie osiem [FOUNDATIONS §2.2]. */
     answers = [...answers, { questionId, option, who: 'you' }];
@@ -1088,8 +1126,9 @@ export function createFeed(scroller: Scroller): Feed {
     /* NADPISUJE, nie dokleja: agent stoi na JEDNYM pytaniu i dostanie JEDNO zdanie. Kolejka
      * zbierająca odpowiedzi wysłałaby przy drugim punkcie kontrolnym wszystkie poprzednie
      * jeszcze raz — a to jest ta klasa błędu, która wygląda jak agent, który nie słucha. */
-    toCarry = option;
-    publish();
+    // Host-bound replies are consumed at their exact IPC endpoint. They must never fill the
+    // old generic Continue queue (a Stop confirmation is not a checkpoint answer).
+    if (bound === undefined) toCarry = option;
   }
 
   /**

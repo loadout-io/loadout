@@ -1,4 +1,7 @@
 import type { ReactElement } from 'react';
+import { openOneRun } from '../run/history-command';
+import { showHistory } from '../run/past/store';
+import { useSectionStore } from '../../ui/shell/section-store';
 
 import type { CellOutcome } from './io';
 import { MARKS } from './model';
@@ -76,7 +79,10 @@ export function Matrix({ table }: MatrixProps): ReactElement {
           </thead>
           <tbody>
             {table.rows.map((row) => (
-              <tr key={row.caseId} className="border-b border-line-subtle last:border-b-0">
+              <tr
+                key={JSON.stringify([row.caseId, row.repeat ?? 0])}
+                className="border-b border-line-subtle last:border-b-0"
+              >
                 <th
                   scope="row"
                   data-lab-row={row.caseId}
@@ -109,16 +115,42 @@ export function Matrix({ table }: MatrixProps): ReactElement {
                     title={cell.said === '' ? undefined : cell.said}
                     className={'p-2 align-top ' + TONE[cell.outcome]}
                   >
-                    <span
-                      aria-label={
-                        cell.said === ''
-                          ? SAID[cell.outcome]
-                          : SAID[cell.outcome] + ' — ' + cell.said
-                      }
-                    >
-                      {cell.mark}
-                    </span>
-                    {cell.spend === '' ? null : <span className="ml-2 value">{cell.spend}</span>}
+                    <details>
+                      <summary className="cursor-pointer">
+                        <span
+                          aria-label={
+                            cell.said === ''
+                              ? SAID[cell.outcome]
+                              : SAID[cell.outcome] + ' — ' + cell.said
+                          }
+                        >
+                          {cell.mark}
+                        </span>
+                        {cell.spend === '' ? null : (
+                          <span className="ml-2 value">{cell.spend}</span>
+                        )}
+                      </summary>
+                      <div className="mt-2 stack text-ui">
+                        {cell.said === '' ? null : <p>{cell.said}</p>}
+                        {cell.elapsed ? <p>Total execution time: {cell.elapsed}</p> : null}
+                        {cell.costNote ? <p>{cell.costNote}</p> : null}
+                        {cell.source ? (
+                          <button
+                            type="button"
+                            className="btn-quiet"
+                            onClick={() => {
+                              const source = cell.source;
+                              if (!source) return;
+                              showHistory(source.workspace, []);
+                              void openOneRun(source.workspace, source.runFolder);
+                              useSectionStore.getState().go('run');
+                            }}
+                          >
+                            Open measured run
+                          </button>
+                        ) : null}
+                      </div>
+                    </details>
                   </td>
                 ))}
               </tr>
@@ -134,7 +166,7 @@ export function Matrix({ table }: MatrixProps): ReactElement {
           {ALL.map((outcome) => MARKS[outcome] + ' ' + SAID[outcome]).join('   ')}
         </p>
         <p data-lab-gesture className="lead">
-          Click a case to read what it asks for. Hover a mark to read why it ended that way.
+          Click a case to read what it asks for. Click a mark to read the result details.
         </p>
       </div>
     </div>

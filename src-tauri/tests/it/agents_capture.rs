@@ -26,6 +26,26 @@ use uuid::Uuid;
 const ID: &str = "019897b4-8f3a-7c21-9d44-0b6a1e2c5f77";
 const OTHER_ID: &str = "019897b4-8f3a-7c21-9d44-0b6a1e2c5f78";
 
+#[test]
+fn explicitly_turning_messages_off_survives_capture_and_resolution() -> Result<(), Box<dyn Error>> {
+    let mut base = Agent::example();
+    base.agent_messages = true;
+    let mut edited = base.clone();
+    edited.agent_messages = false;
+    let patch = capture(&base, &edited)?;
+    assert_eq!(
+        serde_json::to_value(&patch)?["agentMessages"],
+        false,
+        "serialization of the legacy default swallowed an explicit opt-out"
+    );
+    let resolved = loadout_lib::library::agents::resolve(&base, &patch)?;
+    assert!(
+        !resolved.agent.agent_messages,
+        "the step regained the messages its person switched off"
+    );
+    Ok(())
+}
+
 fn forge() -> Result<Agent, Box<dyn Error>> {
     Ok(Agent {
         schema: 1,
@@ -43,6 +63,8 @@ fn forge() -> Result<Agent, Box<dyn Error>> {
         reaches_the_web: false,
         skills: Vec::new(),
         connections: Vec::new(),
+        service_access: Vec::new(),
+        agent_messages: false,
         write_results_to: "handoffs/build.md".to_string(),
         vendor_options: VendorOptions::new(),
         extra: serde_json::Map::new(),

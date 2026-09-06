@@ -45,6 +45,7 @@ pub mod rewrite;
 /// Czytanie gospodarza, zero zapisu: umiejętności, sekcja learnings, ciało podagenta.
 pub mod scan;
 
+pub mod instructions;
 /// Szew do biegu: co z tego, co przeczytaliśmy, jedzie argv, a co promptem.
 pub mod wire;
 

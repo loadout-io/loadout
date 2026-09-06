@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -63,9 +63,9 @@ use tokio::time::timeout;
 
 use super::prices::Prices;
 use super::{
-    AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
-    FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, Tokens, ValidatedImages,
-    unknown_price_notice,
+    AgentDriver, AgentEvent, AgentHandle, ConversationSkill, DecodedEvent, DidNotLetGo,
+    DriverConfiguration, FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, Tokens,
+    ValidatedImages, unknown_price_notice,
 };
 use crate::engine::line::{Action, Tool};
 use crate::engine::stream;
@@ -215,10 +215,13 @@ async fn stop_startup_process(process: &mut Supervised) -> GroupProof {
 pub struct CodexDriver {
     /// Co uruchamiamy.
     binary: PathBuf,
+    /// WF-13: natywne wejścia Skill tylko dla App Servera, nigdy fałszywe flagi `exec`.
+    conversation_skills: Vec<ConversationSkill>,
     /// Prywatny target dowodow gotowy dla jednej logicznej sesji.
     evidence: Option<EvidenceTarget>,
     /// Konfiguracja Connections jednego kroku; Debug pokazuje tylko nazwy środowiska.
     configuration: DriverConfiguration,
+    filesystem_fence: Option<supervisor::FilesystemFence>,
     /// Komu oddać grupę, którą zostawił po sobie nieudany start — powód w całości przy
     /// [`AgentDriver::leaving_leftovers_with`] (2026-09, Z-4).
     leftovers: Option<Arc<dyn supervisor::KeepsLeftovers>>,
@@ -257,8 +260,10 @@ impl CodexDriver {
     pub fn new() -> Self {
         Self {
             binary: PathBuf::from(DEFAULT_BINARY),
+            conversation_skills: Vec::new(),
             evidence: None,
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             leftovers: None,
             tag: None,
             prices: Prices::default(),
@@ -271,8 +276,10 @@ impl CodexDriver {
     pub fn with_binary(binary: PathBuf) -> Self {
         Self {
             binary,
+            conversation_skills: Vec::new(),
             evidence: None,
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             leftovers: None,
             tag: None,
             prices: Prices::default(),
@@ -300,6 +307,35 @@ impl CodexDriver {
     pub fn with_configuration(mut self, configuration: DriverConfiguration) -> Self {
         self.configuration = configuration;
         self
+    }
+
+    /// 2026-09-06 WF-18/19: Preview nie może wywołać przygotowania sesji, bo ono
+    /// zapisuje pliki. Obie drogi sprawdzają to samo źródło, bez czytania sekretu.
+    fn protected_auth_file(&self) -> anyhow::Result<PathBuf> {
+        let original = |name: &str| {
+            self.configuration
+                .environment
+                .iter()
+                .rev()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+                .or_else(|| std::env::var_os(name))
+        };
+        let native = original("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| original("HOME").map(|home| PathBuf::from(home).join(".codex")))
+            .ok_or_else(|| {
+                anyhow!("Codex's existing sign-in location is not available to this protected step")
+            })?;
+        let native_root = supervisor::PublicationRoot::open(&native)
+            .context("Codex's existing sign-in folder is not available read-only")?;
+        let native = supervisor::publication_root_key(&native)?;
+        native_root.validate_path_identity(&native)?;
+        // Otwieramy wyłącznie dla faktu regularnego, no-follow pliku. Ani jeden bajt
+        // sekretu nie jest czytany/kopiowany do run, argv, promptu lub evidence.
+        let _auth = native_root.open_regular_file(Path::new("auth.json"))
+            .context("Codex's existing file sign-in is not available read-only; refresh its normal sign-in outside this protected run")?;
+        Ok(native.join("auth.json"))
     }
 
     /// Startuje sesję i oddaje **konkretny** uchwyt.
@@ -360,6 +396,7 @@ impl CodexDriver {
             stderr_evidence,
             evidence_target: self.evidence.clone(),
             configuration: self.configuration.clone(),
+            filesystem_fence: self.filesystem_fence.clone(),
             // Ten sam znacznik dla KAŻDEJ tury tej sesji: Codex startuje nowy proces na turę,
             // więc znacznik podany raz przy pierwszej nie doszedłby do żadnej następnej.
             tag: self.tag.clone(),
@@ -402,6 +439,7 @@ impl CodexDriver {
             drained: Some(drained),
             stderr_task: Some(stderr_task),
             configuration: self.configuration.clone(),
+            filesystem_fence: self.filesystem_fence.clone(),
             tag: self.tag.clone(),
             prices: self.prices.clone(),
         })
@@ -441,6 +479,7 @@ struct Turn {
     /// gdy sam deskryptor pliku nadal przyjmuje bajty.
     evidence_target: Option<EvidenceTarget>,
     configuration: DriverConfiguration,
+    filesystem_fence: Option<supervisor::FilesystemFence>,
     /// Znacznik biegu dla procesu tej tury (2026-09, Z-01d). Codex startuje **nowy proces na
     /// turę**, więc znacznik musi przyjechać tu, a nie tylko do pierwszego spawnu.
     tag: Option<supervisor::StepTag>,
@@ -504,13 +543,14 @@ impl Turn {
         // `Write`, nie `Keep`: po prompcie deskryptor się ZAMYKA, bo to zamknięcie jest tym
         // EOF-em, na który `codex exec` czeka. `Keep` zostawiłby proces wiszący na wejściu,
         // które nigdy się nie skończy — i wyglądałoby to jak agent, który myśli.
-        let mut process = supervisor::spawn_tagged(
+        let mut process = supervisor::spawn_tagged_with_fence(
             command,
             StdinPlan::Write(self.prompt),
             &self.configuration.environment,
             // Znacznik biegu do środowiska tury (2026-09, Z-01d). Bez niego proces `codex exec`
             // i wszystko, co on odpali, jest po awarii aplikacji nieodróżnialne od cudzej pracy.
             self.tag.as_ref(),
+            self.filesystem_fence.as_ref(),
         )?;
 
         let Some(stdout) = process.stdout() else {
@@ -1533,6 +1573,7 @@ fn started_turn(result: &Value) -> anyhow::Result<String> {
 /// wiec reczny Debug pokazuje wylacznie stan transportu.
 struct CodexConversationHandle {
     process: Option<Supervised>,
+    skills: Vec<ConversationSkill>,
     /// Komu oddać grupę, której uzgodnienie nie doszło do skutku i której nie dało się dowieść.
     ///
     /// `None` znaczy „nikt nie podał rejestru" — tak wygląda ten sterownik w testach sterownika
@@ -1649,7 +1690,16 @@ impl CodexConversationHandle {
         if self.in_flight {
             anyhow::bail!("Wait for the current Codex turn before sending another message.");
         }
-        let input = app_turn_input(&text, &images)?;
+        let mut input = app_turn_input(&text, &images)?;
+        // 2026-09-06: lokalny TurnStartParams CLI 0.153.4 potwierdza to wejście.
+        // Ścieżka wskazuje cały prywatny bundle; nie rozszerzamy sandboxa przez --add-dir.
+        for skill in &self.skills {
+            let path = skill
+                .path
+                .to_str()
+                .ok_or_else(|| anyhow!("The selected skill path is not UTF-8 text."))?;
+            input.push(json!({ "type": "skill", "name": skill.name, "path": path }));
+        }
         let result = match self
             .client
             .request(
@@ -1774,13 +1824,14 @@ impl CodexDriver {
         // nie dostawał ani jednego serwera — a przez `exec` dostawał. Ten sam agent odpowiadał
         // inaczej zależnie od tego, którą drogą go zawołano, i nic tego nie mówiło.
         command.args(app_server_argv(&self.configuration));
-        let mut process = match supervisor::spawn_tagged(
+        let mut process = match supervisor::spawn_tagged_with_fence(
             command,
             StdinPlan::Keep(String::new()),
             &self.configuration.environment,
             // Most też jest procesem kroku (2026-09, Z-01d): App Server żyje przez całą rozmowę
             // i przeżywa awarię aplikacji dokładnie tak, jak tura z `exec`.
             self.tag.as_ref(),
+            self.filesystem_fence.as_ref(),
         ) {
             Ok(process) => process,
             Err(error) => {
@@ -1836,6 +1887,7 @@ impl CodexDriver {
         }));
         let mut handle = CodexConversationHandle {
             process: Some(process),
+            skills: self.conversation_skills.clone(),
             leftovers: self.leftovers.clone(),
             client: AppClient::new(commands_tx, self.evidence.clone()),
             evidence: self.evidence.clone(),
@@ -3288,6 +3340,7 @@ pub struct CodexHandle {
     stderr_task: Option<JoinHandle<()>>,
     /// Te same Connections muszą wrócić w każdej świeżej turze `codex exec resume`.
     configuration: DriverConfiguration,
+    filesystem_fence: Option<supervisor::FilesystemFence>,
     /// Te same stawki muszą wrócić w każdej świeżej turze — powód przy [`Turn::prices`].
     prices: Prices,
     /// Znacznik biegu, który musi wrócić w każdej świeżej turze — powód przy [`Turn::tag`].
@@ -3462,6 +3515,7 @@ impl AgentHandle for CodexHandle {
             stderr_evidence,
             evidence_target: self.evidence.clone(),
             configuration: self.configuration.clone(),
+            filesystem_fence: self.filesystem_fence.clone(),
             // Ten sam znacznik dla KAŻDEJ tury tej sesji: Codex startuje nowy proces na turę,
             // więc znacznik podany raz przy pierwszej nie doszedłby do żadnej następnej.
             tag: self.tag.clone(),
@@ -3579,10 +3633,99 @@ impl AgentDriver for CodexDriver {
         VENDOR
     }
 
+    fn with_conversation_skills(
+        &self,
+        skills: &[ConversationSkill],
+    ) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            conversation_skills: skills.to_vec(),
+            ..self.clone()
+        }))
+    }
+
+    fn reads_step_skills_from_its_folder(&self) -> bool {
+        true
+    }
+
     fn configured(&self, configuration: &DriverConfiguration) -> Option<Arc<dyn AgentDriver>> {
         Some(Arc::new(
             self.clone().with_configuration(configuration.clone()),
         ))
+    }
+
+    fn with_filesystem_fence(
+        &self,
+        fence: &supervisor::FilesystemFence,
+    ) -> Option<Arc<dyn AgentDriver>> {
+        Some(Arc::new(Self {
+            filesystem_fence: Some(fence.clone()),
+            ..self.clone()
+        }))
+    }
+
+    fn protected_readiness(&self) -> Option<anyhow::Result<()>> {
+        Some(self.protected_auth_file().map(|_| ()))
+    }
+
+    fn prepare_protected_step(
+        &self,
+        settings: &super::StepSettings,
+    ) -> Option<anyhow::Result<super::PreparedProtectedStep>> {
+        Some((|| {
+            let (path, held) = super::protected_state::runtime(settings, "codex")?;
+            let auth = self.protected_auth_file()?;
+            match held.read_link(Path::new("auth.json")) {
+                Ok(existing) if existing == auth => {}
+                Ok(_) => {
+                    return Err(anyhow!(
+                        "this private Codex sign-in link belongs to a different source"
+                    ));
+                }
+                Err(why) if why.kind() == std::io::ErrorKind::NotFound => {
+                    held.create_link(Path::new("auth.json"), &auth)?;
+                }
+                Err(why) => return Err(why.into()),
+            }
+            let mut writable = Vec::new();
+            for name in [
+                ".tmp",
+                "log",
+                "sessions",
+                "shell_snapshots",
+                "sqlite",
+                "skills",
+                "archived_sessions",
+            ] {
+                held.ensure_directory(Path::new(name), 0o700)?;
+                writable.push(path.join(name));
+            }
+            let mut configuration = self.configuration.clone();
+            configuration.environment.retain(|(name, _)| {
+                !matches!(name.as_str(), "CODEX_HOME" | "CODEX_SQLITE_HOME" | "TMPDIR")
+            });
+            configuration.environment.extend([
+                ("CODEX_HOME".to_owned(), path.as_os_str().to_os_string()),
+                (
+                    "CODEX_SQLITE_HOME".to_owned(),
+                    path.join("sqlite").into_os_string(),
+                ),
+                ("TMPDIR".to_owned(), path.join(".tmp").into_os_string()),
+            ]);
+            for (name, directory) in [("log_dir", "log"), ("sqlite_home", "sqlite")] {
+                configuration.arguments.extend([
+                    "-c".to_owned(),
+                    format!("{name}={}", serde_json::to_string(&path.join(directory))?),
+                ]);
+            }
+            // HOME pozostaje niezmienione i niezapisywalne. CODEX_HOME root też NIE jest
+            // writable: refresh nie może zapisać nawet auth.json.tmp, nie tylko finalnego auth.
+            Ok(super::PreparedProtectedStep {
+                driver: Arc::new(self.clone().with_configuration(configuration)),
+                writable_roots: writable,
+                readable_roots: vec![path],
+                readable_files: vec![auth],
+            })
+        })())
     }
 
     /// `-c model_reasoning_effort=<poziom>` — cała wiedza tego adaptera o szczeblu „ile myśleć".
@@ -3937,6 +4080,7 @@ mod stop_proof_tests {
             events,
             evidence: Some(evidence),
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             threads: Arc::new(Mutex::new(vec!["vendor-thread".to_owned()])),
             cancelled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             number: 1,
@@ -3956,6 +4100,7 @@ mod stop_proof_tests {
         drop(outcome_sender);
         CodexConversationHandle {
             process: None,
+            skills: Vec::new(),
             leftovers: None,
             client: AppClient::new(commands, Some(evidence.clone())),
             evidence: Some(evidence),
@@ -4294,6 +4439,7 @@ mod stop_proof_tests {
             stderr_evidence: None,
             evidence_target: None,
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             tag: None,
             prices: Prices::default(),
         };
@@ -4313,6 +4459,7 @@ mod stop_proof_tests {
             drained: None,
             stderr_task: None,
             configuration: DriverConfiguration::default(),
+            filesystem_fence: None,
             tag: None,
             prices: Prices::default(),
         };

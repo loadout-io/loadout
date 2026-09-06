@@ -94,7 +94,7 @@ async fn a_skill_in_this_repository_reaches_the_lead_as_a_plugin_dir() -> Result
     let bench = Bench::new()?;
     bench.on_the_shelf_of_the_project(FROM_THE_PROJECT)?;
     let after = bench
-        .one_sentence("claude", &[SKILL.to_owned()], Seam::Present)
+        .one_sentence("claude", &[SKILL.to_owned()], Seam::Present, None)
         .await;
     after
         .answered
@@ -122,25 +122,27 @@ async fn a_skill_in_this_repository_reaches_the_lead_as_a_plugin_dir() -> Result
             started.inherited
         )
     })?;
-    assert_eq!(
-        Path::new(carried),
-        bench.plugin_dir(),
-        "the plugin folder has to stand in the one directory of this person's folder that \
-         belongs to Loadout, named after the agent"
+    let plugin = Path::new(carried);
+    assert_eq!(plugin.parent(), Some(bench.plugins_root().as_path()));
+    let package = plugin.file_name().and_then(|name| name.to_str()).unwrap();
+    assert!(
+        Uuid::parse_str(package).is_ok(),
+        "a conversation gets a private package"
+    );
+    assert_ne!(
+        package,
+        Uuid::from_u128(WHO).to_string(),
+        "the agent ID must not alias two conversations' packages"
     );
 
     // POZIOM `skills/` JEST OBOWIĄZKOWY i to jest zmierzone [S1 §2]: bez niego plugin ładuje się,
     // stoi w zdarzeniu startowym jako pełnoprawny wpis i rejestruje ZERO umiejętności.
-    let landed = bench
-        .plugin_dir()
-        .join("skills")
-        .join(SKILL)
-        .join("SKILL.md");
+    let landed = plugin.join("skills").join(SKILL).join("SKILL.md");
     let text = fs::read_to_string(&landed).map_err(|error| {
         format!(
             "the conversation was handed {} as its plugin folder and no skill lies under it \
              ({error}). A folder handed over empty loads green and teaches the model nothing",
-            bench.plugin_dir().display()
+            plugin.display()
         )
     })?;
     assert!(
@@ -148,11 +150,7 @@ async fn a_skill_in_this_repository_reaches_the_lead_as_a_plugin_dir() -> Result
         "the skill that reached the lead is not the one written in this repository: {text:?}"
     );
     assert!(
-        bench
-            .plugin_dir()
-            .join(".claude-plugin")
-            .join("plugin.json")
-            .is_file(),
+        plugin.join(".claude-plugin").join("plugin.json").is_file(),
         "without a pinned name the prefix falls back to the folder name, and no screen can show \
          the same skill twice the same way"
     );
@@ -173,7 +171,7 @@ async fn a_skill_in_this_repository_reaches_the_lead_as_a_plugin_dir() -> Result
 async fn a_lead_without_skills_starts_exactly_as_it_does_today() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
     bench.on_the_shelf_of_the_project(FROM_THE_PROJECT)?;
-    let after = bench.one_sentence("claude", &[], Seam::Present).await;
+    let after = bench.one_sentence("claude", &[], Seam::Present, None).await;
     after
         .answered
         .map_err(|said| format!("the sentence to the lead was turned down: {said}"))?;
@@ -189,7 +187,7 @@ async fn a_lead_without_skills_starts_exactly_as_it_does_today() -> Result<(), B
         started.inherited
     );
     assert!(
-        !bench.plugin_dir().exists(),
+        !bench.plugins_root().exists(),
         "a lead agent with no skills had a folder written into this person's project. Loadout \
          writes nothing nobody reads, least of all inside somebody else's repository"
     );
@@ -201,14 +199,14 @@ async fn the_stream_says_which_folder_the_skill_came_from() -> Result<(), Box<dy
     let bench = Bench::new()?;
     bench.on_the_shelf_of_the_project(FROM_THE_PROJECT)?;
     bench.in_the_library(FROM_THE_LIBRARY)?;
+    let shelf = bench.project.path().join(SHELF).join(SKILL);
     let after = bench
-        .one_sentence("claude", &[SKILL.to_owned()], Seam::Present)
+        .one_sentence("claude", &[SKILL.to_owned()], Seam::Present, Some(&shelf))
         .await;
     after
         .answered
         .map_err(|said| format!("the sentence to the lead was turned down: {said}"))?;
 
-    let shelf = bench.project.path().join(SHELF).join(SKILL);
     let said = after
         .lines
         .iter()
@@ -261,7 +259,7 @@ async fn a_lead_on_an_app_that_cannot_take_skills_is_told_so() -> Result<(), Box
     let bench = Bench::new()?;
     bench.on_the_shelf_of_the_project(FROM_THE_PROJECT)?;
     let after = bench
-        .one_sentence("codex", &[SKILL.to_owned()], Seam::Missing)
+        .one_sentence("codex", &[SKILL.to_owned()], Seam::Missing, None)
         .await;
     after
         .answered
@@ -275,7 +273,7 @@ async fn a_lead_on_an_app_that_cannot_take_skills_is_told_so() -> Result<(), Box
          untick the skill or to switch the app: {sentence:?}"
     );
     assert!(
-        !bench.plugin_dir().exists(),
+        !bench.plugins_root().exists(),
         "a plugin folder was written for an app that has no way to read it, and it was written \
          inside this person's project"
     );
@@ -466,7 +464,7 @@ struct Bench {
     project: TempDir,
 }
 
-/// Identyfikator lidera. Stała, bo jest zarazem nazwą katalogu pluginu.
+/// Stały identyfikator lidera; katalog pakietu należy do rozmowy, nie do agenta.
 const WHO: u128 = 20_260_902;
 
 impl Bench {
@@ -492,13 +490,9 @@ impl Bench {
         self.project.path().to_string_lossy().into_owned()
     }
 
-    /// Gdzie ma stanąć katalog pluginu tego lidera.
-    fn plugin_dir(&self) -> PathBuf {
-        self.project
-            .path()
-            .join(OURS)
-            .join("skills")
-            .join(Uuid::from_u128(WHO).to_string())
+    /// Prywatne pakiety rozmów mają rozłączne nazwy pod tym katalogiem.
+    fn plugins_root(&self) -> PathBuf {
+        self.project.path().join(OURS).join("skills")
     }
 
     /// Umiejętność napisana w TYM repozytorium — półka, którą czyta Claude Code.
@@ -518,13 +512,23 @@ impl Bench {
     }
 
     /// Zapisuje lidera przez produkcyjną drogę i oddaje jego identyfikator.
-    fn saved_lead(&self, skills: &[String]) -> Result<String, Box<dyn Error>> {
-        let agent = Agent {
+    fn saved_lead(
+        &self,
+        skills: &[String],
+        selected: Option<&Path>,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut agent = Agent {
             id: Uuid::from_u128(WHO),
             name: "Lead".to_owned(),
             skills: skills.to_vec(),
             ..Agent::example()
         };
+        if let Some(source) = selected {
+            agent.extra.insert(
+                "skillSources".to_owned(),
+                serde_json::json!({(SKILL): source}),
+            );
+        }
         save_agent_inner(&self.library(), &agent, None)?;
         Ok(agent.id.to_string())
     }
@@ -535,8 +539,11 @@ impl Bench {
         vendor: &'static str,
         skills: &[String],
         seam: Seam,
+        selected: Option<&Path>,
     ) -> Afterwards {
-        let who = self.saved_lead(skills).expect("the lead has to be saved");
+        let who = self
+            .saved_lead(skills, selected)
+            .expect("the lead has to be saved");
         let folder = self.folder();
         let watch = Arc::new(Watch::default());
         let driver: Arc<dyn AgentDriver> = Arc::new(Fake {

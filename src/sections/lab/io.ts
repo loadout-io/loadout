@@ -11,7 +11,8 @@ import { invoke } from '@tauri-apps/api/core';
 /** Czego zestaw dotyczy: zapisanego agenta albo umiejętności. */
 export type EvalSubject =
   | { readonly kind: 'agent'; readonly id: string }
-  | { readonly kind: 'skill'; readonly name: string };
+  | { readonly kind: 'skill'; readonly name: string }
+  | { readonly kind: 'workflow'; readonly id: string };
 
 /** Oczekiwanie wobec jednego pola odpowiedzi. */
 export interface EvalExpect {
@@ -36,6 +37,24 @@ export interface EvalCase {
   readonly status: EvalCaseStatus;
   /** Skąd ten przypadek się wziął. Kandydatka bez tego nie istnieje. */
   readonly because: string;
+  readonly repeats?: number;
+  readonly proofMode?: 'output-pattern' | 'external-assessment-v1';
+  readonly input?: { readonly sourceRunId: string; readonly snapshotId: string };
+  readonly examiner?: {
+    readonly kind: 'python';
+    readonly program: string;
+    readonly source: string;
+  };
+}
+
+/** Dokładne źródło całego grafu; brak rewizji w starszym zapisie nie udaje przypięcia. */
+export interface EvalWorkflowSource {
+  readonly id: string;
+  readonly place?: 'project' | 'library';
+  readonly path?: string;
+  readonly revision?: string;
+  readonly outputStep: string;
+  readonly overrides: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
 /** Jedna kolumna macierzy: agent plus patch nad jego definicją. */
@@ -44,6 +63,7 @@ export interface EvalVariant {
   readonly name: string;
   readonly agent: string;
   readonly overrides: Readonly<Record<string, unknown>>;
+  readonly workflow?: EvalWorkflowSource;
 }
 
 /** Cały zestaw, jak leży na dysku. */
@@ -54,6 +74,7 @@ export interface EvalSet {
   readonly subject: EvalSubject;
   readonly cases: readonly EvalCase[];
   readonly variants: readonly EvalVariant[];
+  readonly protected?: boolean;
 }
 
 /** Zestaw razem z rewizją, na której okno go czyta. */
@@ -73,10 +94,22 @@ export interface EvalCell {
   /** Dlaczego tak. Puste przy przejściu. */
   readonly said: string;
   readonly costUsd: number | null;
+  readonly execution?: {
+    readonly repeat: number;
+    readonly nodes: readonly string[];
+    readonly output: string;
+    readonly grader: string;
+    readonly elapsedMs: number | null;
+    readonly costPartial: boolean;
+  } | null;
 }
 
 /** Jeden przebieg zestawu, policzony. */
 export interface PastEval {
+  readonly workspace?: string;
+  /** Nazwy i kryteria z zapisu biegu; brak nie jest zgodą na ponowną ocenę. */
+  readonly definition?: EvalSet | null;
+  readonly comparisonFingerprint?: string | null;
   readonly folder: string;
   readonly when: string;
   readonly state: string;
@@ -94,10 +127,25 @@ export interface EvalMovement {
 
 /** Wszystko, co ekran rysuje dla jednego zestawu. */
 export interface EvalBoard {
+  readonly comparisonNote?: string | null;
   readonly set: OpenEvalSet;
   readonly runs: readonly PastEval[];
   readonly movement: EvalMovement | null;
   /** Zdanie o tym, czego brakuje do uruchomienia. `null` znaczy „można". */
+  readonly cannotRun: string | null;
+}
+
+export interface EvalRunPreview {
+  readonly set: string;
+  readonly revision: string;
+  readonly sourceRevision: string | null;
+  readonly protected: boolean;
+  readonly size: {
+    readonly cells: number;
+    readonly nodes: number;
+    readonly edges: number;
+    readonly trees: number;
+  } | null;
   readonly cannotRun: string | null;
 }
 
@@ -129,6 +177,14 @@ export function list(folder: string | null): Promise<EvalSet[]> {
 
 export function board(folder: string | null, set: string, howMany: number): Promise<EvalBoard> {
   return invoke<EvalBoard>('read_eval_board', { folder, set, howMany });
+}
+
+export function previewRun(
+  folder: string | null,
+  set: string,
+  expectedRevision: string | null,
+): Promise<EvalRunPreview> {
+  return invoke<EvalRunPreview>('preview_eval_run', { folder, set, expectedRevision });
 }
 
 export function create(
@@ -189,6 +245,20 @@ export function putCase(
   return invoke<OpenEvalSet>('put_eval_case', { folder, set, case: one, expectedRevision });
 }
 
+export function saveProtection(
+  folder: string | null,
+  set: string,
+  protectedFiles: boolean,
+  expectedRevision: string | null,
+): Promise<OpenEvalSet> {
+  return invoke<OpenEvalSet>('save_eval_protection', {
+    folder,
+    set,
+    protected: protectedFiles,
+    expectedRevision,
+  });
+}
+
 export function putVariant(
   folder: string | null,
   set: string,
@@ -211,6 +281,7 @@ export function dropVariant(
 export interface LabIo {
   readonly list: typeof list;
   readonly board: typeof board;
+  readonly previewRun: typeof previewRun;
   readonly create: typeof create;
   readonly remove: typeof remove;
   readonly propose: typeof propose;
@@ -219,6 +290,7 @@ export interface LabIo {
   readonly stopProposing: typeof stopProposing;
   readonly decide: typeof decide;
   readonly putCase: typeof putCase;
+  readonly saveProtection: typeof saveProtection;
   readonly putVariant: typeof putVariant;
   readonly dropVariant: typeof dropVariant;
 }
@@ -226,6 +298,7 @@ export interface LabIo {
 export const labIo: LabIo = {
   list,
   board,
+  previewRun,
   create,
   remove,
   propose,
@@ -234,6 +307,7 @@ export const labIo: LabIo = {
   stopProposing,
   decide,
   putCase,
+  saveProtection,
   putVariant,
   dropVariant,
 };

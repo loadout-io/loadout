@@ -41,6 +41,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::supervisor::{self, GroupId, GroupProof, StdinPlan, Supervised};
 
+pub mod assessment;
+pub use assessment::ProofMode;
+
 /// Ile jeden krok „sprawdź" ma prawo trwać.
 ///
 /// Trzydzieści minut, bo tyle wynosi budżet naszej własnej pełnej bramki (1800 s,
@@ -85,6 +88,8 @@ pub struct CheckSpec {
 /// Co z komendy wyszło.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckReport {
+    /// Dowód z osobnego egzaminatora; None zachowuje dawny kontrakt command/proof.
+    pub assessment: Option<assessment::Assessment>,
     /// Werdykt Loadouta. Liczony z [`passed`], czyli z kodu wyjścia **i** dopasowania naraz.
     pub passed: bool,
     /// Kod wyjścia. `None`, kiedy proces zginął od sygnału i kodu po prostu nie ma — a `None`
@@ -141,6 +146,7 @@ pub struct Checking {
     handle: Supervised,
     /// Wzorzec dowodu tego kroku, przepisany ze [`CheckSpec`].
     proof: String,
+    proof_mode: ProofMode,
     /// Od kiedy liczymy [`CheckReport::took`] i [`GIVE_UP_AFTER`].
     began: Instant,
 }
@@ -183,7 +189,7 @@ impl Checking {
         let reading = read_to_eof(
             self.handle.stdout(),
             self.handle.stderr(),
-            CheckCapture::new(&self.proof),
+            CheckCapture::for_mode(&self.proof, self.proof_mode),
         );
         tokio::pin!(reading);
 
@@ -239,12 +245,25 @@ impl Checking {
     /// padły" naprawia się inaczej niż „nic się nie uruchomiło", a jedno pole `bool` na dwa różne
     /// stany wysyłałoby go w połowie przypadków w złe miejsce.
     fn report(&self, exit_code: Option<i32>, captured: Captured) -> CheckReport {
-        let Captured { text, matched } = captured;
-        CheckReport {
-            passed: verdict(exit_code, matched),
-            exit_code,
+        let Captured {
+            text,
             matched,
-            output: text,
+            assessment_bytes,
+            read_failed,
+        } = captured;
+        let assessment =
+            assessment_bytes.map(|bytes| assessment::assess(&bytes, exit_code, read_failed));
+        CheckReport {
+            passed: assessment.as_ref().map_or_else(
+                || verdict(exit_code, matched),
+                |one| one.outcome == assessment::Outcome::Passed,
+            ),
+            exit_code,
+            matched: assessment
+                .as_ref()
+                .map_or(matched, |one| one.receipt.is_some()),
+            output: assessment.as_ref().map_or(text, |one| one.reason.clone()),
+            assessment,
             took: self.began.elapsed(),
         }
     }
@@ -351,18 +370,19 @@ enum ProofUnit {
     Digits,
 }
 
-/// Żywy stan dopasowania podciągu.
+/// Żywy stan dopasowania podciągu. Bool pamięta niezerową cyfrę w pierwszej grupie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProofState {
     /// Następna część wzorca jeszcze czeka na znak.
-    At(usize),
+    At(usize, bool),
     /// Grupa pod tym indeksem dostała już co najmniej jedną cyfrę i może trwać albo się domknąć.
-    InDigits(usize),
+    InDigits(usize, bool),
 }
 
 /// Inkrementalny rdzeń dopasowania, wspólny dla strumienia procesu i [`proof_matches`].
 struct ProofScan {
     units: Vec<ProofUnit>,
+    primary_digit: Option<usize>,
     states: Vec<ProofState>,
     enabled: bool,
     matched: bool,
@@ -381,8 +401,12 @@ impl ProofScan {
                 }
             }
         }
+        let primary_digit = units
+            .iter()
+            .position(|unit| matches!(unit, ProofUnit::Digits));
         Self {
             units,
+            primary_digit,
             states: Vec::new(),
             enabled,
             matched: false,
@@ -405,36 +429,44 @@ impl ProofScan {
         let mut next = Vec::with_capacity(self.states.len().saturating_add(2));
 
         // Nowa próba przy KAŻDYM znaku sprawia, że wzorzec szuka podciągu, nie tylko początku.
-        Self::advance(&self.units, 0, character, &mut next);
+        self.advance(0, false, character, &mut next);
         for state in &self.states {
             match *state {
-                ProofState::At(at) => Self::advance(&self.units, at, character, &mut next),
-                ProofState::InDigits(at) => {
+                ProofState::At(at, positive) => self.advance(at, positive, character, &mut next),
+                ProofState::InDigits(at, positive) => {
                     if character.is_ascii_digit() {
-                        Self::push(&mut next, ProofState::InDigits(at));
+                        let positive =
+                            positive || (self.primary_digit == Some(at) && character != '0');
+                        Self::push(&mut next, ProofState::InDigits(at, positive));
                     }
                     // 2026-08-31 — grupa może domknąć się PRZED tym znakiem. Ta druga droga
                     // jest nawrotem, dzięki któremu `(\d+)5` trafia w `125`, a wiele grup ma
                     // dokładnie tę samą semantykę w strumieniu i w gotowym tekście.
-                    Self::advance(&self.units, at + 1, character, &mut next);
+                    self.advance(at + 1, positive, character, &mut next);
                 }
             }
         }
 
         self.matched = next.iter().any(|state| match *state {
-            ProofState::At(at) => at == self.units.len(),
-            ProofState::InDigits(at) => at + 1 == self.units.len(),
+            ProofState::At(at, positive) => {
+                at == self.units.len() && (self.primary_digit.is_none() || positive)
+            }
+            ProofState::InDigits(at, positive) => at + 1 == self.units.len() && positive,
         });
         self.states = next;
     }
 
-    fn advance(units: &[ProofUnit], at: usize, character: char, next: &mut Vec<ProofState>) {
-        match units.get(at) {
+    fn advance(&self, at: usize, positive: bool, character: char, next: &mut Vec<ProofState>) {
+        match self.units.get(at) {
             Some(ProofUnit::Literal(expected)) if *expected == character => {
-                Self::push(next, ProofState::At(at + 1));
+                Self::push(next, ProofState::At(at + 1, positive));
             }
             Some(ProofUnit::Digits) if character.is_ascii_digit() => {
-                Self::push(next, ProofState::InDigits(at));
+                // 2026-09-06 — `0 passed` dawało zielone po exit 0 (niezmiennik 19).
+                // Pierwsza grupa jest licznikiem przejść; następne nie mogą go ratować.
+                // Wystarcza niezerowa cyfra: brak przepełnienia i ten sam stan między porcjami.
+                let positive = positive || (self.primary_digit == Some(at) && character != '0');
+                Self::push(next, ProofState::InDigits(at, positive));
             }
             _ => {}
         }
@@ -451,6 +483,8 @@ impl ProofScan {
 struct Captured {
     text: String,
     matched: bool,
+    assessment_bytes: Option<Vec<u8>>,
+    read_failed: bool,
 }
 
 /// Streamingowy odbiorca jednego kroku „sprawdź".
@@ -462,6 +496,8 @@ struct CheckCapture {
     pending: Vec<u8>,
     proof: ProofScan,
     dropped: bool,
+    assessment_bytes: Option<Vec<u8>>,
+    read_failed: bool,
 }
 
 impl CheckCapture {
@@ -471,7 +507,25 @@ impl CheckCapture {
             pending: Vec::with_capacity(3),
             proof: ProofScan::new(proof),
             dropped: false,
+            assessment_bytes: None,
+            read_failed: false,
         }
+    }
+
+    fn for_mode(proof: &str, mode: ProofMode) -> Self {
+        let mut capture = Self::new(proof);
+        if mode == ProofMode::ExternalAssessmentV1 {
+            capture.assessment_bytes = Some(Vec::new());
+        }
+        capture
+    }
+
+    fn take_stream(&mut self, stdout: bool, chunk: &[u8]) {
+        if stdout && let Some(bytes) = &mut self.assessment_bytes {
+            let left = (assessment::MAX_BYTES + 1).saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..left.min(chunk.len())]);
+        }
+        self.take(chunk);
     }
 
     fn take(&mut self, chunk: &[u8]) {
@@ -543,6 +597,8 @@ impl CheckCapture {
         Captured {
             text: self.tail,
             matched: self.proof.matched,
+            assessment_bytes: self.assessment_bytes,
+            read_failed: self.read_failed,
         }
     }
 }
@@ -570,7 +626,10 @@ async fn read_to_eof(
     stderr: Option<ChildStderr>,
     mut capture: CheckCapture,
 ) -> Captured {
-    read_both(stdout, stderr, |chunk| capture.take(chunk)).await;
+    capture.read_failed = !read_both(stdout, stderr, |stdout, chunk| {
+        capture.take_stream(stdout, chunk);
+    })
+    .await;
     capture.finish()
 }
 
@@ -587,11 +646,12 @@ async fn read_to_eof(
 ///
 /// Powód, dla którego to MUSI dojść do EOF, i powód, dla którego to jest jeden `select!`, a nie
 /// dwa zadania, stoją w całości przy [`read_to_eof`].
-async fn read_both<Into: FnMut(&[u8])>(
+async fn read_both<Into: FnMut(bool, &[u8])>(
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
     mut into: Into,
-) {
+) -> bool {
+    let mut complete = true;
     let mut out = stdout;
     let mut complaints = stderr;
     let mut from_out = vec![0_u8; CHUNK];
@@ -610,16 +670,24 @@ async fn read_both<Into: FnMut(&[u8])>(
             (None, Some(other)) => Said::Complaints(other.read(&mut from_complaints).await),
             // Oba potoki na EOF: to jedyne wyjście z tej pętli, więc „do EOF" znaczy tu dokładnie
             // to, co mówi.
-            (None, None) => return,
+            (None, None) => return complete,
         };
 
         match heard {
             // Zero bajtów to EOF, a błąd odczytu znaczy dla nas to samo: z tego potoku nie
             // przyjdzie już nic. Zamknięty potok trzymany w pętli byłby czekaniem bez końca.
-            Said::Out(Ok(0) | Err(_)) => out = None,
-            Said::Complaints(Ok(0) | Err(_)) => complaints = None,
-            Said::Out(Ok(how_many)) => into(&from_out[..how_many]),
-            Said::Complaints(Ok(how_many)) => into(&from_complaints[..how_many]),
+            Said::Out(Ok(0)) => out = None,
+            Said::Complaints(Ok(0)) => complaints = None,
+            Said::Out(Err(_)) => {
+                out = None;
+                complete = false;
+            }
+            Said::Complaints(Err(_)) => {
+                complaints = None;
+                complete = false;
+            }
+            Said::Out(Ok(how_many)) => into(true, &from_out[..how_many]),
+            Said::Complaints(Ok(how_many)) => into(false, &from_complaints[..how_many]),
         }
     }
 }
@@ -639,12 +707,22 @@ pub struct CommandDriver {
     /// tam był argumentem jednej drogi, a `serve` szedł drugą i nie dostawał go wcale. Na polu
     /// niesie go każda.
     tag: Option<supervisor::StepTag>,
+    filesystem_fence: Option<supervisor::FilesystemFence>,
+    proof_mode: ProofMode,
+    executable: Option<(std::path::PathBuf, Vec<std::ffi::OsString>)>,
+    temporary_directory: Option<std::path::PathBuf>,
 }
 
 impl CommandDriver {
     #[must_use]
     pub const fn new() -> Self {
-        Self { tag: None }
+        Self {
+            tag: None,
+            filesystem_fence: None,
+            proof_mode: ProofMode::OutputPattern,
+            executable: None,
+            temporary_directory: None,
+        }
     }
 
     /// Ten sam sterownik, tylko wiedzący, czyj bieg i czyj krok uruchamia.
@@ -657,24 +735,88 @@ impl CommandDriver {
         self
     }
 
+    #[must_use]
+    pub fn with_filesystem_fence(mut self, fence: &supervisor::FilesystemFence) -> Self {
+        self.filesystem_fence = Some(fence.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_proof_mode(mut self, mode: ProofMode) -> Self {
+        self.proof_mode = mode;
+        self
+    }
+
+    /// Zaufany, zamrożony program nie przechodzi przez shell ani PATH subjectu.
+    #[must_use]
+    pub fn with_executable(
+        mut self,
+        program: std::path::PathBuf,
+        arguments: Vec<std::ffi::OsString>,
+    ) -> Self {
+        self.executable = Some((program, arguments));
+        self
+    }
+
+    #[must_use]
+    pub fn with_temporary_directory(mut self, directory: std::path::PathBuf) -> Self {
+        self.temporary_directory = Some(directory);
+        self
+    }
+
     /// Startuje komendę we **własnej grupie procesów**, przez [`supervisor::spawn`].
     ///
     /// Zwrócony uchwyt zna swój `pgid` natychmiast — to jest ta kolejność („wygeneruj, zapisz,
     /// dopiero potem czytaj cokolwiek z wyjścia"), która w ogóle czyni odzyskiwanie możliwym
     /// [T7 §6.2].
     pub fn start(&self, spec: &CheckSpec) -> io::Result<Checking> {
-        let mut command = tokio::process::Command::new(SHELL);
-        command.arg("-c").arg(&spec.command);
+        self.start_with_input(spec, None)
+    }
+
+    /// 2026-09-05: hostowe dane Check idą stdin, nigdy przez interpolację do command.
+    pub fn start_with_input(
+        &self,
+        spec: &CheckSpec,
+        input: Option<String>,
+    ) -> io::Result<Checking> {
+        if self.proof_mode == ProofMode::Unknown {
+            return Err(io::Error::other(
+                "This kind of check evidence is not supported.",
+            ));
+        }
+        let mut command = if let Some((program, arguments)) = &self.executable {
+            let mut command = tokio::process::Command::new(program);
+            command.args(arguments);
+            command
+        } else {
+            let mut command = tokio::process::Command::new(SHELL);
+            command.arg("-c").arg(&spec.command);
+            command
+        };
         command.current_dir(&spec.cwd);
         // `StdinPlan::Null` daje dziecku EOF natychmiast. Krok „sprawdź" nie ma promptu i nie ma
         // nic do powiedzenia komendzie — a odziedziczony stdin kosztuje sekundy czekania na
         // każdym kroku każdego biegu [T1 §4.6].
-        let handle = supervisor::spawn_tagged(command, StdinPlan::Null, &[], self.tag.as_ref())?;
+        let stdin = input.map_or(StdinPlan::Null, StdinPlan::Write);
+        let environment = self
+            .temporary_directory
+            .as_ref()
+            .map(|path| ("TMPDIR".to_owned(), path.clone().into_os_string()))
+            .into_iter()
+            .collect::<Vec<_>>();
+        let handle = supervisor::spawn_tagged_with_fence(
+            command,
+            stdin,
+            &environment,
+            self.tag.as_ref(),
+            self.filesystem_fence.as_ref(),
+        )?;
         let group = handle.group();
         Ok(Checking {
             group,
             handle,
             proof: spec.proof.clone(),
+            proof_mode: self.proof_mode,
             began: Instant::now(),
         })
     }
@@ -697,6 +839,15 @@ impl CommandDriver {
     /// z inną nazwą: wołający dowiaduje się o `pgid` dopiero wtedy, gdy proces już zszedł, więc
     /// przez cały czas jego życia nie ma go czym pokazać ani czym ubić.
     pub fn start_to_stay(&self, spec: &StartSpec) -> io::Result<Staying> {
+        self.start_to_stay_with_environment(spec, &[])
+    }
+
+    /// Niesekretne ustawienia portów/uruchomienia przechodzą tę samą listę supervisora.
+    pub fn start_to_stay_with_environment(
+        &self,
+        spec: &StartSpec,
+        environment: &[(String, std::ffi::OsString)],
+    ) -> io::Result<Staying> {
         let mut command = tokio::process::Command::new(SHELL);
         command.arg("-c").arg(&spec.command);
         command.current_dir(&spec.cwd);
@@ -709,8 +860,13 @@ impl CommandDriver {
         // TĄ SAMĄ DROGĄ CO KROK „SPRAWDŹ", ze znacznikiem z pola (2026-09, Z-01d). To jest ta
         // droga, na której poprzednie podejście znacznik zgubiło: `serve` szedł przez `Processes::
         // start` → `start_to_stay`, czyli obok jedynej funkcji, która znacznik ustawiała.
-        let mut handle =
-            supervisor::spawn_tagged(command, StdinPlan::Null, &[], self.tag.as_ref())?;
+        let mut handle = supervisor::spawn_tagged_with_fence(
+            command,
+            StdinPlan::Null,
+            environment,
+            self.tag.as_ref(),
+            self.filesystem_fence.as_ref(),
+        )?;
         let group = handle.group();
 
         let output = StayingOutput {
@@ -732,7 +888,7 @@ impl CommandDriver {
          * tutaj nie czeka nikt. */
         let keep = Arc::clone(&output.said);
         let _reading = tokio::spawn(async move {
-            read_both(out, complaints, |chunk| remember(&keep, chunk)).await;
+            read_both(out, complaints, |_, chunk| remember(&keep, chunk)).await;
             /* EOF NA OBU POTOKACH URUCHAMIA DOWÓD, ALE NIM NIE JEST. Sierota dziedzicząca stdout
              * nie pozwala potokowi dojść do EOF (`lsof` pokazał obie na fd 1 i fd 2 [T7 §3.1]),
              * lecz proces może też świadomie zamknąć deskryptory. Dlatego ten dzwonek nie usuwa

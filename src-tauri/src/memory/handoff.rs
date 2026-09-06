@@ -461,7 +461,7 @@ pub fn read_handoff(path: &Path) -> Result<Handoff> {
     Ok(handoff)
 }
 
-fn parse_handoff(path: &Path, bytes: &[u8]) -> Result<Handoff> {
+pub(crate) fn parse_handoff(path: &Path, bytes: &[u8]) -> Result<Handoff> {
     let text = std::str::from_utf8(bytes).map_err(|error| {
         Error::Io(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -520,6 +520,58 @@ fn verified_attachment_from_path(path: &Path, body: &str) -> Option<PathBuf> {
 /// Kolejność wynikowa jest kolejnością nazw plików, bo prefiks `NN` jest numerem kroku —
 /// to jedyne uporządkowanie, które przeżywa skasowanie `loadout.db` (niezmiennik 4).
 pub fn scan_run_dir(run_dir: &Path) -> Result<Vec<Handoff>> {
+    let mut found = Vec::new();
+    for directory in publication_directories(run_dir).map_err(Error::Io)? {
+        found.extend(scan_publication_dir(&directory)?);
+    }
+    found.sort_by(|one, other| {
+        one.meta
+            .step
+            .cmp(&other.meta.step)
+            .then_with(|| one.path.cmp(&other.path))
+    });
+    Ok(found)
+}
+
+/// WF-16: tylko zakresy z zapisanego grafu, nie rekurencyjne skanowanie work/ lub obcych linków.
+/// Legacy bez definicji zachowuje jeden katalog. To samo źródło czytają indeks i replay.
+pub(crate) fn publication_directories(run_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    use std::io::Read;
+    let mut directories = vec![run_dir.to_path_buf()];
+    let root = PublicationRoot::open(run_dir)?;
+    if root.entry_identity(Path::new("context"))?.is_none() {
+        return Ok(directories);
+    }
+    let file = match root.open_regular_file(Path::new("run.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(directories),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(io::Error::other("The saved run is too large."));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    let Some(graph) = value.get("workflow_snapshot") else {
+        return Ok(directories);
+    };
+    if graph.get("executionInputs").is_none() {
+        return Ok(directories);
+    }
+    let graph: crate::workflow::WorkflowFile =
+        serde_json::from_value(graph.clone()).map_err(io::Error::other)?;
+    let inputs =
+        crate::workflow::execution::RunInputs::from_graph(&graph).map_err(io::Error::other)?;
+    for scope in inputs.contexts.keys() {
+        let path = run_dir.join("context").join(scope);
+        PublicationRoot::open(&path)?;
+        directories.push(path);
+    }
+    Ok(directories)
+}
+
+fn scan_publication_dir(run_dir: &Path) -> Result<Vec<Handoff>> {
     DurableFilePublisher::new(run_dir)
         .recover_with(|root| {
             recover_handoff_attachments(root, run_dir).map_err(PublishError::Io)?;

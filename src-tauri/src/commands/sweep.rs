@@ -546,6 +546,19 @@ fn old_runs_that_would_go(project: &Path, days: u32) -> (Vec<OldRun>, Vec<String
     let mut stayed = Vec::new();
     for folder in runs_older_than(project, days) {
         let dir = project.join(RUNS_DIR).join(&folder);
+        match super::run::retention_blocker(&dir) {
+            Ok(None) => {}
+            Ok(Some(why)) => {
+                stayed.push(format!("It left {folder} alone. {why}"));
+                continue;
+            }
+            Err(why) => {
+                stayed.push(format!(
+                    "It left {folder} alone because its saved results could not be checked: {why}"
+                ));
+                continue;
+            }
+        }
         let work_folders = work_folders_in(&dir, &registered);
         if let Some(unsaved) = work_folders
             .iter()

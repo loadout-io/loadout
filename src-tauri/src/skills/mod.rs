@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub mod bundle;
 pub mod ingest;
 pub mod place;
 
@@ -177,6 +178,9 @@ pub struct Skill {
     /// Markdown za front-matterem.
     pub body: String,
     pub files: Vec<BundledFile>,
+    /// WF-13: zasoby odczytane przy przeglądzie. Własność idzie razem ze Skill, nie wrapperem Import.
+    /// Instalacja nie może ponownie czytać zmienionego folderu źródłowego.
+    pub frozen_bundle: Option<bundle::Bundle>,
 
     /// Pola front-mattera spoza specyfikacji, przyniesione przez import — surowy tekst
     /// wartości, bo emiterowi wystarczy wiedzieć, że pole **było**. To z tej mapy
@@ -267,6 +271,8 @@ pub enum Why {
     /// `SKILL.md` nie da się przeczytać albo nie przechodzi walidatora.
     #[error("its SKILL.md could not be read as a skill")]
     Unusable,
+    #[error("{reason}")]
+    IncompleteSource { reason: String },
     /// Krok pracuje wprost w folderze człowieka, więc kopia nie ma gdzie stanąć.
     ///
     /// Odmowa, nie cichy zapis: katalog dopisany do cudzego repozytorium jest zmianą, o której

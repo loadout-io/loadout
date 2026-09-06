@@ -290,7 +290,7 @@ pub fn open_private_file(
 
 /// Tożsamość inode'u utrzymana obok deskryptora. Rdzeń używa jej wyłącznie do porównania,
 /// czy nazwa nadal wskazuje dokładnie ten plik lub katalog, który został zwalidowany.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PublicationIdentity {
     device: u64,
     inode: u64,
@@ -549,11 +549,141 @@ impl PublicationRoot {
         ))
     }
 
+    /// WF-24: rezerwacja nowego celu. EEXIST jest odmową, nigdy odzyskaniem cudzego katalogu.
+    #[cfg(unix)]
+    pub(crate) fn create_directory_exclusive(
+        &self,
+        relative: &Path,
+        mode: u32,
+    ) -> io::Result<Self> {
+        use nix::fcntl::openat;
+        use nix::sys::stat::{Mode, mkdirat};
+        let target = self.target(relative)?;
+        let mode = Mode::from_bits_truncate(
+            mode.try_into()
+                .map_err(|_| io::Error::other("the directory mode is out of range"))?,
+        );
+        mkdirat(&target.directory, Path::new(&target.file_name), mode).map_err(io::Error::from)?;
+        let directory = openat(
+            &target.directory,
+            Path::new(&target.file_name),
+            directory_flags(),
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        enforce_owned_directory_mode(&directory, mode)?;
+        let identity = identity_of(&directory)?;
+        target.sync_directory()?;
+        Ok(Self {
+            directory,
+            identity,
+        })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn create_directory_exclusive(
+        &self,
+        _relative: &Path,
+        _mode: u32,
+    ) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "exclusive publication directories are not implemented on Windows",
+        ))
+    }
+
     /// Zwraca wyłącznie bezpośrednie wpisy katalogu, nigdy ich cele.
     #[cfg(unix)]
     pub(crate) fn list_directory(&self, relative: &Path) -> io::Result<Vec<PublicationEntry>> {
         let directory = self.open_directory(relative)?;
         directory_entries(directory)
+    }
+
+    /// WF-01 (2026-09-05): strumieniowy odczyt pliku względem utrzymanego roota.
+    /// NONBLOCK zapobiega zawieszeniu, jeśli ktoś podmieni zwykły plik na FIFO przed openat.
+    #[cfg(unix)]
+    pub(crate) fn open_regular_file(&self, relative: &Path) -> io::Result<std::fs::File> {
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::Mode;
+        let target = self.target(relative)?;
+        let opened = openat(
+            &target.directory,
+            Path::new(&target.file_name),
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        validate_regular_fd(&opened)?;
+        Ok(std::fs::File::from(opened))
+    }
+
+    /// Odczytuje sam cel linka, nigdy jego zawartość ani katalog po drugiej stronie.
+    #[cfg(unix)]
+    pub(crate) fn read_link(&self, relative: &Path) -> io::Result<PathBuf> {
+        let target = self.target(relative)?;
+        let value = nix::fcntl::readlinkat(&target.directory, Path::new(&target.file_name))
+            .map_err(io::Error::from)?;
+        Ok(PathBuf::from(value))
+    }
+
+    /// WF-03 (2026-09-05): rodzaj i tożsamość wpisu, bez otwierania celu linka.
+    #[cfg(unix)]
+    pub(crate) fn entry_identity(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<(PublicationEntryKind, PublicationIdentity)>> {
+        self.target(relative)?.entry_identity()
+    }
+
+    /// Nowa nazwa musi być wolna. Nigdy nie skracamy pliku podmienionego przez obcy proces.
+    #[cfg(unix)]
+    pub(crate) fn create_regular(&self, relative: &Path) -> io::Result<std::fs::File> {
+        use nix::fcntl::{OFlag, openat};
+        use nix::sys::stat::Mode;
+        let target = self.target(relative)?;
+        let opened = openat(
+            &target.directory,
+            Path::new(&target.file_name),
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        )
+        .map_err(io::Error::from)?;
+        validate_regular_fd(&opened)?;
+        target.sync_directory()?;
+        Ok(std::fs::File::from(opened))
+    }
+
+    /// Link jest wynikiem, nie ścieżką do odwiedzenia. symlinkat odmawia zajętej nazwy.
+    #[cfg(unix)]
+    pub(crate) fn create_link(&self, relative: &Path, link: &Path) -> io::Result<()> {
+        let target = self.target(relative)?;
+        nix::unistd::symlinkat(link, &target.directory, Path::new(&target.file_name))
+            .map_err(io::Error::from)?;
+        target.sync_directory()
+    }
+
+    /// Nigdy rekurencyjnie; usuwa tylko wpis o sprawdzonej tożsamości. Tak jak istniejący
+    /// `remove_regular_file_if_identity` wymaga serializacji writerów tej prywatnej kopii.
+    #[cfg(unix)]
+    pub(crate) fn remove_entry_if_identity(
+        &self,
+        relative: &Path,
+        expected: (PublicationEntryKind, PublicationIdentity),
+    ) -> io::Result<bool> {
+        use nix::unistd::{UnlinkatFlags, unlinkat};
+        let target = self.target(relative)?;
+        if target.entry_identity()? != Some(expected) {
+            return Ok(false);
+        }
+        let flags = if expected.0 == PublicationEntryKind::Directory {
+            UnlinkatFlags::RemoveDir
+        } else {
+            UnlinkatFlags::NoRemoveDir
+        };
+        unlinkat(&target.directory, Path::new(&target.file_name), flags)
+            .map_err(io::Error::from)?;
+        target.sync_directory()?;
+        Ok(true)
     }
 
     #[cfg(windows)]
@@ -716,6 +846,36 @@ impl fmt::Debug for PublicationTarget {
 }
 
 impl PublicationTarget {
+    #[cfg(unix)]
+    fn entry_identity(&self) -> io::Result<Option<(PublicationEntryKind, PublicationIdentity)>> {
+        use nix::errno::Errno;
+        use nix::fcntl::AtFlags;
+        use nix::sys::stat::{SFlag, fstatat};
+        match fstatat(
+            &self.directory,
+            Path::new(&self.file_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(stat) => {
+                let kind = match SFlag::from_bits_truncate(stat.st_mode) {
+                    SFlag::S_IFREG => PublicationEntryKind::Regular,
+                    SFlag::S_IFDIR => PublicationEntryKind::Directory,
+                    SFlag::S_IFLNK => PublicationEntryKind::Symlink,
+                    _ => PublicationEntryKind::Other,
+                };
+                Ok(Some((
+                    kind,
+                    PublicationIdentity {
+                        device: u64::from_ne_bytes(i64::from(stat.st_dev).to_ne_bytes()),
+                        inode: stat.st_ino,
+                    },
+                )))
+            }
+            Err(Errno::ENOENT) => Ok(None),
+            Err(error) => Err(io::Error::from(error)),
+        }
+    }
+
     /// Fakty leafu spod nazwy, bez otwierania go i bez podążania za dowiązaniem.
     #[cfg(unix)]
     fn private_facts(&self) -> Result<Option<PrivateFileFacts>, PrivateLeafError> {
@@ -2592,6 +2752,112 @@ pub fn group_is_empty(pgid: i32) -> bool {
     group_is_gone(pgid)
 }
 
+/// Kto naprawdę słucha na tym porcie, nie kto wypisał podobny URL na stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerOwner {
+    Ours,
+    Missing,
+    Foreign,
+}
+
+/// WF-26: lsof czyta PID oraz grupę właścicieli LISTEN. Brak narzędzia jest odmową,
+/// nigdy domysłem na podstawie HTTP 200. Sonda ma własny limit i zwykły deathproof.
+#[cfg(unix)]
+pub async fn listener_owner(port: u16, pgid: i32) -> io::Result<ListenerOwner> {
+    use tokio::io::AsyncReadExt;
+    let program = ["/usr/sbin/lsof", "/usr/bin/lsof", "/sbin/lsof"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Loadout cannot verify who owns this app address: lsof is unavailable.",
+            )
+        })?;
+    let mut command = Command::new(program);
+    command.args([
+        "-nP",
+        "-a",
+        &format!("-iTCP:{port}"),
+        "-sTCP:LISTEN",
+        "-Fpg",
+    ]);
+    let mut child = spawn_probe(command, OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin"))?;
+    let stdout = child.stdout();
+    let stderr = child.stderr();
+    let read = async {
+        let mut out = Vec::new();
+        let mut errors = Vec::new();
+        let (a, b) = tokio::join!(
+            async {
+                if let Some(stream) = stdout {
+                    stream.take(16_385).read_to_end(&mut out).await?;
+                }
+                Ok::<(), io::Error>(())
+            },
+            async {
+                if let Some(stream) = stderr {
+                    stream.take(4_097).read_to_end(&mut errors).await?;
+                }
+                Ok::<(), io::Error>(())
+            }
+        );
+        a?;
+        b?;
+        let status = child.wait().await?;
+        Ok::<_, io::Error>((status, out, errors))
+    };
+    let read = timeout(Duration::from_secs(1), read).await;
+    let proof = child.stop(DEFAULT_GRACE).await;
+    if !matches!(proof, GroupProof::Dead { .. }) {
+        return Err(io::Error::other(
+            "Loadout could not finish checking who owns the app address.",
+        ));
+    }
+    let (status, out, errors) = read.map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Checking who owns the app address took too long.",
+        )
+    })??;
+    if out.len() > 16_384 || errors.len() > 4_096 {
+        return Err(io::Error::other(
+            "The app address ownership reply was too large.",
+        ));
+    }
+    if !status.success() {
+        return if status.code() == Some(1) && out.is_empty() && errors.is_empty() {
+            Ok(ListenerOwner::Missing)
+        } else {
+            Err(io::Error::other(
+                "Loadout could not verify who owns the app address.",
+            ))
+        };
+    }
+    let text = std::str::from_utf8(&out).map_err(io::Error::other)?;
+    let mut found = false;
+    for line in text.lines().filter_map(|line| line.strip_prefix('g')) {
+        let owner: i32 = line.parse().map_err(io::Error::other)?;
+        found = true;
+        if owner != pgid {
+            return Ok(ListenerOwner::Foreign);
+        }
+    }
+    Ok(if found {
+        ListenerOwner::Ours
+    } else {
+        ListenerOwner::Missing
+    })
+}
+
+#[cfg(not(unix))]
+pub async fn listener_owner(_port: u16, _pgid: i32) -> io::Result<ListenerOwner> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Loadout cannot verify app address ownership on this system.",
+    ))
+}
+
 /// Identyfikator biegu, którego proces siedzi w grupie `pgid` — odczytany z jego środowiska.
 ///
 /// # Dlaczego `None` NIE znaczy „cudza grupa" (2026-09, Z-01d)
@@ -2836,6 +3102,353 @@ pub fn spawn_with_environment(
 /// * znacznik stał PRZED pętlą po `environment`, więc zatwierdzone Połączenie ze zmienną o tej
 ///   samej nazwie cicho go nadpisywało. Dlatego stoi **za** wszystkim innym: to ostatni zapis
 ///   wygrywa, a odzyskiwanie porównuje tę wartość z `run.json`.
+///
+/// WF-18: niemutowalna, hostowa granica plików, niezależna od dialu vendora.
+#[derive(Clone)]
+pub struct FilesystemFence {
+    writable_roots: Vec<FenceRoot>,
+    readable_roots: Vec<FenceRoot>,
+    hidden_roots: Vec<FenceRoot>,
+    readable_files: Vec<FenceFile>,
+}
+
+#[derive(Clone)]
+struct FenceRoot {
+    path: PathBuf,
+    identity: PublicationIdentity,
+}
+
+#[derive(Clone)]
+struct FenceFile {
+    path: PathBuf,
+    parent: FenceRoot,
+    identity: PublicationIdentity,
+}
+
+impl FenceFile {
+    fn open(path: &Path) -> io::Result<Self> {
+        if !path.is_absolute()
+            || path
+                .to_str()
+                .is_none_or(|text| text.chars().any(char::is_control))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a protected input needs a plain absolute file path",
+            ));
+        }
+        let parent = FenceRoot::open(
+            path.parent()
+                .ok_or_else(|| io::Error::other("the protected input has no parent folder"))?,
+        )?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("the protected input has no file name"))?;
+        let file = PublicationRoot::open(&parent.path)?.open_regular_file(Path::new(name))?;
+        Ok(Self {
+            path: parent.path.join(name),
+            parent,
+            identity: publication_identity(&file)?,
+        })
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        self.parent.validate()?;
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| io::Error::other("the protected input has no file name"))?;
+        let file = PublicationRoot::open(&self.parent.path)?.open_regular_file(Path::new(name))?;
+        if publication_identity(&file)? != self.identity {
+            return Err(io::Error::other(
+                "a protected input file changed before starting",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for FilesystemFence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FilesystemFence")
+            .field("writable_roots", &self.writable_roots.len())
+            .field("readable_roots", &self.readable_roots.len())
+            .field("readable_files", &self.readable_files.len())
+            .field("hidden_roots", &self.hidden_roots.len())
+            .finish()
+    }
+}
+
+impl FenceRoot {
+    fn open(path: &Path) -> io::Result<Self> {
+        if !path.is_absolute()
+            || path
+                .to_str()
+                .is_none_or(|text| text.chars().any(char::is_control))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a protected file boundary needs plain absolute folder paths",
+            ));
+        }
+        // Normalizacja aliasów platformy nie autoryzuje dowiązania wybranego przez repo.
+        let held = PublicationRoot::open(path)?;
+        let path = publication_root_key(path)?;
+        held.validate_path_identity(&path)?;
+        Ok(Self {
+            path,
+            identity: held.identity(),
+        })
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        if PublicationRoot::open(&self.path)?.identity() != self.identity {
+            return Err(io::Error::other(
+                "a folder in the protected file boundary changed before starting",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FilesystemFence {
+    /// Nowe zamrożone wyniki nie otwierają ponownie wcześniejszych granic ani ich tożsamości.
+    pub fn reading_roots(mut self, paths: Vec<PathBuf>) -> io::Result<Self> {
+        self.readable_roots.extend(
+            paths
+                .into_iter()
+                .map(|path| FenceRoot::open(&path))
+                .collect::<io::Result<Vec<_>>>()?,
+        );
+        Ok(self)
+    }
+
+    /// Dokładne pliki runtime; nigdy nie oznacza prawa do odczytu całego rodzica.
+    pub fn reading_files(mut self, paths: Vec<PathBuf>) -> io::Result<Self> {
+        self.readable_files.extend(
+            paths
+                .into_iter()
+                .map(|path| FenceFile::open(&path))
+                .collect::<io::Result<Vec<_>>>()?,
+        );
+        Ok(self)
+    }
+    pub fn new(
+        writable_roots: Vec<PathBuf>,
+        readable_roots: Vec<PathBuf>,
+        hidden_roots: Vec<PathBuf>,
+    ) -> io::Result<Self> {
+        filesystem_fence_supported()?;
+        let fence = Self {
+            writable_roots: writable_roots
+                .into_iter()
+                .map(|path| FenceRoot::open(&path))
+                .collect::<io::Result<_>>()?,
+            readable_roots: readable_roots
+                .into_iter()
+                .map(|path| FenceRoot::open(&path))
+                .collect::<io::Result<_>>()?,
+            hidden_roots: hidden_roots
+                .into_iter()
+                .map(|path| FenceRoot::open(&path))
+                .collect::<io::Result<_>>()?,
+            readable_files: Vec::new(),
+        };
+        for writable in &fence.writable_roots {
+            if writable.path.parent().is_none()
+                || fence
+                    .hidden_roots
+                    .iter()
+                    .any(|hidden| hidden.path.starts_with(&writable.path))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a protected process cannot write the root of the measurement or a parent folder",
+                ));
+            }
+        }
+        Ok(fence)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        filesystem_fence_supported()?;
+        for root in self
+            .writable_roots
+            .iter()
+            .chain(&self.readable_roots)
+            .chain(&self.hidden_roots)
+        {
+            root.validate()?;
+        }
+        for file in &self.readable_files {
+            file.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Niepłatny proces pod dokładnie tą granicą. Sam plik sandbox-exec nie dowodzi,
+    /// że obecny proces aplikacji może uruchomić profil (np. po zmianie uprawnień systemu).
+    pub async fn prove_available(&self) -> io::Result<()> {
+        let mut process = spawn_tagged_with_fence(
+            Command::new("/usr/bin/true"),
+            StdinPlan::Null,
+            &[],
+            None,
+            Some(self),
+        )?;
+        let waited = timeout(Duration::from_secs(2), process.wait()).await;
+        let proof = process.stop(Duration::from_millis(250)).await;
+        if !matches!(proof, GroupProof::Dead { .. }) {
+            return Err(io::Error::other(
+                "the file protection check could not be proved stopped",
+            ));
+        }
+        match waited {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            _ => Err(io::Error::other(
+                "this system could not apply the protected file boundary; no agent was started",
+            )),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn profile(&self) -> String {
+        use std::fmt::Write as _;
+        let mut profile = String::from(
+            "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* (literal \"/dev/null\"))\n",
+        );
+        for root in &self.writable_roots {
+            let _ = writeln!(profile, "(allow file-write* {})", fence_subpath(&root.path));
+        }
+        for hidden in &self.hidden_roots {
+            // Wyjątek musi być WEWNĄTRZ ukrytego drzewa. Readable project będący jego
+            // przodkiem nie może zdjąć odmowy z wyroczni ani cudzych komórek.
+            let exceptions: BTreeSet<_> = self
+                .readable_roots
+                .iter()
+                .chain(&self.writable_roots)
+                .filter(|root| root.path != hidden.path && root.path.starts_with(&hidden.path))
+                .map(|root| &root.path)
+                .collect();
+            profile.push_str("(deny file-read* (require-all ");
+            profile.push_str(&fence_subpath(&hidden.path));
+            for exception in exceptions {
+                let _ = write!(profile, " (require-not {})", fence_subpath(exception));
+            }
+            for file in self
+                .readable_files
+                .iter()
+                .filter(|file| file.path.starts_with(&hidden.path))
+            {
+                let _ = write!(profile, " (require-not {})", fence_literal(&file.path));
+            }
+            profile.push_str("))\n");
+        }
+        // 2026-09-06 WF-18: realny Codex używa canonicalize(CODEX_HOME). Metadane
+        // dokładnych przodków są potrzebne do przejścia ścieżki, ale NIE uprawniają
+        // do readdir ani czytania sąsiednich plików. Osobny proces Rust sądzi oba fakty.
+        let visible = self
+            .writable_roots
+            .iter()
+            .chain(&self.readable_roots)
+            .map(|root| &root.path)
+            .chain(self.readable_files.iter().map(|file| &file.path));
+        let metadata: BTreeSet<_> = visible
+            .flat_map(|path| path.ancestors())
+            .filter(|path| {
+                self.hidden_roots
+                    .iter()
+                    .any(|hidden| path.starts_with(&hidden.path))
+            })
+            .map(Path::to_path_buf)
+            .collect();
+        for path in metadata {
+            let _ = writeln!(
+                profile,
+                "(allow file-read-metadata {})",
+                fence_literal(&path)
+            );
+        }
+        profile
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fence_subpath(path: &Path) -> String {
+    let text = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("(subpath \"{text}\")")
+}
+
+#[cfg(target_os = "macos")]
+fn fence_literal(path: &Path) -> String {
+    let text = path
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("(literal \"{text}\")")
+}
+
+#[cfg(target_os = "macos")]
+fn filesystem_fence_supported() -> io::Result<()> {
+    let metadata = std::fs::metadata("/usr/bin/sandbox-exec")?;
+    if !metadata.is_file() || !executable_bits(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this system cannot protect the measurement's files",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn filesystem_fence_supported() -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "protected file boundaries are not available on this system",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn fence_command(command: &Command, fence: &FilesystemFence) -> io::Result<Command> {
+    fence.validate()?;
+    let mut wrapped = Command::new("/usr/bin/sandbox-exec");
+    wrapped.arg("-p").arg(fence.profile());
+    wrapped
+        .arg(command.as_std().get_program())
+        .args(command.as_std().get_args());
+    if let Some(cwd) = command.as_std().get_current_dir() {
+        wrapped.current_dir(cwd);
+    }
+    Ok(wrapped)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fence_command(_command: &Command, _fence: &FilesystemFence) -> io::Result<Command> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "protected file boundaries are not available on this system",
+    ))
+}
+
+/// Jedyny wrapper zależny od platformy. Adaptery nie tworzą profilu ani własnej powłoki.
+pub fn spawn_tagged_with_fence(
+    command: Command,
+    stdin: StdinPlan,
+    environment: &[(String, OsString)],
+    tag: Option<&StepTag>,
+    fence: Option<&FilesystemFence>,
+) -> io::Result<Supervised> {
+    let command = match fence {
+        Some(fence) => fence_command(&command, fence)?,
+        None => command,
+    };
+    spawn_tagged(command, stdin, environment, tag)
+}
+
 pub fn spawn_tagged(
     command: Command,
     stdin: StdinPlan,
@@ -3097,6 +3710,39 @@ pub fn link(target: &std::path::Path, at: &std::path::Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, at)
 }
 
+/// WF-01/02: tryb wykonania jest częścią wyniku, nie tylko jego bajty.
+#[must_use]
+pub fn executable_bits(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+/// WF-01/02: cały spacer i liść są no-follow, a wynik pozostaje otwartym deskryptorem.
+pub fn open_regular_beneath(root: &Path, relative: &Path) -> io::Result<std::fs::File> {
+    PublicationRoot::open(root)?.open_regular_file(relative)
+}
+
+/// WF-01/03: chmod dotyczy pliku, który zapisaliśmy, nawet po podmianie jego nazwy.
+pub fn set_executable_file(file: &std::fs::File, executable: bool) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut permissions = file.metadata()?.permissions();
+    let mode = permissions.mode() & !0o111;
+    permissions.set_mode(mode | if executable { 0o111 } else { 0 });
+    file.set_permissions(permissions)
+}
+
+/// WF-24: polecenia odczytu/utrzymania historycznego OID nie uruchamiają haków repo.
+#[cfg(unix)]
+#[must_use]
+pub fn disabled_git_hooks() -> &'static Path {
+    Path::new("/dev/null")
+}
+
+#[cfg(windows)]
+pub fn disabled_git_hooks() -> &'static Path {
+    Path::new("NUL")
+}
+
 /// Własna grupa procesów Loadouta.
 ///
 /// `0` w `killpg` znaczy „moja własna grupa", a wiersz z `pgid` równym tej wartości to my sami.
@@ -3243,7 +3889,11 @@ pub fn reap_group(pgid: i32) -> GroupProof {
             Err(error) if error.raw_os_error() == Some(NO_SUCH_GROUP) => ReapResponse::NoSuchGroup,
             // 2026-08-27: szczególnie `EPERM` może oznaczać PGID przewinięty do cudzej
             // grupy. Rdzeń musi dostać odmowę, nie fałszywy dowód śmierci ani zgodę na KILL.
-            Err(_) => ReapResponse::Refused,
+            Err(error) => {
+                tracing::warn!(pgid, signal = platform_signal, %error,
+                    "the operating system refused a recovery signal");
+                ReapResponse::Refused
+            }
         }
     });
     match proof {
@@ -3284,16 +3934,24 @@ fn wait_for_group_to_disappear(
     signal: &mut impl FnMut(ReapAction) -> ReapResponse,
 ) -> ReapWait {
     let began = Instant::now();
+    let mut refused = false;
     loop {
         match signal(ReapAction::Probe) {
             ReapResponse::Delivered => {}
             ReapResponse::NoSuchGroup => return ReapWait::Gone,
-            ReapResponse::Refused => return ReapWait::Refused,
+            // WF-25 (2026-09-05): macOS potrafi zwrócić EPERM w krótkim oknie
+            // wychodzącej grupy, a chwilę później ESRCH. Obserwujemy do limitu,
+            // ale raz cofnięte prawo eskalacji już w tym przebiegu nie wraca.
+            ReapResponse::Refused => refused = true,
         }
 
         let elapsed = began.elapsed();
         if elapsed >= limit {
-            return ReapWait::TimedOut;
+            return if refused {
+                ReapWait::Refused
+            } else {
+                ReapWait::TimedOut
+            };
         }
         std::thread::sleep(PROOF_POLL.min(limit.saturating_sub(elapsed)));
     }

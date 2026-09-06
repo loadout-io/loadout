@@ -168,6 +168,12 @@ impl Inherited {
         &self.flags
     }
 
+    /// WF-13: caller dowiódł materializacji TEGO pluginu w natywnej półce własnej kopii.
+    /// Tylko flags pluginu są zastąpione; tekst, pochodzenie i wyniki przeglądu zostają.
+    pub(crate) fn skills_were_delivered_in_the_folder(&mut self) {
+        self.flags.clear();
+    }
+
     /// Fakty w tej samej kolejności, w której dziedziczenie składa wybrane materiały.
     #[must_use]
     pub fn sources(&self) -> &[InheritedSource] {

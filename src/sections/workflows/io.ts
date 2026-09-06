@@ -120,3 +120,22 @@ export function check(workflow: WorkflowFile): Promise<Note[]> {
 export function listHostMaterial(folder: string | null = null): Promise<HostMaterial> {
   return invoke<HostMaterial>('list_host_material', { folder });
 }
+
+export interface AdditionalInputPreview {
+  readonly files: readonly {
+    readonly path: string;
+    readonly bytes: number;
+    readonly ignored: boolean;
+    readonly private: boolean;
+  }[];
+  readonly totalBytes: number;
+  readonly fileLimit: number;
+  readonly byteLimit: number;
+}
+
+export function previewAdditionalInputs(
+  folder: string,
+  patterns: readonly string[],
+): Promise<AdditionalInputPreview> {
+  return invoke<AdditionalInputPreview>('preview_additional_inputs', { folder, patterns });
+}

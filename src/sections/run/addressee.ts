@@ -27,6 +27,8 @@
  * o jedną warstwę niżej — `sayToAgent(text, null)` mówi „ten jeden, który pracuje" (`./io.ts`).
  * Dwa różne `null` w jednej ścieżce to gałąź, w którą wchodzi się przez pomyłkę.
  */
+import type { StepSession } from '../../ipc/types';
+
 export type Addressee =
   | { readonly to: 'lead'; readonly text: string }
   | { readonly to: 'agent'; readonly agent: string; readonly text: string };
@@ -61,4 +63,40 @@ export function addresseeOf(typed: string, working: readonly string[]): Addresse
      * własną nazwą — czyta się to jak ktoś, kto cytuje mu ją z powrotem. */
     text: text.slice(addressed.length).trimStart(),
   };
+}
+
+export type SessionAddressee =
+  | { readonly to: 'lead'; readonly text: string }
+  | { readonly to: 'agent'; readonly text: string; readonly target: StepSession }
+  | { readonly to: 'refused'; readonly said: string };
+
+/** WF-08: jawny adres nigdy nie staje się po odmowie prozą do Leada. */
+export function sessionAddresseeOf(
+  typed: string,
+  known: readonly string[],
+  sessions: readonly StepSession[],
+): SessionAddressee {
+  const text = typed.trim();
+  const first = text.split(/\s+/)[0] ?? '';
+  const explicit = first.startsWith('@');
+  const legacy = addresseeOf(typed, known);
+  if (!explicit && legacy.to === 'lead') return legacy;
+  const addressed = explicit ? first.slice(1) : first;
+  const direct = sessions.find((session) => session.nodeKey === addressed);
+  const named = sessions.filter((session) => session.agent === addressed && !session.finished);
+  const target =
+    direct ??
+    (named.length === 1 ? named[0] : undefined) ??
+    (named.length === 0 ? sessions.find((session) => session.agent === addressed) : undefined);
+  if (named.length > 1 && direct === undefined)
+    return {
+      to: 'refused',
+      said:
+        'More than one agent uses this name. Address one with ' +
+        named.map((one) => '@' + one.nodeKey).join(' or ') +
+        '.',
+    };
+  if (target === undefined)
+    return { to: 'refused', said: 'That step has not opened a message channel in this run.' };
+  return { to: 'agent', target, text: text.slice(first.length).trimStart() };
 }

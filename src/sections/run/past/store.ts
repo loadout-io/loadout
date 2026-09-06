@@ -219,11 +219,22 @@ export const COULD_NOT_FORGET_RUN = 'Loadout could not take this run away.';
  * Odmowa zostawia WSZYSTKO tak, jak było, bo Rust odmawia w całości: ani folderu, ani gałęzi.
  * Zdanie idzie w `said`, czyli tam, gdzie człowiek nacisnął (niezmiennik 29).
  */
-export async function forgetThisRun(): Promise<void> {
+export async function forgetThisRun(confirmedResultFolders?: readonly string[]): Promise<void> {
   const run = now.opened;
   if (run === null) return;
+  const folder = now.folder;
+  const expected = (run.resultFolders ?? []).map((one) => one.path).sort();
+  const confirmed = [...(confirmedResultFolders ?? [])].sort();
+  // WF-06: zgoda dotyczy wyświetlonych ścieżek, nie samego przycisku „Forget”. Rust ponownie
+  // sprawdza aktualną listę na dysku; ten warunek nie udaje ochrony po stronie serwera.
+  if (expected.length !== confirmed.length || expected.some((path, at) => path !== confirmed[at])) {
+    sayInHistory(
+      'These folders contain saved results. Confirm their exact paths before forgetting this run.',
+    );
+    return;
+  }
   try {
-    await forgetRun(now.folder, run.folder);
+    await forgetRun(folder, run.folder, confirmedResultFolders);
   } catch (error: unknown) {
     sayInHistory(why(error, COULD_NOT_FORGET_RUN));
     return;

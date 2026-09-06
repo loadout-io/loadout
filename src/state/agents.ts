@@ -40,6 +40,11 @@ export type Vendor = 'claude-code' | 'codex';
 export type Thinking = 'quick' | 'balanced' | 'deep' | 'deepest';
 export type FileAccess = 'look-only' | 'ask-first' | 'work-freely';
 export type Tools = 'everything' | { only: string[] };
+export type ServiceOperation = 'read' | 'start' | 'restart' | 'stop';
+export interface ServiceGrant {
+  service: string;
+  operations: ServiceOperation[];
+}
 
 /** Pięć przygaszonych tokenów tożsamości, `--id-1`…`--id-5` (DESIGN §3). */
 export type Color = 'slate' | 'plum' | 'clay' | 'moss' | 'rose';
@@ -67,8 +72,14 @@ export interface Agent {
    * `Agent::reaches_the_web` w `library/agents.rs`. */
   reachesTheWeb: boolean;
   skills: string[];
+  /** Jawne źródła ze znanych półek projektu/użytkownika; brak pozostawia resolverowi wybór. */
+  skillSources?: Record<string, string>;
   /** Etykieta: `Connections`. */
   connections: string[];
+  /** Exact app steps; an absent field grants no access. */
+  serviceAccess?: ServiceGrant[];
+  /** Brak pola oznacza brak komunikacji między krokami. */
+  agentMessages?: boolean;
   writeResultsTo: string;
   /** Przelotka D6. Nieobecna, kiedy pusta — pusta mapa nie ma prawa dokładać klucza. */
   vendorOptions?: Record<string, Record<string, string>>;

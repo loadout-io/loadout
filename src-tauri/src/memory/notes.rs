@@ -1224,11 +1224,17 @@ fn read_note(path: &Path) -> Result<Note> {
 
 fn read_note_snapshot(path: &Path) -> Result<NoteSnapshot> {
     let raw = fs::read_to_string(path)?;
-    let (front, _) = FrontMatter::split(&raw)?;
     Ok(NoteSnapshot {
-        note: note_from(path, &front),
+        note: parse_note(path, &raw)?,
         raw,
     })
+}
+
+/// Ten sam parser dla odczytu zwykłego i ograniczonego odczytu no-follow Leada (WF-22).
+/// Polityka wejścia do promptu nadal należy wyłącznie do `what_you_know`.
+pub(crate) fn parse_note(path: &Path, raw: &str) -> Result<Note> {
+    let (front, _) = FrontMatter::split(raw)?;
+    Ok(note_from(path, &front))
 }
 
 /// Czy `discarded/` zawiera tombstone dokładnie tego sluga.

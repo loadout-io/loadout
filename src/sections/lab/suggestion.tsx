@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 
 import type { EvalCase } from './io';
+import { ExaminerReview } from './examiner';
 
 /* Kandydatka czekająca na człowieka — ten sam wzorzec, co notatka `suggested` w Memory.
  *
@@ -42,30 +43,34 @@ export function Suggestion({
           Zadania ani oczekiwanych pol tu nie ma — te opisuja PRACE, a nie sposob jej
           sprawdzenia, i przypadek przepisany po przeczytaniu wyniku przestaje byc tym samym
           pomiarem. */}
-      <div className="mt-2 flex gap-2">
-        <input
-          data-lab-case-command={one.id}
-          aria-label="What command says whether this worked"
-          placeholder="a command from this project, or nothing"
-          defaultValue={one.command}
-          disabled={busy}
-          className="h-8 flex-1 rounded-sm border border-line bg-well px-2 text-ui text-ink"
-          onBlur={(event) => {
-            onEdit({ ...one, command: event.target.value.trim() });
-          }}
-        />
-        <input
-          data-lab-case-proof={one.id}
-          aria-label="What has to appear in its output"
-          placeholder="text that proves it ran"
-          defaultValue={one.proof}
-          disabled={busy}
-          className="h-8 w-48 rounded-sm border border-line bg-well px-2 text-ui text-ink"
-          onBlur={(event) => {
-            onEdit({ ...one, proof: event.target.value.trim() });
-          }}
-        />
-      </div>
+      {one.examiner === undefined ? (
+        <div className="mt-2 flex gap-2">
+          <input
+            data-lab-case-command={one.id}
+            aria-label="What command says whether this worked"
+            placeholder="a command from this project, or nothing"
+            defaultValue={one.command}
+            disabled={busy}
+            className="h-8 flex-1 rounded-sm border border-line bg-well px-2 text-ui text-ink"
+            onBlur={(event) => {
+              onEdit({ ...one, command: event.target.value.trim() });
+            }}
+          />
+          <input
+            data-lab-case-proof={one.id}
+            aria-label="What has to appear in its output"
+            placeholder="text that proves it ran"
+            defaultValue={one.proof}
+            disabled={busy}
+            className="h-8 w-48 rounded-sm border border-line bg-well px-2 text-ui text-ink"
+            onBlur={(event) => {
+              onEdit({ ...one, proof: event.target.value.trim() });
+            }}
+          />
+        </div>
+      ) : (
+        <ExaminerReview examiner={one.examiner} />
+      )}
       <div className="mt-2 flex gap-2">
         <button
           data-lab-keep={one.id}

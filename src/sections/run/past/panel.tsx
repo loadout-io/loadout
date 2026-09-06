@@ -19,6 +19,7 @@
  */
 import type { ReactElement } from 'react';
 import { useState, useSyncExternalStore } from 'react';
+import { why } from '../../../ipc/why';
 
 import { costText, openOneRun, stateWord } from '../history-command';
 import type {
@@ -26,16 +27,20 @@ import type {
   PastBranch,
   PastHandoff,
   PastMemory,
+  PastResultFolder,
   PastRun,
   PastRunRow,
   PastStep,
 } from '../io';
+import { openResultFolder } from '../io';
 import { Line } from '../feed/line';
 import type { HistoryRow } from '../feed/model';
 import { identityToken, statusToken } from '../rail/colour';
 import { reflectionText } from '../reflection/said';
 import { PICK_UP_HERE, pickUpFrom } from './pick-up';
 import { rowsOf } from './rows';
+import { Replay } from './replay';
+import { SavedResults } from './result-restore';
 import {
   askAboutRunsOlderThan,
   backToTheList,
@@ -182,11 +187,12 @@ function Row({ row, folder }: { row: PastRunRow; folder: string | null }): React
 }
 
 /** Kroki i przekazania jednego biegu — wszystko, co po nim zostało na dysku. */
-function OneRun({ run }: { run: PastRun }): ReactElement {
+function OneRun({ run, project }: { run: PastRun; project: string | null }): ReactElement {
   /* KTÓRE WIERSZE SĄ ROZWINIĘTE — stan tego ekranu i tylko jego. Rozwinięcie jest sprawą
    * patrzącego, nie pliku: dopisane do magazynu przeżyłoby zamknięcie panelu i wróciłoby
    * z cudzą decyzją sprzed dwóch dni. */
   const [opened, setOpened] = useState<readonly number[]>([]);
+  const [foldersToForget, setFoldersToForget] = useState<readonly string[] | null>(null);
 
   function toggle(rowId: number): void {
     setOpened((now) =>
@@ -237,6 +243,22 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
       </section>
 
       <Branches run={run} />
+      {project !== null && (
+        <SavedResults key={project + ':files:' + run.folder} project={project} run={run} />
+      )}
+      {project !== null && run.state !== 'running' && run.state !== 'paused' && (
+        <Replay key={project + ':' + run.folder} project={project} runFolder={run.folder} />
+      )}
+      {(run.resultFolders?.length ?? 0) > 0 && (
+        <section data-result-folders className="mt-4">
+          <h4 className="border-b border-line px-[18px] py-[9px] font-mono text-eyebrow text-muted">
+            Folders this run kept
+          </h4>
+          {run.resultFolders?.map((folder) => (
+            <ResultFolder key={folder.workKey} folder={folder} run={run.folder} project={project} />
+          ))}
+        </section>
+      )}
 
       {/* JEDNO WYJŚCIE Z CAŁEGO BIEGU, i stoi ostatnie na ekranie — pod wszystkim, co ten bieg
           zostawił, bo dopiero po przeczytaniu tego człowiek wie, czy chce to stracić.
@@ -247,13 +269,95 @@ function OneRun({ run }: { run: PastRun }): ReactElement {
           type="button"
           data-forget-run
           onClick={() => {
-            void forgetThisRun();
+            const paths = (run.resultFolders ?? []).map((one) => one.path);
+            if (paths.length > 0) setFoldersToForget(paths);
+            else void forgetThisRun();
           }}
           className={QUIET}
         >
           {FORGET_THIS_RUN}
         </button>
+        {foldersToForget !== null && (
+          <section aria-label="Confirm removing saved results" className="mt-3">
+            <p className="lead">
+              This will remove these folders and the results they contain. This cannot be undone.
+            </p>
+            <ul>
+              {foldersToForget.map((path) => (
+                <li className="value break-all" key={path}>
+                  {path}
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              className="text-ink"
+              onClick={() => {
+                const confirmed = foldersToForget;
+                setFoldersToForget(null);
+                void forgetThisRun(confirmed);
+              }}
+            >
+              Forget these folders and this run
+            </button>
+            <button
+              type="button"
+              className="ml-3 text-muted"
+              onClick={() => setFoldersToForget(null)}
+            >
+              Keep folders
+            </button>
+          </section>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** WF-06: zachowany folder ma czynne wyjście; częściowe wejście nie udaje gotowego wyniku. */
+function ResultFolder({
+  folder,
+  run,
+  project,
+}: {
+  folder: PastResultFolder;
+  run: string;
+  project: string | null;
+}): ReactElement {
+  const [trouble, setTrouble] = useState<string | null>(null);
+  const incomplete = folder.state === 'incomplete';
+  const said = incomplete
+    ? 'This folder is incomplete and cannot be used to resume the run.'
+    : folder.state === 'changed'
+      ? 'Changes kept in this folder.'
+      : 'This folder was kept because its contents could not be checked.';
+  return (
+    <div data-result-folder={folder.workKey} className="px-[18px] py-2">
+      <p className="value">{folder.step}</p>
+      <p className="lead">{said}</p>
+      <p className="value break-all">{folder.path}</p>
+      <button
+        type="button"
+        className={QUIET}
+        onClick={() => {
+          setTrouble(null);
+          void openResultFolder(project, run, folder.workKey).catch((error: unknown) => {
+            setTrouble(
+              why(
+                error,
+                'Loadout could not open this folder. It is still available at the path above.',
+              ),
+            );
+          });
+        }}
+      >
+        {incomplete ? 'Open partial folder' : 'Open result folder'}
+      </button>
+      {trouble !== null && (
+        <p role="alert" className="lead">
+          {trouble}
+        </p>
+      )}
     </div>
   );
 }
@@ -395,7 +499,11 @@ function Step({
           pluginu z umiejętnościami i przekierowanego katalogu pamięci mieszkają tam i tylko tam
           (niezmiennik 23). Liczenie tego tutaj byłoby drugą kopią tej wiedzy, po tej stronie,
           po której nie da się jej sprawdzić. */}
-      <StepMemory memory={step.memory ?? []} alsoLoaded={step.whatLoadoutDidNotGive ?? null} />
+      <StepMemory
+        memory={step.memory ?? []}
+        alsoLoaded={step.whatLoadoutDidNotGive ?? null}
+        instructions={step.projectInstructions ?? []}
+      />
 
       {/* KROK JEST PUDEŁKIEM O SKOŃCZONEJ WYSOKOŚCI, i to jest cała naprawa tego ekranu.
           Zgłoszenie właściciela 2026-08-23: „ten UI od razu ogarnij bo mnie wkurwia".
@@ -470,13 +578,41 @@ function Step({
 function StepMemory({
   memory,
   alsoLoaded,
+  instructions,
 }: {
   memory: readonly PastMemory[];
   alsoLoaded: string | null;
+  instructions: NonNullable<PastStep['projectInstructions']>;
 }): ReactElement {
   return (
     <section data-step-memory className="border-b border-line px-[18px] py-[9px]">
       <h5 className="mb-1 font-mono text-eyebrow text-muted">{WHAT_THIS_STEP_KNEW}</h5>
+      {instructions.length === 0 ? null : (
+        <details data-project-instructions>
+          <summary className="label">
+            Project instructions supplied by Loadout · {instructions.length} sources
+          </summary>
+          <p className="caption">
+            Frozen when this workflow started. These are separate from anything the agent app loaded
+            itself.
+          </p>
+          <ul className="stack" data-gap="1">
+            {instructions.map((source, index) => (
+              <li key={`${source.path}:${index}`} className="caption">
+                <span className="break-all">{source.path}</span> — {source.bytes} bytes ·{' '}
+                {source.digest?.slice(0, 8)}; folder {source.directory || '.'}
+                {source.paths.length === 0 ? null : `; paths ${source.paths.join(', ')}`}
+                {source.digest === undefined ? null : (
+                  <details>
+                    <summary>Full fingerprint</summary>
+                    <span className="break-all">{source.digest}</span>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       {alsoLoaded === null ? null : (
         <p data-also-loaded className="label">
           {alsoLoaded}
@@ -684,7 +820,7 @@ export function PastRuns(): ReactElement | null {
             ))}
           </div>
         ) : (
-          <OneRun run={now.opened} />
+          <OneRun run={now.opened} project={now.folder} />
         )}
       </div>
     </div>

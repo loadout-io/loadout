@@ -85,8 +85,14 @@ fn waiting_for_the_field() -> ServeStep {
         command: String::new(),
         command_from: Some(CommandFrom {
             field: "command".to_owned(),
+            producer: None,
+            format: Default::default(),
         }),
         folder: Folder::default(),
+        lifetime: loadout_lib::workflow::ServiceLifetime::Window,
+        start_when: Default::default(),
+        endpoints: Vec::new(),
+        readiness: None,
         at: loadout_lib::workflow::Point::default(),
         extra: serde_json::Map::new(),
     }

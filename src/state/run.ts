@@ -23,7 +23,7 @@
  */
 import { create, useStore } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
-import type { Line } from '../ipc/types';
+import type { Line, StepSession } from '../ipc/types';
 /* WYŁĄCZNIE TYP, i to jest cała treść tego importu. Rodzajów kafelka jest cztery i mieszkają
  * w `./workflows` (niezmiennik 13); druga ich lista, wpisana tutaj, rozjechałaby się przy piątym.
  * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc magazyn biegu nie zyskuje ani
@@ -192,6 +192,9 @@ export interface Answer {
 export const LINE_LIMIT = 2000;
 
 export interface RunState {
+  /** WF-08: kanały rzeczywiście utworzonych sesji, nigdy inferencja ze stanu kroku. */
+  readonly messageSessions: readonly StepSession[];
+  rememberStepRecipients(recipients: readonly StepSession[]): void;
   /** Okno ostatnich `LINE_LIMIT` linii, najstarsza pierwsza. */
   readonly lines: readonly FeedLine[];
   /** Ile linii wypadło z głowy okna od początku biegu. */
@@ -349,6 +352,21 @@ function withAgents(agents: readonly string[], batch: readonly FeedLine[]): read
   return next ?? agents;
 }
 
+function withMessageSessions(
+  previous: readonly StepSession[],
+  batch: readonly FeedLine[],
+): readonly StepSession[] {
+  let next = previous;
+  for (const line of batch) {
+    if (line.kind !== 'stepSession') continue;
+    next = [
+      ...next.filter((one) => one.runId === line.runId && one.nodeKey !== line.nodeKey),
+      line,
+    ];
+  }
+  return next;
+}
+
 /**
  * Siedem stanów kroku jako WARTOŚĆ — typ nie istnieje w czasie wykonania, a wiersz z drutu
  * niesie `state` jako zwykły napis (`src/ipc/types.ts`: `{ kind: 'stepState', …, state: str }`).
@@ -447,6 +465,10 @@ function withStepStates(steps: readonly Step[], batch: readonly FeedLine[]): rea
  */
 export function createRunStore(): RunStore {
   return create<RunState>()((set) => ({
+    messageSessions: [],
+    rememberStepRecipients(recipients): void {
+      set({ messageSessions: recipients });
+    },
     lines: [],
     droppedBefore: 0,
     earliestKnownId: null,
@@ -487,6 +509,7 @@ export function createRunStore(): RunStore {
            * „jedź dalej” mają po jednym konsumencie, w tym samym momencie, bez inferencji
            * z sąsiednich kroków (niezmienniki 13 i 17). */
           steps: withStepStates(state.steps, batch),
+          messageSessions: withMessageSessions(state.messageSessions, batch),
         };
       });
 
@@ -508,7 +531,7 @@ export function createRunStore(): RunStore {
        * zaczyna się od swojego planu, nie od sumy z poprzednim. `steps` bierzemy dokładnie
        * takie, jakie przyszły — kopia dawałaby paskowi loadoutu nową tożsamość każdego bloku
        * przy każdym wywołaniu, a `stripFor` liczy się z `useMemo` po tej właśnie tożsamości. */
-      set({ workflow, steps, folder, fileName, links, ended: null });
+      set({ workflow, steps, folder, fileName, links, ended: null, messageSessions: [] });
     },
 
     runEnded(): void {
@@ -523,6 +546,7 @@ export function createRunStore(): RunStore {
         /* TYLKO żywość schodzi. Kroki, strzałki i adres pliku są paragonem właśnie
          * zakończonego biegu; ich wyzerowanie stworzyło wadę Z-37. */
         workflow: '',
+        messageSessions: [],
       }));
     },
 
@@ -598,6 +622,20 @@ const NO_WORKSPACE = '';
 
 /** Sesje, po jednej na zakres. Powstają na żądanie i ZOSTAJĄ. */
 const sessions = new Map<string, RunStore>();
+const activityListeners = new Set<() => void>();
+
+/** WF-25: rejestr usług jest wspólny dla okna, więc obserwujemy także biegi w tle.
+ * Nie trzymamy drugiego licznika: istniejące workflow każdej sesji pozostaje prawdą. */
+export function anyRunIsActive(): boolean {
+  return [...sessions.values()].some((session) => session.getState().workflow !== '');
+}
+
+export function subscribeToRunActivity(listener: () => void): () => void {
+  activityListeners.add(listener);
+  return () => {
+    activityListeners.delete(listener);
+  };
+}
 
 /**
  * Sesja tego zakresu — ta sama przy każdym wywołaniu, przez cały czas życia okna.
@@ -614,6 +652,10 @@ export function runFor(workspace: string | null): RunStore {
   if (already !== undefined) return already;
   const fresh = createRunStore();
   sessions.set(key, fresh);
+  fresh.subscribe((state, previous) => {
+    if (state.workflow === previous.workflow) return;
+    for (const listener of activityListeners) listener();
+  });
   return fresh;
 }
 

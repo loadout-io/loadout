@@ -180,6 +180,8 @@
 //! się kluczem węzła, katalogiem roboczym i podpisem („Build (2 of 3)"). `RunReport::steps` ma
 //! od teraz jeden wpis na WĘZEŁ, nie na krok pliku.
 
+mod protection;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
@@ -271,6 +273,44 @@ const STEP_SKILLS_DIR: &str = "skills";
 /// tylko dlatego, że wybór był zawsze pusty.
 const BORROWED_DIR: &str = "borrowed";
 
+/// WF-13: brak manifestu pozostaje jawnym brakiem, nie pustą listą. Recorded sprawdza,
+/// czy wcześniejszy krok oczekiwał skilli; nigdy nie zastępuje None dzisiejszą biblioteką.
+#[derive(Debug)]
+pub struct SavedSkillBundles {
+    pub agent: Option<Vec<crate::skills::bundle::ResolvedSkill>>,
+    pub borrowed: Option<Vec<crate::skills::bundle::ResolvedSkill>>,
+}
+
+pub fn saved_skill_bundles(run_dir: &Path, node_key: &str) -> io::Result<SavedSkillBundles> {
+    let mut components = Path::new(node_key).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(io::Error::other(
+            "The saved skill step address is not valid.",
+        ));
+    }
+    let root = crate::engine::supervisor::PublicationRoot::open(run_dir)?;
+    let read =
+        |relative: PathBuf| -> io::Result<Option<Vec<crate::skills::bundle::ResolvedSkill>>> {
+            match root.entry_identity(&relative) {
+                Ok(None) => Ok(None),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Ok(Some((crate::engine::supervisor::PublicationEntryKind::Directory, _))) => {
+                    crate::skills::bundle::read_delivered(&run_dir.join(relative)).map(Some)
+                }
+                Ok(Some(_)) => Err(io::Error::other(
+                    "The saved skill folder is no longer a real directory.",
+                )),
+                Err(error) => Err(error),
+            }
+        };
+    let agent = read(Path::new(STEP_SKILLS_DIR).join(node_key))?;
+    let borrowed = read(Path::new(BORROWED_DIR).join(node_key).join("plugin"))?;
+    root.validate_path_identity(run_dir)?;
+    Ok(SavedSkillBundles { agent, borrowed })
+}
+
 /// Opis biegu: bieg, jego kroki i migawki. To jest **prawda** (niezmiennik 4).
 const RUN_FILE: &str = "run.json";
 
@@ -311,14 +351,6 @@ const LOGS_DIR: &str = "logs";
 /// mówi, dlaczego ten krok nie ma ani logu, ani przekazania, ani kosztu. Bez niego historia biegu
 /// twierdziłaby, że agent pracował i nic nie powiedział.
 const NOT_NEEDED: &str = "Not needed: the work already passed in an earlier try.";
-
-/// Podsumowanie sędziego, dla którego nie było czego sprawdzać.
-///
-/// **Nie „przeszło".** Krok, który nic nie sprawdził, nie ma prawa czytać się jak krok, który
-/// sprawdził i przepuścił — brak ceremonii znaczy „nikt tego nie sprawdził", nigdy „sprawdzone
-/// i dobrze" (D7). Zdanie mówi więc, co się naprawdę stało, i mówi to w `run.json`, na karcie
-/// kroku i w podsumowaniu biegu.
-const NOTHING_CHANGED: &str = "Nothing to check: the step before this one changed no files.";
 
 /// Katalog, pod którym powstają własne kopie plików dla kroków `fresh-copy`.
 const WORK_DIR: &str = "work";
@@ -739,6 +771,7 @@ pub async fn run_workflow_inner(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrestartFaultPoint {
     AfterWorktreeAdd,
+    AfterFirstIsolation,
     AfterSecondIsolation,
     AfterHandoffSeed,
     AfterBorrow,
@@ -762,6 +795,12 @@ pub trait PrestartFaultInjector: Send + Sync {
     /// Pozwala kryterium odtworzyć stan po awarii, zanim produkcja oceni własność katalogu.
     /// Zwykły bieg niczego tu nie robi; przygotowany stan dalej przechodzi pełną ścieżkę Run.
     fn before_run_directory(&self, _run_dir: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// WF-03: błąd po rzeczywistej operacji składania, przypięty wyłącznie do tego biegu.
+    /// Obserwator nie wykonuje publikacji ani cleanupu; zwykły bieg ma tutaj noop.
+    fn after_fan_in_operation(&self, _into: &Path, _applied: usize) -> io::Result<()> {
         Ok(())
     }
 
@@ -1173,6 +1212,7 @@ pub async fn run_workflow_with_prestart_faults(
         slots,
         WorkflowRunOptions {
             budget_usd: None,
+            lead_start: None,
             reflection_enabled: learn_from_runs(deps),
             before_stamp: None,
             faults,
@@ -1267,6 +1307,32 @@ pub async fn run_workflow_with_reflection(
         budget_usd,
         reflection_enabled,
         None,
+    )
+    .await
+}
+
+/// WF-07: ten sam executor i globalna pula, dodatkowo ack po trwałym prestarcie.
+pub async fn run_workflow_with_lead_start(
+    deps: &RunDeps<'_>,
+    request: &RunRequest,
+    lines: LineSink,
+    budget_usd: Option<f64>,
+    reflection_enabled: bool,
+    lead_start: super::lead_start::LeadStart,
+) -> Result<RunReport, RunError> {
+    let slots = the_pool_of_this_application(deps, request.how_many_at_once);
+    the_whole_workflow_with_prestart(
+        deps,
+        request,
+        lines,
+        slots,
+        WorkflowRunOptions {
+            budget_usd,
+            reflection_enabled,
+            before_stamp: None,
+            faults: Arc::new(NoPrestartFaults),
+            lead_start: Some(lead_start),
+        },
     )
     .await
 }
@@ -1423,6 +1489,7 @@ async fn the_whole_workflow(
         slots,
         WorkflowRunOptions {
             budget_usd,
+            lead_start: None,
             reflection_enabled,
             before_stamp,
             faults: Arc::new(NoPrestartFaults),
@@ -1670,17 +1737,31 @@ async fn the_whole_run(
 ) -> Result<RunReport, RunError> {
     let WorkflowRunOptions {
         budget_usd,
+        lead_start,
         reflection_enabled,
         before_stamp,
         faults,
     } = options;
+    let plan = if let Some(start) = &lead_start {
+        plan_run_with_identity(
+            deps,
+            request,
+            Uuid::now_v7().to_string(),
+            now_ms(),
+            None,
+            Some(start),
+        )?
+    } else {
+        plan_run(deps, request)?
+    };
     the_planned_run_with_prestart(
         deps,
-        plan_run(deps, request)?,
+        plan,
         lines,
         slots,
         PlannedRunOptions {
             acceptance: None,
+            lead_start,
             budget_usd,
             reflection_enabled,
             before_stamp,
@@ -1758,6 +1839,7 @@ async fn the_whole_triggered_run(
         slots,
         PlannedRunOptions {
             acceptance: Some(acceptance),
+            lead_start: None,
             budget_usd,
             reflection_enabled: learn_from_runs(deps),
             before_stamp: None,
@@ -1795,6 +1877,7 @@ async fn the_whole_ask(
         slots,
         PlannedRunOptions {
             acceptance: None,
+            lead_start: None,
             budget_usd,
             reflection_enabled: learn_from_runs(deps),
             before_stamp: None,
@@ -1816,6 +1899,7 @@ struct BoundPrestart {
 }
 
 struct PlannedRunOptions {
+    lead_start: Option<super::lead_start::LeadStart>,
     acceptance: Option<TriggerAcceptance>,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
@@ -1823,6 +1907,7 @@ struct PlannedRunOptions {
 }
 
 struct WorkflowRunOptions {
+    lead_start: Option<super::lead_start::LeadStart>,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
     before_stamp: Option<FrozenPromptHook>,
@@ -1870,6 +1955,7 @@ async fn the_planned_run_with_prestart(
 ) -> Result<RunReport, RunError> {
     let PlannedRunOptions {
         acceptance,
+        lead_start,
         budget_usd,
         reflection_enabled,
         before_stamp,
@@ -1887,6 +1973,13 @@ async fn the_planned_run_with_prestart(
         },
     )
     .await?;
+    // Dopiero ta granica oznacza trwały run.json oraz przejęte ownership przygotowania.
+    // Utrata odpowiedzi mostu nie odbiera AppState uchwytu ani nie odwołuje przyjętego biegu.
+    deps.control
+        .set_run_address(live.plan.id.clone(), live.plan.dir.clone());
+    if let Some(start) = lead_start {
+        start.prepared(deps.project, &live.plan.id);
+    }
     let cancel = deps.control.cancel_token();
     let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
     finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
@@ -1910,6 +2003,12 @@ async fn prepare_planned_run(
     slots: Limiter,
     options: PreparationOptions,
 ) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    if plan.inputs.configuration.isolate_contexts {
+        // Rzeczywisty, niepłatny proces dowodzi zdolności platformy przed pierwszym agentem.
+        supervisor::FilesystemFence::new(Vec::new(), Vec::new(), vec![plan.project.clone()])?
+            .prove_available()
+            .await?;
+    }
     /* CAŁE PRZYGOTOWANIE JEDZIE NA PULĘ BLOKUJĄCĄ — RAZEM Z GWARDIĄ (2026-09, Z-10).
      *
      * `lay_out_the_run_dir` zakłada drzewo pracy każdego kroku, a to jest `git worktree add`,
@@ -1983,7 +2082,10 @@ fn everything_before_the_first_process(
         .as_ref()
         .map(|acceptance| acceptance.bound_prestart.clone());
     let mut provisional = ProvisionalRun::new(project.clone(), Arc::clone(&faults), bound_prestart);
-    let isolated = lay_out_the_run_dir(&plan, &project, &mut provisional)?;
+    let isolated = lay_out_the_run_dir(&mut plan, &project, &mut provisional)?;
+    bring_recorded_sources(&mut plan)?;
+    bring_project_instructions(&mut plan, &project)?;
+    plan.memory_sources.save_to(&plan.dir)?;
     // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
     // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
@@ -1998,9 +2100,24 @@ fn everything_before_the_first_process(
     say_what_the_borrowed_text_carries(&lines, &plan);
     provisional.check(PrestartFaultPoint::AfterBorrow)?;
     hand_the_skills_to_the_steps(&mut plan)?;
+    if plan
+        .replay
+        .as_ref()
+        .is_some_and(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+    {
+        plan.skills = what_this_run_froze(&plan.steps)?;
+    }
     provisional.check(PrestartFaultPoint::AfterSkills)?;
+    plan.protection = protection::prepare(&mut plan)?;
+    control.set_external_messages(plan.inputs.configuration.effects.external_messages);
     let live = Arc::new(Live::new(
-        plan, lines, control, slots, processes, budget_usd,
+        plan,
+        lines,
+        control,
+        slots,
+        processes,
+        budget_usd,
+        Arc::clone(&faults),
     ));
     // Bez pierwszego trwałego zrzutu żaden proces nie rusza (niezmiennik 4).
     provisional.check(PrestartFaultPoint::BeforeFirstRunFile)?;
@@ -2038,7 +2155,15 @@ fn everything_before_the_first_process(
     // dokładnie zestaw notatek już zamrożony w `run.json`. Księga jest właścicielem receipt,
     // bo od T-130 dopisuje do niego fizycznych odbiorców podczas biegu.
     let book = live.book();
-    stamp_what_this_run_carried(&book.memory);
+    if live.plan.inputs.configuration.effects.publish_memory
+        && !live
+            .plan
+            .replay
+            .as_ref()
+            .is_some_and(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+    {
+        stamp_what_this_run_carried(&book.memory);
+    }
     drop(book);
     provisional.check(PrestartFaultPoint::OwnershipTransferred)?;
     // Akceptacja jest ostatnią fallible operacją przed przekazaniem ownershipu. Gdyby stała
@@ -2158,15 +2283,45 @@ async fn finish_planned_run(
     // Sufit dostawcy znaczy `skipped`, a tylko token człowieka znaczy `cancelled`.
     let mut states = outcome.states;
     live.name_what_the_budget_stopped(&mut states);
+    // WF-25: koniec grafu zamyka wyłącznie usługi o czasie życia tego biegu. Window-owned
+    // zostają widoczne w Processes; ich lease odracza domknięcie właściwej kopii.
+    let stopped = live.processes.stop_run(deps.project, &live.plan.id).await;
+    let (proved, warning) = match stopped {
+        Ok(report) => {
+            let proved = report
+                .proofs
+                .iter()
+                .all(|proof| matches!(proof, GroupProof::Dead { .. }));
+            (proved, (!proved).then(|| "A background process could not be confirmed stopped. Its working folder was kept. Use Stop again before removing it.".to_owned()))
+        }
+        Err(error) => (
+            false,
+            Some(format!(
+                "Loadout could not confirm that this run's background processes stopped: {error}"
+            )),
+        ),
+    };
+    live.update(|book| {
+        for (at, step) in live.plan.steps.iter().enumerate() {
+            if matches!(&step.job, Job::Serve(job) if job.lifetime == crate::workflow::ServiceLifetime::Run)
+                && book.steps[at].execution.executed
+            {
+                book.steps[at].death_proof = proved;
+                if let Some(warning) = &warning { book.steps[at].error = Some(warning.clone()); }
+            }
+        }
+    });
     live.close_the_book(&states, outcome.cancelled);
     close_the_trees(deps.project, &isolated, &live).await;
     deps.store.rebuild_from(&live.plan.dir).await?;
     // Auto-pamięć kroków i refleksja czytają skończony, posprzątany i już zindeksowany bieg.
-    what_the_steps_wrote_down(deps, &live.plan);
+    if live.plan.inputs.configuration.effects.publish_memory {
+        what_the_steps_wrote_down(deps, &live.plan);
+    }
     let cancelled_before_reflection = outcome.cancelled || cancel.is_cancelled();
     let reflection = if cancelled_before_reflection {
         ReflectionReceipt::not_asked(NotAsked::Stopped)
-    } else if reflection_enabled {
+    } else if reflection_enabled && live.plan.inputs.configuration.effects.publish_memory {
         // Sufit tury liczy się z tego, co bieg NAPRAWDĘ wydał na kroki, a materiał — z tego, co
         // kroki po sobie zostawiły; jedno i drugie jest znane dopiero tutaj, po
         // `close_the_book` (2026-09, Z-38).
@@ -2191,6 +2346,24 @@ async fn finish_planned_run(
             book.status = RunState::Cancelled;
         }
     });
+
+    // WF-10: wartość z rzeczywistych wyników terminalnych, nie z samego zwrotu zadania.
+    // Window-owned Serve świadomie żyje dalej. Każdy wykonany Agent/Check oraz Run-owned
+    // Serve musi mieć dowód; odmowa/refleksja/przerwane domknięcie wcześniej zostawia Unknown.
+    let groups_proved = {
+        let book = live.book.lock().unwrap_or_else(PoisonError::into_inner);
+        book.steps.iter().enumerate().all(|(at, step)| {
+            !step.execution.executed
+                || match &live.plan.steps[at].job {
+                    Job::Ask { .. } => true,
+                    Job::Serve(job) if job.lifetime == crate::workflow::ServiceLifetime::Window => {
+                        true
+                    }
+                    _ => step.death_proof,
+                }
+        })
+    };
+    deps.control.record_stop_proof(groups_proved && proved);
 
     Ok(RunReport {
         id: live.plan.id.clone(),
@@ -3110,15 +3283,21 @@ fn title_from(rule: &str) -> String {
 /// zakończony i bieg odrzucony wracają stąd natychmiast — ale uchwyt biegu, którego nikt nigdy
 /// nie uruchomił, nie ma czego dowieść i czekanie na niego nie ma końca.
 pub async fn stop_run_inner(deps: &RunDeps<'_>) -> Result<Outcome, RunError> {
-    deps.control.stop();
+    let _proof = stop_control(&deps.control).await;
+    Ok(Outcome::Cancelled)
+}
+
+/// Wspólna droga Stop — to samo anulowanie i czekanie, ale z osobnym wynikiem dowodowym.
+pub async fn stop_control(control: &RunControl) -> super::StopProof {
+    control.stop();
     // Czekamy na bieg, a nie na siebie. Kroki rozstrzygają swoje grupy procesów same — tylko
     // one znają uchwyt i adres do późniejszego sprzątania — a `settle()` zapala się dopiero,
     // kiedy `run_workflow_inner` naprawdę wróciło.
-    deps.control.wait_until_settled().await;
+    control.wait_until_settled().await;
     // Bieg, którego token jest anulowany, melduje `cancelled` także wtedy, gdy ostatni krok
     // zdążył się udać (`scheduler::execute` czyta token na końcu). Dwa różne zdania o jednym
     // biegu byłyby dwoma miejscami, w których mieszka jedna odpowiedź.
-    Ok(Outcome::Cancelled)
+    control.stop_proof()
 }
 
 /// Stop naciśnięty przez człowieka: zatrzymuje bieg, jeśli jakikolwiek idzie.
@@ -3299,6 +3478,22 @@ pub async fn continue_run_inner(
     Ok(())
 }
 
+/// Kompatybilny sygnał dla pauz niebędących pytaniem. Sieć nigdy nie wybiera za człowieka ID.
+pub async fn continue_unaddressed(
+    deps: &RunDeps<'_>,
+    answer: Option<String>,
+) -> Result<(), RunError> {
+    if !super::checkpoint::list(&deps.control).is_empty() {
+        return Err(RunError::QuestionNeedsAddress);
+    }
+    deps.control.signal_go_on(answer);
+    // Sygnał nie zwolni nowego pytania utworzonego po sprawdzeniu; ono ma własny oneshot.
+    if super::checkpoint::list(&deps.control).is_empty() {
+        deps.control.wait_until_moving().await;
+    }
+    Ok(())
+}
+
 /// Mówi coś agentowi, który **właśnie pracuje** — kolejna tura w jego żywej sesji.
 ///
 /// # Po co to istnieje
@@ -3330,6 +3525,9 @@ pub async fn say_to_agent_inner(
     agent: Option<&str>,
     text: &str,
 ) -> Result<(), RunError> {
+    if let Some(refusal) = super::step_message::fixed_input_refusal(control, "", "") {
+        return Err(RunError::MessageRefused(refusal.said));
+    }
     let said = text.trim();
     if said.is_empty() {
         return Err(RunError::NothingToSay);
@@ -3361,6 +3559,23 @@ pub async fn say_to_agent_inner(
             }
         }
     })?;
+
+    // Każdy przygotowany bieg ma dokładny adres. Stary adapter nazw dochodzi do tej samej
+    // funkcji przyjęcia co Entry i most; poniższa ścieżka bez adresu zostaje dla starych,
+    // wewnętrznych uchwytów testowych, które nigdy nie przeszły prepare.
+    if let Some(run) = control.run_address() {
+        let recipients = super::step_message::recipients(control);
+        let node = recipients
+            .iter()
+            .find(|one| one.agent == to && one.can_receive)
+            .ok_or_else(|| RunError::StoppedListening { name: to.clone() })?;
+        let reply = super::step_message::send(control, &run.id, &node.node_key, said).await;
+        return if reply.result == super::step_message::StepMessageResult::AcceptedBySession {
+            Ok(())
+        } else {
+            Err(RunError::MessageRefused(reply.said))
+        };
+    }
 
     // Kanał, nie uchwyt: nadajnik jest klonowalny i nie wymaga `&mut`, czyli da się nim pisać
     // do sesji, której tura właśnie trwa. Cała naprawa mieści się w tym jednym zdaniu.
@@ -3397,10 +3612,25 @@ pub async fn say_to_agent_inner(
 /// w bibliotece — odmawia przy budowie tej struktury. Dzięki temu „odmowa nie tworzy katalogu"
 /// jest własnością kolejności wywołań, a nie obietnicą powtarzaną w komentarzach.
 struct Plan {
+    replay: Option<Arc<super::replay::ReplayMaterial>>,
+    inputs: super::run_inputs::BoundInputs,
+    protection: BTreeMap<StepId, protection::Boundary>,
+    lead_origin: Option<super::lead_start::LeadStartOrigin>,
     /// uuid v7 biegu — sortuje się po czasie.
     id: String,
     /// `<projekt>/.loadout/runs/<ts>__<id>/`. Policzony tutaj, tworzony dopiero po planie.
     dir: PathBuf,
+    /// WF-01: jeden obraz bazowy, wspólny dla izolacji, fan-in i odtwarzania.
+    input_snapshot: Option<super::input_snapshot::InputSnapshot>,
+    /// Jawnie adresowane wejścia WF-16, po rzeczywistym kluczu zarządzanej kopii.
+    workspace_inputs: super::workspace_inputs::Bound,
+    /// ID i odcisk prywatnego pakietu WF-12, odczytywane także przez odtwarzanie i Lab.
+    project_instructions: Option<Value>,
+    /// WF-23: pełne źródła wybranych notatek, nie gotowe prompty; zapis przed procesami.
+    memory_sources: super::memory_sources::Snapshot,
+    additional_inputs: Vec<String>,
+    /// Dokładny zapisany wynik, od którego zaczyna każda wznowiona kopia (WF-01).
+    starting_results: BTreeMap<String, StartingResult>,
     /// Tytuł widoczny w historii.
     title: String,
     /// Który workflow to był.
@@ -3636,7 +3866,11 @@ struct ServeJob {
     ///
     /// `None` znaczy „komende wpisal czlowiek" — powod w calosci stoi przy
     /// [`crate::workflow::ServeStep::command_from`].
-    command_from: Option<String>,
+    command_from: Option<crate::workflow::CommandFrom>,
+    lifetime: crate::workflow::ServiceLifetime,
+    start_when: crate::workflow::ServiceStartWhen,
+    endpoints: Vec<crate::workflow::ServiceEndpointSpec>,
+    readiness: Option<crate::workflow::ReadinessSpec>,
     /// Katalog, w ktorym to wstaje. Dla serwera dev jest trescia, nie szczegolem: podaje kod
     /// z TEGO drzewa, wiec weryfikacja w kopii kroku oglada dokladnie te prace.
     cwd: PathBuf,
@@ -3646,6 +3880,7 @@ struct ServeJob {
 
 /// Wszystko, czego krok „sprawdź" potrzebuje, żeby ruszyć — policzone przed startem biegu.
 struct CheckJob {
+    proof_mode: crate::engine::drivers::command::ProofMode,
     /// Co uruchomić, po czym poznać i gdzie. Prosto z pliku workflow, bez ani jednego naszego
     /// słowa: komenda jest tym, co człowiek wpisał.
     spec: CheckSpec,
@@ -3950,6 +4185,13 @@ fn how_it_went_down(how: ClosedHow, code: Option<i32>, proof: &GroupProof) -> Ho
     }
 }
 
+/// Jednorazowe wejście tury; nadajnik pozostaje własnością startu również przy odmowie.
+struct AgentTurn {
+    spec: RunSpec,
+    target: EvidenceTarget,
+    events: mpsc::Sender<DecodedEvent>,
+}
+
 /// Wszystko, czego krok agenta potrzebuje, żeby ruszyć — policzone przed startem biegu.
 struct AgentJob {
     /// Sterownik vendora, wzięty z fabryki raz, przy planowaniu.
@@ -4052,6 +4294,9 @@ struct AgentJob {
     thinking: Thinking,
     /// Zatwierdzone Connections rozwiązane podczas planowania, zanim ruszy pierwszy proces.
     connections: Vec<crate::connections::Connection>,
+    /// WF-28: sufit zamrożony z efektywnego agenta; sesja nie może go poszerzyć.
+    service_access: Vec<crate::library::agents::ServiceGrant>,
+    agent_messages: bool,
     /// Przelotka `vendorOptions` tego agenta, **już w kształcie argv jego aplikacji**.
     ///
     /// 2026-08-23 (T-90) — pole doszło, bo do tego dnia przelotka nie docierała do procesu ani
@@ -4110,7 +4355,14 @@ struct AgentJob {
 
 /// Wczytuje plik, sprawdza go drugi raz i rozpisuje bieg — **bez dotykania dysku**.
 fn plan_run(deps: &RunDeps<'_>, request: &RunRequest) -> Result<Plan, RunError> {
-    plan_run_with_identity(deps, request, Uuid::now_v7().to_string(), now_ms(), None)
+    plan_run_with_identity(
+        deps,
+        request,
+        Uuid::now_v7().to_string(),
+        now_ms(),
+        None,
+        None,
+    )
 }
 
 fn planned_routes(
@@ -4161,6 +4413,7 @@ fn plan_triggered_run(
             delivery_id: delivery.claim.delivery_id.clone(),
             issue_id: delivery.issue.id.clone(),
         }),
+        None,
     )
 }
 
@@ -4170,12 +4423,41 @@ fn plan_run_with_identity(
     id: String,
     created_at: i64,
     trigger_origin: Option<TriggerOrigin>,
+    lead_start: Option<&super::lead_start::LeadStart>,
 ) -> Result<Plan, RunError> {
     // Bajty czytamy osobno od `load()`, bo odcisk ma odpowiadać na pytanie „czy to ten sam
     // PLIK". Odcisk liczony z naszej serializacji odpowiadałby na pytanie „czy to ten sam plik
     // po przejściu przez nas", czyli milczałby o każdej zmianie, której nie rozumiemy.
-    let bytes = fs::read(&request.workflow)?;
-    let file = load(&request.workflow)?;
+    let replay = lead_start.and_then(|start| start.replay.as_ref());
+    if let Some(replay) = replay {
+        replay.validate().map_err(|message| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: None,
+                fix: None,
+                message,
+            })
+        })?;
+    }
+    let recorded = replay.filter(|replay| replay.mode == super::replay::ReplayMode::Recorded);
+    let bytes = if let Some(replay) = recorded {
+        replay.graph_bytes.clone()
+    } else {
+        fs::read(&request.workflow)?
+    };
+    let file = if let Some(start) = lead_start {
+        if recorded.is_none() && crate::durable_file::revision_of(&bytes) != start.expected_revision
+        {
+            return Err(RunError::Refused(Note {
+                level: Level::Problem, step_id: None, fix: None,
+                message: "Nothing started: the workflow changed after the lead selected it. Ask to start it again.".to_owned(),
+            }));
+        }
+        // Nie drugi load(path): rewizja i deserializowany graf muszą opisywać te same bajty.
+        crate::workflow::file::load_snapshot(&request.workflow, &bytes)?
+    } else {
+        load(&request.workflow)?
+    };
 
     // Bieg nie ufa UI (T3 §5.2): plik mógł zostać zmergowany gitem albo poprawiony ręcznie
     // między zapisem a naciśnięciem Start. Odmawiamy zdaniem WALIDATORA, słowo w słowo —
@@ -4220,11 +4502,33 @@ fn plan_run_with_identity(
      * Plik bez ani jednego powrotu wychodzi z `unroll` w kształcie 1:1 (dowodzi tego kryterium
      * `a_file_with_no_way_back_comes_out_unchanged`), więc żaden istniejący bieg się nie zmienia. */
     let unrolled = crate::workflow::unroll::unroll(&file);
+    let wanted = which_nodes(&unrolled, &file, request.part.as_ref());
+    let inputs = super::run_inputs::RunInputs::from_graph(&file)
+        .map_err(|why| RunError::Io(io::Error::other(why)))?;
+    let folders = crate::workflow::unroll::folders::working_folders_at(
+        &file,
+        &unrolled,
+        &inputs,
+        deps.project,
+        &dir.join(WORK_DIR),
+    )
+    .map_err(|why| RunError::Io(io::Error::other(why)))?;
     let setup = Setup {
+        replay: recorded.map(AsRef::as_ref),
+        wanted: &wanted,
+        inputs,
+        folders,
         library: deps.home.join(AGENTS_DIR),
         connections: deps.home.join("connections"),
         data: deps.home,
-        knows: what_the_agents_know(deps.home, deps.project),
+        knows: if let Some(replay) = recorded {
+            match &replay.memory_sources {
+                Some(snapshot) => frozen_known(snapshot, deps.home, deps.project, None)?,
+                None => empty_known(),
+            }
+        } else {
+            what_the_agents_know(deps.home, deps.project)
+        },
         is_ask: false,
         /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
          * fakt („nic nie kazano"), a dwa różne prompty za jeden fakt to dwie różne odpowiedzi
@@ -4243,7 +4547,6 @@ fn plan_run_with_identity(
          * schodzi z sędziego rundy pierwszej, a nie z kroku, który stoi przed pętlą. */
         unrolled: &unrolled,
     };
-    let wanted = which_nodes(&unrolled, &file, request.part.as_ref());
     let (mut steps, place) = plan_the_nodes(&unrolled, &file, &wanted, &setup)?;
     /* STRZAŁKI ZALEŻĄ OD TEGO, O KTÓRY WYCINEK CHODZI, i to jest cała różnica między dwoma
      * rodzajami powtórzenia.
@@ -4301,17 +4604,54 @@ fn plan_run_with_identity(
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
+    let memory_sources =
+        freeze_memory_sources(&memory, &steps, deps.home, deps.project, recorded.is_none())?;
     /* ZAMROŻENIE JEST JEDNORAZOWE, WIĘC BRAMKA STOI PRZED PLANEM, a nie w kroku: odmowa ma paść
      * ZANIM powstanie katalog biegu i zanim ruszy pierwszy proces (niezmiennik 12). Zwykły Start
      * jej nie widzi — `handoffs_from` niesie wyłącznie powtórzenie i wznowienie (`commands::rerun`). */
-    the_frozen_skills_are_still_here(request.handoffs_from.as_deref(), &steps)?;
-    let skills = what_this_run_froze(&steps)?;
+    if recorded.is_none() {
+        the_frozen_skills_are_still_here(request.handoffs_from.as_deref(), &steps)?;
+    }
+    let skills = if recorded.is_some() {
+        Vec::new()
+    } else {
+        what_this_run_froze(&steps)?
+    };
 
     // Związane PRZED planem: `setup` pożycza `dir`, a `dir` jedzie do planu przeniesieniem.
     let asked_for = setup.task.clone();
+    let input_nodes: Vec<_> = steps
+        .iter()
+        .map(|step| super::run_inputs::InputNode {
+            node_key: &step.node_key,
+            is_check: matches!(&step.job, Job::Check(_)),
+        })
+        .collect();
+    let inputs = super::run_inputs::RunInputs::from_graph(&file)
+        .and_then(|inputs| inputs.bind_checks(&input_nodes, &arrows))
+        .map_err(|message| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: None,
+                message,
+                fix: None,
+            })
+        })?;
     Ok(Plan {
+        replay: replay.cloned(),
+        inputs,
+        protection: BTreeMap::new(),
         id,
         dir,
+        lead_origin: lead_start.map(|start| start.origin.clone()),
+        input_snapshot: None,
+        workspace_inputs: BTreeMap::new(),
+        project_instructions: None,
+        memory_sources,
+        additional_inputs: file
+            .additional_inputs()
+            .map_err(|said| RunError::Io(io::Error::other(said)))?,
+        starting_results: BTreeMap::new(),
         title: file.name.clone(),
         workflow_id: file.id.clone(),
         hash: fingerprint(&bytes),
@@ -4431,30 +4771,11 @@ const THE_ASK: &str = "/ask";
 /// rzeczą, którą przyniósł człowiek, jest identyfikator agenta i zdanie — pierwsze sprawdza
 /// [`find_agent`], a drugie nie ma czego łamać. Sądzenie własnej konstrukcji dałoby odmowę,
 /// której nie da się naprawić z drugiej strony granicy.
-fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
-    let library = deps.home.join(AGENTS_DIR);
-    /* ODMOWA PRZED PIERWSZYM KATALOGIEM — kolejność z `ARCHITECTURE` §4, ta sama, co przy
-     * biegu z pliku. Bieg, który najpierw zakłada `runs/<ts>__<id>/`, a odmawia potem,
-     * zostawia w historii ślad biegu, którego nie było (niezmiennik 4), i robi to w chwili,
-     * w której człowiek pomylił się w jednym słowie.
-     *
-     * TA SAMA funkcja, co przy kroku z pliku — więc i to samo zdanie o agencie, którego nie
-     * ma. Druga odpowiedź na pytanie „kogo nazywa ten identyfikator" rozjechałaby się przy
-     * pierwszej zmianie którejkolwiek z nich (niezmiennik 13). */
-    let saved = find_agent(&library, &ask.agent, THE_ASK)?;
-
-    let id = Uuid::now_v7().to_string();
-    let created_at = now_ms();
-    let dir = run_directory(deps.project, &id, created_at);
-    /* TYTUŁ W HISTORII TO TO, O CO POPROSZONO, w jednym wierszu — bo tym jeden bieg `/ask`
-     * różni się od drugiego. Bez zdania zostaje nazwa agenta: bieg musi dać się rozpoznać na
-     * liście także wtedy, gdy nikt nie kazał nic ponad „ruszaj". */
-    let title = one_line(&ask.task, TITLE_LIMIT).unwrap_or_else(|| saved.name.clone());
-
-    let file = WorkflowFile {
+fn ask_workflow(saved: &Agent, ask: &AskRequest, title: &str) -> WorkflowFile {
+    WorkflowFile {
         format: crate::workflow::file::CURRENT,
         id: saved.id.to_string(),
-        name: title.clone(),
+        name: title.to_owned(),
         description: None,
         steps: vec![Step::Agent(AgentStep {
             /* KLUCZEM KAFELKA JEST IDENTYFIKATOR AGENTA, i to nie jest ozdoba. Okno rozpoznaje
@@ -4498,15 +4819,51 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         })],
         links: Vec::new(),
         extra: Map::new(),
-    };
+    }
+}
+
+fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
+    let library = deps.home.join(AGENTS_DIR);
+    /* ODMOWA PRZED PIERWSZYM KATALOGIEM — kolejność z `ARCHITECTURE` §4, ta sama, co przy
+     * biegu z pliku. Bieg, który najpierw zakłada `runs/<ts>__<id>/`, a odmawia potem,
+     * zostawia w historii ślad biegu, którego nie było (niezmiennik 4), i robi to w chwili,
+     * w której człowiek pomylił się w jednym słowie.
+     *
+     * TA SAMA funkcja, co przy kroku z pliku — więc i to samo zdanie o agencie, którego nie
+     * ma. Druga odpowiedź na pytanie „kogo nazywa ten identyfikator" rozjechałaby się przy
+     * pierwszej zmianie którejkolwiek z nich (niezmiennik 13). */
+    let saved = find_agent(&library, &ask.agent, THE_ASK)?;
+
+    let id = Uuid::now_v7().to_string();
+    let created_at = now_ms();
+    let dir = run_directory(deps.project, &id, created_at);
+    /* TYTUŁ W HISTORII TO TO, O CO POPROSZONO, w jednym wierszu — bo tym jeden bieg `/ask`
+     * różni się od drugiego. Bez zdania zostaje nazwa agenta: bieg musi dać się rozpoznać na
+     * liście także wtedy, gdy nikt nie kazał nic ponad „ruszaj". */
+    let title = one_line(&ask.task, TITLE_LIMIT).unwrap_or_else(|| saved.name.clone());
+
+    let file = ask_workflow(&saved, ask, &title);
 
     /* TEN SAM ROZWIJACZ, CO PRZY PLIKU, choć rozwijać tu nie ma czego: bieg z `/ask` ma jeden
      * kafelek i ani jednej strzałki. Graf policzony tą samą funkcją, a nie wpisany z ręki, bo
      * druga odpowiedź na pytanie „jak wygląda graf tego biegu" rozjechałaby się przy pierwszej
      * zmianie tamtej (niezmiennik 13) — a od tego grafu zależy, gdzie kroki pracują. */
     let unrolled = crate::workflow::unroll::unroll(&file);
+    let inputs = super::run_inputs::RunInputs::default();
+    let folders = crate::workflow::unroll::folders::working_folders_at(
+        &file,
+        &unrolled,
+        &inputs,
+        deps.project,
+        &dir.join(WORK_DIR),
+    )
+    .map_err(|why| RunError::Io(io::Error::other(why)))?;
     let setup = Setup {
         library,
+        replay: None,
+        wanted: &[],
+        inputs,
+        folders,
         connections: deps.home.join("connections"),
         data: deps.home,
         knows: what_the_agents_know(deps.home, deps.project),
@@ -4537,6 +4894,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
     // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
     // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
+    let memory_sources = freeze_memory_sources(&memory, &steps, deps.home, deps.project, true)?;
     /* Ten sam rachunek z umiejętności, co przy biegu z pliku — i tu zwykle pusty: krok `/ask`
      * powstaje z `Skills::default()`, więc nie ma po co sięgać. Bramki zamrożenia nie ma, bo bieg
      * jednokrokowy niczego nie wznawia (`seeded_from: None` niżej) i nie ma z czym porównywać. */
@@ -4545,8 +4903,20 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
 
     Ok(Plan {
         id,
+        replay: None,
         dir,
         title,
+        lead_origin: None,
+        inputs: super::run_inputs::BoundInputs::default(),
+        protection: BTreeMap::new(),
+        input_snapshot: None,
+        workspace_inputs: BTreeMap::new(),
+        project_instructions: None,
+        memory_sources,
+        additional_inputs: file
+            .additional_inputs()
+            .map_err(|said| RunError::Io(io::Error::other(said)))?,
+        starting_results: BTreeMap::new(),
         workflow_id: file.id.clone(),
         /* ODCISK PLANU, nie pliku: „czy to był ten sam plan" ma dla biegu jednokrokowego jedną
          * odpowiedź — ten agent i to zdanie — i dokładnie tyle jest w tych bajtach. */
@@ -4619,6 +4989,16 @@ struct Known {
     snapshots: BTreeMap<PathBuf, String>,
 }
 
+fn empty_known() -> Known {
+    Known {
+        text: String::new(),
+        sources: Vec::new(),
+        memory: Vec::new(),
+        notes: Vec::new(),
+        snapshots: BTreeMap::new(),
+    }
+}
+
 fn what_the_agents_know(home: &Path, project: &Path) -> Known {
     let library_root = super::memory::notes_root(home);
     let project_root = super::memory::project_notes_root(project);
@@ -4659,30 +5039,54 @@ fn what_the_agents_know(home: &Path, project: &Path) -> Known {
             tracing::debug!(root = %project_root.display(), %error, "the project notes could not be read");
         }
     }
-    let mut text = String::new();
-    let mut sources = Vec::new();
-    let mut memory = Vec::new();
+    known_from_sources(notes, snapshots, home, project)
+}
+
+fn known_from_sources(
+    notes: Vec<crate::memory::notes::Note>,
+    snapshots: BTreeMap<PathBuf, String>,
+    home: &Path,
+    project: &Path,
+) -> Known {
+    let mut known = Known {
+        notes,
+        snapshots,
+        ..empty_known()
+    };
     for scope in [
         crate::memory::notes::Scope::Everywhere,
         crate::memory::notes::Scope::ThisProject,
     ] {
         add_block(
-            &mut text,
-            &mut sources,
-            &mut memory,
-            &notes,
+            &mut known.text,
+            &mut known.sources,
+            &mut known.memory,
+            &known.notes,
             scope,
             home,
             project,
         );
     }
-    Known {
-        text,
-        sources,
-        memory,
-        notes,
-        snapshots,
-    }
+    known
+}
+
+fn frozen_known(
+    snapshot: &super::memory_sources::Snapshot,
+    home: &Path,
+    project: &Path,
+    node: Option<&str>,
+) -> io::Result<Known> {
+    let sources = snapshot.notes(home, project, node)?;
+    let raw = sources
+        .iter()
+        .map(|(note, raw)| (note.path.clone(), raw.clone()))
+        .collect();
+    Ok(known_from_sources(
+        sources.into_iter().map(|(note, _)| note).collect(),
+        raw,
+        home,
+        project,
+    ))
 }
 
 /// Dokleja blok jednego zakresu do tego, co już wiadomo — i dopisuje rachunek z niego.
@@ -4930,6 +5334,44 @@ fn what_this_run_knew(
     records
 }
 
+/// Źródło pochodzi z tego samego odczytu co prompt; mapa nie rozszerza zasięgu pomiędzy
+/// kopiami. Notatki odrzucone przez budżet pozostają w receipt, ale nie w paczce wejściowej.
+fn freeze_memory_sources(
+    memory: &[MemoryRecord],
+    steps: &[Planned],
+    home: &Path,
+    project: &Path,
+    verify_live: bool,
+) -> io::Result<super::memory_sources::Snapshot> {
+    let nodes = steps
+        .iter()
+        .filter_map(|step| match &step.job {
+            Job::Agent(job) => Some((
+                step.node_key.clone(),
+                job.memory
+                    .iter()
+                    .filter(|one| one.delivered)
+                    .map(|one| one.address.clone())
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let sources = memory
+        .iter()
+        .filter(|record| record.carried)
+        .map(|record| super::memory_sources::Source {
+            address: record.address.clone(),
+            raw: record.snapshot.clone(),
+        })
+        .collect();
+    let snapshot = super::memory_sources::Snapshot::new(sources, nodes)?;
+    if verify_live {
+        snapshot.verify_live_sources(home, project)?;
+    }
+    Ok(snapshot)
+}
+
 /// Jedna umiejętność w zrzucie biegu: **czym była**, nie co mówiła.
 ///
 /// 2026-08-28 (T-154). Lustro [`MemoryRecord`] obok, z tego samego powodu: `run.json` jest prawdą
@@ -5175,6 +5617,13 @@ fn with_the_task(task: &str, instructions: &str) -> String {
 /// Wobec czego planujemy krok: gdzie leży biblioteka, gdzie projekt, gdzie katalog tego biegu
 /// i skąd biorą się sterowniki.
 struct Setup<'a> {
+    replay: Option<&'a super::replay::ReplayMaterial>,
+    inputs: super::run_inputs::RunInputs,
+    /// WF-17: te same aliasy katalogów dla wykonania i limitu kopii przed Startem.
+    folders: crate::workflow::unroll::folders::CopyPlan,
+    /// WF-16 (2026-09-06): powtórzenie wycinka musi utworzyć wspólną kopię także wtedy,
+    /// gdy pierwotny właściciel nie wykonuje się ponownie. Adres kopii pozostaje ten sam.
+    wanted: &'a [bool],
     /// `~/.loadout/agents` — stąd bierzemy agenta, którego nazywa krok.
     library: PathBuf,
     /// `~/.loadout/connections` — wyłącznie natywne, jawnie zatwierdzone pliki.
@@ -5223,49 +5672,27 @@ struct Setup<'a> {
     unrolled: &'a crate::workflow::unroll::Unrolled,
 }
 
-/// Klucz katalogu roboczego: `id` kroku z pliku, a dla dalszych kopii ten sam klucz z numerem
-/// kopii.
-///
-/// # RUNDY DZIELĄ FOLDER, KOPIE NIE — i to są dwie różne rzeczy z dwóch różnych powodów
-///
-/// Rundy pętli **muszą** pracować w jednym drzewie, bo inaczej runda 2 nie widzi poprawek rundy 1
-/// i pętla przestaje mieć sens w swoim jedynym zadaniu. Kopie są odwrotnie: biegną **równocześnie
-/// same ze sobą**, więc wspólne drzewo znaczyłoby trzy sesje piszące po tych samych ścieżkach —
-/// dokładnie ta kolizja, dla której `check::one_folder_two_steps` wymaga od kroku w kilku kopiach
-/// własnej kopii plików (niezmiennik 12).
-///
-/// Dlatego numer rundy tutaj NIE wchodzi, a numer kopii wchodzi. Kopia zerowa nie dostaje
-/// sufiksu: plik, w którym nikt nie prosił o kopie, daje dokładnie te ścieżki, które dawał
-/// przedtem.
-fn work_key_for(tile_key: &str, copy: u8) -> String {
-    crate::workflow::check::work_key_for(tile_key, copy)
-}
-
 /// Klucz węzła: klucz katalogu roboczego, a dla dalszych rund pętli ten sam z numerem rundy.
 ///
 /// Runda zerowa NIE dostaje sufiksu, i to jest decyzja o wsteczności: plik bez pętli daje wtedy
 /// dokładnie te klucze, które dawał przedtem, więc `run.json` starych biegów i nowych da się
 /// porównać, a nikt, kto o pętli nie słyszał, nie widzi zmiany.
 ///
-/// ZBUDOWANY NA [`work_key_for`], a nie sklejony obok niego: dwa klucze różnią się dokładnie
+/// ZBUDOWANY NA [`crate::workflow::check::work_key_for`], a nie sklejony obok niego: dwa klucze różnią się dokładnie
 /// jednym sufiksem i mają się nie rozjechać w dniu, w którym ktoś poprawi jeden z nich.
 ///
 /// Klucze MUSZĄ się różnić między kopiami i między rundami, bo indeks biegu ma na nich
 /// `UNIQUE (run_id, node_key)` (`store::schema`): dwa węzły o jednym kluczu to bieg, który zapisze
 /// jeden i zgubi drugi — **po** zapłaceniu za oba (niezmiennik 4).
-fn node_key_for(tile_key: &str, turn: u8, copy: u8) -> String {
-    let key = work_key_for(tile_key, copy);
-    if turn == 0 {
-        return key;
-    }
-    format!("{key}#{turn}")
+pub(crate) fn node_key_for(tile_key: &str, turn: u8, copy: u8) -> String {
+    crate::workflow::check::node_key_for(tile_key, turn, copy)
 }
 
 /// Klucz katalogu pracy z klucza węzła — bez sufiksu rundy, ale z tożsamością kopii.
 ///
 /// 2026-08-24 (T-114) — gałąź i źródło wznowienia muszą pytać o tę samą kopię, którą nazywa
 /// katalog `work/`. Obcięcie także `~N` sprowadzałoby wszystkie kopie do gałęzi pierwszej.
-fn work_key_of(node_key: &str) -> &str {
+pub(super) fn work_key_of(node_key: &str) -> &str {
     node_key.find('#').map_or(node_key, |at| &node_key[..at])
 }
 
@@ -5398,6 +5825,14 @@ fn plan_step(
                 vendor: String::new(),
                 folds_in,
                 job: Job::Check(Box::new(CheckJob {
+                    proof_mode: check.proof_mode().map_err(|message| {
+                        RunError::Refused(Note {
+                            level: Level::Problem,
+                            step_id: Some(check.id.clone()),
+                            message,
+                            fix: None,
+                        })
+                    })?,
                     spec: CheckSpec {
                         command: check.command.clone(),
                         proof: check.proof.clone(),
@@ -5429,7 +5864,11 @@ fn plan_step(
                     /* Sama NAZWA POLA, nie cały typ: to jest jedyna wartość, którą krok czyta
                      * w chwili startu, a `ServeJob` istnieje po to, żeby nie nosić ze sobą
                      * kształtu z pliku workflow. */
-                    command_from: serve.command_from.as_ref().map(|from| from.field.clone()),
+                    command_from: serve.command_from.clone(),
+                    lifetime: serve.lifetime,
+                    start_when: serve.start_when,
+                    endpoints: serve.endpoints.clone(),
+                    readiness: serve.readiness.clone(),
                     cwd: spot.cwd,
                     ours: spot.ours,
                 })),
@@ -5451,7 +5890,11 @@ fn plan_step(
 /// rundami: stożek policzony na pliku dałby jeden węzeł na krok i po cichu wykasowałby powtórki,
 /// czyli zamieniłby pętlę w prostą — a bieg wyglądałby na udany, robiąc coś innego, niż narysował
 /// człowiek.
-fn which_nodes(unrolled: &Unrolled, file: &WorkflowFile, part: Option<&Part>) -> Vec<bool> {
+pub(crate) fn which_nodes(
+    unrolled: &Unrolled,
+    file: &WorkflowFile,
+    part: Option<&Part>,
+) -> Vec<bool> {
     let Some(part) = part else {
         return vec![true; unrolled.nodes.len()];
     };
@@ -5506,6 +5949,13 @@ fn add_task_context(
     setup: &Setup<'_>,
     node: usize,
 ) {
+    let scope = setup
+        .unrolled
+        .nodes
+        .get(node)
+        .and_then(|node| setup.file.steps.get(node.step))
+        .and_then(|step| setup.inputs.context_for(step.id()));
+    let task = scope.map_or(setup.task.as_str(), |scope| scope.task.as_str());
     if setup.is_ask {
         if !instructions.is_empty() {
             context.push(ContextSource {
@@ -5515,11 +5965,11 @@ fn add_task_context(
             });
         }
     } else {
-        if !setup.task.is_empty() {
+        if !task.is_empty() {
             context.push(ContextSource {
                 kind: ContextKind::RunTask,
                 reference: "run/task".to_owned(),
-                bytes: setup.task.len(),
+                bytes: task.len(),
             });
         }
         let instruction_bytes = instructions.replace(TASK_MARK, "").len();
@@ -5546,11 +5996,29 @@ fn plan_agent(
     spot: Workspace,
     setup: &Setup<'_>,
 ) -> Result<AgentJob, RunError> {
-    let saved = find_agent(&setup.library, &step.agent, &step.name)?;
+    let replay_key = setup
+        .unrolled
+        .nodes
+        .get(node)
+        .map(|one| node_key_for(&step.id, one.turn, copy));
+    let recorded = setup.replay.and_then(|replay| {
+        replay_key
+            .as_ref()
+            .and_then(|key| replay.effective.get(key))
+    });
+    let saved = if let Some(agent) = recorded {
+        agent.clone()
+    } else {
+        find_agent(&setup.library, &step.agent, &step.name)?
+    };
     // Nadpisania kroku przechodzą przez `Overrides`, więc klucz, którego krok nie ma prawa
     // ruszyć (`id`, `name`, `runsWith`), odbija się o typ, a nie o walidator do zapamiętania.
     let overrides: Overrides = serde_json::from_value(Value::Object(step.overrides.clone()))?;
-    let mut effective = resolve(&saved, &overrides)?.agent;
+    let mut effective = if recorded.is_some() {
+        saved.clone()
+    } else {
+        resolve(&saved, &overrides)?.agent
+    };
 
     // Polityka policzona RAZ i czytana dwa razy: raz jako dial kroku, raz jako sufit jego listy
     // narzędzi. Dwa wywołania tej samej tabeli byłyby dwoma miejscami, w których krok mógłby
@@ -5592,11 +6060,25 @@ fn plan_agent(
      * już swojego sędziego ze swoim zdaniem: `workflow::check::the_passthrough` biegnie w
      * `check_to_run`, czyli zanim ten plan w ogóle powstanie, i mówi „remove it from this step's
      * … options". Jeden nośnik, jedno zdanie, oba przed pierwszym procesem (niezmiennik 12). */
-    effective.vendor_options = crate::library::agents::passthrough_of_the_step(
-        &effective.vendor_options,
-        &step.vendor_options,
-    );
-    let skills = what_this_step_may_reach(setup.data, &saved, &overrides, step)?;
+    if recorded.is_none() {
+        effective.vendor_options = crate::library::agents::passthrough_of_the_step(
+            &effective.vendor_options,
+            &step.vendor_options,
+        );
+    }
+    let skills = if let Some(replay) = setup.replay {
+        StepSkills {
+            names: replay_key
+                .as_ref()
+                .and_then(|key| replay.skills.get(key))
+                .and_then(|one| one.agent.as_ref())
+                .map(|items| items.iter().map(|one| one.name.clone()).collect())
+                .unwrap_or_default(),
+            dirs: Vec::new(),
+        }
+    } else {
+        what_this_step_may_reach(setup.data, setup.project, &saved, &overrides, step)?
+    };
     let connections =
         crate::connections::runtime::selected(&setup.connections, &effective.connections).map_err(
             |error| {
@@ -5618,16 +6100,64 @@ fn plan_agent(
     let instructions = numbered(&step.instructions, copy, step.copies);
     // Trzeci blok pamięci powstaje TUTAJ, bo tutaj po raz pierwszy wiadomo, KTÓRY agent
     // biegnie w tym kroku (2026-08-22, T-80). Zbiór notatek jest ten sam dla całego biegu.
-    let (knows, mut context, memory) =
-        what_this_step_knows(&setup.knows, &effective.name, setup.data, setup.project);
+    let (mut knows, mut context, mut memory) = if let Some(snapshot) = setup
+        .replay
+        .and_then(|replay| replay.memory_sources.as_ref())
+    {
+        let key = replay_key
+            .as_deref()
+            .ok_or_else(|| io::Error::other("The saved memory has no physical step address."))?;
+        let known = frozen_known(snapshot, setup.data, setup.project, Some(key))?;
+        let prepared = what_this_step_knows(&known, &effective.name, setup.data, setup.project);
+        let delivered: BTreeSet<_> = prepared
+            .2
+            .iter()
+            .filter(|one| one.delivered)
+            .map(|one| &one.address)
+            .collect();
+        let expected: BTreeSet<_> = snapshot.selected_for(key)?.iter().collect();
+        if delivered != expected {
+            return Err(RunError::Io(io::Error::other(
+                "The saved memory selection no longer fits this step's context rules; nothing was replaced with today's notes.",
+            )));
+        }
+        prepared
+    } else {
+        what_this_step_knows(&setup.knows, &effective.name, setup.data, setup.project)
+    };
+    let scope = setup.inputs.context_for(&step.id);
+    if scope.is_some_and(|scope| !scope.project_memory) {
+        knows.clear();
+        context.clear();
+        memory.clear();
+    }
     add_task_context(&mut context, &instructions, setup, node);
+    let task = scope.map_or(setup.task.as_str(), |scope| scope.task.as_str());
+    if let Some(scope) = scope
+        && !scope.instructions.is_empty()
+    {
+        if !knows.is_empty() {
+            knows.push_str("\n\n");
+        }
+        knows.push_str(&scope.instructions);
+        context.push(ContextSource {
+            kind: ContextKind::WorkflowStep,
+            reference: format!(
+                "context/{}/instructions",
+                setup.inputs.context_key(&step.id).unwrap_or_default()
+            ),
+            bytes: scope.instructions.len(),
+        });
+    }
 
     // Sterownik stoi już wyżej (przy suficie narzędzi) i jest **jeden na krok**: etykieta
     // vendora idzie do `run.json` od pierwszego zrzutu, więc historia biegu wie, do kogo
     // wracać, także wtedy, gdy krok nigdy nie ruszył. Pytanie „czy ten program w ogóle umie
     // przyjąć katalog pluginu" zadajemy tej samej instancji i ZANIM powstanie katalog biegu.
     let borrows = what_this_step_borrows(&step.borrow);
-    borrowing_is_possible(setup.project, &driver, &borrows, step)?;
+    if recorded.is_none() {
+        borrowing_is_possible(setup.project, &driver, &borrows, step)?;
+    }
     // Policzone, ZANIM sterownik wejdzie do struktury: `Arc` idzie tam przez przeniesienie,
     // a klon tylko po to, żeby zadać jedno pytanie, byłby drugim uchwytem do niczego.
     let frozen = what_was_frozen(&effective, &driver)?;
@@ -5657,7 +6187,7 @@ fn plan_agent(
         // wyszło, dostaje blok „co wiadomo". Ta kolejność jest treścią: notatki są kontekstem
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
-        prompt: with_what_we_know(&knows, &with_the_task(&setup.task, &instructions)),
+        prompt: with_what_we_know(&knows, &with_the_task(task, &instructions)),
         asked: instructions,
         context,
         memory,
@@ -5674,6 +6204,8 @@ fn plan_agent(
         // skutku (niezmiennik 16).
         thinking: effective.thinking,
         connections,
+        service_access: effective.service_access.clone(),
+        agent_messages: effective.agent_messages,
         // W kształcie TEJ aplikacji, policzonym raz: `--flaga wartość` dla Claude Code,
         // `-c klucz=wartość` dla Codeksa. Klucz przelotki bierze się z vendora agenta, bo to
         // plik agenta nazywa go tym słowem — nie z etykiety sterownika, którą w teście nosi
@@ -5883,6 +6415,7 @@ fn what_this_step_may_use(
 /// dostaje trzy, nic nie pada i nikt się o tym nie dowiaduje.
 fn what_this_step_may_reach(
     data: &Path,
+    project: &Path,
     saved: &Agent,
     overrides: &Overrides,
     step: &AgentStep,
@@ -5891,21 +6424,40 @@ fn what_this_step_may_reach(
         Skills::Every(_) => None,
         Skills::Only(names) => Some(names.clone()),
     });
-    StepSkills::for_the_step(data, &saved.skills, picked.as_deref(), &step.name).map_err(
-        |missing| {
-            RunError::Refused(Note {
-                level: Level::Problem,
-                // Kropka ląduje na kafelku TEGO kroku: to jego lista umiejętności, a odmowa bez
-                // wskazania kafelka zostawia człowieka ze szukaniem, którego agenta dotyczy.
-                step_id: Some(step.id.clone()),
-                // ZDANIE CO DO SŁOWA Z `skills::Missing`. Własne brzmienie byłoby drugą kopią jednej
-                // odmowy, a druga kopia jest zawsze tą nieaktualną (niezmiennik 23) — tym bardziej
-                // że to samo zdanie czyta potem ekran pracy.
-                message: missing.to_string(),
-                fix: None,
-            })
-        },
+    let roots = crate::skills::Roots {
+        home: data.parent().unwrap_or(data).to_path_buf(),
+        project: Some(project.to_path_buf()),
+        data: data.to_path_buf(),
+    };
+    let selected = crate::skills::bundle::choices(&saved.extra).map_err(|error| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: Some(step.id.clone()),
+            message: error.to_string(),
+            fix: None,
+        })
+    })?;
+    StepSkills::from_selected_sources(
+        &roots,
+        &saved.skills,
+        picked.as_deref(),
+        &step.name,
+        &selected,
     )
+    .map(|found| found.skills)
+    .map_err(|missing| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            // Kropka ląduje na kafelku TEGO kroku: to jego lista umiejętności, a odmowa bez
+            // wskazania kafelka zostawia człowieka ze szukaniem, którego agenta dotyczy.
+            step_id: Some(step.id.clone()),
+            // ZDANIE CO DO SŁOWA Z `skills::Missing`. Własne brzmienie byłoby drugą kopią jednej
+            // odmowy, a druga kopia jest zawsze tą nieaktualną (niezmiennik 23) — tym bardziej
+            // że to samo zdanie czyta potem ekran pracy.
+            message: missing.to_string(),
+            fix: None,
+        })
+    })
 }
 
 /// Znajduje w bibliotece agenta o tym identyfikatorze.
@@ -6026,8 +6578,7 @@ struct Folded {
 ///
 /// [`Folder::SameCopy`] jest jedynym wariantem, którego nie da się rozstrzygnąć z samego kroku:
 /// „to samo drzewo, w którym pracował krok przede mną" jest zdaniem o GRAFIE. Dlatego wejście do
-/// rozwiązywania folderu jest tutaj, a nie w [`workspace`] — i jest dalej jedno, bo obie drogi
-/// schodzą się w tej funkcji.
+/// rozwiązywania folderu korzysta z jednego `CopyPlan`, wspólnego także z rachunkiem Labu.
 ///
 /// Odmowa zamiast domysłu, kiedy odpowiedzi nie ma wcale. Ciche zejście do folderu projektu
 /// byłoby dokładnie tą implementacją, przed którą ten wariant powstał: kafelek mówi „to samo
@@ -6043,67 +6594,67 @@ fn where_it_works(
     key: &str,
     name: &str,
     node: usize,
-    copy: u8,
+    _copy: u8,
     setup: &Setup<'_>,
 ) -> Result<(Workspace, Vec<Folded>), RunError> {
-    let work = work_key_for(key, copy);
-    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work) {
-        return Ok((spot, Vec::new()));
-    }
-
-    let mut before = trees_before(node, setup);
-    match before.len() {
-        // TO SAMO ZDANIE, CO W WALIDATORZE, i dlatego przychodzi z `workflow::check`. Tą drogą
-        // człowiek nie idzie: `check_to_run` mówi to samo kilkadziesiąt linii wcześniej i bieg
-        // odmawia tam. Ale ta funkcja musi zwrócić WARTOŚĆ, a jedyną wartością, która tu nie
-        // kłamie, jest odmowa — folder projektu wpisany w to miejsce byłby cichym powrotem
-        // do wady, którą `same-copy` usuwa.
-        0 => Err(RunError::Refused(Note {
+    let chosen = setup.folders.nodes.get(node).ok_or_else(|| {
+        RunError::Io(io::Error::other("the working folder names an unknown step"))
+    })?;
+    let root = chosen.root.as_ref().ok_or_else(|| {
+        RunError::Refused(Note {
             level: Level::Problem,
-            // Kropka ląduje na kafelku TEGO kroku: to on nie ma odpowiedzi na pytanie „które
-            // drzewo", więc to jego człowiek otworzy.
             step_id: Some(key.to_owned()),
             message: crate::workflow::check::nothing_before(name),
             fix: None,
-        })),
-        1 => Ok((
-            Workspace {
-                // Gość w cudzym drzewie: zakłada je krok, który je NAZWAŁ (`fresh-copy`), a bieg
-                // robi to raz na katalog roboczy (`lay_out_the_run_dir` dedupikuje po `cwd`).
-                // `ours: true` tutaj znaczyłoby dwa kroki, z których każdy chce założyć to samo
-                // drzewo, a wtedy o wyniku decyduje kolejność w pliku.
-                cwd: before.remove(0).cwd,
-                ours: false,
-            },
-            Vec::new(),
-        )),
-        /* FIZYCZNY FAN-IN (2026-08-29). Krok, przed którym stoją kroki pracujące w RÓŻNYCH
-         * drzewach, dostaje WŁASNE, nowe — i to jest cała treść tej gałęzi. Do tego dnia stała
-         * tu odmowa („the steps before it work in N different folders"), czyli dwie równoległe
-         * gałęzie dało się narysować i nie dało się na nich pracować.
-         *
-         * `ours: true`, czyli zwykłą drogą [`lay_out_the_run_dir`]: kopia składana powstaje tym
-         * SAMYM przepisem, co kopie rodziców, i to nie jest symetria, tylko warunek poprawności
-         * — [`super::fan_in`] porównuje z nią bajty, żeby wiedzieć, co który rodzic zmienił.
-         * Kopia zrobiona inaczej byłaby inną bazą i cudza praca czytałaby się jako zmiana.
-         *
-         * Wybranie pierwszego z brzegu byłoby biegiem, w którym poprawka czyta nie ten kod;
-         * dlatego lista jest KOMPLETNA i idzie dalej razem z katalogiem. */
-        _ => Ok((
-            Workspace {
-                cwd: own_copy_at(setup.dir, &work),
-                ours: true,
-            },
-            before,
-        )),
-    }
+        })
+    })?;
+    // Alias jest wspólną polityką z rachunkiem Labu; wybór inicjalizatora wycinka nadal
+    // należy do tego konkretnego biegu. FreshCopy/rundy deduplikuje istniejący layout.
+    let ours = match folder {
+        Folder::FreshCopy => true,
+        Folder::Project => {
+            setup.inputs.project_owner(setup.file, key).is_some()
+                && scoped_copy_initializer(setup, key) == Some(key)
+        }
+        Folder::SameCopy => chosen.establishes,
+        Folder::Pick { .. } => false,
+    };
+    let before = if matches!(folder, Folder::SameCopy) && chosen.establishes {
+        trees_before(node, setup)
+    } else {
+        Vec::new()
+    };
+    Ok((
+        Workspace {
+            cwd: folder_path(root, setup),
+            ours,
+        },
+        before,
+    ))
 }
 
-/// Katalog, w którym pracuje krok o tej robocie. `None` dla kafelka kontrolnego: on nie dotyka
-/// plików, tylko pyta człowieka.
-///
-/// Ta sama trójka ramion, co w [`lay_out_the_run_dir`], i z tego samego powodu: „gdzie ten krok
-/// pracuje" ma mieć jedną odpowiedź, choć trzy rodzaje roboty trzymają ją w trzech polach.
+/// Pierwszy wybrany krok zakłada wspólną kopię; nie musi być jej historycznym właścicielem.
+fn scoped_copy_initializer<'a>(setup: &'a Setup<'_>, tile: &str) -> Option<&'a str> {
+    let scope = setup.inputs.context_key(tile)?;
+    setup
+        .file
+        .steps
+        .iter()
+        .enumerate()
+        .find(|(at, step)| {
+            setup.inputs.context_key(step.id()) == Some(scope)
+                && folder_and_key(step).is_some_and(|(folder, _)| matches!(folder, Folder::Project))
+                && setup
+                    .unrolled
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .any(|(index, node)| node.step == *at && setup.wanted.get(index) == Some(&true))
+        })
+        .map(|(_, step)| step.id())
+}
+
+/// Katalog pracy, wspólny dla agenta, komendy i usługi. Checkpoint nie dotyka plików.
 fn where_the_job_works(job: &Job) -> Option<&Path> {
     match job {
         Job::Agent(one) => Some(one.cwd.as_path()),
@@ -6115,42 +6666,14 @@ fn where_the_job_works(job: &Job) -> Option<&Path> {
 
 /// Katalog własnej kopii kroku o tym kluczu pracy.
 ///
-/// Jedno miejsce, bo pytają o nią trzy (niezmiennik 13): [`workspace`] dla `fresh-copy`,
-/// [`where_it_works`] dla kroku, który składa, i [`works_in`] dla kroku, który za takim stoi.
-/// Trzy sklejenia tej samej ścieżki rozjechałyby się przy pierwszej poprawce jednego z nich.
+/// Jedno miejsce: wszystkie rozstrzygnięte aliasy z `CopyPlan` adresuje [`folder_path`].
 fn own_copy_at(dir: &Path, work_key: &str) -> PathBuf {
     dir.join(WORK_DIR).join(work_key)
 }
 
-/// Gdzie pracuje JEDEN węzeł rozwiniętego grafu — także wtedy, gdy sam składa pracę rodziców.
-///
-/// `None` znaczy „ten węzeł drzewa nie wyznacza": kafelek kontrolny nie dotyka plików, a krok
-/// „to samo drzewo", przed którym stoi dokładnie jedno drzewo, jest tym samym pytaniem zadanym
-/// o krok dalej wstecz.
-///
-/// # Dlaczego krok składający ma tu odpowiedź, a nie jest przezroczysty
-///
-/// 2026-08-29 — bez tej gałęzi krok stojący ZA składaniem schodziłby po strzałkach do dziadków
-/// i widziałby dwa drzewa rodziców zamiast jednego, złożonego. Odmówiłby albo — gorzej —
-/// pracował w kopii jednego z nich, czyli nie zobaczyłby pracy drugiego. Składanie jest krokiem
-/// z własnym katalogiem, więc mówi to samo, co każdy inny krok z własnym katalogiem.
-///
-/// Rekurencja przez [`trees_before`] idzie WYŁĄCZNIE po strzałkach wstecz, więc kończy się na
-/// grafie bez cykli, którego pilnuje `Dag::new`.
-fn works_in(node: usize, setup: &Setup<'_>) -> Option<PathBuf> {
-    let one = setup.unrolled.nodes.get(node)?;
-    // Krok, którego nie ma w pliku, nie wyznacza drzewa — `unroll` numeruje węzły z tego samego
-    // pliku, więc to jest kształt niemożliwy, a nie ścieżka, którą ktoś przejdzie.
-    let step = setup.file.steps.get(one.step)?;
-    let (folder, key) = folder_and_key(step)?;
-    // NUMER KOPII TEGO WĘZŁA, nie kafelka: każda kopia ma własne drzewo, więc krok „to samo
-    // drzewo, w którym pracował krok przede mną", stojący za krokiem w trzech kopiach, widzi
-    // TRZY różne katalogi — i to jest składanie u wołającego, a nie wybór pierwszego z brzegu.
-    let work = work_key_for(key, one.copy);
-    if let Some(spot) = workspace(folder, setup.project, setup.dir, &work) {
-        return Some(spot.cwd);
-    }
-    (trees_before(node, setup).len() > 1).then(|| own_copy_at(setup.dir, &work))
+/// Jedynie adresuje rozstrzygnięty alias. Reguły dziedziczenia i składania są w `CopyPlan`.
+fn folder_path(root: &crate::workflow::unroll::folders::Root, setup: &Setup<'_>) -> PathBuf {
+    root.at(setup.project, &setup.dir.join(WORK_DIR))
 }
 
 /// Nazwa kafelka tego węzła — z numerem kopii, jeśli krok biegnie w kilku.
@@ -6185,69 +6708,17 @@ fn tile_name_of(node: usize, setup: &Setup<'_>) -> String {
 /// Zero katalogów znaczy „przed tym krokiem nie ma nikogo" i jest odmową u wołającego; więcej niż
 /// jeden — „poprzednicy pracują w różnych drzewach", czyli jest co składać.
 fn trees_before(node: usize, setup: &Setup<'_>) -> Vec<Folded> {
-    let mut seen = vec![false; setup.unrolled.nodes.len()];
-    // Ten krok od razu jako odwiedzony: strzałka do siebie samego jest kształtem, którego
-    // `Dag::new` odmawia, ale obchód nie ma prawa się o nią zapętlić, gdyby jednak tu doszła.
-    if let Some(mine) = seen.get_mut(node) {
-        *mine = true;
-    }
-    let mut stack = vec![node];
-    let mut found: Vec<Folded> = Vec::new();
-    while let Some(at) = stack.pop() {
-        for &(from, to) in &setup.unrolled.arrows {
-            if to != at {
-                continue;
-            }
-            // Numer spoza listy węzłów jest kształtem niemożliwym (`unroll` numeruje węzły
-            // i strzałki razem), więc pomijamy go zamiast indeksować: panika w silniku zabiera
-            // cały bieg (`AGENTS.md` §4).
-            let Some(first_time) = seen.get_mut(from).filter(|been| !**been) else {
-                continue;
-            };
-            *first_time = true;
-            match works_in(from, setup) {
-                Some(cwd) if !found.iter().any(|one| one.cwd == cwd) => found.push(Folded {
-                    name: tile_name_of(from, setup),
-                    cwd,
-                }),
-                Some(_) => {}
-                // `same-copy` bez własnej kopii: to samo pytanie, tylko o krok dalej wstecz.
-                None => stack.push(from),
-            }
-        }
-    }
-    found
-}
-
-/// Gdzie krok pracuje i czy ten katalog jest nasz — **jeśli mówi to sam krok**.
-///
-/// 2026-08-17 (T-33) — `fresh-copy` dostaje **własny katalog z kopią plików projektu**.
-///
-/// Do tego dnia dostawał katalog PUSTY, a `ARCHITECTURE.md` §2 p. 4 obiecuje „każdy krok dostaje
-/// własną kopię twoich plików". To nie była brakująca wygoda: `workflow::check` odmawia zapisu
-/// workflow, w którym dwa kroki piszą po tych samych ścieżkach (T-12), i ta walidacja ZAKŁADA,
-/// że fresh-copy chroni. Nie chroniła — więc krok „na własnej kopii" pracował na pustce zamiast
-/// na projekcie, co jest gorsze od kolizji: agent nie widzi plików, które ma zmienić.
-///
-/// Ta funkcja dalej tylko WSKAZUJE katalog. Kopiowanie robi [`lay_out_the_run_dir`], bo dotyka
-/// dysku, a plan ma być czystym rachunkiem — planowanie, które zapisuje, nie da się powtórzyć
-/// przy wznowieniu.
-///
-/// 2026-08-20 (T-56) — `None` DLA [`Folder::SameCopy`], i to jest cała treść tego wariantu.
-/// „To samo drzewo, w którym pracował krok przede mną" jest zdaniem o GRAFIE, a tutaj wchodzi
-/// jeden folder i klucz jednego węzła — nie ma z czego wyliczyć odpowiedzi. Odpowiada
-/// [`where_it_works`], które widzi strzałki; brak wartości mówi to wprost, zamiast schodzić po
-/// cichu do folderu projektu.
-fn workspace(folder: &Folder, project: &Path, dir: &Path, node_key: &str) -> Option<Workspace> {
-    let (cwd, ours) = match folder {
-        Folder::Project => (project.to_path_buf(), false),
-        // Katalog wskazany ręcznie jest cudzy: nie tworzymy go, bo „nie ma takiego folderu" jest
-        // odpowiedzią, a utworzenie go po cichu zamienia literówkę w pusty bieg.
-        Folder::Pick { path } => (PathBuf::from(path), false),
-        Folder::FreshCopy => (own_copy_at(dir, node_key), true),
-        Folder::SameCopy => return None,
-    };
-    Some(Workspace { cwd, ours })
+    setup
+        .folders
+        .nodes
+        .get(node)
+        .into_iter()
+        .flat_map(|one| &one.parents)
+        .map(|(from, root)| Folded {
+            name: tile_name_of(*from, setup),
+            cwd: folder_path(root, setup),
+        })
+        .collect()
 }
 
 /// Dial „co agent może zrobić z plikami" → polityka, którą rozumie sterownik.
@@ -6278,7 +6749,7 @@ fn some_text(text: &str) -> Option<String> {
 
 /// Tworzy katalog biegu i to, co do niego należy — **dopiero po planie**.
 fn lay_out_the_run_dir(
-    plan: &Plan,
+    plan: &mut Plan,
     project: &Path,
     provisional: &mut ProvisionalRun,
 ) -> Result<Vec<Isolated>, RunError> {
@@ -6302,6 +6773,10 @@ fn lay_out_the_run_dir(
         provisional.owns_run_directory(plan.dir.clone());
     }
     prepared.map_err(|problem| RunError::Io(io::Error::other(problem.to_string())))?;
+    let publication = supervisor::PublicationRoot::open(&plan.dir)?;
+    for scope in plan.inputs.configuration.contexts.keys() {
+        publication.ensure_directory(&PathBuf::from("context").join(scope), 0o700)?;
+    }
     // 2026-08-28 (T-152 review): retry dokładnie tego samego Bound claimu ma ten sam UUID i
     // katalog. Brak durable `run.json` dowodzi, że lifecycle jeszcze nie ruszył, więc ten
     // istniejący katalog nadal należy do jednej logicznej próby. Zwykły Start nie ma tego
@@ -6309,9 +6784,104 @@ fn lay_out_the_run_dir(
     if !run_directory_was_missing && provisional.can_reclaim_bound_directory(&plan.id, &plan.dir) {
         provisional.owns_reclaimed_run_directory(plan.dir.clone());
     }
+    let needs_input = plan.steps.iter().any(|step| match &step.job {
+        Job::Agent(job) => job.ours,
+        Job::Check(job) => job.ours,
+        Job::Serve(job) => job.ours,
+        Job::Ask { .. } => false,
+    });
+    let input = if needs_input {
+        if !run_directory_was_missing
+            && !plan.dir.join(super::input_snapshot::DIRECTORY).exists()
+            && fs::read_dir(plan.dir.join(WORK_DIR))
+                .is_ok_and(|mut children| children.next().is_some())
+        {
+            provisional.block_reclaimed_parent_cleanup(&plan.dir);
+            return Err(RunError::Io(io::Error::other(
+                "The saved input of these existing copies is missing. Their folders were kept; start a new independent run.",
+            )));
+        }
+        let captured = if let Some(replay) = plan
+            .replay
+            .as_ref()
+            .filter(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+        {
+            replay
+                .input
+                .as_ref()
+                .ok_or_else(|| {
+                    RunError::Io(io::Error::other(
+                        "The recorded starting files are unavailable.",
+                    ))
+                })?
+                .copy_to(&plan.dir)?
+        } else if let Some(previous) = plan.seeded_from.as_deref() {
+            let original = super::input_snapshot::read(previous).map_err(|error| RunError::Io(
+                io::Error::other(format!("The earlier run's saved input is unavailable: {error}. Start a new independent run."))
+            ))?;
+            let work_keys: BTreeSet<_> = plan
+                .steps
+                .iter()
+                .filter_map(|step| match &step.job {
+                    Job::Agent(job) if job.ours => Some(work_key_of(&step.node_key)),
+                    Job::Check(job) if job.ours => Some(work_key_of(&step.node_key)),
+                    Job::Serve(job) if job.ours => Some(work_key_of(&step.node_key)),
+                    _ => None,
+                })
+                .collect();
+            // Jedna kontynuowana kopia nie miesza wyników z nowym WIP gospodarza. Wiele
+            // kopii zachowuje ostrożną odmowę, zanim zgadniemy, jak połączyć różne bazy.
+            if work_keys.len() > 1 {
+                let current_dir = tempfile::Builder::new()
+                    .prefix(".current-input-")
+                    .tempdir_in(&plan.dir)?;
+                let current = super::input_snapshot::capture_selected(
+                    project,
+                    current_dir.path(),
+                    original.additional_inputs(),
+                )?;
+                if current.entries() != original.entries()
+                    || current.git_oid() != original.git_oid()
+                {
+                    return Err(RunError::Io(io::Error::other(
+                        "The project changed since the earlier run. Start a new independent run; its results were not overwritten.",
+                    )));
+                }
+            }
+            original.copy_to(&plan.dir)?
+        } else {
+            super::input_snapshot::capture_selected(project, &plan.dir, &plan.additional_inputs)?
+        };
+        Some(captured)
+    } else {
+        None
+    };
     /* JEDEN KATALOG ROBOCZY POWSTAJE RAZ. Rundy petli dziela katalog -- musza, bo inaczej runda 2
      * nie widzi poprawek rundy 1 -- wiec bez tego zbioru zakladalibysmy drzewo N razy w tym samym
      * miejscu, a `git worktree add` odmawia na istniejacym katalogu. */
+    let seed_source = plan
+        .replay
+        .as_ref()
+        .filter(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+        .map(|replay| replay.source_dir.as_path())
+        .or(plan.seeded_from.as_deref());
+    let needed_seeds = plan
+        .steps
+        .iter()
+        .filter_map(|step| {
+            plan.inputs
+                .configuration
+                .context_for(tile_key_of(&step.node_key))
+        })
+        .filter_map(|scope| scope.workspace_seed.as_deref())
+        .collect();
+    let seeds = super::workspace_inputs::prepare(
+        project,
+        &plan.dir,
+        &plan.inputs.configuration,
+        &needed_seeds,
+        seed_source,
+    )?;
     let mut made: Vec<Isolated> = Vec::new();
     for (at, step) in plan.steps.iter().enumerate() {
         // Krok „sprawdź" dostaje własne drzewo tą samą drogą, co krok agenta, i to jest wymóg,
@@ -6330,12 +6900,49 @@ fn lay_out_the_run_dir(
         if let Some(cwd) = fresh
             && !made.iter().any(|one| one.cwd == *cwd)
         {
-            let work_key = work_key_of(&step.node_key);
+            // Klucz WSPÓLNEJ kopii nie jest kluczem kroku, który ją teraz zakłada.
+            // Przy Just(reader) właściciel publisher nie biegnie, lecz zapisany wynik
+            // nadal należy do publisher. Wybranie reader zgubiłoby historyczne bajty.
+            let work_key = cwd
+                .file_name()
+                .and_then(|key| key.to_str())
+                .ok_or_else(|| {
+                    RunError::Io(io::Error::other(
+                        "The managed working folder has no valid key.",
+                    ))
+                })?;
             let branch = isolate::branch_for(&plan.id, work_key);
             /* SKĄD ODBIJA SIĘ TO DRZEWO. Przy zwykłym biegu z `HEAD`; przy wznowieniu z gałęzi,
              * na której TEN KAFELEK skończył poprzednio. Powód stoi przy [`where_it_left_off`]
              * i jest z pomiaru, nie z symetrii. */
-            let from = where_it_left_off(project, plan.seeded_from.as_deref(), work_key);
+            let from =
+                where_it_left_off(project, plan.seeded_from.as_deref(), work_key, &plan.dir)?;
+            if let Some(start) = &from {
+                plan.starting_results
+                    .insert(work_key.to_owned(), start.record());
+            }
+            let seed = plan
+                .inputs
+                .configuration
+                .context_for(tile_key_of(&step.node_key))
+                .and_then(|scope| scope.workspace_seed.as_ref())
+                .and_then(|key| seeds.get(key));
+            let origin = seed
+                .map(|seed| &seed.input)
+                .or(input.as_ref())
+                .ok_or_else(|| {
+                    RunError::Io(io::Error::other("The run's saved input is missing."))
+                })?;
+            if let Some(seed) = seed {
+                plan.workspace_inputs
+                    .insert(work_key.to_owned(), seed.clone());
+            }
+            let content = from.as_ref().and_then(CopyStart::files).unwrap_or(origin);
+            if plan.inputs.configuration.isolate_contexts
+                && from.as_ref().and_then(CopyStart::oid).is_some()
+            {
+                return Err(io::Error::other("This protected retry needs a saved file result. Start a new protected run from its saved input instead.").into());
+            }
             // Odmowa jest GŁOŚNA i zatrzymuje bieg, zanim ruszy jakikolwiek proces. Ciche
             // zejście do wspólnego katalogu dałoby dwa kroki piszące po tych samych plikach,
             // z których każdy skończyłby się „sukcesem" (niezmiennik 12).
@@ -6344,7 +6951,12 @@ fn lay_out_the_run_dir(
                 &plan.dir,
                 cwd,
                 &branch,
-                from.as_deref().unwrap_or("HEAD"),
+                from.as_ref().and_then(CopyStart::oid),
+                CopyInput {
+                    origin,
+                    content,
+                    file_only: plan.inputs.configuration.isolate_contexts,
+                },
                 provisional,
             )
             .map_err(|why| {
@@ -6360,7 +6972,13 @@ fn lay_out_the_run_dir(
                     why: why.to_string(),
                 }
             })?;
+            if from.is_some()
+                && let Some(previous) = plan.seeded_from.as_deref()
+            {
+                carry_previous_import(previous, &plan.dir, work_key, origin)?;
+            }
             made.push(Isolated {
+                copy_identity: supervisor::PublicationRoot::open(cwd)?.identity(),
                 step: step.name.clone(),
                 at,
                 cwd: cwd.clone(),
@@ -6370,12 +6988,50 @@ fn lay_out_the_run_dir(
                 },
                 left_behind: done.left_behind,
             });
+            if made.len() == 1 {
+                provisional.check(PrestartFaultPoint::AfterFirstIsolation)?;
+            }
             if made.len() == 2 {
                 provisional.check(PrestartFaultPoint::AfterSecondIsolation)?;
             }
         }
     }
+    plan.input_snapshot = input;
     Ok(made)
+}
+
+/// 2026-09-06: wznowiony wynik konsumenta zawiera jego własne poprawki. Bez poprzedniej
+/// delty importer porównywał je z origin i odmawiał nawet niezmienionych wejść rodziców.
+/// Przenosimy bazę porównania, NIE zgodę na przygotowanie konkretnego kroku nowego biegu.
+fn carry_previous_import(
+    previous: &Path,
+    run: &Path,
+    key: &str,
+    origin: &super::input_snapshot::InputSnapshot,
+) -> Result<(), RunError> {
+    refuse_incomplete_input(previous, key)?;
+    let old = read_isolation_marker(&previous.join(ISOLATION_MARKERS_DIR).join(key))
+        .map_err(io::Error::other)?;
+    let Some(mut prepared) = old.as_ref().and_then(IsolationMarker::fan_in).cloned() else {
+        return Ok(());
+    };
+    if prepared.origin != origin.id() {
+        return Err(io::Error::other("The previous combined input belongs to a different saved starting copy. Nothing was overwritten.").into());
+    }
+    let path = run.join(ISOLATION_MARKERS_DIR).join(key);
+    let mut marker = read_isolation_marker(&path)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("The new working copy's ownership is missing."))?;
+    if marker.fan_in().is_some() {
+        return Ok(());
+    }
+    prepared.consumer.clear();
+    prepared.parent_steps.clear();
+    prepared.parents.clear();
+    prepared.plan_digest.clear();
+    marker.set_fan_in(prepared);
+    write_isolation_marker(&path, &marker).map_err(io::Error::other)?;
+    Ok(())
 }
 
 /// Powtarza layout po awarii miedzy `bind` i pierwszym `run.json`.
@@ -6401,17 +7057,162 @@ fn lay_out_the_run_dir(
 /// ma dokładnie jedną odpowiedź, a składamy ją tą samą funkcją, która tamtą nazwę nadała
 /// (niezmiennik 13).
 ///
-/// `None`, kiedy czegokolwiek brakuje — nie ma poprzedniego biegu, nie da się przeczytać jego
-/// `run.json`, albo gałąź została skasowana. Wtedy drzewo odbija się od `HEAD`, czyli robi to,
-/// co robiło zawsze. Cichy powrót jest tu poprawny: „nie było czego przenieść" i „przeniesiono"
-/// dają to samo drzewo, kiedy poprzedni bieg tego kafelka nie tknął.
-fn where_it_left_off(project: &Path, previous: Option<&Path>, work_key: &str) -> Option<String> {
-    let bytes = fs::read(previous?.join(RUN_FILE)).ok()?;
-    let described: Value = serde_json::from_slice(&bytes).ok()?;
-    let branch = isolate::branch_for(described.get("id")?.as_str()?, work_key);
-    // Sprawdzamy, ŻE ISTNIEJE, zanim ją podamy: `git worktree add` z nieistniejącym punktem
-    // startu odmawia całemu biegowi, a brak gałęzi po skasowanym biegu jest zwykłym stanem.
-    isolate::names_a_commit(project, &branch).then_some(branch)
+/// WF-01 (2026-09-05): brak wyniku nie oznacza HEAD. Pusta, poprawnie domknięta kopia
+/// ma zapisany dokładny commit, mimo że jej tymczasowa gałąź została już usunięta.
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum StartingResult {
+    Git {
+        oid: String,
+    },
+    Folder {
+        manifest: PathBuf,
+        snapshot: String,
+        origin: String,
+    },
+    Unchanged {
+        origin: String,
+    },
+}
+
+enum CopyStart {
+    Git(String),
+    Folder {
+        input: super::input_snapshot::InputSnapshot,
+        manifest: PathBuf,
+        origin: String,
+    },
+    Unchanged(String),
+}
+
+impl CopyStart {
+    fn oid(&self) -> Option<&str> {
+        match self {
+            Self::Git(oid) => Some(oid),
+            _ => None,
+        }
+    }
+    fn files(&self) -> Option<&super::input_snapshot::InputSnapshot> {
+        match self {
+            Self::Folder { input, .. } => Some(input),
+            _ => None,
+        }
+    }
+    fn record(&self) -> StartingResult {
+        match self {
+            Self::Git(oid) => StartingResult::Git { oid: oid.clone() },
+            Self::Folder {
+                input,
+                manifest,
+                origin,
+            } => StartingResult::Folder {
+                manifest: manifest.clone(),
+                snapshot: input.id().to_owned(),
+                origin: origin.clone(),
+            },
+            Self::Unchanged(origin) => StartingResult::Unchanged {
+                origin: origin.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CopyInput<'a> {
+    origin: &'a super::input_snapshot::InputSnapshot,
+    content: &'a super::input_snapshot::InputSnapshot,
+    file_only: bool,
+}
+
+fn where_it_left_off(
+    project: &Path,
+    previous: Option<&Path>,
+    work_key: &str,
+    run_dir: &Path,
+) -> Result<Option<CopyStart>, RunError> {
+    let Some(previous) = previous else {
+        return Ok(None);
+    };
+    refuse_incomplete_input(previous, work_key)?;
+    let held = supervisor::PublicationRoot::open(previous)?;
+    let file = held.open_regular_file(Path::new(RUN_FILE))?;
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(io::Error::other("The earlier run description is too large.").into());
+    }
+    let described: Value = serde_json::from_slice(&bytes)?;
+    described
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .ok_or_else(|| io::Error::other("The earlier run's identity is missing or invalid."))?;
+    let input = super::input_snapshot::read(previous)?;
+    if described
+        .pointer("/input_snapshot/id")
+        .and_then(Value::as_str)
+        != Some(input.id())
+    {
+        return Err(io::Error::other(
+            "The earlier run's input no longer matches its saved description.",
+        )
+        .into());
+    }
+    held.validate_path_identity(previous)?;
+    let input = super::workspace_inputs::for_copy(previous, work_key)?;
+    let saved = described
+        .get("copy_results")
+        .and_then(|results| results.get(work_key))
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "The earlier result for copy {work_key} was not saved for reuse."
+            ))
+        })?;
+    let result: SavedCopy = serde_json::from_value(saved.clone())?;
+    if !matches!(result, SavedCopy::Git { .. }) {
+        if let SavedCopy::Unchanged { origin } = &result {
+            if origin != input.id() {
+                return Err(io::Error::other(
+                    "The unchanged result names a different saved input.",
+                )
+                .into());
+            }
+            return Ok(Some(CopyStart::Unchanged(origin.clone())));
+        }
+        let saved = read_saved_folder(previous, work_key, &result)?;
+        // WF-01/06: wcześniejszy folder może zostać usunięty przez człowieka po Starcie.
+        // Nowy bieg utrwala własne bajty KAŻDEGO wyniku przed uruchomieniem agentów;
+        // jego wspólny origin pozostaje osobny i nadal jest bazą łączenia wyników.
+        let relative = PathBuf::from("starting").join(work_key);
+        let target = run_dir.join(&relative);
+        supervisor::PublicationRoot::open(run_dir)?.ensure_directory(&relative, 0o700)?;
+        let frozen = super::input_snapshot::capture_saved_result(&saved.path, &target)?;
+        if frozen.entries() != &saved.entries {
+            return Err(io::Error::other(
+                "The earlier result changed while it was being prepared. Nothing started.",
+            )
+            .into());
+        }
+        return Ok(Some(CopyStart::Folder {
+            input: frozen,
+            manifest: relative.join("input/manifest.json"),
+            origin: saved.origin,
+        }));
+    }
+    let SavedCopy::Git { oid } = result else {
+        return Err(RunError::Io(io::Error::other(format!(
+            "The earlier result for copy {work_key} is unavailable."
+        ))));
+    };
+    if !matches!(oid.len(), 40 | 64)
+        || !oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !isolate::names_a_commit(project, &oid)
+    {
+        return Err(RunError::Io(io::Error::other(format!(
+            "The saved commit for copy {work_key} is missing or invalid."
+        ))));
+    }
+    Ok(Some(CopyStart::Git(oid)))
 }
 
 fn make_or_recover_tree(
@@ -6419,23 +7220,25 @@ fn make_or_recover_tree(
     run_dir: &Path,
     cwd: &Path,
     branch: &str,
-    from: &str,
+    from: Option<&str>,
+    input: CopyInput<'_>,
     provisional: &mut ProvisionalRun,
 ) -> Result<isolate::Made, isolate::Trouble> {
     // Walidacja stoi przed `exists`, `make` i `remove_dir_all`: inaczej niebezpieczny klucz
     // albo symlink przodka moze wskazac ofiare poza biegiem, zanim cleanup zobaczy cel.
     let marker_path = prove_generated_work_path(project, run_dir, cwd)?;
     let marker = read_isolation_marker(&marker_path)?;
-    if !isolate::is_a_repo(project) {
-        /* Kopia plikowa punktu startu nie zna i znać nie może: bez gita nie ma gałęzi, na której
-         * poprzedni bieg mógłby cokolwiek zostawić. Wznowienie w projekcie bez repozytorium
-         * dostaje więc to, co dostawało zawsze — kopię tego, co leży w projekcie. */
+    if input.file_only || !isolate::is_a_repo(project) {
         // 2026-08-28 (T-152 review) — marker Gita dowodzi, że katalog pochodzi z wcześniejszej
         // próby. Odmowa musi więc poprzedzać przejęcie ownershipu; inaczej Drop skasowałby WIP
         // odzyskanego worktree jako rzekomą kopię plikową tej próby.
-        if marker.is_some() {
+        if marker.as_ref().is_some_and(|one| {
+            !matches!(one,
+            IsolationMarker::FileCopy { origin_snapshot: Some(origin), fan_in: None, native_skills: None }
+            if origin == input.origin.id())
+        }) {
             return Err(isolate::Trouble::Git(
-                "the retry found a git isolation record, but this project is no longer the same git repository"
+                "the retry found an isolation record from a different input or repository"
                     .to_owned(),
             ));
         }
@@ -6443,7 +7246,15 @@ fn make_or_recover_tree(
         // i dowodzie ścieżki guard musi więc przejąć cel przed pierwszym zapisem; cleanup braku
         // ścieżki jest idempotentny.
         provisional.owns_file_copy(cwd.to_path_buf());
-        let made = make_or_recover_file_copy(project, cwd, branch)?;
+        let made = make_or_recover_file_copy(cwd, input.content)?;
+        write_isolation_marker(
+            &marker_path,
+            &IsolationMarker::FileCopy {
+                origin_snapshot: Some(input.origin.id().to_owned()),
+                fan_in: None,
+                native_skills: None,
+            },
+        )?;
         return Ok(made);
     }
     make_or_recover_git_tree(
@@ -6451,8 +7262,11 @@ fn make_or_recover_tree(
         cwd,
         branch,
         from,
-        &marker_path,
-        marker.as_ref(),
+        input.origin,
+        IsolationRecord {
+            path: &marker_path,
+            marker: marker.as_ref(),
+        },
         provisional,
     )
 }
@@ -6720,12 +7534,17 @@ fn unsafe_run_path() -> isolate::Trouble {
 }
 
 fn make_or_recover_file_copy(
-    project: &Path,
     cwd: &Path,
-    branch: &str,
+    snapshot: &super::input_snapshot::InputSnapshot,
 ) -> Result<isolate::Made, isolate::Trouble> {
     if !path_entry_exists(cwd)? {
-        return isolate::make(project, cwd, branch);
+        snapshot
+            .materialize(cwd)
+            .map_err(isolate::Trouble::Copying)?;
+        return Ok(isolate::Made {
+            how: isolate::How::Copy,
+            left_behind: snapshot.left_behind().to_vec(),
+        });
     }
     if !cwd.is_dir() {
         return Err(isolate::Trouble::Copying(io::Error::other(
@@ -6735,20 +7554,36 @@ fn make_or_recover_file_copy(
     // 2026-08-21, T-65: brak `run.json` dowodzi, ze zaden driver nie wystartowal. Usuwamy
     // wylacznie wygenerowana, potencjalnie polowiczna kopie pod tym samym katalogiem biegu.
     fs::remove_dir_all(cwd).map_err(isolate::Trouble::Copying)?;
-    isolate::make(project, cwd, branch)
+    snapshot
+        .materialize(cwd)
+        .map_err(isolate::Trouble::Copying)?;
+    Ok(isolate::Made {
+        how: isolate::How::Copy,
+        left_behind: snapshot.left_behind().to_vec(),
+    })
+}
+
+#[derive(Clone, Copy)]
+struct IsolationRecord<'a> {
+    path: &'a Path,
+    marker: Option<&'a IsolationMarker>,
 }
 
 fn make_or_recover_git_tree(
     project: &Path,
     cwd: &Path,
     branch: &str,
-    from: &str,
-    marker_path: &Path,
-    marker: Option<&IsolationMarker>,
+    from: Option<&str>,
+    snapshot: &super::input_snapshot::InputSnapshot,
+    record: IsolationRecord<'_>,
     provisional: &mut ProvisionalRun,
 ) -> Result<isolate::Made, isolate::Trouble> {
+    let IsolationRecord {
+        path: marker_path,
+        marker,
+    } = record;
     if let Some(marked) = marker
-        && marked.branch() != branch
+        && marked.branch() != Some(branch)
     {
         return Err(isolate::Trouble::Git(
             "the isolation record names a different branch; nothing was removed".to_owned(),
@@ -6765,6 +7600,13 @@ fn make_or_recover_git_tree(
         let head = branch_oid(project, branch)?;
         match marker {
             Some(IsolationMarker::Complete { head: expected, .. }) if expected == &head => {
+                if !matches!(marker, Some(IsolationMarker::Complete { origin_snapshot: Some(origin), .. }) if origin == snapshot.id())
+                    || marker.is_some_and(IsolationMarker::has_incomplete_input)
+                {
+                    return Err(isolate::Trouble::Git(
+                        "the copy does not have the same completed saved input; nothing was removed".to_owned(),
+                    ));
+                }
                 if provisional.owns_directory_containing_marker(marker_path) {
                     provisional.owns_git_tree(
                         cwd.to_path_buf(),
@@ -6794,6 +7636,11 @@ fn make_or_recover_git_tree(
                     "the work tree changed after recovery began; nothing was removed".to_owned(),
                 ));
             }
+            Some(IsolationMarker::FileCopy { .. }) => {
+                return Err(isolate::Trouble::Git(
+                    "the copy is not a git work tree; nothing was removed".to_owned(),
+                ));
+            }
             None => {
                 // Ten fsync jest PRZED pierwszym skutkiem cleanup. Po awarii marker jest
                 // uprawnieniem wylacznie do tej sciezki, galezi i tego niezmienionego OID.
@@ -6802,80 +7649,116 @@ fn make_or_recover_git_tree(
                     &IsolationMarker::Recovering {
                         branch: branch.to_owned(),
                         head,
+                        origin_snapshot: Some(snapshot.id().to_owned()),
+                        fan_in: None,
+                        native_skills: None,
                     },
                 )?;
             }
         }
         cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
     } else {
-        match marker {
-            Some(IsolationMarker::Recovering { .. }) => {
-                cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
-            }
-            Some(IsolationMarker::Complete { .. }) => {
-                return Err(isolate::Trouble::Git(
-                    "the completed work tree is missing; nothing was removed".to_owned(),
-                ));
-            }
-            None if branch_exists(project, branch)? => {
-                // Naturalne okno awarii: `git worktree add` zdazyl zapisac branch i admin,
-                // katalog cwd fizycznie zniknal, a marker nie powstal. Prealokowana sciezka,
-                // branch i OID musza wskazac jeden prunable record; dopiero potem fsyncujemy
-                // Recovering i wchodzimy do tego samego idempotentnego cleanupu.
-                let head = branch_oid(project, branch)?;
-                match expected_worktree_admin(project, cwd, branch, &head)? {
-                    ExpectedWorktreeAdmin::Present { prunable: true } => {
-                        write_isolation_marker(
-                            marker_path,
-                            &IsolationMarker::Recovering {
-                                branch: branch.to_owned(),
-                                head,
-                            },
-                        )?;
-                        cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
-                    }
-                    ExpectedWorktreeAdmin::Present { prunable: false } => {
-                        return Err(isolate::Trouble::Git(
-                            "the missing work tree is not marked removable by git; nothing was removed"
-                                .to_owned(),
-                        ));
-                    }
-                    ExpectedWorktreeAdmin::Absent => {
-                        return Err(isolate::Trouble::Git(
+        recover_missing_worktree(project, cwd, branch, snapshot, record)?;
+    }
+
+    make_new_git_tree(
+        project,
+        cwd,
+        branch,
+        from,
+        snapshot,
+        marker_path,
+        provisional,
+    )
+}
+
+fn recover_missing_worktree(
+    project: &Path,
+    cwd: &Path,
+    branch: &str,
+    snapshot: &super::input_snapshot::InputSnapshot,
+    record: IsolationRecord<'_>,
+) -> Result<(), isolate::Trouble> {
+    let IsolationRecord {
+        path: marker_path,
+        marker,
+    } = record;
+    match marker {
+        Some(IsolationMarker::Recovering { .. }) => {
+            cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
+        }
+        Some(IsolationMarker::Complete { .. }) => {
+            return Err(isolate::Trouble::Git(
+                "the completed work tree is missing; nothing was removed".to_owned(),
+            ));
+        }
+        Some(IsolationMarker::FileCopy { .. }) => {
+            return Err(isolate::Trouble::Git(
+                "the copy is not a git work tree; nothing was removed".to_owned(),
+            ));
+        }
+        None if branch_exists(project, branch)? => {
+            // Naturalne okno awarii: `git worktree add` zdazyl zapisac branch i admin,
+            // katalog cwd fizycznie zniknal, a marker nie powstal. Prealokowana sciezka,
+            // branch i OID musza wskazac jeden prunable record; dopiero potem fsyncujemy
+            // Recovering i wchodzimy do tego samego idempotentnego cleanupu.
+            let head = branch_oid(project, branch)?;
+            match expected_worktree_admin(project, cwd, branch, &head)? {
+                ExpectedWorktreeAdmin::Present { prunable: true } => {
+                    write_isolation_marker(
+                        marker_path,
+                        &IsolationMarker::Recovering {
+                            branch: branch.to_owned(),
+                            head,
+                            origin_snapshot: Some(snapshot.id().to_owned()),
+                            fan_in: None,
+                            native_skills: None,
+                        },
+                    )?;
+                    cleanup_incomplete_worktree(project, cwd, branch, marker_path)?;
+                }
+                ExpectedWorktreeAdmin::Present { prunable: false } => {
+                    return Err(isolate::Trouble::Git(
+                        "the missing work tree is not marked removable by git; nothing was removed"
+                            .to_owned(),
+                    ));
+                }
+                ExpectedWorktreeAdmin::Absent => {
+                    return Err(isolate::Trouble::Git(
                             "the recovery branch has no matching work tree administration; nothing was removed"
                                 .to_owned(),
                         ));
-                    }
                 }
             }
-            None => {}
         }
+        None => {}
     }
-
-    make_new_git_tree(project, cwd, branch, from, marker_path, provisional)
+    Ok(())
 }
 
 fn make_new_git_tree(
     project: &Path,
     cwd: &Path,
     branch: &str,
-    from: &str,
+    from: Option<&str>,
+    snapshot: &super::input_snapshot::InputSnapshot,
     marker_path: &Path,
     provisional: &mut ProvisionalRun,
 ) -> Result<isolate::Made, isolate::Trouble> {
     let mut added_head = None;
-    let made = isolate::make_from_after_add(project, cwd, branch, from, |head| {
-        added_head = Some(head.to_owned());
-        provisional.owns_git_tree(
-            cwd.to_path_buf(),
-            branch.to_owned(),
-            head.to_owned(),
-            marker_path.to_path_buf(),
-        );
-        provisional
-            .faults
-            .check(PrestartFaultPoint::AfterWorktreeAdd)
-    })?;
+    let made =
+        isolate::make_from_snapshot_after_add(project, cwd, branch, from, snapshot, |head| {
+            added_head = Some(head.to_owned());
+            provisional.owns_git_tree(
+                cwd.to_path_buf(),
+                branch.to_owned(),
+                head.to_owned(),
+                marker_path.to_path_buf(),
+            );
+            provisional
+                .faults
+                .check(PrestartFaultPoint::AfterWorktreeAdd)
+        })?;
     if matches!(&made.how, isolate::How::Tree { .. }) {
         let head = added_head.ok_or_else(|| {
             isolate::Trouble::Git(
@@ -6889,6 +7772,9 @@ fn make_new_git_tree(
             &IsolationMarker::Complete {
                 branch: branch.to_owned(),
                 head,
+                origin_snapshot: Some(snapshot.id().to_owned()),
+                fan_in: None,
+                native_skills: None,
             },
         )?;
     }
@@ -6898,14 +7784,84 @@ fn make_new_git_tree(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum IsolationMarker {
-    Complete { branch: String, head: String },
-    Recovering { branch: String, head: String },
+    Complete {
+        branch: String,
+        head: String,
+        #[serde(
+            default,
+            rename = "originSnapshot",
+            skip_serializing_if = "Option::is_none"
+        )]
+        origin_snapshot: Option<String>,
+        #[serde(default, rename = "fanIn", skip_serializing_if = "Option::is_none")]
+        fan_in: Option<FanInPreparation>,
+        #[serde(
+            default,
+            rename = "nativeSkills",
+            skip_serializing_if = "Option::is_none"
+        )]
+        native_skills: Option<crate::skills::bundle::native::NativeDelivery>,
+    },
+    Recovering {
+        branch: String,
+        head: String,
+        #[serde(
+            default,
+            rename = "originSnapshot",
+            skip_serializing_if = "Option::is_none"
+        )]
+        origin_snapshot: Option<String>,
+        #[serde(default, rename = "fanIn", skip_serializing_if = "Option::is_none")]
+        fan_in: Option<FanInPreparation>,
+        #[serde(
+            default,
+            rename = "nativeSkills",
+            skip_serializing_if = "Option::is_none"
+        )]
+        native_skills: Option<crate::skills::bundle::native::NativeDelivery>,
+    },
+    FileCopy {
+        #[serde(
+            default,
+            rename = "originSnapshot",
+            skip_serializing_if = "Option::is_none"
+        )]
+        origin_snapshot: Option<String>,
+        #[serde(default, rename = "fanIn", skip_serializing_if = "Option::is_none")]
+        fan_in: Option<FanInPreparation>,
+        #[serde(
+            default,
+            rename = "nativeSkills",
+            skip_serializing_if = "Option::is_none"
+        )]
+        native_skills: Option<crate::skills::bundle::native::NativeDelivery>,
+    },
+}
+
+/// WF-03: dwa fakty przygotowania istniejącej kopii, nie osobny ledger wykonania grafu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FanInPreparation {
+    work_key: String,
+    origin: String,
+    parents: Vec<(PathBuf, String)>,
+    plan_digest: String,
+    input_ready: bool,
+    /// 2026-09-06: folder przeżywa rundę. Tożsamość i delta importu pozwalają odświeżyć
+    /// następne wejście bez potraktowania własnej pracy konsumenta jako plików rodzica.
+    #[serde(default)]
+    consumer: String,
+    #[serde(default)]
+    parent_steps: Vec<Option<String>>,
+    #[serde(default)]
+    imported: Option<BTreeMap<PathBuf, Option<super::input_snapshot::Entry>>>,
 }
 
 impl IsolationMarker {
-    fn branch(&self) -> &str {
+    fn branch(&self) -> Option<&str> {
         match self {
-            Self::Complete { branch, .. } | Self::Recovering { branch, .. } => branch,
+            Self::Complete { branch, .. } | Self::Recovering { branch, .. } => Some(branch),
+            Self::FileCopy { .. } => None,
         }
     }
 
@@ -6915,9 +7871,61 @@ impl IsolationMarker {
     /// pytanie o commity ponad punktem startu, a punkt startu wznowionego kroku jest gałęzią
     /// poprzedniego biegu, nie `HEAD` projektu. Marker jest jedynym miejscem, w którym ten OID
     /// stoi zapisany — i tym samym, którego pilnuje odzyskiwanie po przerwanej próbie.
-    fn head(&self) -> &str {
+    fn head(&self) -> Option<&str> {
         match self {
-            Self::Complete { head, .. } | Self::Recovering { head, .. } => head,
+            Self::Complete { head, .. } | Self::Recovering { head, .. } => Some(head),
+            Self::FileCopy { .. } => None,
+        }
+    }
+
+    fn fan_in(&self) -> Option<&FanInPreparation> {
+        match self {
+            Self::Complete { fan_in, .. }
+            | Self::Recovering { fan_in, .. }
+            | Self::FileCopy { fan_in, .. } => fan_in.as_ref(),
+        }
+    }
+
+    fn set_fan_in(&mut self, value: FanInPreparation) {
+        match self {
+            Self::Complete { fan_in, .. }
+            | Self::Recovering { fan_in, .. }
+            | Self::FileCopy { fan_in, .. } => *fan_in = Some(value),
+        }
+    }
+
+    fn has_incomplete_input(&self) -> bool {
+        self.fan_in().is_some_and(|one| !one.input_ready)
+            || self.native_skills().is_some_and(|one| !one.complete)
+    }
+
+    fn native_skills(&self) -> Option<&crate::skills::bundle::native::NativeDelivery> {
+        match self {
+            Self::Complete { native_skills, .. }
+            | Self::Recovering { native_skills, .. }
+            | Self::FileCopy { native_skills, .. } => native_skills.as_ref(),
+        }
+    }
+
+    fn set_native_skills(&mut self, value: crate::skills::bundle::native::NativeDelivery) {
+        match self {
+            Self::Complete { native_skills, .. }
+            | Self::Recovering { native_skills, .. }
+            | Self::FileCopy { native_skills, .. } => *native_skills = Some(value),
+        }
+    }
+
+    fn origin_snapshot(&self) -> Option<&str> {
+        match self {
+            Self::Complete {
+                origin_snapshot, ..
+            }
+            | Self::Recovering {
+                origin_snapshot, ..
+            }
+            | Self::FileCopy {
+                origin_snapshot, ..
+            } => origin_snapshot.as_deref(),
         }
     }
 
@@ -6926,13 +7934,107 @@ impl IsolationMarker {
             Self::Complete {
                 branch: marked_branch,
                 head: marked_head,
+                ..
             }
             | Self::Recovering {
                 branch: marked_branch,
                 head: marked_head,
+                ..
             } => marked_branch == branch && marked_head == head,
+            Self::FileCopy { .. } => false,
         }
     }
+}
+
+/// Zapis native delivery korzysta z markera kopii, nie z drugiego rejestru własności.
+fn native_marker_path(run_dir: &Path, cwd: &Path) -> io::Result<Option<PathBuf>> {
+    let Ok(relative) = cwd.strip_prefix(run_dir.join(WORK_DIR)) else {
+        return Ok(None);
+    };
+    if relative.components().count() != 1
+        || !relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(io::Error::other(
+            "The native skill folder has no valid working-copy address.",
+        ));
+    }
+    Ok(Some(run_dir.join(ISOLATION_MARKERS_DIR).join(relative)))
+}
+
+fn native_cleanup_needed(run_dir: &Path, cwd: &Path) -> io::Result<bool> {
+    let Some(path) = native_marker_path(run_dir, cwd)? else {
+        return Ok(false);
+    };
+    let marker = read_isolation_marker(&path).map_err(io::Error::other)?;
+    Ok(marker
+        .as_ref()
+        .and_then(IsolationMarker::native_skills)
+        .is_some_and(crate::skills::bundle::native::NativeDelivery::needs_cleanup))
+}
+
+/// Caller utrzymuje wyłączność kopii. Przerwany zapis/cleanup zostawia complete=false,
+/// więc odtworzenie procesu nie uzna częściowo sprzątniętego folderu za wynik.
+fn change_native_skills(
+    run_dir: &Path,
+    cwd: &Path,
+    skills: Option<&crate::skills::StepSkills>,
+) -> io::Result<()> {
+    let Some(path) = native_marker_path(run_dir, cwd)? else {
+        return if skills.is_none() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "Native skills cannot be installed in your project folder.",
+            ))
+        };
+    };
+    let mut marker = read_isolation_marker(&path)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("The working copy's saved ownership is missing."))?;
+    let mut native = match marker.native_skills() {
+        Some(native) => native.clone(),
+        None if skills.is_none() => return Ok(()),
+        None => crate::skills::bundle::native::NativeDelivery::new(cwd)?,
+    };
+    native.validate(cwd)?;
+    if skills.is_none() && !native.needs_cleanup() {
+        return Ok(());
+    }
+    native.complete = false;
+    marker.set_native_skills(native.clone());
+    write_isolation_marker(&path, &marker).map_err(io::Error::other)?;
+    match skills {
+        Some(skills) => native.deliver(cwd, skills)?,
+        None => native.clean(cwd)?,
+    }
+    marker.set_native_skills(native);
+    write_isolation_marker(&path, &marker).map_err(io::Error::other)
+}
+
+/// Jedna odmowa reuse dla Git i kopii plikowych. Brak starego pola to legacy bez fan-in;
+/// jawnie rozpoczęte przygotowanie bez inputReady nigdy nie awansuje przez brak procesu.
+pub(super) fn refuse_incomplete_input(previous: &Path, work_key: &str) -> Result<(), RunError> {
+    let marker_path = previous.join(ISOLATION_MARKERS_DIR).join(work_key);
+    let marker = read_isolation_marker(&marker_path).map_err(|error| {
+        io::Error::other(format!("The saved input record cannot be read: {error}"))
+    })?;
+    if marker.as_ref().is_some_and(|one| {
+        one.fan_in().is_some_and(|prepared| {
+            prepared.work_key != work_key || one.origin_snapshot() != Some(prepared.origin.as_str())
+        })
+    }) {
+        return Err(RunError::Io(io::Error::other(
+            "The saved input belongs to a different copy or saved starting files.",
+        )));
+    }
+    if marker.is_some_and(|one| one.has_incomplete_input()) {
+        return Err(RunError::Io(io::Error::other(format!(
+            "The input for {work_key} was not completely prepared. Its partial folder was kept for inspection, not saved as a result. Start a new run to combine the complete parent results."
+        ))));
+    }
+    Ok(())
 }
 
 fn read_isolation_marker(path: &Path) -> Result<Option<IsolationMarker>, isolate::Trouble> {
@@ -7150,6 +8252,7 @@ fn cleanup_incomplete_worktree(
     let IsolationMarker::Recovering {
         branch: marked_branch,
         head: marked_head,
+        ..
     } = marker
     else {
         return Err(isolate::Trouble::Git(
@@ -7363,6 +8466,8 @@ fn git_for_recovery(at: &Path, args: &[&str]) -> Result<String, isolate::Trouble
 /// na gałęzi albo posprzątać po kroku, który nic nie zrobił.
 #[derive(Debug, Clone)]
 struct Isolated {
+    /// Tożsamość zwalidowanej kopii przy layout; te same bajty na obcym inode nie są własnością.
+    copy_identity: PublicationIdentity,
     /// Nazwa kroku — ta z kafelka, bo to jej szuka człowiek.
     step: String,
     /// Pozycja tego kroku w księdze biegu.
@@ -7376,6 +8481,35 @@ struct Isolated {
     branch: Option<String>,
     /// Pliki, o których git nie wie, więc drzewo ich nie niesie.
     left_behind: Vec<String>,
+}
+
+/// Faktów domknięcia nie wiążemy z `LineSink`: preview może żyć dłużej niż pompa biegu.
+#[derive(Debug, Clone)]
+struct ClosingRun {
+    id: String,
+    dir: PathBuf,
+    title: String,
+    input_snapshot: Option<super::input_snapshot::InputSnapshot>,
+    workspace_inputs: super::workspace_inputs::Bound,
+}
+
+impl ClosingRun {
+    fn from_live(live: &Live) -> Self {
+        Self {
+            id: live.plan.id.clone(),
+            dir: live.plan.dir.clone(),
+            title: live.plan.title.clone(),
+            input_snapshot: live.plan.input_snapshot.clone(),
+            workspace_inputs: live.plan.workspace_inputs.clone(),
+        }
+    }
+
+    fn input_for(&self, key: &str) -> Option<&super::input_snapshot::InputSnapshot> {
+        self.workspace_inputs
+            .get(key)
+            .map(|seed| &seed.input)
+            .or(self.input_snapshot.as_ref())
+    }
 }
 
 /// Ile nazw plików mieści się w jednym wierszu, zanim zacznie być ścianą tekstu.
@@ -7559,14 +8693,19 @@ fn seed_the_handoffs(plan: &Plan) -> io::Result<()> {
     let Some(from) = &plan.seeded_from else {
         return Ok(());
     };
-    copy_the_files_in(
-        &from.join(crate::store::rebuild::HANDOFFS_DIR),
-        &plan.dir.join(crate::store::rebuild::HANDOFFS_DIR),
-    )?;
-    copy_the_files_in(
-        &from.join(handoff::ATTACHMENTS_DIR),
-        &plan.dir.join(handoff::ATTACHMENTS_DIR),
-    )
+    for directory in handoff::publication_directories(from)? {
+        let relative = directory.strip_prefix(from).map_err(io::Error::other)?;
+        let into = plan.dir.join(relative);
+        copy_the_files_in(
+            &directory.join(crate::store::rebuild::HANDOFFS_DIR),
+            &into.join(crate::store::rebuild::HANDOFFS_DIR),
+        )?;
+        copy_the_files_in(
+            &directory.join(handoff::ATTACHMENTS_DIR),
+            &into.join(handoff::ATTACHMENTS_DIR),
+        )?;
+    }
+    Ok(())
 }
 
 /// Pliki z pierwszego poziomu jednego katalogu do drugiego. Brak źródła nie jest awarią.
@@ -7710,10 +8849,15 @@ fn what_the_run_before_left(plan: &Plan) -> Vec<Vec<Carried>> {
                 if running.contains(tile) {
                     return None;
                 }
-                let path = plan
-                    .dir
-                    .join(crate::store::rebuild::HANDOFFS_DIR)
-                    .join(name);
+                let source_scope =
+                    crate::workflow::execution::RunInputs::from_graph(&described.workflow_snapshot)
+                        .ok()?;
+                if source_scope.context_key(tile)
+                    != plan.inputs.configuration.context_key(&step.tile_key)
+                {
+                    return None;
+                }
+                let path = plan.dir.join(had.path.strip_prefix(before).ok()?);
                 // Wskazujemy WYŁĄCZNIE to, co naprawdę leży w tym katalogu: wiersz indeksu ze
                 // ścieżką bez pliku po drugiej stronie przewraca `prompt_for` i zabiera krok.
                 if !path.is_file() {
@@ -7831,45 +8975,525 @@ async fn close_the_trees(project: &Path, made: &[Isolated], live: &Arc<Live>) {
 }
 
 /// Ciało [`close_the_trees`], wykonywane w całości na puli blokującej.
-fn close_every_tree(project: &Path, made: &[Isolated], live: &Live) {
+fn close_every_tree(project: &Path, made: &[Isolated], live: &Arc<Live>) {
+    let context = ClosingRun::from_live(live);
     for one in made {
-        let says = match &one.branch {
-            Some(branch) => close_one_tree(project, one, branch, live),
-            None => close_one_copy(one),
-        };
-        if says.is_empty() {
+        let key = one
+            .cwd
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        let same_copy = supervisor::PublicationRoot::open(&one.cwd)
+            .is_ok_and(|root| root.identity() == one.copy_identity);
+        if !same_copy {
+            record_closed_copy(
+                live,
+                one,
+                &key,
+                SavedCopy::Unavailable,
+                &["The working folder changed identity, so Loadout left it untouched.".to_owned()],
+            );
             continue;
         }
-        let at = one.at;
-        let said_now = says.join(" ");
-        live.update(move |book| {
-            let Some(row) = book.steps.get_mut(at) else {
-                return;
-            };
-            // DOPISUJEMY, nie nadpisujemy. Krok mógł paść z własnego powodu i tamten powód jest
-            // tym, którego człowiek szuka pierwszy; ten drugi mówi mu, gdzie w takim razie leży
-            // to, co agent zdążył zrobić.
-            row.error = Some(match row.error.take() {
-                Some(said) => format!("{said} {said_now}"),
-                None => said_now,
-            });
-        });
+        match live.processes.try_finalize_copy(&one.cwd) {
+            Ok(Some(_guard)) => {
+                let (saved, says) = close_finalized_copy(project, one, &context);
+                record_closed_copy(live, one, &key, saved, &says);
+            }
+            Ok(None) => {
+                // Przed rejestracją callbacku: ostatnia usługa może zejść w tej samej chwili.
+                // Ten fakt blokuje też retencję między Dead a trwałym zapisem rezultatu.
+                let published = {
+                    let mut book = live.book();
+                    book.pending_finalization.insert(key.clone());
+                    live.spill(&book)
+                };
+                if let Err(error) = published {
+                    tracing::error!(run = %context.id, %error, "the deferred folder could not be recorded");
+                    continue;
+                }
+                let weak = Arc::downgrade(live);
+                let context = context.clone();
+                let one = one.clone();
+                let project = project.to_path_buf();
+                let cwd = one.cwd.clone();
+                let callback = Box::new(move || {
+                    let (saved, says) = close_finalized_copy(&project, &one, &context);
+                    if let Some(live) = weak.upgrade() {
+                        record_closed_copy(&live, &one, &key, saved, &says);
+                    } else if let Err(error) = record_deferred_result(&context, &key, &saved, &says)
+                    {
+                        tracing::error!(run = %context.id, %error, "the deferred folder result could not be saved");
+                    }
+                });
+                if let Err(error) = live.processes.defer_copy_finalization(&cwd, callback) {
+                    tracing::error!(run = %live.plan.id, %error, "the working folder remains pending finalization");
+                }
+            }
+            Err(error) => record_closed_copy(
+                live,
+                one,
+                &key,
+                SavedCopy::Unavailable,
+                &[format!(
+                    "Loadout could not prove that this working folder is free to close: {error}"
+                )],
+            ),
+        }
     }
 }
 
+/// Ta sama polityka po grafie i po ostatnim procesie; callback nie utrzymuje pompy IPC.
+fn close_finalized_copy(
+    project: &Path,
+    one: &Isolated,
+    context: &ClosingRun,
+) -> (SavedCopy, Vec<String>) {
+    if !supervisor::PublicationRoot::open(&one.cwd)
+        .is_ok_and(|root| root.identity() == one.copy_identity)
+    {
+        return (
+            SavedCopy::Unavailable,
+            vec!["The working folder changed identity, so Loadout left it untouched.".to_owned()],
+        );
+    }
+    let key = one.cwd.file_name().and_then(|one| one.to_str());
+    let incomplete = key.map_or_else(
+        || {
+            Err(RunError::Io(io::Error::other(
+                "The copy has no valid saved-input key.",
+            )))
+        },
+        |key| refuse_incomplete_input(&context.dir, key),
+    );
+    // WF-03: diagnostyczna kopia nie jest wynikiem. Nie commitujemy ani nie kasujemy jej
+    // po niepełnej publikacji, także gdy wszystkie procesy już zeszły.
+    let complete = incomplete
+        .and_then(|()| change_native_skills(&context.dir, &one.cwd, None).map_err(RunError::Io));
+    if let Err(why) = complete {
+        (
+            SavedCopy::Unavailable,
+            vec![format!(
+                "{why} The partial folder is still here: {}",
+                one.cwd.display()
+            )],
+        )
+    } else {
+        match &one.branch {
+            Some(branch) => close_one_tree(project, one, branch, context),
+            None => close_one_copy(one, context),
+        }
+    }
+}
+
+fn record_closed_copy(live: &Live, one: &Isolated, key: &str, saved: SavedCopy, says: &[String]) {
+    let at = one.at;
+    let said_now = says.join(" ");
+    live.update(move |book| {
+        book.copy_results.insert(key.to_owned(), saved);
+        book.pending_finalization.remove(key);
+        if said_now.is_empty() {
+            return;
+        }
+        let Some(row) = book.steps.get_mut(at) else {
+            return;
+        };
+        // DOPISUJEMY, nie nadpisujemy. Krok mógł paść z własnego powodu i tamten powód jest
+        // tym, którego człowiek szuka pierwszy; ten drugi mówi mu, gdzie w takim razie leży
+        // to, co agent zdążył zrobić.
+        row.error = Some(match row.error.take() {
+            Some(said) => format!("{said} {said_now}"),
+            None => said_now,
+        });
+    });
+}
+
+/// Po zniknięciu Live plik nadal jest prawdą. CAS zachowuje późną refleksję i zmiany innych
+/// kopii; nie odtwarza całego run.json z nieaktualnej księgi przechowanej w callbacku.
+fn record_deferred_result(
+    context: &ClosingRun,
+    key: &str,
+    saved: &SavedCopy,
+    says: &[String],
+) -> io::Result<()> {
+    use std::io::Read as _;
+    let target = context.dir.join(RUN_FILE);
+    for _ in 0..3 {
+        let mut bytes = Vec::new();
+        supervisor::open_regular_beneath(&context.dir, Path::new(RUN_FILE))?
+            .take(64 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err(io::Error::other(
+                "the saved run is too large to update safely",
+            ));
+        }
+        let mut file: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if file.get("id").and_then(Value::as_str) != Some(context.id.as_str()) {
+            return Err(io::Error::other(
+                "the saved run changed identity before its folder closed",
+            ));
+        }
+        let root = file
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("the saved run is not an object"))?;
+        root.entry("copy_results")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("the saved results are not readable"))?
+            .insert(
+                key.to_owned(),
+                serde_json::to_value(saved).map_err(io::Error::other)?,
+            );
+        if let Some(pending) = root
+            .get_mut("pending_finalization")
+            .and_then(Value::as_array_mut)
+        {
+            pending.retain(|one| one.as_str() != Some(key));
+        }
+        let said = says.join(" ");
+        if !said.is_empty()
+            && let Some(steps) = root.get_mut("steps").and_then(Value::as_array_mut)
+        {
+            for step in steps {
+                if step
+                    .get("node_key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|node| work_key_of(node) == key)
+                {
+                    let previous = step
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    step["error"] = Value::String(if previous.is_empty() {
+                        said.clone()
+                    } else {
+                        format!("{previous} {said}")
+                    });
+                    break;
+                }
+            }
+        }
+        let updated = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
+        match DurableFilePublisher::new(&context.dir).publish_definition(
+            &target,
+            &updated,
+            ModePolicy::Exact(DEFINITION_FILE_MODE),
+            Some(&crate::durable_file::revision_of(&bytes)),
+        ) {
+            Ok(()) => return Ok(()),
+            Err(PublishError::Changed { .. }) => {}
+            Err(error) => return Err(error.into_io()),
+        }
+    }
+    Err(io::Error::other(
+        "the saved run kept changing while its folder result was recorded",
+    ))
+}
+
+/// WF-25: adres zapisany PRZED cleanupem. run.json nadal jest projekcją biegu;
+/// recovery konsumuje ten niezmienny ślad, gdy późny callback nie mógł zaktualizować pliku.
+#[derive(Debug, Serialize, Deserialize)]
+struct CopyResultReceipt {
+    schema: u8,
+    run_id: String,
+    work_key: String,
+    copy_identity: PublicationIdentity,
+    origin: Option<String>,
+    saved: SavedCopy,
+}
+
+fn save_copy_result(context: &ClosingRun, one: &Isolated, saved: SavedCopy) -> io::Result<()> {
+    let key = one
+        .cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::other("the working copy has no result key"))?;
+    if validated_copy_path(&context.dir, key)? != one.cwd {
+        return Err(io::Error::other(
+            "the working copy has a different result location",
+        ));
+    }
+    let root = supervisor::PublicationRoot::open(&one.cwd)?;
+    if root.identity() != one.copy_identity {
+        return Err(io::Error::other(
+            "the working copy was replaced before its result was saved",
+        ));
+    }
+    let receipt = CopyResultReceipt {
+        schema: 1,
+        run_id: context.id.clone(),
+        work_key: key.to_owned(),
+        copy_identity: one.copy_identity,
+        origin: context.input_for(key).map(|input| input.id().to_owned()),
+        saved,
+    };
+    let bytes = serde_json::to_vec(&receipt).map_err(io::Error::other)?;
+    supervisor::PublicationRoot::open(&context.dir)?
+        .ensure_directory(Path::new(".results"), 0o700)?;
+    let target = context.dir.join(".results").join(format!("{key}.json"));
+    match DurableFilePublisher::new(&context.dir).atomic_create_if_absent(
+        &target,
+        &bytes,
+        ModePolicy::Exact(crate::durable_file::PRIVATE_FILE_MODE),
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Idempotencja nie oznacza nadpisania. Odczyt musi być tych samych bajtów
+            // przez bezpieczny uchwyt; inny wynik pozostawia drzewo do wyjaśnienia.
+            let mut old = Vec::new();
+            supervisor::open_regular_beneath(
+                &context.dir,
+                &Path::new(".results").join(format!("{key}.json")),
+            )?
+            .take(64 * 1024 + 1)
+            .read_to_end(&mut old)?;
+            if old == bytes {
+                Ok(())
+            } else {
+                Err(error.into_io())
+            }
+        }
+    }
+}
+
+/// Jedyny czytelnik późnych receiptów; bez tego kroku usunięte cwd gubiłoby adres wyniku.
+/// Nie podnosi Partial/Unknown ani cudzej tożsamości do poprawnego wyniku.
+pub(super) fn recover_recorded_results(project: &Path, run_dir: &Path) -> io::Result<usize> {
+    let held = supervisor::PublicationRoot::open(run_dir)?;
+    let mut bytes = Vec::new();
+    held.open_regular_file(Path::new(RUN_FILE))?
+        .take(64 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(io::Error::other("the saved run is too large"));
+    }
+    let run: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if matches!(
+        run.get("status").and_then(Value::as_str),
+        Some("running" | "paused")
+    ) {
+        return Ok(0);
+    }
+    let entries = match held.list_directory(Path::new(".results")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let id = run
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .ok_or_else(|| io::Error::other("the saved run identity is not valid"))?;
+    let input = super::input_snapshot::read(run_dir)?;
+    if run.pointer("/input_snapshot/id").and_then(Value::as_str) != Some(input.id()) {
+        return Err(io::Error::other(
+            "the saved run and its original input no longer match",
+        ));
+    }
+    let services = super::reconcile::services_bound_to_run(project, run_dir, &run)?;
+    let context = ClosingRun {
+        id: id.to_owned(),
+        dir: run_dir.to_path_buf(),
+        title: run
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        input_snapshot: Some(input.clone()),
+        workspace_inputs: super::workspace_inputs::read_bound(run_dir)?,
+    };
+    let mut recovered = 0;
+    for entry in entries {
+        let mut bytes = Vec::new();
+        held.open_regular_file(&Path::new(".results").join(&entry.name))?
+            .take(64 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 64 * 1024 {
+            return Err(io::Error::other("the saved result is too large"));
+        }
+        let receipt: CopyResultReceipt =
+            serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if receipt.schema != 1
+            || receipt.run_id != id
+            || entry.name != format!("{}.json", receipt.work_key).as_str()
+            || receipt.origin.as_deref()
+                != context
+                    .input_for(&receipt.work_key)
+                    .map(super::input_snapshot::InputSnapshot::id)
+        {
+            return Err(io::Error::other(
+                "the saved result belongs to a different run or input",
+            ));
+        }
+        let cwd = own_copy_at(run_dir, &receipt.work_key);
+        require_one_normal_child(&run_dir.join(WORK_DIR), &cwd)
+            .map_err(|why| io::Error::other(why.to_string()))?;
+        refuse_incomplete_input(run_dir, &receipt.work_key)
+            .map_err(|why| io::Error::other(why.to_string()))?;
+        let copy_key = supervisor::publication_root_key(&cwd)?;
+        if services.iter().any(|service| {
+            supervisor::publication_root_key(&service.cwd)
+                .map_or(true, |owned| owned == copy_key && service.keeps_copy())
+        }) {
+            continue;
+        }
+        match fs::symlink_metadata(&cwd) {
+            Ok(_) => {
+                if supervisor::PublicationRoot::open(&cwd)?.identity() != receipt.copy_identity {
+                    return Err(io::Error::other(
+                        "the recorded working folder changed identity",
+                    ));
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let SavedCopy::Git { oid } = &receipt.saved else {
+            continue;
+        };
+        if !matches!(oid.len(), 40 | 64)
+            || !oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !isolate::names_a_commit(project, oid)
+        {
+            return Err(io::Error::other(
+                "the recorded result commit is unavailable",
+            ));
+        }
+        let value = serde_json::to_value(&receipt.saved).map_err(io::Error::other)?;
+        if run
+            .get("copy_results")
+            .and_then(|results| results.get(&receipt.work_key))
+            == Some(&value)
+            && !run
+                .get("pending_finalization")
+                .and_then(Value::as_array)
+                .is_some_and(|pending| {
+                    pending
+                        .iter()
+                        .any(|key| key.as_str() == Some(receipt.work_key.as_str()))
+                })
+        {
+            continue;
+        }
+        held.validate_path_identity(run_dir)?;
+        record_deferred_result(&context, &receipt.work_key, &receipt.saved, &[])?;
+        recovered += 1;
+    }
+    Ok(recovered)
+}
+
+/// Recovery nie kopiuje formatu receiptu ani polityki ownershipu z normalnego zamknięcia.
+pub(super) fn save_recovered_git_result(
+    project: &Path,
+    run_dir: &Path,
+    tree: &LeftTree,
+    oid: &str,
+) -> io::Result<()> {
+    let mut bytes = Vec::new();
+    supervisor::open_regular_beneath(run_dir, Path::new(RUN_FILE))?
+        .take(64 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(io::Error::other("the saved run is too large"));
+    }
+    let run: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    // Legacy nie dostaje wymyślonego origin. Dotychczasowy cleanup z poprawnego markera
+    // pozostaje, ale nie obiecuje odtworzenia wejść, których dawny build nie zachował.
+    if run.get("input_snapshot").is_none_or(Value::is_null) {
+        return Ok(());
+    }
+    let input = super::input_snapshot::read(run_dir)?;
+    if run.pointer("/input_snapshot/id").and_then(Value::as_str) != Some(input.id()) {
+        return Err(io::Error::other(
+            "the original input does not match this run",
+        ));
+    }
+    let id = run
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .ok_or_else(|| io::Error::other("the saved run has no valid identity"))?;
+    if !worktree_points_at(project, &tree.cwd, &tree.branch) {
+        return Err(io::Error::other(
+            "this is no longer the recorded working tree",
+        ));
+    }
+    let copy_identity = supervisor::PublicationRoot::open(&tree.cwd)?.identity();
+    let copy_key = supervisor::publication_root_key(&tree.cwd)?;
+    for service in super::reconcile::services_bound_to_run(project, run_dir, &run)? {
+        if supervisor::publication_root_key(&service.cwd)? == copy_key
+            && (service.keeps_copy() || service.copy_identity != copy_identity)
+        {
+            return Err(io::Error::other(
+                "the service has not released this exact working copy",
+            ));
+        }
+    }
+    let context = ClosingRun {
+        id: id.to_owned(),
+        dir: run_dir.to_path_buf(),
+        input_snapshot: Some(input),
+        workspace_inputs: super::workspace_inputs::read_bound(run_dir)?,
+        title: run
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    };
+    let copy = Isolated {
+        copy_identity,
+        step: tree.key.clone(),
+        at: 0,
+        cwd: tree.cwd.clone(),
+        branch: Some(tree.branch.clone()),
+        left_behind: Vec::new(),
+    };
+    save_copy_result(
+        &context,
+        &copy,
+        SavedCopy::Git {
+            oid: oid.to_owned(),
+        },
+    )
+}
+
 /// Zamyka JEDNO drzewo gita i oddaje zdania, które człowiek ma o nim przeczytać.
-fn close_one_tree(project: &Path, one: &Isolated, branch: &str, live: &Live) -> Vec<String> {
+fn close_one_tree(
+    project: &Path,
+    one: &Isolated,
+    branch: &str,
+    context: &ClosingRun,
+) -> (SavedCopy, Vec<String>) {
+    let initial = base_of_tree(project, &context.dir, &one.cwd);
     let isolate::Closed {
         kept,
         tidied,
         left_behind,
-    } = isolate::finish(
+    } = isolate::finish_with_saved(
         project,
         &one.cwd,
         branch,
-        &format!("{}: {}", live.plan.title, one.step),
-        base_of_tree(project, &live.plan.dir, &one.cwd).as_deref(),
+        &format!("{}: {}", context.title, one.step),
+        initial.as_deref(),
+        |oid| {
+            save_copy_result(
+                context,
+                one,
+                SavedCopy::Git {
+                    oid: oid.to_owned(),
+                },
+            )
+            .map_err(|why| format!("the result receipt could not be saved: {why}"))
+        },
     );
+    let saved = match &kept {
+        isolate::Kept::OnABranch(branch) => branch_oid(project, branch).ok(),
+        isolate::Kept::Nothing => initial,
+        isolate::Kept::LeftInPlace { .. } => None,
+    }
+    .map_or(SavedCopy::Unavailable, |oid| SavedCopy::Git { oid });
     // Trzy zdania, jedno pole: krok umie zostawić pracę poza gitem, nie dać się sprzątnąć
     // i świadomie pominąć duże nowe pliki, a człowiek ma prawo przeczytać każde z nich.
     let mut says: Vec<String> = Vec::new();
@@ -7882,33 +9506,401 @@ fn close_one_tree(project: &Path, one: &Isolated, branch: &str, live: &Live) -> 
     }
     says.extend(tidied);
     says.extend(left_behind);
-    says
+    (saved, says)
 }
 
-/// Zdejmuje katalog kroku, który pracował w KOPII plików — bo gałęzi tam nie ma.
-///
-/// 2026-09 (Z-9) — `remove_dir_all`, nie `worktree remove`: ten katalog nie jest w rejestrze gita
-/// i nigdy w nim nie był (marker izolacji zapisuje wyłącznie [`make_new_git_tree`]). Powód, dla
-/// którego kasujemy jedyną kopię tej pracy, stoi w całości przy [`close_the_trees`].
-///
-/// Nieudane zdjęcie **nie psuje wyniku biegu**, ale mówi o sobie zdaniem ze ścieżką — dokładnie
-/// tak, jak nieudane sprzątanie drzewa (Z-7). Do dziś taki katalog był ciszą: bieg czytał się
-/// zielono, a w projekcie stał pełny jego odpis.
-fn close_one_copy(one: &Isolated) -> Vec<String> {
-    match fs::remove_dir_all(&one.cwd) {
-        Ok(()) => Vec::new(),
-        // Kroku, który już nie ma katalogu, nie ma o czym meldować. Zdarza się to po biegu
-        // wznowionym w ten sam katalog i nie jest awarią.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => {
-            tracing::warn!(step = %one.step, %error, "the step's copy could not be removed after the run");
-            vec![format!(
-                "Loadout could not clear away the folder this step worked in ({error}), so it is \
-                 still here: {}",
-                one.cwd.display()
-            )]
+/// WF-06 (2026-09-05): domknięcie kopii bez Git nie może kasować jedynego wyniku pracy.
+/// Dopiero porównanie ze sprawdzoną migawką wejścia pozwala usunąć niezmienioną własną kopię.
+/// Zmiana albo niepewność zachowuje folder i jego opis; źródłowy projekt pozostaje nietknięty.
+type InspectedCopy = (
+    super::input_snapshot::InputSnapshot,
+    BTreeMap<PathBuf, super::input_snapshot::Entry>,
+    BTreeMap<PathBuf, CopyEntryIdentity>,
+);
+
+fn close_one_copy(one: &Isolated, context: &ClosingRun) -> (SavedCopy, Vec<String>) {
+    let key = one
+        .cwd
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let path = Path::new(WORK_DIR).join(key);
+    let origin = context.input_for(key).map(|one| one.id().to_owned());
+    let inspected = (|| -> io::Result<InspectedCopy> {
+        let expected_path = validated_copy_path(&context.dir, key)?;
+        if expected_path != one.cwd {
+            return Err(io::Error::other("the copy has a different saved location"));
+        }
+        let root = supervisor::PublicationRoot::open(&one.cwd)?;
+        if root.identity() != one.copy_identity {
+            return Err(io::Error::other(
+                "the copy directory was replaced; nothing was removed",
+            ));
+        }
+        // Własność plików powstaje PRZED porównaniem; równe bajty na późniejszym obcym inode
+        // nie uprawniają do cleanupu (WF-03/06). Nie idziemy za linkami ani po ich celach.
+        let owned = copy_entry_identities(&root)?;
+        let input = super::workspace_inputs::for_copy(&context.dir, key)?;
+        if origin.as_deref() != Some(input.id()) {
+            return Err(io::Error::other("the saved starting input changed"));
+        }
+        let entries = super::input_snapshot::inspect(&one.cwd)?;
+        root.validate_path_identity(&one.cwd)?;
+        for (path, identity) in &owned {
+            if root.entry_identity(path)? != Some(*identity) {
+                return Err(io::Error::other(
+                    "an object in the copy was replaced while checking it",
+                ));
+            }
+        }
+        Ok((input, entries, owned))
+    })();
+    match inspected {
+        Ok((input, entries, owned)) if entries == *input.entries() => {
+            match remove_unchanged_copy(&context.dir, one, owned) {
+                Ok(()) => (
+                    SavedCopy::Unchanged {
+                        origin: input.id().to_owned(),
+                    },
+                    Vec::new(),
+                ),
+                Err(why) => kept_uncertain_copy(path, origin, &one.cwd, &why.to_string()),
+            }
+        }
+        Ok((input, entries, _owned)) => match sync_kept_copy(&one.cwd, one.copy_identity, &entries)
+            .and_then(|()| folder_digest(&entries))
+        {
+            Ok(digest) => (
+                SavedCopy::Folder {
+                    path,
+                    origin: Some(input.id().to_owned()),
+                    digest: Some(digest),
+                },
+                vec![format!(
+                    "The changes were kept in this folder, without changing your project: {}",
+                    one.cwd.display()
+                )],
+            ),
+            Err(why) => kept_uncertain_copy(path, origin, &one.cwd, &why.to_string()),
+        },
+        Err(why) => kept_uncertain_copy(path, origin, &one.cwd, &why.to_string()),
+    }
+}
+
+fn kept_uncertain_copy(
+    path: PathBuf,
+    origin: Option<String>,
+    cwd: &Path,
+    why: &str,
+) -> (SavedCopy, Vec<String>) {
+    (
+        SavedCopy::Folder {
+            path,
+            origin,
+            digest: None,
+        },
+        vec![format!(
+            "This folder was kept because Loadout could not check its complete result ({why}). It cannot be reused automatically, but you can inspect it here: {}",
+            cwd.display()
+        )],
+    )
+}
+
+type CopyEntryIdentity = (supervisor::PublicationEntryKind, PublicationIdentity);
+
+fn copy_entry_identities(
+    root: &supervisor::PublicationRoot,
+) -> io::Result<BTreeMap<PathBuf, CopyEntryIdentity>> {
+    let mut owned = BTreeMap::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(directory) = pending.pop() {
+        for entry in root.list_directory(&directory)? {
+            let path = directory.join(&entry.name);
+            let identity = root
+                .entry_identity(&path)?
+                .ok_or_else(|| io::Error::other("a copy entry disappeared"))?;
+            if entry.kind == supervisor::PublicationEntryKind::Directory {
+                pending.push(path.clone());
+            }
+            owned.insert(path, identity);
         }
     }
+    Ok(owned)
+}
+
+fn remove_unchanged_copy(
+    run_dir: &Path,
+    one: &Isolated,
+    owned: BTreeMap<PathBuf, CopyEntryIdentity>,
+) -> io::Result<()> {
+    let root = supervisor::PublicationRoot::open(&one.cwd)?;
+    if root.identity() != one.copy_identity {
+        return Err(io::Error::other("the copy directory was replaced"));
+    }
+    let mut entries: Vec<_> = owned.into_iter().collect();
+    entries.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    for (path, identity) in entries {
+        root.validate_path_identity(&one.cwd)?;
+        if !root.remove_entry_if_identity(&path, identity)? {
+            return Err(io::Error::other(
+                "a copy entry was replaced; it was not removed",
+            ));
+        }
+    }
+    let relative = one.cwd.strip_prefix(run_dir).map_err(io::Error::other)?;
+    let parent = supervisor::PublicationRoot::open(run_dir)?;
+    if !parent.remove_entry_if_identity(
+        relative,
+        (
+            supervisor::PublicationEntryKind::Directory,
+            one.copy_identity,
+        ),
+    )? {
+        return Err(io::Error::other(
+            "the copy directory was replaced; it was not removed",
+        ));
+    }
+    Ok(())
+}
+
+fn validated_copy_path(run_dir: &Path, key: &str) -> io::Result<PathBuf> {
+    let mut parts = Path::new(key).components();
+    if !matches!(parts.next(), Some(std::path::Component::Normal(_))) || parts.next().is_some() {
+        return Err(io::Error::other(
+            "the saved copy key is not one folder name",
+        ));
+    }
+    let root = supervisor::PublicationRoot::open(run_dir)?;
+    let relative = Path::new(WORK_DIR).join(key);
+    if !matches!(
+        root.entry_identity(&relative)?,
+        Some((supervisor::PublicationEntryKind::Directory, _))
+    ) {
+        return Err(io::Error::other(
+            "the saved result is missing or is not the original folder",
+        ));
+    }
+    Ok(run_dir.join(relative))
+}
+
+fn folder_digest(entries: &BTreeMap<PathBuf, super::input_snapshot::Entry>) -> io::Result<String> {
+    use sha2::Digest as _;
+    let bytes = serde_json::to_vec(entries).map_err(io::Error::other)?;
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
+
+fn sync_kept_copy(
+    cwd: &Path,
+    identity: PublicationIdentity,
+    entries: &BTreeMap<PathBuf, super::input_snapshot::Entry>,
+) -> io::Result<()> {
+    let root = supervisor::PublicationRoot::open(cwd)?;
+    if root.identity() != identity {
+        return Err(io::Error::other("the result folder was replaced"));
+    }
+    for (path, entry) in entries {
+        if matches!(entry, super::input_snapshot::Entry::File { .. }) {
+            root.open_regular_file(path)?.sync_all()?;
+        }
+        root.target(path)?.sync_directory()?;
+        if matches!(entry, super::input_snapshot::Entry::Directory) {
+            // target otwiera wyłącznie katalog rodzica; ta nazwa nie tworzy żadnego artefaktu.
+            root.target(&path.join(".result-sync"))?.sync_directory()?;
+        }
+    }
+    root.target(Path::new(".result-sync"))?.sync_directory()?;
+    root.validate_path_identity(cwd)
+}
+
+/// Wznowienie dostaje fakty sprawdzone z dysku, nie ścieżkę skopiowaną bez walidacji z JSON.
+#[derive(Debug)]
+pub(super) struct SavedFolder {
+    pub(super) path: PathBuf,
+    pub(super) entries: BTreeMap<PathBuf, super::input_snapshot::Entry>,
+    pub(super) origin: String,
+}
+
+pub(super) fn read_saved_folder(
+    previous: &Path,
+    work_key: &str,
+    saved: &SavedCopy,
+) -> Result<SavedFolder, RunError> {
+    refuse_incomplete_input(previous, work_key)?;
+    let SavedCopy::Folder {
+        path,
+        origin: Some(origin),
+        digest: Some(digest),
+    } = saved
+    else {
+        return Err(RunError::Io(io::Error::other(
+            "This folder result was kept for inspection, but cannot be verified for reuse.",
+        )));
+    };
+    if path != &Path::new(WORK_DIR).join(work_key) {
+        return Err(RunError::Io(io::Error::other(
+            "The saved result points outside its own working copy.",
+        )));
+    }
+    let path = validated_copy_path(previous, work_key)?;
+    let held = supervisor::PublicationRoot::open(&path)?;
+    let input = super::workspace_inputs::for_copy(previous, work_key)?;
+    if input.id() != origin {
+        return Err(RunError::Io(io::Error::other(
+            "The result belongs to different saved starting files.",
+        )));
+    }
+    let entries = super::input_snapshot::inspect(&path)?;
+    held.validate_path_identity(&path)?;
+    if folder_digest(&entries)? != *digest {
+        return Err(RunError::Io(io::Error::other(
+            "The saved result folder changed after the run finished. It was not reused.",
+        )));
+    }
+    Ok(SavedFolder {
+        path,
+        entries,
+        origin: origin.clone(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum KeptFolderState {
+    Changed,
+    Uncertain,
+    Incomplete,
+}
+
+#[derive(Debug)]
+pub(super) struct KeptFolder {
+    pub(super) work_key: String,
+    pub(super) path: PathBuf,
+    pub(super) state: KeptFolderState,
+}
+
+/// Historia, retencja i jawne Forget pytają ten sam rdzeń o foldery, których nie wolno zgubić.
+/// Po awarii przed receipt sam folder + marker nadal są prawdą; brak indeksu niczego nie zmienia.
+pub(super) fn kept_folders_in(run_dir: &Path) -> io::Result<Vec<KeptFolder>> {
+    let described: Value = fs::read(run_dir.join(RUN_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null);
+    let entries = match fs::read_dir(run_dir.join(WORK_DIR)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut kept = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let key = entry
+            .file_name()
+            .to_str()
+            .ok_or_else(|| io::Error::other("a kept folder has an unreadable name"))?
+            .to_owned();
+        let kind = entry.file_type()?;
+        if !kind.is_dir() {
+            if kind.is_symlink() {
+                return Err(io::Error::other(
+                    "a kept folder was replaced by a link; nothing was removed",
+                ));
+            }
+            continue;
+        }
+        let path = validated_copy_path(run_dir, &key)?;
+        let marker = read_isolation_marker(&run_dir.join(ISOLATION_MARKERS_DIR).join(&key))
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let saved = described
+            .get("copy_results")
+            .and_then(|one| one.get(&key))
+            .and_then(|one| serde_json::from_value::<SavedCopy>(one.clone()).ok());
+        let state = if marker
+            .as_ref()
+            .is_some_and(IsolationMarker::has_incomplete_input)
+        {
+            KeptFolderState::Incomplete
+        } else {
+            match saved {
+                Some(SavedCopy::Folder {
+                    digest: Some(_), ..
+                }) => KeptFolderState::Changed,
+                Some(SavedCopy::Folder { .. }) => KeptFolderState::Uncertain,
+                Some(SavedCopy::Git { .. }) => continue,
+                _ if marker.as_ref().and_then(IsolationMarker::branch).is_some() => continue,
+                // Legacy worktree nie staje się kopią non-git przez brak nowego receipt.
+                _ if marker.is_none() && fs::symlink_metadata(path.join(".git")).is_ok() => {
+                    continue;
+                }
+                _ => KeptFolderState::Uncertain,
+            }
+        };
+        kept.push(KeptFolder {
+            work_key: key,
+            path,
+            state,
+        });
+    }
+    kept.sort_by(|one, other| one.work_key.cmp(&other.work_key));
+    Ok(kept)
+}
+
+/// Usługi mogą zginąć przed końcem odroczonego zapisu wyniku. Sam status procesu nie
+/// upoważnia wtedy retencji do usunięcia run.json spod callbacku finalizera (WF-25).
+pub(super) fn pending_copy_finalization(run_dir: &Path) -> io::Result<bool> {
+    let described: Value =
+        serde_json::from_slice(&fs::read(run_dir.join(RUN_FILE))?).map_err(io::Error::other)?;
+    match described.get("pending_finalization") {
+        None => Ok(false),
+        Some(Value::Array(pending)) => Ok(!pending.is_empty()),
+        Some(_) => Err(io::Error::other(
+            "the saved finalization record is not readable",
+        )),
+    }
+}
+
+pub(super) fn copy_lifetime_blocker(run_dir: &Path) -> io::Result<Option<String>> {
+    let described: Value =
+        serde_json::from_slice(&fs::read(run_dir.join(RUN_FILE))?).map_err(io::Error::other)?;
+    if matches!(
+        described.get("status").and_then(Value::as_str),
+        Some("running" | "paused")
+    ) {
+        return Ok(Some(
+            "This run is still using its working folders. Stop it before removing them.".to_owned(),
+        ));
+    }
+    if pending_copy_finalization(run_dir)? {
+        return Ok(Some(
+            "The result folders are still being saved after their services stop.".to_owned(),
+        ));
+    }
+    if super::processes::read_service_records(run_dir)?
+        .iter()
+        .any(super::processes::ServiceRecord::keeps_copy)
+    {
+        return Ok(Some("A service may still be using this run's folders. Stop it and wait for confirmation before removing them.".to_owned()));
+    }
+    Ok(None)
+}
+
+pub(super) fn retention_blocker(run_dir: &Path) -> io::Result<Option<String>> {
+    if let Some(said) = super::result_restore::removal_blocker(run_dir)? {
+        return Ok(Some(said));
+    }
+    if let Some(said) = copy_lifetime_blocker(run_dir)? {
+        return Ok(Some(said));
+    }
+    let kept = kept_folders_in(run_dir)?;
+    if !kept.is_empty() {
+        return Ok(Some(format!(
+            "This run holds result folders that were kept for you: {}. Forget them only after confirming these exact paths.",
+            kept.iter()
+                .map(|one| one.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(None)
 }
 
 /// Jedno drzewo, które bieg zostawił po sobie na dysku — i wszystko, czego trzeba, żeby je zamknąć.
@@ -7958,6 +9950,13 @@ pub(super) fn trees_left_in(run_dir: &Path) -> Vec<LeftTree> {
         let Ok(Some(marker)) = read_isolation_marker(&entry.path()) else {
             continue;
         };
+        // Recovery nie może nazwać częściowej publikacji pracą kroku i commitować jej.
+        if marker.has_incomplete_input() {
+            continue;
+        }
+        let (Some(branch), Some(head)) = (marker.branch(), marker.head()) else {
+            continue;
+        };
         let cwd = own_copy_at(run_dir, &key);
         if !fs::symlink_metadata(&cwd).is_ok_and(|one| one.file_type().is_dir()) {
             continue;
@@ -7965,8 +9964,8 @@ pub(super) fn trees_left_in(run_dir: &Path) -> Vec<LeftTree> {
         left.push(LeftTree {
             key,
             cwd,
-            branch: marker.branch().to_owned(),
-            head: marker.head().to_owned(),
+            branch: branch.to_owned(),
+            head: head.to_owned(),
         });
     }
     // Kolejność katalogu jest dowolna, a zdania dla człowieka składają się w jedno pole: bez
@@ -7988,7 +9987,7 @@ pub(super) fn trees_left_in(run_dir: &Path) -> Vec<LeftTree> {
 fn base_of_tree(project: &Path, run_dir: &Path, cwd: &Path) -> Option<String> {
     let marker_path = prove_generated_work_path(project, run_dir, cwd).ok()?;
     let marker = read_isolation_marker(&marker_path).ok()??;
-    Some(marker.head().to_owned())
+    marker.head().map(str::to_owned)
 }
 
 /// Co ten kafelek pożycza z repozytorium gospodarza — przełożone z kształtu pliku na pytanie.
@@ -8039,7 +10038,10 @@ fn borrowing_is_possible(
         return Ok(());
     }
 
-    if !borrows.skills.is_empty() && driver.inheriting(&[]).is_none() {
+    if !borrows.skills.is_empty()
+        && driver.inheriting(&[]).is_none()
+        && !driver.reads_step_skills_from_its_folder()
+    {
         return Err(RunError::Refused(Note {
             level: Level::Problem,
             // Kropka ląduje na kafelku TEGO kroku: to jego wybór i jego agent.
@@ -8069,6 +10071,119 @@ fn borrowing_is_possible(
     })
 }
 
+/// WF-12: jeden pakiet instrukcji projektu, przed pierwszym procesem i przed rozwinięciem
+/// promptów fizycznych kopii. Wznowienie bierze pakiet poprzedniego biegu, nie dzisiejszy host.
+fn bring_recorded_sources(plan: &mut Plan) -> Result<(), RunError> {
+    let Some(replay) = plan
+        .replay
+        .as_ref()
+        .filter(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+    else {
+        return Ok(());
+    };
+    if let Some(instructions) = &replay.instructions {
+        instructions.save_to(&plan.dir)?;
+    }
+    for step in &mut plan.steps {
+        let Job::Agent(job) = &mut step.job else {
+            continue;
+        };
+        let Some(bundles) = replay.skills.get(&step.node_key) else {
+            continue;
+        };
+        if let Some(skills) = &bundles.agent {
+            let root = plan.dir.join("recorded-skills").join(&step.node_key);
+            job.skills.dirs.clear();
+            for skill in skills {
+                let directory = root.join(&skill.name);
+                skill.bundle.materialize(&directory)?;
+                job.skills.dirs.push(directory);
+            }
+        }
+        if let Some(skills) = &bundles.borrowed {
+            // Ten prywatny host jest wyłącznie źródłem obecnego adaptera Borrow. Oryginalny
+            // projekt i metadata source nie są czytane ani przepisywane.
+            let host = plan.dir.join("recorded-borrow").join(&step.node_key);
+            for skill in skills {
+                skill.bundle.materialize(
+                    &host
+                        .join(crate::skills::SHELF_CLAUDE_READS)
+                        .join(&skill.name),
+                )?;
+            }
+            if let Some(crate::workflow::Step::Agent(configured)) = replay
+                .graph
+                .steps
+                .iter()
+                .find(|one| one.id() == step.tile_key)
+            {
+                borrowing_is_possible(&host, &job.driver, &job.borrows, configured)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bring_project_instructions(plan: &mut Plan, project: &Path) -> Result<(), RunError> {
+    let graph_steps = plan.graph.get("steps").and_then(Value::as_array);
+    let mut choices = Vec::new();
+    for step in &plan.steps {
+        if !matches!(&step.job, Job::Agent(_)) {
+            continue;
+        }
+        let configured = graph_steps
+            .and_then(|steps| {
+                steps.iter().find(|source| {
+                    source.get("id").and_then(Value::as_str) == Some(step.tile_key.as_str())
+                })
+            })
+            .and_then(|source| source.get("projectInstructions"));
+        let selected =
+            crate::inherit::instructions::override_from(configured).map_err(|error| {
+                RunError::Refused(Note {
+                    level: Level::Problem,
+                    step_id: Some(step.tile_key.clone()),
+                    message: error.to_string(),
+                    fix: None,
+                })
+            })?;
+        let selected = plan
+            .inputs
+            .configuration
+            .context_for(&step.tile_key)
+            .map_or(selected, |scope| Some(scope.project_instructions));
+        choices.push((step.tile_key.clone(), selected));
+    }
+    let snapshot = crate::inherit::instructions::for_run(
+        project,
+        &plan.dir,
+        &choices,
+        plan.seeded_from.as_deref(),
+    )
+    .map_err(|error| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: None,
+            message: error.to_string(),
+            fix: None,
+        })
+    })?;
+    let instructions = snapshot.prompt(false);
+    plan.project_instructions = Some(serde_json::json!({
+        "id": snapshot.id(), "digest": snapshot.package_digest()?,
+    }));
+    for step in &mut plan.steps {
+        if !snapshot.for_step(&step.tile_key) {
+            continue;
+        }
+        if let Job::Agent(job) = &mut step.job {
+            job.prompt = format!("{instructions}\n{}", job.prompt);
+            job.context.extend(snapshot.context());
+        }
+    }
+    Ok(())
+}
+
 /// Zbiera to, co KAŻDY krok pożyczył, do katalogu tego kroku — po powstaniu katalogu biegu.
 ///
 /// Stoi TU, a nie w `plan_agent`, i to jest ta sama granica, która trzyma
@@ -8092,7 +10207,17 @@ fn bring_in_what_each_step_borrowed(plan: &mut Plan, project: &Path) -> Result<(
             continue;
         }
         let under = run_dir.join(BORROWED_DIR).join(&node_key);
-        job.borrowed = wire::from_the_host(project, &under, &job.borrows).map_err(|error| {
+        let recorded_host = run_dir.join("recorded-borrow").join(&node_key);
+        let host = if plan
+            .replay
+            .as_ref()
+            .is_some_and(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+        {
+            recorded_host.as_path()
+        } else {
+            project
+        };
+        job.borrowed = wire::from_the_host(host, &under, &job.borrows).map_err(|error| {
             RunError::Refused(Note {
                 level: Level::Problem,
                 step_id: Some(tile_key),
@@ -8100,6 +10225,24 @@ fn bring_in_what_each_step_borrowed(plan: &mut Plan, project: &Path) -> Result<(
                 fix: None,
             })
         })?;
+        if !job.borrows.skills.is_empty()
+            && job.driver.inheriting(&[]).is_none()
+            && job.driver.reads_step_skills_from_its_folder()
+        {
+            // WF-13: nie czytamy ponownie gospodarza. Native shelf dostaje zweryfikowaną,
+            // zamrożoną paczkę tego kroku. W folderze człowieka wspólny placer odmawia.
+            let plugin = under.join("plugin");
+            let bundles = crate::skills::bundle::read_delivered(&plugin)?;
+            let selected = crate::skills::StepSkills {
+                names: bundles.iter().map(|skill| skill.name.clone()).collect(),
+                dirs: bundles
+                    .iter()
+                    .map(|skill| plugin.join("skills").join(&skill.name))
+                    .collect(),
+            };
+            hand_native_skills(&run_dir, &job.cwd, &selected, &step.name, &step.tile_key)?;
+            job.borrowed.skills_were_delivered_in_the_folder();
+        }
     }
     Ok(())
 }
@@ -8138,20 +10281,46 @@ fn hand_the_skills_to_the_steps(plan: &mut Plan) -> Result<(), RunError> {
         // krok ma ten katalog założyć" — i dla `same-copy` daje `false` mimo że drzewo jest nasze
         // (założył je krok przed nim). Tamta odpowiedź w tym miejscu odmawiałaby krokowi, który
         // w folderze człowieka nie pracuje.
-        let ours = job.cwd.starts_with(&run_dir);
-        // 2026-09 (Z-8): półka jest wyłącznie zastępstwem dla brakującej flagi. Kładzenie jej
-        // także sterownikowi z `--plugin-dir` wnosiło pliki Loadouta do commita kroku.
-        if job.driver.inheriting(&[]).is_none() {
-            job.skills
-                .into_the_step_folder(&job.cwd, ours, &name)
-                .map_err(|refusal| refused_by_the_skills(&refusal, tile_key))?;
-        }
-
         let into = run_dir.join(STEP_SKILLS_DIR).join(&node_key);
         let carried = rewrite::plugin_dir_from_the_library(&job.skills, &into)
             .map_err(|error| RunError::Io(io::Error::other(error)))?;
+        // 2026-09 (Z-8): półka jest wyłącznie zastępstwem dla brakującej flagi. Kładzenie jej
+        // także sterownikowi z `--plugin-dir` wnosiło pliki Loadouta do commita kroku.
+        if job.driver.inheriting(&[]).is_none() {
+            let selected = saved_native_skills(&into)?;
+            hand_native_skills(&run_dir, &job.cwd, &selected, &name, &tile_key)?;
+        }
+
         job.plugin_flags = rewrite::plugin_argv(&carried);
     }
+    Ok(())
+}
+
+fn saved_native_skills(plugin: &Path) -> io::Result<crate::skills::StepSkills> {
+    let bundles = crate::skills::bundle::read_delivered(plugin)?;
+    Ok(crate::skills::StepSkills {
+        names: bundles.iter().map(|skill| skill.name.clone()).collect(),
+        dirs: bundles
+            .iter()
+            .map(|skill| plugin.join("skills").join(&skill.name))
+            .collect(),
+    })
+}
+
+fn hand_native_skills(
+    run_dir: &Path,
+    cwd: &Path,
+    skills: &crate::skills::StepSkills,
+    name: &str,
+    tile_key: &str,
+) -> Result<(), RunError> {
+    if !cwd.starts_with(run_dir.join(WORK_DIR)) {
+        // Wspólny komunikat placera nazywa skill i kafelek; nie ma zapisu do gospodarza.
+        skills
+            .into_the_step_folder(cwd, false, name)
+            .map_err(|refusal| refused_by_the_skills(&refusal, tile_key.to_owned()))?;
+    }
+    change_native_skills(run_dir, cwd, Some(skills))?;
     Ok(())
 }
 
@@ -8225,8 +10394,12 @@ struct Live {
     /// który skleja u siebie, ustala okno, którego nikt nie zmierzył, i odbiera pompie jedyną
     /// rzecz, dla której ta pompa powstała.
     lines: LineSink,
+    /// Jeden właściciel trwałych wiadomości tego biegu; nigdy współdzielony z retry/new run.
+    messages: Arc<crate::bridge::messages::Mailbox>,
     /// Stop i Continue sięgają tędy do środka biegu.
     control: RunControl,
+    /// Ten sam per-run obserwator co przy przygotowaniu; nigdy globalny hook.
+    faults: Arc<dyn PrestartFaultInjector>,
     /// Rejestr rzeczy, które mają zostać żywe po swoim kroku (kafelek „uruchom i zostaw").
     processes: std::sync::Arc<crate::commands::processes::Processes>,
     /// Wspólna pula miejsc **całej aplikacji** i pauza dostawcy — jedne drzwi dla obu
@@ -8318,17 +10491,6 @@ struct Live {
     /// sprawdził, jedzie dalej jako zrobiona. Czytane przed każdym krokiem ciała pętli i przez to
     /// jedyny nośnik faktu „dalszych rund TEJ pętli już nie potrzebujemy".
     settled_at: Mutex<Vec<Option<u8>>>,
-    /// Katalogi, do których praca rodziców już została zniesiona — zapadka „składamy raz".
-    ///
-    /// 2026-08-29 — RUNDY PĘTLI DZIELĄ FOLDER, i to jest cały powód istnienia tego pola.
-    /// Runda 2 kroku, który składa, weszłaby drugi raz w ten sam katalog i nadpisała bajtami
-    /// rodziców poprawki, które runda 1 właśnie w nim zrobiła — czyli pętla przestałaby robić
-    /// jedyną rzecz, dla której istnieje.
-    ///
-    /// Klucz jest KATALOGIEM, nie numerem kroku: to katalog jest tym, co rundy dzielą, a dwie
-    /// kopie jednego kafelka mają dwa różne (`work_key_for`). `std::sync::Mutex` i nigdy trzymany
-    /// przez `await` (niezmiennik 8): jedyny wołający oddaje go w tym samym wyrażeniu.
-    folded: Mutex<BTreeSet<PathBuf>>,
     /// Klucz węzła, który OSTATNI stanął do pracy w tym katalogu — po jednym wpisie na katalog.
     ///
     /// 2026-08-29 — ZNACZNIK POCHODZENIA KOPII, i bez niego składanie nie ma jak zauważyć, że
@@ -8339,7 +10501,7 @@ struct Live {
     /// pracowała, jest nie do odróżnienia od poprawnego. To pole zapisuje, kto tam pracował
     /// NAPRAWDĘ.
     ///
-    /// Klucz jest KATALOGIEM, tak samo jak w [`Live::folded`] wyżej i z tego samego powodu: to
+    /// Klucz jest KATALOGIEM: to
     /// katalog jest tym, co rundy dzielą, a dwie kopie jednego kafelka mają dwa różne.
     /// `std::sync::Mutex` i nigdy trzymany przez `await` (niezmiennik 8): obaj wołający oddają
     /// go w tym samym wyrażeniu.
@@ -8351,7 +10513,29 @@ struct Live {
 }
 
 /// Zmienna połowa biegu — dokładnie to, co zmienia się między zrzutami `run.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum SavedCopy {
+    Git {
+        oid: String,
+    },
+    Folder {
+        path: PathBuf,
+        origin: Option<String>,
+        digest: Option<String>,
+    },
+    Unchanged {
+        origin: String,
+    },
+    #[serde(other)]
+    Unavailable,
+}
+
 struct Book {
+    /// Usługa jeszcze korzysta z kopii albo trwa jej końcowy zapis; chroni też przed retencją.
+    pending_finalization: BTreeSet<String>,
+    /// Czytelnik wznowienia korzysta z dokładnego wyniku, nie z obecnej końcówki gałęzi.
+    copy_results: BTreeMap<String, SavedCopy>,
     /// Stan **biegu**. Jedyne miejsce, w którym istnieje `paused`.
     status: RunState,
     /// Czy bieg stoi na pytaniu do człowieka.
@@ -8377,6 +10561,9 @@ struct Book {
 /// Co bieg wie o jednym kroku.
 #[derive(Debug, Clone)]
 struct StepRun {
+    assessment: Option<crate::engine::drivers::command::assessment::Assessment>,
+    end_cause: Option<super::run_inputs::EndCause>,
+    result_files: Option<super::run_inputs::ResultFiles>,
     /// Stan kroku. `paused` tu nie istnieje i nie ma go w [`StepState`] — to jest stan biegu.
     status: StepState,
     execution: ExecutionFacts,
@@ -8681,6 +10868,7 @@ impl Live {
         slots: Limiter,
         processes: std::sync::Arc<crate::commands::processes::Processes>,
         budget_usd: Option<f64>,
+        faults: Arc<dyn PrestartFaultInjector>,
     ) -> Self {
         // Kopia stanów kroków, którą dostaje limit dostawcy, jest **martwa z rozmysłem**:
         // `engine::limits::Run` ma pełny dostęp do statusów i podejść dokładnie po to, żeby
@@ -8693,6 +10881,9 @@ impl Live {
             .map(|planned| StepRun {
                 status: StepState::Pending,
                 execution: ExecutionFacts::default(),
+                end_cause: None,
+                assessment: None,
+                result_files: None,
                 not_run_because: None,
                 round_outcome: None,
                 started_at: None,
@@ -8736,9 +10927,19 @@ impl Live {
         // Od tej chwili receipt jest częścią zmiennej księgi. Plan nie trzyma drugiej kopii,
         // która mogłaby rozjechać się z listami odbiorców podczas równoległych startów.
         let memory = std::mem::take(&mut plan.memory);
+        let messages = Arc::new(crate::bridge::messages::Mailbox::new(
+            super::lead_start::RunRef {
+                workspace: plan.project.clone(),
+                run_id: plan.id.clone(),
+            },
+            plan.dir.clone(),
+            lines.clone(),
+        ));
         Self {
             plan,
             book: Mutex::new(Book {
+                pending_finalization: BTreeSet::new(),
+                copy_results: BTreeMap::new(),
                 status: RunState::Running,
                 asking: false,
                 started_at: None,
@@ -8748,7 +10949,9 @@ impl Live {
                 reflection: ReflectionReceipt::default(),
             }),
             lines,
+            messages,
             control,
+            faults,
             gate,
             budget_usd,
             stopped_by_the_budget,
@@ -8758,7 +10961,6 @@ impl Live {
             did_not_pass,
             said_so_far,
             settled_at,
-            folded: Mutex::new(BTreeSet::new()),
             lineage: Mutex::new(BTreeMap::new()),
             route_evidence,
             route_decisions: Mutex::new(Vec::new()),
@@ -9300,36 +11502,6 @@ impl Live {
         )
     }
 
-    /// Czy ciało tej pętli zostawiło cokolwiek do sprawdzenia.
-    ///
-    /// Pyta o drzewo kroku, DO którego wraca powrót — czyli implementera. Sędzia z własną świeżą
-    /// kopią ma drzewo puste zawsze, więc pytanie postawione u niego pomijałoby każdą weryfikację.
-    ///
-    /// Krok pracujący wprost w folderze człowieka (`folder: project`) nie jest tu rozstrzygalny
-    /// — jego „drzewo" to całe repo z cudzą pracą w środku — i wtedy odpowiadamy `false`, czyli
-    /// „jest co sprawdzać". Milczenie w stronę weryfikacji, nigdy w stronę jej pominięcia.
-    fn nothing_to_judge(&self, which: usize) -> bool {
-        let Some(the_loop) = self.plan.loops.get(which) else {
-            return false;
-        };
-        let Some(entry) = self
-            .plan
-            .steps
-            .iter()
-            .find(|step| step.tile_key == the_loop.entry)
-        else {
-            return false;
-        };
-        let Job::Agent(job) = &entry.job else {
-            return false;
-        };
-        // Folder projektu znaczy „nie wiem": zmiany w nim mogą być czyjekolwiek.
-        if !job.ours {
-            return false;
-        }
-        !crate::commands::isolate::touched(&self.plan.project, &job.cwd)
-    }
-
     /// Pętla, której sędzią jest ten krok — razem z jej numerem pozycji.
     ///
     /// Sędzią jest krok, z którego WYCHODZI powrót. Krok stojący w pętli, ale nie na jej powrocie,
@@ -9418,18 +11590,28 @@ impl Live {
     /// zawsze: serwer dev nie kończy się nigdy i właśnie o to w nim chodzi. Powód całego kroku
     /// stoi przy [`crate::workflow::ServeStep`] i jest zmierzony na biegu właściciela.
     ///
-    /// Nie `async`: `Processes::start` wraca natychmiast, z `pgid` już w ręku.
-    fn start_and_leave(&self, id: StepId, job: &ServeJob) -> StepReport {
-        /* KOMENDA OD CZŁOWIEKA MA PIERWSZEŃSTWO, a pole `command_from` jest drogą na wypadek,
-         * gdy jej nie ma. Odwrotna kolejność znaczyłaby, że wpisany wiersz przestaje działać
-         * w chwili, w której ktoś dopisze pole obok niego. */
-        let from_the_agent = match self.command_a_step_handed_over(id, job) {
-            Ok(said) => said,
+    /// WF-26: bez konfiguracji oddaje Started, z nią czeka tylko do gotowości.
+    async fn start_and_leave(
+        &self,
+        id: StepId,
+        job: &ServeJob,
+        cancel: &CancellationToken,
+    ) -> StepReport {
+        // Włączone commandFrom jest jawnym wyborem źródła, także gdy ręczna
+        // komenda została w pliku do późniejszego ponownego użycia.
+        let description = match self.command_a_step_handed_over(id, job) {
+            Ok(Some(said)) => said,
+            Ok(None) => crate::workflow::LaunchDescription {
+                command: job.command.clone(),
+                subdirectory: String::new(),
+                environment: BTreeMap::new(),
+                required_env: Vec::new(),
+                endpoints: job.endpoints.clone(),
+                readiness: job.readiness.clone(),
+            },
             Err(why) => return self.refuse_step(id, &why),
         };
-        let line = from_the_agent
-            .as_deref()
-            .map_or_else(|| job.command.trim(), str::trim);
+        let line = description.command.trim();
         if line.is_empty() {
             // Odmowa, nie ciche przejście: krok bez komendy jest kafelkiem bez skutku, a bieg,
             // który go „wykona", uczy człowieka, że ten kafelek działa.
@@ -9438,17 +11620,63 @@ impl Live {
                 "This step has no command, so there is nothing to start.",
             );
         }
-        match self.processes.start(
-            &crate::engine::drivers::command::StartSpec {
-                command: line.to_owned(),
-                cwd: job.cwd.clone(),
+        let owner = super::processes::ServiceOwner {
+            reference: super::processes::ServiceRef {
+                workspace: self.plan.project.clone(),
+                run_id: self.plan.id.clone(),
+                node_key: self.plan.steps[id].node_key.clone(),
+                service_id: Uuid::now_v7().to_string(),
+                generation: 1,
             },
+            run_dir: self.plan.dir.clone(),
+            cwd: job.cwd.clone(),
+            lifetime: job.lifetime,
+        };
+        if job.start_when == crate::workflow::ServiceStartWhen::Asked {
+            return match self
+                .processes
+                .configure_description(&description, self.tag_for(id), owner)
+            {
+                Ok(reference) => {
+                    let result = serde_json::json!({"service":reference,"status":"Configured, not started","endpoints":[]});
+                    self.hand_over(id, &format!("## Answer\n{result}\n\n## Evidence\nLoadout saved the app description. No process has started.\n\n## Open questions\nAn allowed agent may start this app.\n"), &[]);
+                    if self
+                        .handoffs
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(id)
+                        .is_none_or(Option::is_none)
+                    {
+                        return self.refuse_step(id, "The app was configured, but its description could not be handed to the next step.");
+                    }
+                    self.update(|book| {
+                        book.steps[id].summary = Some(
+                            "The app is configured, not started. An allowed agent may start it."
+                                .to_owned(),
+                        );
+                    });
+                    StepReport::Succeeded
+                }
+                Err(why) => {
+                    self.refuse_step(id, &format!("Loadout could not configure this app: {why}"))
+                }
+            };
+        }
+        if job.start_when == crate::workflow::ServiceStartWhen::Unknown {
+            return self.refuse_step(
+                id,
+                "This app uses a start setting this version does not support.",
+            );
+        }
+        match self.processes.start_owned_description(
+            &description,
             /* ZE ZNACZNIKIEM, i to jest ta droga, którą poprzednie podejście go zgubiło
              * (2026-09, Z-01d). Kafelek „uruchom i zostaw" idzie tędy — `Processes::start` →
              * `start_to_stay` — czyli obok tej jednej funkcji, w której znacznik wtedy stał.
              * Jego proces ma z rozmysłu przeżyć krok, więc po awarii aplikacji jest dokładnie
              * tym, czego odzyskiwanie szuka. */
-            Some(self.tag_for(id)),
+            self.tag_for(id),
+            owner,
         ) {
             Ok(started) => {
                 self.update(|book| {
@@ -9457,7 +11685,49 @@ impl Live {
                     step.summary = Some(format!("Started and left running: {line}"));
                     step.pgid = Some(started.pgid);
                 });
-                StepReport::Succeeded
+                let Some(ready) = &description.readiness else {
+                    return StepReport::Succeeded;
+                };
+                let Some(reference) = &started.service else {
+                    return self.refuse_step(id, "The started app has no saved owner.");
+                };
+                match self
+                    .processes
+                    .wait_until_ready(reference, ready, cancel)
+                    .await
+                {
+                    super::processes::ReadinessEnd::Ready(current) => {
+                        let result = serde_json::json!({ "service": current.service, "endpoints": current.endpoints, "readiness": current.readiness });
+                        self.hand_over(id, &format!("## Answer\n{result}\n\n## Evidence\nLoadout checked the responding process and its address.\n\n## Open questions\nNone.\n"), &[]);
+                        if self
+                            .handoffs
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .get(id)
+                            .is_none_or(Option::is_none)
+                        {
+                            return self.refuse_step(id, "The app was ready, but its address could not be handed to the next step.");
+                        }
+                        self.update(|book| {
+                            book.steps[id].summary = Some("The app is ready to use.".to_owned());
+                        });
+                        StepReport::Succeeded
+                    }
+                    super::processes::ReadinessEnd::Failed { message, proof } => {
+                        self.update(|book| {
+                            book.steps[id].death_proof =
+                                matches!(proof, Some(GroupProof::Dead { .. }));
+                        });
+                        self.refuse_step(id, &message)
+                    }
+                    super::processes::ReadinessEnd::Cancelled { proof } => {
+                        self.update(|book| {
+                            book.steps[id].death_proof =
+                                matches!(proof, Some(GroupProof::Dead { .. }));
+                        });
+                        StepReport::Cancelled
+                    }
+                }
             }
             // Zdanie mówi, CO nie wstało: `os error 2` samo nie mówi nic (DESIGN §8).
             Err(error) => {
@@ -9492,26 +11762,93 @@ impl Live {
         &self,
         id: StepId,
         job: &ServeJob,
-    ) -> Result<Option<String>, String> {
-        let Some(field) = job.command_from.as_deref() else {
+    ) -> Result<Option<crate::workflow::LaunchDescription>, String> {
+        let Some(source) = &job.command_from else {
             return Ok(None);
         };
-
-        let handed = self.handed_before(id);
-        /* NAJŚWIEŻSZE ODDANE POLE WYGRYWA. Rodziców bywa kilku (fan-in), a runda pętli dokłada
-         * własne — więc przechodzimy całą listę i bierzemy ostatnie, które to pole niesie. Wersja
-         * biorąca pierwsze uruchamiałaby komendę z rundy sprzed poprawki. */
-        let mut found: Option<String> = None;
-        for one in &handed {
-            let Ok(read) = handoff::read_handoff(&one.path) else {
-                continue;
+        let field = &source.field;
+        let mut found = Vec::new();
+        let paths = if let Some(producer) = &source.producer {
+            let ancestors = super::run_inputs::ancestors_of(id, &self.plan.arrows);
+            let Some(at) = self
+                .plan
+                .steps
+                .iter()
+                .position(|step| &step.node_key == producer)
+                .filter(|at| *at != id && ancestors.contains(at))
+            else {
+                return Err("The selected app description must come from an exact earlier step, copy and attempt in this workflow.".to_owned());
             };
+            let written = self
+                .handoffs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(at)
+                .and_then(Option::as_ref)
+                .cloned();
+            if let Some(written) = written {
+                let body = super::run_inputs::read_output(
+                    &self.plan.dir,
+                    &self.plan.id,
+                    at,
+                    &written,
+                )
+                .map_err(|_| {
+                    "The selected app description could not be read safely from its saved result."
+                        .to_owned()
+                })?;
+                if let Some(said) = fields_said_in(&body).get(field) {
+                    found.push(said.clone());
+                }
+            }
+            Vec::new()
+        } else {
+            self.handed_before(id)
+                .into_iter()
+                .map(|hand| hand.path)
+                .collect()
+        };
+        // WF-27: zgodność starego pliku oznacza jednego producenta, nie last-wins.
+        // Odczyt jest ograniczony i no-follow, zanim modelowe dane staną się komendą.
+        for path in paths {
+            let parent = path
+                .parent()
+                .ok_or("The app description has no saved folder.")?;
+            let name = path
+                .file_name()
+                .ok_or("The app description has no saved file.")?;
+            let read = (|| -> anyhow::Result<handoff::Handoff> {
+                let root = crate::engine::supervisor::PublicationRoot::open(parent)?;
+                let mut file = root.open_regular_file(Path::new(name))?;
+                if file.metadata()?.len() > 65536 {
+                    anyhow::bail!("saved app description is too large");
+                }
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut std::io::Read::take(&mut file, 65537), &mut bytes)?;
+                if bytes.len() > 65536 {
+                    anyhow::bail!("saved app description grew while being read");
+                }
+                root.validate_path_identity(parent)?;
+                let read = handoff::parse_handoff(&path, &bytes)?;
+                if read.bytes_mismatch() {
+                    anyhow::bail!("saved app description changed after publication");
+                }
+                Ok(read)
+            })()
+            .map_err(|_| {
+                "The selected app description could not be read safely from its saved result."
+                    .to_owned()
+            })?;
             if let Some(said) = fields_said_in(&read.body).get(field) {
-                found = Some(said.clone());
+                found.push(said.clone());
             }
         }
-
-        let Some(said) = found else {
+        if found.len() > 1 {
+            return Err(format!(
+                "More than one earlier result contains \"{field}\". Choose the exact step, copy and attempt to start the app from."
+            ));
+        }
+        let Some(said) = found.pop() else {
             /* ODMOWA NAZYWA POLE I KAFELEK. „Nothing to start" zostawia człowieka przed grafem,
              * w którym wszystko wygląda poprawnie — a brakuje jednego wiersza w odpowiedzi
              * poprzednika (niezmiennik 29: zdanie ląduje w `book.steps[id].error`, czyli tam,
@@ -9522,18 +11859,34 @@ impl Live {
             ));
         };
 
-        if let Some(what) = crate::workflow::check::a_command_carrying_a_secret_shape(&said) {
-            return Err(format!(
-                "The step before this one handed over a command that looks like it carries {what}, \
-                 so Loadout did not run it. Commands reach the shell as plain text."
-            ));
-        }
-        Ok(Some(said))
+        let description = match source.format {
+            crate::workflow::CommandFormat::LaunchDescription => {
+                super::processes::launch::parse(&said)?
+            }
+            crate::workflow::CommandFormat::Command => crate::workflow::LaunchDescription {
+                command: said,
+                subdirectory: String::new(),
+                environment: BTreeMap::new(),
+                required_env: Vec::new(),
+                endpoints: job.endpoints.clone(),
+                readiness: job.readiness.clone(),
+            },
+            crate::workflow::CommandFormat::Unknown => {
+                return Err(
+                    "Choose a command or an app description as this step's source.".to_owned(),
+                );
+            }
+        };
+        crate::workflow::check::launch_description(&description)?;
+        Ok(Some(description))
     }
 
     /// Krok, który nie ruszył, z powodem zapisanym tam, gdzie człowiek go szuka.
     fn refuse_step(&self, id: StepId, said: &str) -> StepReport {
-        self.update(|book| book.steps[id].error = Some(said.to_owned()));
+        self.update(|book| {
+            book.steps[id].error = Some(said.to_owned());
+            book.steps[id].end_cause = Some(super::run_inputs::EndCause::Refused);
+        });
         StepReport::Failed
     }
 
@@ -9618,82 +11971,33 @@ impl Live {
     }
 
     fn run_file_bytes(&self, book: &Book) -> Result<Vec<u8>, RunError> {
-        Ok(serde_json::to_vec_pretty(&self.run_file(book))?)
+        Ok(serde_json::to_vec_pretty(&self.run_file(book)?)?)
     }
 
     /// Widok `run.json` na tę chwilę.
-    fn run_file<'a>(&'a self, book: &'a Book) -> RunFile<'a> {
+    fn run_file<'a>(&'a self, book: &'a Book) -> Result<RunFile<'a>, RunError> {
         let steps = self
             .plan
             .steps
             .iter()
             .zip(&book.steps)
-            .map(|(planned, run)| StepEntry {
-                id: &planned.id,
-                node_key: &planned.node_key,
-                name: &planned.name,
-                agent: &planned.vendor,
-                kind: match &planned.job {
-                    Job::Agent(_) => "agent",
-                    Job::Check(_) => "check",
-                    Job::Ask { .. } => "checkpoint",
-                    Job::Serve(_) => "serve",
-                },
-                depends_on: &planned.depends_on,
-                status: run.status,
-                execution: ExecutionEntry {
-                    executed: run.execution.executed,
-                    process_started: run.execution.process_started,
-                },
-                not_run_because: run.not_run_because.as_deref(),
-                round_outcome: run.round_outcome,
-                // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
-                // [PLAN §7], więc każdy krok ma tu dziś dokładnie jedno podejście.
-                attempt: 0,
-                agent_session_id: match &planned.job {
-                    Job::Agent(job) if run.execution.process_started => {
-                        Some(job.session.to_string())
-                    }
-                    Job::Agent(_) | Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
-                    // Kafelek kontrolny i krok „sprawdź" nie mają sesji, bo nie mają vendora.
-                    // Wpisany identyfikator byłby numerem, pod którym wznowienie szukałoby
-                    // kiedyś rozmowy, której nigdy nie było.
-                },
-                pid: run.pid,
-                pgid: run.pgid,
-                pgids: &run.pgids,
-                exit_code: run.exit_code,
-                death_proof: run.death_proof,
-                started_at: run.started_at,
-                ended_at: run.ended_at,
-                cost_usd: run.cost_usd,
-                cost_estimate: run.cost_estimate,
-                uncached_input: run.uncached_input,
-                cache_read: run.cache_read,
-                cache_write: run.cache_write,
-                output: run.output,
-                vendor_turns: run.vendor_turns,
-                summary: run.summary.as_deref(),
-                error: run.error.as_deref(),
-                stopped_from_outside: run.stopped_from_outside,
-                ran_without: &run.ran_without,
-                effective: match &planned.job {
-                    Job::Agent(job) => Some(&job.effective),
-                    // Nie ma czego zamrażać: ani kafelek kontrolny, ani krok „sprawdź" nie mają
-                    // konfiguracji agenta, bo żadnego agenta nie wołają.
-                    // 2026-08-23 — kafelek „uruchom i zostaw" też nie ma czego zamrażać: nie woła
-                    // agenta, tylko odpala polecenie i idzie dalej.
-                    Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
-                },
-                repaired: &run.repaired,
-                truncated: run.truncated,
-                loaded_by_the_app: run.loaded_by_the_app.as_ref(),
-                borrowed_concerns: &run.borrowed_concerns,
-            })
+            .map(|(planned, run)| step_entry(planned, run))
             .collect();
 
-        RunFile {
+        Ok(RunFile {
             id: &self.plan.id,
+            lead_origin: self.plan.lead_origin.as_ref(),
+            project_instructions: self.plan.project_instructions.as_ref(),
+            memory_sources: self.plan.memory_sources.binding()?,
+            input_snapshot: self.plan.input_snapshot.as_ref().map(|snapshot| {
+                serde_json::json!({
+                    "id": snapshot.id(), "manifest": "input/manifest.json"
+                })
+            }),
+            workspace_inputs: super::workspace_inputs::wire(&self.plan.workspace_inputs),
+            starting_results: &self.plan.starting_results,
+            copy_results: &book.copy_results,
+            pending_finalization: &book.pending_finalization,
             workflow_id: &self.plan.workflow_id,
             workflow_hash: &self.plan.hash,
             workflow_snapshot: &self.plan.graph,
@@ -9741,7 +12045,7 @@ impl Live {
             spent_usd: anything_was_priced(book).then(|| final_spend_in(book)),
             reflection: &book.reflection,
             steps,
-        }
+        })
     }
 
     /// Jeden krok, od pierwszego wpisu w księdze po ostatni.
@@ -9778,34 +12082,15 @@ impl Live {
          *
          * PRZED miejscem z puli, nie po: runda, której nikt nie potrzebuje, nie ma prawa stać
          * w kolejce po zasób wart ~583 MB i blokować kroku, który naprawdę ma coś do zrobienia. */
-        /* SĘDZIA, KTÓRY NIE MA CZEGO SĄDZIĆ, NIE BIEGNIE — i pętla się na tym domyka.
-         *
-         * 2026-08-22, prośba właściciela: „jak backend nie ma czego implementować, to żeby bez
-         * sensu się nie odbijać". Zmierzone na jego biegu: `Backend check` przeszedł trzy pełne
-         * rundy nad pracą, której nie było, napisał w każdej to samo — „no backend code or schema
-         * changes to verify" — i skończył jako `failed`, bo jedynym wyjściem z pętli był werdykt
-         * `pass`. Kara za uczciwość, płacona prawdziwymi procesami i tokenami.
-         *
-         * PYTAMY GITA, NIE AGENTA (`isolate::touched`), i pytamy o drzewo IMPLEMENTERA. To jest
-         * fakt, nie deklaracja: model nie ma jak go ograć, a wątpliwość liczy się jako „coś się
-         * wydarzyło", bo pominięta weryfikacja jest droższa od jednej zbędnej rundy. */
-        if let Some(which) = self.judging(&self.plan.steps[id]).map(|(which, _)| which)
-            && self.nothing_to_judge(which)
-        {
-            // Pętla domyka się na TEJ rundzie: dalszych już nie potrzebujemy, a bez tego kolejne
-            // startowałyby po kolei i każda pytała o to samo puste drzewo.
-            self.settle(which, self.plan.steps[id].turn);
-            self.update(|book| {
-                let step = &mut book.steps[id];
-                step.summary = Some(NOTHING_CHANGED.to_owned());
-            });
-            return self.finish_this_step(id, StepReport::Succeeded).await;
-        }
-
+        // 2026-09-05 (WF-04): brak diffu Git nie jest werdyktem. Wynik może być tekstem,
+        // pracą późniejszego kroku albo innej kopii; sędzia z grafu musi go ocenić.
+        // Pomijamy wyłącznie przyszłe próby po rzeczywistym `pass`, tą samą drogą dla
+        // sędziego-agenta i Check, bez zmiany polityki zachowania plików.
         if let Some(why) = self.not_run_because(id) {
             self.update(|book| {
                 let step = &mut book.steps[id];
                 step.not_run_because = Some(why);
+                step.end_cause = Some(super::run_inputs::EndCause::LoopSettled);
                 step.summary = Some(NOT_NEEDED.to_owned());
             });
             return self.finish_this_step(id, StepReport::Succeeded).await;
@@ -9824,7 +12109,11 @@ impl Live {
          *
          * Zdanie idzie na ekran tą samą drogą, co `say_what_was_left_behind`: `Line::Problem`
          * z nazwą kafelka, bo to jego wiersz człowiek otworzy. */
-        if let Err(why) = self.fold_what_came_before(id) {
+        let prepared = self.fold_what_came_before(id);
+        if matches!(prepared, Ok(fan_in::ApplyOutcome::Cancelled)) {
+            return StepReport::Cancelled;
+        }
+        if let Err(why) = prepared {
             // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem
             // (`ipc::Sent`), a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
             let _ = self.lines.send(Line::Problem {
@@ -9938,7 +12227,7 @@ impl Live {
             Job::Agent(job) => self.run_agent(id, job, &cancel, &mut slot).await,
             Job::Ask { question } => self.wait_for_a_person(id, question.as_deref()).await,
             Job::Check(job) => self.run_check(id, job, &cancel, &mut slot).await,
-            Job::Serve(job) => self.start_and_leave(id, job),
+            Job::Serve(job) => self.start_and_leave(id, job, &cancel).await,
         };
 
         self.finish_this_step(id, report).await
@@ -9946,50 +12235,77 @@ impl Live {
 
     /// Znosi pracę rodziców tego kroku do JEDNEJ kopii — tej, w której zaraz stanie sterownik.
     ///
-    /// `Ok(())` dla kroku, który niczego nie składa, i dla katalogu, który już został złożony;
+    /// `Ready` dla kroku, który niczego nie składa, i dla przygotowanego bieżącego wejścia;
     /// `Err` niesie gotowe zdanie dla człowieka.
     ///
-    /// # Zapadka zamyka się PRZED składaniem, nie po nim
-    ///
-    /// Bo pytanie brzmi „czy do tego katalogu wolno jeszcze wnosić cudzą pracę", a nie „czy się
-    /// udało". Runda 2 pętli ma zastać w folderze poprawki rundy 1, także wtedy, gdy runda 1
-    /// skończyła się niezgodą — a przy niezgodzie w katalogu nie stanął ani jeden bajt, więc
-    /// nie ma czego naprawiać drugim podejściem.
+    /// WF-03/20 (2026-09-06): trwałe inputReady dotyczy konkretnej rundy i jej rodziców.
+    /// Następna runda odświeża import trójstronnie, zachowując własną pracę konsumenta.
     ///
     /// Zamek zamyka się i otwiera w jednym wyrażeniu, bez `await` w środku (niezmiennik 8).
-    fn fold_what_came_before(&self, id: StepId) -> Result<(), String> {
+    fn fold_what_came_before(&self, id: StepId) -> Result<fan_in::ApplyOutcome, String> {
         let step = &self.plan.steps[id];
+        // WF-03: CarryOn może przekazać TEN SAM folder krokowi, który sam już niczego nie
+        // składa. Puste folds_in nie dowodzi kompletności folderu odziedziczonego po błędzie.
+        if let Some(cwd) = where_the_job_works(&step.job)
+            && let Ok(relative) = cwd.strip_prefix(self.plan.dir.join(WORK_DIR))
+            && relative.components().count() == 1
+            && let Some(key) = relative.to_str()
+        {
+            refuse_incomplete_input(&self.plan.dir, key).map_err(|error| error.to_string())?;
+        }
+        if let Some(cwd) = where_the_job_works(&step.job) {
+            self.clean_native_result(cwd)?;
+        }
         if step.folds_in.is_empty() {
-            return Ok(());
+            return Ok(fan_in::ApplyOutcome::Ready);
         }
         // Kafelek kontrolny nie pracuje w żadnym katalogu, więc nie ma dokąd składać. Do tego
         // ramienia nikt dziś nie dochodzi — kafelek bez folderu nie dostaje listy rodziców —
         // ale odpowiedź „nie ma dokąd" jest tu jedyną, która nie kłamie.
         let Some(into) = where_the_job_works(&step.job) else {
-            return Ok(());
+            return Ok(fan_in::ApplyOutcome::Ready);
         };
-        if !self
-            .folded
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(into.to_path_buf())
+        let marker_path = prove_generated_work_path(&self.plan.project, &self.plan.dir, into)
+            .map_err(|error| error.to_string())?;
+        let snapshot = into
+            .file_name()
+            .and_then(|key| key.to_str())
+            .and_then(|key| self.plan.workspace_inputs.get(key))
+            .map(|seed| &seed.input)
+            .or(self.plan.input_snapshot.as_ref())
+            .ok_or_else(|| {
+                "The saved input for combining these copies is missing. This step was not started."
+                    .to_owned()
+            })?;
+        let mut marker = read_isolation_marker(&marker_path).map_err(|error| error.to_string())?;
+        if marker
+            .as_ref()
+            .is_some_and(|one| one.origin_snapshot() != Some(snapshot.id()))
         {
-            return Ok(());
+            return Err(
+                "This copy belongs to a different saved input. Nothing was overwritten.".to_owned(),
+            );
+        }
+        if marker
+            .as_ref()
+            .is_some_and(IsolationMarker::has_incomplete_input)
+        {
+            return Err("This copy's input was not completely prepared. Start a new run; this partial folder was kept for inspection.".to_owned());
         }
         // Migawka pod jednym zamkiem, oddanym w tym samym wyrażeniu (niezmiennik 8): rodzice
         // tego kroku już zeszli, więc nikt tych wpisów w trakcie nie przestawi, a zamek trzymany
         // przez całe składanie stałby otworem przez cały obchód dwóch drzew projektu.
-        let born: Vec<Option<fan_in::Generation>> = {
+        let parent_steps: Vec<Option<String>> = {
             let lineage = self.lineage.lock().unwrap_or_else(PoisonError::into_inner);
             step.folds_in
                 .iter()
-                .map(|one| {
-                    lineage
-                        .get(&one.cwd)
-                        .and_then(|node_key| self.generation_of(node_key))
-                })
+                .map(|one| lineage.get(&one.cwd).cloned())
                 .collect()
         };
+        let born: Vec<_> = parent_steps
+            .iter()
+            .map(|key| key.as_deref().and_then(|key| self.generation_of(key)))
+            .collect();
         let parents: Vec<fan_in::Parent<'_>> = step
             .folds_in
             .iter()
@@ -10000,7 +12316,135 @@ impl Live {
                 born: *born,
             })
             .collect();
-        fan_in::fold_the_copies(into, &parents).map_err(|trouble| trouble.to_string())
+        // Także dwóch jednakowo starych rodziców nie jest wejściem bieżącej rundy.
+        if let Some(current) = self.generation_of(&step.node_key) {
+            for parent in &parents {
+                if let Some(previous) = parent.born
+                    && previous.loop_at == current.loop_at
+                    && previous.which != current.which
+                {
+                    return Err(fan_in::Trouble::MixedTries {
+                        one: parent.name.to_owned(),
+                        one_try: previous.which,
+                        other: step.name.clone(),
+                        other_try: current.which,
+                        of: current.of,
+                    }
+                    .to_string());
+                }
+            }
+        }
+        let mut parent_guards = Vec::new();
+        let mut guarded = BTreeSet::new();
+        for cwd in parents
+            .iter()
+            .map(|parent| parent.cwd)
+            .chain(std::iter::once(into))
+        {
+            if !guarded.insert(cwd) {
+                continue;
+            }
+            self.copy_processes_stopped(cwd)?;
+            parent_guards.push(self.processes.try_finalize_copy(cwd).map_err(|error| error.to_string())?
+                .ok_or_else(|| "A background process is still using one of these working folders. Stop it before combining its files.".to_owned())?);
+            change_native_skills(&self.plan.dir, cwd, None).map_err(|error| error.to_string())?;
+        }
+        let incoming =
+            fan_in::plan_frozen(&parents, snapshot).map_err(|trouble| trouble.to_string())?;
+        let imported = incoming
+            .changes
+            .iter()
+            .map(|one| (one.path.clone(), one.after.clone()))
+            .collect();
+        let mut preparation = FanInPreparation {
+            work_key: into
+                .file_name()
+                .and_then(|one| one.to_str())
+                .ok_or_else(|| "The copy has no valid input key.".to_owned())?
+                .to_owned(),
+            origin: snapshot.id().to_owned(),
+            parents: incoming.parents().map_err(|error| error.to_string())?,
+            plan_digest: incoming.digest().map_err(|error| error.to_string())?,
+            input_ready: false,
+            consumer: step.node_key.clone(),
+            parent_steps,
+            imported: Some(imported),
+        };
+        let old = marker.as_ref().and_then(IsolationMarker::fan_in);
+        if let Some(old) = old
+            && old.input_ready
+            && old.consumer == preparation.consumer
+            && old.parent_steps == preparation.parent_steps
+            && old.parents == preparation.parents
+            && old.plan_digest == preparation.plan_digest
+            && old.imported == preparation.imported
+        {
+            return Ok(fan_in::ApplyOutcome::Ready);
+        }
+        let empty = BTreeMap::new();
+        let previous = match old {
+            Some(old) => old.imported.as_ref().ok_or_else(||
+                "This older copy does not record its previous combined input. Start a new independent run; its files were not overwritten.".to_owned())?,
+            None => &empty,
+        };
+        let merge = incoming
+            .refresh(snapshot, previous, into, &step.name)
+            .map_err(|trouble| trouble.to_string())?;
+        let marker = marker.get_or_insert_with(|| IsolationMarker::FileCopy {
+            origin_snapshot: Some(snapshot.id().to_owned()),
+            fan_in: None,
+            native_skills: None,
+        });
+        marker.set_fan_in(preparation.clone());
+        write_isolation_marker(&marker_path, marker).map_err(|error| error.to_string())?;
+        let cancel = self.control.cancel_token();
+        if cancel.is_cancelled() {
+            return Ok(fan_in::ApplyOutcome::Cancelled);
+        }
+        let staged = fan_in::stage_plan(into, &self.plan.dir, &merge)
+            .map_err(|trouble| trouble.to_string())?;
+        let applied = staged
+            .apply(
+                |into, applied| self.faults.after_fan_in_operation(into, applied),
+                || cancel.is_cancelled(),
+            )
+            .map_err(|trouble| trouble.to_string())?;
+        if applied == fan_in::ApplyOutcome::Cancelled || cancel.is_cancelled() {
+            return Ok(fan_in::ApplyOutcome::Cancelled);
+        }
+        preparation.input_ready = true;
+        marker.set_fan_in(preparation);
+        write_isolation_marker(&marker_path, marker).map_err(|error| error.to_string())?;
+        Ok(fan_in::ApplyOutcome::Ready)
+    }
+
+    /// Sam exit bieżącego lidera nie zwalnia kopii współdzielonej z innym procesem.
+    fn copy_processes_stopped(&self, cwd: &Path) -> Result<(), String> {
+        let book = self.book();
+        if self
+            .plan
+            .steps
+            .iter()
+            .zip(&book.steps)
+            .any(|(planned, state)| {
+                where_the_job_works(&planned.job) == Some(cwd)
+                    && state.execution.process_started
+                    && !state.death_proof
+            })
+        {
+            return Err("A process using this working folder has not been confirmed stopped. Its files were kept, not accepted as a result.".to_owned());
+        }
+        Ok(())
+    }
+
+    fn clean_native_result(&self, cwd: &Path) -> Result<(), String> {
+        if !native_cleanup_needed(&self.plan.dir, cwd).map_err(|error| error.to_string())? {
+            return Ok(());
+        }
+        self.copy_processes_stopped(cwd)?;
+        let _guard = self.processes.try_finalize_copy(cwd).map_err(|error| error.to_string())?
+            .ok_or_else(|| "A background process is still using this working folder. Its skill files were left untouched.".to_owned())?;
+        change_native_skills(&self.plan.dir, cwd, None).map_err(|error| error.to_string())
     }
 
     /// Zapisuje, że to ten węzeł pracował w swoim katalogu — znacznik pochodzenia kopii.
@@ -10053,6 +12497,26 @@ impl Live {
     /// odmowa przechodzi przez [`Live::when_this_one_fails`] PRZED jednym zapisem i jedną linią
     /// stanu, więc polityka kroku oraz to, co widzi człowiek, mają ten sam wynik.
     async fn finish_this_step(&self, id: StepId, report: StepReport) -> StepReport {
+        let report = if report != StepReport::Cancelled && self.plan.inputs.is_producer(id) {
+            match self.freeze_result_files(id) {
+                Ok(files) => {
+                    self.update(|book| book.steps[id].result_files = files);
+                    report
+                }
+                Err(error) => {
+                    self.update(|book| {
+                        book.steps[id].error = Some(format!(
+                            "The result files could not be saved for the next check: {error}"
+                        ));
+                        book.steps[id].end_cause =
+                            Some(super::run_inputs::EndCause::InfrastructureFailed);
+                    });
+                    StepReport::Failed
+                }
+            }
+        } else {
+            report
+        };
         let report = if report == StepReport::Succeeded {
             match self.chosen_route_after(id) {
                 Ok(_) => report,
@@ -10077,6 +12541,15 @@ impl Live {
         self.update(|book| {
             let step = &mut book.steps[id];
             step.status = ended;
+            if ended == StepState::Cancelled {
+                step.end_cause = Some(super::run_inputs::EndCause::Cancelled);
+            } else if step.end_cause.is_none() {
+                step.end_cause = Some(if ended == StepState::Succeeded {
+                    super::run_inputs::EndCause::Completed
+                } else {
+                    super::run_inputs::EndCause::InfrastructureFailed
+                });
+            }
             if step.execution.executed {
                 step.ended_at = Some(now_ms());
             }
@@ -10562,8 +13035,18 @@ impl Live {
         &self,
         id: StepId,
         job: &AgentJob,
+        service_connection: Option<&crate::connections::Connection>,
     ) -> anyhow::Result<DriverConfiguration> {
-        let mut configuration = if job.connections.is_empty() {
+        let mut connections = job.connections.clone();
+        if let Some(connection) = service_connection {
+            if connections.iter().any(|one| one.name == connection.name) {
+                return Err(anyhow::anyhow!(
+                    "an approved Connection uses the name reserved for Loadout's app tools; rename that Connection before starting this step"
+                ));
+            }
+            connections.push(connection.clone());
+        }
+        let mut configuration = if connections.is_empty() {
             DriverConfiguration::default()
         } else {
             let directory = self
@@ -10579,7 +13062,7 @@ impl Live {
             crate::connections::runtime::for_driver_with_secrets(
                 &directory,
                 job.driver.id(),
-                &job.connections,
+                &connections,
                 &self.plan.secrets,
             )?
         };
@@ -10832,8 +13315,9 @@ impl Live {
         job: &AgentJob,
         target: EvidenceTarget,
         leftovers: &Arc<StepLeftovers>,
+        service_connection: Option<&crate::connections::Connection>,
     ) -> anyhow::Result<Arc<dyn AgentDriver>> {
-        let configuration = self.vendor_arguments_for(id, job)?;
+        let configuration = self.vendor_arguments_for(id, job, service_connection)?;
         /* STAWKI IDĄ PIERWSZE, przed każdą inną nakładką (2026-09, Z-44), i to jest ta sama
          * wymuszona kolejność, co niżej: każde z tych opakowań oddaje KLON sterownika, więc
          * tabela założona później zginęłaby przy pierwszym opakowaniu klonującym sterownik
@@ -10852,7 +13336,7 @@ impl Live {
                  * krok, ktory ich nie dostanie, NIE RUSZA. Sam szczebel tej wagi nie ma:
                  * jest ustawieniem, nie zgoda, a stary dubel silnika bez tego szwu ma dalej
                  * dac sie uzyc do testowania planisty. */
-                None if !job.connections.is_empty() => {
+                None if !job.connections.is_empty() || service_connection.is_some() => {
                     return Err(anyhow::anyhow!(
                         "this agent app cannot use the approved Connections. Loadout stopped the step instead of starting it without them."
                     ));
@@ -10869,7 +13353,11 @@ impl Live {
          * drugie; dowody ostatnie, bo tylko wtedy nadajnik dowodow siedzi na sterowniku,
          * ktory naprawde pojdzie do `start`. Odwrocenie tej kolejnosci jest niewidoczne:
          * wszystko sie kompiluje, bieg rusza, a znika albo `--mcp-config`, albo plik dowodu. */
-        let driver = self.with_its_own_settings(id, job, &driver)?;
+        let driver = if self.plan.protection.contains_key(&id) {
+            driver
+        } else {
+            self.with_its_own_settings(id, job, &driver)?
+        };
         let driver = match driver.with_evidence(target) {
             Some(driver) => driver,
             /* Stare duble silnika nie znaja surowego drutu i pozostaja uzyteczne do
@@ -10896,7 +13384,11 @@ impl Live {
          * rusza (2026-09, Z-01d). `None` nie odmawia startu: vendor bez własnego procesu nie ma
          * czego znaczyć, a atrapy nie mają tego szwu wcale. */
         let tag = self.tag_for(id);
-        Ok(driver.for_step(&tag).unwrap_or(driver))
+        let driver = driver.for_step(&tag).unwrap_or(driver);
+        match self.plan.protection.get(&id) {
+            Some(boundary) => boundary.agent(driver.as_ref()),
+            None => Ok(driver),
+        }
     }
 
     /// Konfiguruje sterownik i oddaje mu nadajnik dokładnie raz.
@@ -10907,13 +13399,62 @@ impl Live {
         &self,
         id: StepId,
         job: &AgentJob,
-        spec: RunSpec,
-        target: EvidenceTarget,
-        events: mpsc::Sender<DecodedEvent>,
+        turn: AgentTurn,
         leftovers: &Arc<StepLeftovers>,
+        service_connection: Option<&crate::connections::Connection>,
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
-        let driver = self.configured_driver_for_agent(id, job, target, leftovers)?;
-        driver.start(spec, events).await
+        let driver =
+            self.configured_driver_for_agent(id, job, turn.target, leftovers, service_connection)?;
+        driver.start(turn.spec, turn.events).await
+    }
+
+    /// Zwykły Step dostaje wyłącznie swój host usług. Nie jest Desk-em Leada.
+    async fn service_bridge_for(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+        expires: CancellationToken,
+    ) -> anyhow::Result<Option<crate::bridge::host::Bridge>> {
+        if job.service_access.is_empty() && !job.agent_messages {
+            return Ok(None);
+        }
+        let services = (!job.service_access.is_empty()).then(|| {
+            Arc::new(super::processes::services::ServiceAccess::for_step(
+                Arc::clone(&self.processes),
+                self.plan.project.clone(),
+                self.plan.id.clone(),
+                job.service_access.clone(),
+                expires.clone(),
+            ))
+        });
+        let step = &self.plan.steps[id];
+        let messages = if job.agent_messages {
+            Some(
+                self.messages
+                    .join(
+                        step.node_key.clone(),
+                        &step.name,
+                        self.plan
+                            .inputs
+                            .configuration
+                            .context_key(&step.tile_key)
+                            .map(str::to_owned),
+                        expires,
+                    )
+                    .map_err(anyhow::Error::msg)?,
+            )
+        } else {
+            None
+        };
+        let access = Arc::new(crate::bridge::messages::StepDesk { services, messages });
+        Ok(Some(
+            crate::bridge::host::Bridge::open_with_tools(
+                &std::env::temp_dir(),
+                access.tools(),
+                access,
+            )
+            .await?,
+        ))
     }
 
     /// Krok agenta: sterownik, zdarzenia, linie, koniec albo anulowanie.
@@ -10960,6 +13501,13 @@ impl Live {
          * drogą porażki, bo to jest zwykła porażka: `run.json` dostaje zdanie nazywające pole,
          * a ustawienie „co, kiedy ten nie przejdzie" działa tu tak samo, jak wszędzie indziej. */
         if let Err(why) = Self::the_answer_has_somewhere_to_go(job) {
+            return self.never_started(id, why, events, ours, pump).await;
+        }
+
+        // WF-13: fan-in/Check/ostatnia kopia usuwają wyłącznie własne, niezmienione pliki
+        // dostawy. SameCopy i kolejne rundy odtwarzają wybrany pakiet przed procesem,
+        // ze źródła zamrożonego przy Start, nigdy z dzisiejszej biblioteki/gospodarza.
+        if let Err(why) = self.republish_native_skills(id, job) {
             return self.never_started(id, why, events, ours, pump).await;
         }
 
@@ -11023,6 +13571,30 @@ impl Live {
         // zaznaczył umiejętności, agent nie dostał żadnej i nic tego nie mówi.
         let target = self.evidence_for_agent(id, spec.prompt.len(), context, &job.borrowed);
         let evidence = target.clone();
+        // Upuszczenie samego nasłuchu nie zamyka już przyjętych połączeń. Prawa gasną
+        // z tą turą także dla trzymanego starego gniazda, przed każdą drogą powrotu.
+        let services_expire = cancel.child_token();
+        let _services_expire = services_expire.clone().drop_guard();
+        let service_bridge = match self.service_bridge_for(id, job, services_expire).await {
+            Ok(bridge) => bridge,
+            Err(why) => {
+                return self
+                    .never_started(id, why.to_string(), events, ours, pump)
+                    .await;
+            }
+        };
+        let service_connection = match service_bridge
+            .as_ref()
+            .map(super::super::bridge::host::Bridge::as_connection)
+            .transpose()
+        {
+            Ok(connection) => connection,
+            Err(why) => {
+                return self
+                    .never_started(id, why.to_string(), events, ours, pump)
+                    .await;
+            }
+        };
         /* MIEJSCE KROKU JEDZIE DO STEROWNIKA NA CZAS STARTU (2026-09, Z-4). Nieudany start vendora
          * potrafi zostawić żywą grupę, a permit należy do kroku, nie do sterownika — więc gdyby
          * ocalały wjechał do rejestru bez niego, pula zwolniłaby miejsce po czymś, co dalej
@@ -11033,7 +13605,17 @@ impl Live {
             slot.take(),
         ));
         let started = self
-            .start_agent_turn(id, job, spec, target, events, &leftovers)
+            .start_agent_turn(
+                id,
+                job,
+                AgentTurn {
+                    spec,
+                    target,
+                    events,
+                },
+                &leftovers,
+                service_connection.as_ref(),
+            )
             .await;
         *slot = leftovers.take_back();
 
@@ -11173,6 +13755,159 @@ impl Live {
     /// routująca ten krok przez [`plan_agent`] przewróciłaby się na `RunError::NoAgentsSaved`
     /// w repo, w którym nikt nie zapisał ani jednego agenta, a nie ma powodu, żeby taki krok
     /// jakiegokolwiek agenta potrzebował.
+    /// Fakty producentów są danymi. Ani ich output, ani identyfikator nie zmienia komendy.
+    fn republish_native_skills(&self, id: StepId, job: &AgentJob) -> Result<(), String> {
+        if job.driver.inheriting(&[]).is_some()
+            || (job.skills.names.is_empty() && job.borrows.skills.is_empty())
+        {
+            return Ok(());
+        }
+        self.copy_processes_stopped(&job.cwd)?;
+        let _guard = self.processes.try_finalize_copy(&job.cwd).map_err(|error| error.to_string())?
+            .ok_or_else(|| "A background process is still using this working folder. Its skill files were left untouched.".to_owned())?;
+        let step = &self.plan.steps[id];
+        let mut plugins = Vec::new();
+        if !job.skills.names.is_empty() {
+            plugins.push(self.plan.dir.join(STEP_SKILLS_DIR).join(&step.node_key));
+        }
+        if !job.borrows.skills.is_empty() {
+            plugins.push(
+                self.plan
+                    .dir
+                    .join(BORROWED_DIR)
+                    .join(&step.node_key)
+                    .join("plugin"),
+            );
+        }
+        for plugin in plugins {
+            let skills = saved_native_skills(&plugin).map_err(|error| error.to_string())?;
+            hand_native_skills(
+                &self.plan.dir,
+                &job.cwd,
+                &skills,
+                &step.name,
+                &step.tile_key,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn freeze_result_files(
+        &self,
+        id: StepId,
+    ) -> io::Result<Option<super::run_inputs::ResultFiles>> {
+        let proved = {
+            let book = self.book();
+            !book.steps[id].execution.process_started || book.steps[id].death_proof
+        };
+        if !proved {
+            return Err(io::Error::other(
+                "The producing agent is not confirmed stopped.",
+            ));
+        }
+        let Some(cwd) = where_the_job_works(&self.plan.steps[id].job) else {
+            return Ok(None);
+        };
+        let _guard = self
+            .processes
+            .try_finalize_copy(cwd)?
+            .ok_or_else(|| io::Error::other("A background app is still using these files."))?;
+        self.copy_processes_stopped(cwd).map_err(io::Error::other)?;
+        change_native_skills(&self.plan.dir, cwd, None)?;
+        let relative = PathBuf::from("check-inputs").join(&self.plan.steps[id].node_key);
+        supervisor::PublicationRoot::open(&self.plan.dir)?.ensure_directory(&relative, 0o700)?;
+        // WF-16 (2026-09-06): Project/Pick nie są własnością biegu. Zamrożenie wyniku
+        // nie daje nowej zgody na import prywatnego .env gospodarza. Własna kopia ma już
+        // rozstrzygnięte wejścia WF-14 i zachowuje także pliki utworzone później przez agenta.
+        let snapshot = if cwd.starts_with(self.plan.dir.join(WORK_DIR)) {
+            super::input_snapshot::capture_saved_result(cwd, &self.plan.dir.join(&relative))?
+        } else {
+            super::input_snapshot::capture_selected(
+                cwd,
+                &self.plan.dir.join(&relative),
+                &self.plan.additional_inputs,
+            )?
+        };
+        Ok(Some(super::run_inputs::ResultFiles {
+            snapshot: snapshot.id().to_owned(),
+            directory: relative.to_string_lossy().into_owned(),
+        }))
+    }
+
+    fn input_for_check(&self, id: StepId) -> io::Result<Option<String>> {
+        let Some(selected) = self.plan.inputs.for_check(id) else {
+            return Ok(None);
+        };
+        let mut results = Vec::with_capacity(selected.len());
+        let mut bytes = 0_usize;
+        for &producer in selected {
+            let (status, error, cause, files) = {
+                // Mutex nigdy nie przechodzi przez odczyt pliku ani await (niezmiennik 8).
+                let book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
+                let step = &book.steps[producer];
+                if step
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.len() > super::run_inputs::MAX_CHECK_INPUT_BYTES)
+                {
+                    return Err(io::Error::other(
+                        "The selected check input exceeds 256 KiB.",
+                    ));
+                }
+                (
+                    step.status.name().to_owned(),
+                    step.error.clone(),
+                    step.end_cause
+                        .unwrap_or(super::run_inputs::EndCause::Unknown),
+                    step.result_files.clone(),
+                )
+            };
+            let written = self
+                .handoffs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(producer)
+                .cloned()
+                .flatten();
+            let output = written
+                .as_ref()
+                .map(|written| {
+                    super::run_inputs::read_output(&self.plan.dir, &self.plan.id, producer, written)
+                })
+                .transpose()?;
+            bytes = bytes
+                .saturating_add(output.as_ref().map_or(0, String::len))
+                .saturating_add(error.as_ref().map_or(0, String::len));
+            if bytes > super::run_inputs::MAX_CHECK_INPUT_BYTES {
+                return Err(io::Error::other(
+                    "The selected check input exceeds 256 KiB.",
+                ));
+            }
+            let files = files
+                .map(|record| -> io::Result<Value> {
+                    let snapshot =
+                        super::input_snapshot::read(&self.plan.dir.join(&record.directory))?;
+                    if snapshot.id() != record.snapshot {
+                        return Err(io::Error::other(
+                            "The selected result files belong to another publication.",
+                        ));
+                    }
+                    Ok(serde_json::json!({"root":snapshot.files(),"snapshotId":snapshot.id()}))
+                })
+                .transpose()?;
+            results.push(super::run_inputs::InputResult {
+                node_key: self.plan.steps[producer].node_key.clone(),
+                status,
+                output,
+                error,
+                cause,
+                files,
+            });
+        }
+        super::run_inputs::encode(&results).map(Some)
+    }
+
     async fn run_check(
         &self,
         id: StepId,
@@ -11182,18 +13917,40 @@ impl Live {
     ) -> StepReport {
         // ZE ZNACZNIKIEM (2026-09, Z-01d): komenda sprawdzająca to najczęściej `npm test` albo
         // `cargo test`, czyli dokładnie ta rzecz, która potrafi zostawić po sobie serwer w tle.
-        let driver = CommandDriver::new().for_step(self.tag_for(id));
+        let driver = CommandDriver::new()
+            .for_step(self.tag_for(id))
+            .with_proof_mode(job.proof_mode);
         // START I CZEKANIE OSOBNO, a nie jednym `CommandDriver::run`, i to jest cała różnica
         // między księgą, która pomaga po awarii, a księgą, która opisuje przeszłość: `run` to
         // `start` plus `settle().await`, więc wraca dopiero PO całym sprawdzeniu — a `pid`
         // i `pgid` zapisane wtedy są nieobecne przez cały czas, w którym komenda naprawdę biegła.
-        let mut live = match driver.start(&job.spec) {
+        let input = match self.input_for_check(id) {
+            Ok(input) => input,
+            Err(error) => return self.refuse_step(id, &error.to_string()),
+        };
+        let boundary = self.plan.protection.get(&id);
+        let saved_input = boundary.and(input.clone());
+        let mut spec = job.spec.clone();
+        let driver = if let Some(boundary) = boundary {
+            spec.cwd = boundary.check_cwd(&spec.cwd).to_path_buf();
+            match boundary.check(driver, input.as_deref()) {
+                Ok(driver) => driver,
+                Err(error) => return self.refuse_step(id, &error.to_string()),
+            }
+        } else {
+            driver
+        };
+        let mut live = match driver.start_with_input(&spec, input) {
             Ok(live) => live,
             Err(error) => {
                 // Zdanie nazywa KOMENDĘ, bo to ona się nie uruchomiła. „Nie udało się" bez
                 // podmiotu wysyła człowieka szukać wady w agencie, którego tu nie ma.
                 let text = format!("Loadout could not start this check: {error}");
-                self.update(|book| book.steps[id].error = Some(text));
+                self.update(|book| {
+                    book.steps[id].error = Some(text);
+                    book.steps[id].end_cause =
+                        Some(super::run_inputs::EndCause::InfrastructureFailed);
+                });
                 /* 2026-08-23 (T-87) — I TA DROGA TEZ IDZIE PRZEZ JEDNO MIEJSCE. Do tego dnia
                  * wracalo stad gole `StepReport::Failed`, wiec ustawienie czlowieka „jedz dalej
                  * mimo wszystko" bylo na tej sciezce martwe: literowka w nazwie katalogu zabierala
@@ -11221,7 +13978,7 @@ impl Live {
         let end = live.settle(cancel).await;
 
         match end.how {
-            CheckHow::Ran(report) => {
+            CheckHow::Ran(mut report) => {
                 /* 2026-08-28 — WERDYKT DOPIERO PO DOWODZIE ZEJŚCIA GRUPY.
                  *
                  * `Checking::settle` na ścieżce `Settled::Exited` nie wołało `stop()` ani razu:
@@ -11231,13 +13988,50 @@ impl Live {
                  * obok kroku agenta. */
                 let proof = self.prove_check_settled(id, &mut live).await;
                 let proven_dead = matches!(&proof, GroupProof::Dead { .. });
+                if let Some(boundary) = boundary {
+                    let unchanged = boundary
+                        .validate()
+                        .and_then(|()| self.input_for_check(id))
+                        .is_ok_and(|now| now == saved_input);
+                    if !unchanged {
+                        report.passed = false;
+                        report.assessment =
+                            Some(crate::engine::drivers::command::assessment::Assessment {
+                                outcome:
+                                    crate::engine::drivers::command::assessment::Outcome::NotJudged,
+                                receipt: None,
+                                reason:
+                                    "The evaluation data changed. This result was not measured."
+                                        .to_owned(),
+                            });
+                    }
+                }
                 self.update(|book| {
                     let step = &mut book.steps[id];
                     step.exit_code = report.exit_code;
                     step.summary = summary_of(&report.output);
+                    step.assessment.clone_from(&report.assessment);
                     step.death_proof = proven_dead;
                     if !proven_dead {
                         step.error = Some(CHECK_SURVIVOR_ERROR.to_owned());
+                    }
+                    step.end_cause = Some(if !proven_dead {
+                        super::run_inputs::EndCause::UnprovenStop
+                    } else if report.assessment.as_ref().is_some_and(|one| {
+                        one.outcome
+                            == crate::engine::drivers::command::assessment::Outcome::NotJudged
+                    }) {
+                        super::run_inputs::EndCause::InfrastructureFailed
+                    } else if report.passed {
+                        super::run_inputs::EndCause::Completed
+                    } else {
+                        super::run_inputs::EndCause::TaskFailed
+                    });
+                    if proven_dead
+                        && let Some(assessment) = &report.assessment
+                        && !report.passed
+                    {
+                        step.error = Some(assessment.reason.clone());
                     }
                 });
                 // Ocalały jedzie do rejestru PRZED przekazaniem i przed werdyktem: za nimi stoi
@@ -11845,6 +14639,22 @@ impl Live {
             let step = &mut book.steps[id];
             step.exit_code = code;
             record_turn(step, &outcome, cost_is_estimate);
+            step.end_cause = Some(if !proven_dead {
+                super::run_inputs::EndCause::UnprovenStop
+            } else if !matches!(how, ClosedHow::OnItsOwn) || !evidence_complete {
+                super::run_inputs::EndCause::InfrastructureFailed
+            } else if matches!(outcome.reason, FinishReason::Cancelled) {
+                super::run_inputs::EndCause::Cancelled
+            } else if matches!(outcome.reason, FinishReason::LimitReached) {
+                super::run_inputs::EndCause::LimitReached
+            } else if ok {
+                super::run_inputs::EndCause::Completed
+            }
+            // Ogólne Failed(String) vendora nie odróżnia awarii logowania od błędu pracy.
+            // Nie zgadujemy na podstawie prozy; brak dowodu zostaje jawnie nieznany.
+            else {
+                super::run_inputs::EndCause::Unknown
+            });
             step.summary = summary_of(&outcome.text);
             /* NUMER SYGNAŁU WCHODZI DO KSIĘGI ZAWSZE, także wtedy, gdy zdanie o nim przegra
              * z powodem wyżej (2026-09, Z-39). To jest fakt, nie tekst: przeżywa skasowanie
@@ -12056,9 +14866,11 @@ impl Live {
         }
 
         /* Głos jest dostępny przez całą turę i zdejmowany na wspólnej drodze po każdym wyniku. */
-        if let Some(voice) = handle.voice() {
-            self.control.step_can_hear(&self.plan.steps[id].name, voice);
-        }
+        let message_generation = self.control.step_session_started(
+            &self.plan.steps[id].node_key,
+            &self.plan.steps[id].name,
+            handle.voice(),
+        );
 
         // Zegar rusza przy czekaniu, nie przy planowaniu ani oczekiwaniu na wolny slot.
         let limit = match &self.plan.steps[id].job {
@@ -12069,7 +14881,8 @@ impl Live {
         let report = self
             .finish_agent_turn(handle, finished, cost_is_estimate, limit, &mut turn)
             .await;
-        self.control.step_went_quiet(&self.plan.steps[id].name);
+        self.control
+            .step_session_finished(&self.plan.steps[id].node_key, message_generation);
         report
     }
 
@@ -12284,9 +15097,12 @@ impl Live {
         // się po cichu z `handoff::write_inner` (ten sam powód stoi nad `Transcript`), a wersja
         // bezwarunkowa dawałaby `--add-dir` na ścieżkę, której nie ma — czyli zamieniałaby
         // nieczytelny załącznik w nieuruchomiony krok.
-        let attachments = self.plan.dir.join(handoff::ATTACHMENTS_DIR);
-        if attachments.is_dir() && !told.extra_dirs.iter().any(|had| had == &attachments) {
-            told.extra_dirs.push(attachments);
+        for hand in handed {
+            if let Some(attachments) = hand.attachment.as_ref().and_then(|path| path.parent())
+                && !told.extra_dirs.iter().any(|had| had == attachments)
+            {
+                told.extra_dirs.push(attachments.to_path_buf());
+            }
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HANDOFF_INDEX_CLOSES);
@@ -12374,8 +15190,8 @@ impl Live {
     /// czego pamiętać, a dokładanie jej odnośnika do pliku, którego jeszcze nie ma, byłoby
     /// ścieżką bez pliku po drugiej stronie.
     ///
-    /// SORTOWANIE PO NUMERZE KROKU JEST SORTOWANIEM PO (POZYCJA W PLIKU, RUNDA) — `unroll` emituje
-    /// węzły w kolejności z pliku, a rundy jednego kroku jedna za drugą. Dzięki temu kolejność
+    /// SORTOWANIE PO NUMERZE KROKU JEST SORTOWANIEM PO (POZYCJA W PLIKU, RUNDA, KOPIA) — `unroll`
+    /// emituje węzły w kolejności z pliku, a kopie każdej rundy jedna za drugą. Dzięki temu kolejność
     /// indeksu nie zależy od tego, kto skończył pierwszy, i czyta się tak samo jak `ls handoffs/`.
     fn handed_before(&self, id: StepId) -> Vec<Handed> {
         // Migawka pod jednym zamkiem, bez ani jednego `await` w środku (niezmiennik 8). Kopia
@@ -12426,6 +15242,19 @@ impl Live {
             })
             .collect();
         index.extend(wanted.into_iter().filter_map(|step| {
+            if self
+                .plan
+                .inputs
+                .configuration
+                .context_key(&self.plan.steps[id].tile_key)
+                != self
+                    .plan
+                    .inputs
+                    .configuration
+                    .context_key(&self.plan.steps.get(step)?.tile_key)
+            {
+                return None;
+            }
             let written = filed.get(step)?.as_ref()?;
             let succeeded = unpassed.get(step).is_none_or(Option::is_none);
             Some(Handed {
@@ -12449,7 +15278,7 @@ impl Live {
         (self.plan.steps.get(child)?.in_loop != Some(which)).then_some(which)
     }
 
-    /// Ostatnie przekazanie, jakie NAPRAWDĘ wyprodukował każdy krok tej pętli.
+    /// Ostatnie przekazanie, jakie NAPRAWDĘ wyprodukowała każda kopia kroku tej pętli.
     ///
     /// 2026-08-23 (T-87) — TO JEST NAPRAWA FAN-INU, ZMIERZONA NA BIEGU WŁAŚCICIELA. Strzałka
     /// z pętli na zewnątrz wychodzi z rundy OSTATNIEJ (`workflow::unroll`), a rundy po tej,
@@ -12473,21 +15302,24 @@ impl Live {
         let Some(the_loop) = self.plan.loops.get(which) else {
             return Vec::new();
         };
-        the_loop
-            .body
-            .iter()
-            .filter_map(|tile| {
-                self.plan
-                    .steps
-                    .iter()
-                    .enumerate()
-                    .filter(|(at, step)| {
-                        &step.tile_key == tile && filed.get(*at).is_some_and(Option::is_some)
-                    })
-                    .map(|(at, _)| at)
-                    .next_back()
-            })
-            .collect()
+        // 2026-09-05 (WF-05): ostatni węzeł kafelka był ostatnią KOPIĄ, nie wynikiem
+        // wszystkich kopii. Work key zachowuje kopię, usuwając wyłącznie numer rundy.
+        let mut latest: BTreeMap<&str, (u8, StepId)> = BTreeMap::new();
+        for (at, step) in self.plan.steps.iter().enumerate() {
+            if step.in_loop != Some(which)
+                || !the_loop.body.contains(&step.tile_key)
+                || !filed.get(at).is_some_and(Option::is_some)
+            {
+                continue;
+            }
+            let last = latest
+                .entry(work_key_of(&step.node_key))
+                .or_insert((step.turn, at));
+            if step.turn > last.0 {
+                *last = (step.turn, at);
+            }
+        }
+        latest.into_values().map(|(_, at)| at).collect()
     }
 
     /// Co ta runda już wie — a czego dziś nie widziała: wejście pętli, wcześniejsze próby pracy,
@@ -12527,7 +15359,7 @@ impl Live {
         // Wejście pętli: to, co dostała jej PIERWSZA runda. Liczone z grafu, a nie zapamiętane
         // przy tamtym kroku, bo pętla zaczyna się raz i jej wejście się nie zmienia.
         let mut knows: Vec<StepId> = Vec::new();
-        if let Some(entry) = self.node_of(&the_loop.entry, 0) {
+        for entry in self.nodes_of(&the_loop.entry, 0) {
             for parent in ends(&self.plan.arrows, |&(parent, child)| {
                 (child == entry).then_some(parent)
             }) {
@@ -12554,21 +15386,27 @@ impl Live {
         // w całości, więc nie da się odróżnić poprawki od tego samego błędu opisanego inaczej.
         for turn in 0..step.turn {
             if step.tile_key == the_loop.judge {
-                knows.extend(self.node_of(&the_loop.entry, turn));
+                knows.extend(self.nodes_of(&the_loop.entry, turn));
             } else {
-                knows.extend(self.node_of(&step.tile_key, turn));
+                // Historia własna nie jest historią pierwszej znalezionej kopii kafelka.
+                knows.extend(self.nodes_of(&step.tile_key, turn).filter(|&at| {
+                    work_key_of(&self.plan.steps[at].node_key) == work_key_of(&step.node_key)
+                }));
             }
-            knows.extend(self.node_of(&the_loop.judge, turn));
+            knows.extend(self.nodes_of(&the_loop.judge, turn));
         }
         knows
     }
 
-    /// Numer węzła po kluczu kafelka i rundzie. `None`, kiedy tej rundy nie ma w tym wycinku.
-    fn node_of(&self, tile: &str, turn: u8) -> Option<StepId> {
+    /// Wszystkie kopie kafelka w tej rundzie. Wybór jednej wymaga dodatkowo work key.
+    fn nodes_of<'a>(&'a self, tile: &'a str, turn: u8) -> impl Iterator<Item = StepId> + 'a {
         self.plan
             .steps
             .iter()
-            .position(|step| step.tile_key == tile && step.turn == turn)
+            .enumerate()
+            .filter_map(move |(at, step)| {
+                (step.tile_key == tile && step.turn == turn).then_some(at)
+            })
     }
 
     /// Czym jest plik `from` dla kroku `id` — jedno miejsce z odpowiedzią na to pytanie.
@@ -12594,7 +15432,7 @@ impl Live {
         // Numer próby od jedynki: `turn` jest polem danych, a to jest zdanie dla czytającego.
         let which = before.turn.saturating_add(1);
         let of = the_loop.turns;
-        if before.tile_key == step.tile_key {
+        if work_key_of(&before.node_key) == work_key_of(&step.node_key) {
             return WhatItIs::YourOwnTry { which, of };
         }
         if step.tile_key == the_loop.judge
@@ -12675,7 +15513,16 @@ impl Live {
             reads: reads.to_vec(),
         };
 
-        match handoff::write_handoff(&self.plan.dir, draft, said) {
+        let directory = self
+            .plan
+            .inputs
+            .configuration
+            .context_key(&step.tile_key)
+            .map_or_else(
+                || self.plan.dir.clone(),
+                |scope| self.plan.dir.join("context").join(scope),
+            );
+        match handoff::write_handoff(&directory, draft, said) {
             Ok(written) => {
                 // 2026-08-23 (T-86) — DO TEGO DNIA STAŁO TU `tracing::debug!` I TYLE.
                 //
@@ -12860,7 +15707,13 @@ impl Live {
         // Nasłuch PRZED ogłoszeniem pauzy. Powód stoi przy `RunControl::listen_for_go_on`:
         // odpowiedź przychodzi w reakcji na to, co widać na dysku, więc kolejność odwrotna ma
         // okno, w którym Continue trafia do nikogo i bieg stoi już na zawsze.
-        let listening = self.control.listen_for_go_on();
+        let step = &self.plan.steps[id];
+        let listening = super::checkpoint::park(
+            &self.control,
+            step.node_key.clone(),
+            question.unwrap_or(&step.name).to_owned(),
+        );
+        let info = listening.info.clone();
         // Fakt „bieg stoi" ma jednego właściciela — [`RunControl`] — a wpis w `run.json` jest
         // jego trwałym lustrem: stan, który nie dociera na dysk, nie przeżywa awarii aplikacji
         // (niezmiennik 4), a stan, który istnieje wyłącznie na dysku, nie da się o nic zapytać
@@ -12871,10 +15724,24 @@ impl Live {
             // `true`, bo pytanie stoi tu i teraz; drugi powód czyta [`run_stands_or_moves`].
             run_stands_or_moves(book, book.asking);
         });
-        self.ask(id, question);
+        self.ask(id, &info);
 
-        if listening.wait().await {
-            self.control.resume();
+        if let Some(said) = listening.wait().await {
+            if let Some(run) = self.control.run_address() {
+                send_batch(
+                    &self.lines,
+                    vec![Line::QuestionAnswered {
+                        agent: step.name.clone(),
+                        run_id: run.id,
+                        checkpoint_id: info.checkpoint_id,
+                        answer: said.clone(),
+                    }],
+                );
+            }
+            let other_questions = !super::checkpoint::list(&self.control).is_empty();
+            if !other_questions {
+                self.control.resume();
+            }
             /* ODPOWIEDŹ CZŁOWIEKA STAJE SIĘ PRZEKAZANIEM TEGO KROKU.
              *
              * To jest jedyne uczciwe miejsce, w które może pójść: kafelek kontrolny nie woła
@@ -12886,7 +15753,7 @@ impl Live {
              * Nic nie piszemy, kiedy człowiek nie napisał nic: puste przekazanie dołożyłoby
              * do promptu następnego kroku nagłówek nad pustką, czyli kosztowałoby długość
              * za informację, której nie ma. */
-            if let Some(said) = self.control.take_answer() {
+            if !said.trim().is_empty() {
                 if self.has_routes(id) {
                     self.remember_evidence(id, RouteEvidence::Checkpoint(said.clone()));
                 }
@@ -12896,8 +15763,8 @@ impl Live {
             // wznawia niczego: bieg dalej stoi, tylko już z innego powodu.
             let still = !self.gate.still_paused_for().is_zero();
             self.update(|book| {
-                book.asking = false;
-                run_stands_or_moves(book, still);
+                book.asking = other_questions;
+                run_stands_or_moves(book, still || other_questions);
             });
             StepReport::Succeeded
         } else {
@@ -12923,16 +15790,22 @@ impl Live {
     /// bez ani jednego `await` w środku jest czerwony u `clippy::unused_async`, a udawane
     /// czekanie przed pytaniem byłoby jedynym miejscem w tym pliku, w którym punkt kontrolny
     /// zależy od tego, czy okno nadąża.
-    fn ask(&self, id: StepId, question: Option<&str>) {
+    fn ask(&self, id: StepId, question: &super::checkpoint::CheckpointInfo) {
         let step = &self.plan.steps[id];
         let line = Line::Asked {
             agent: step.name.clone(),
+            question: Some(crate::engine::line::QuestionAddress {
+                question_id: question.checkpoint_id.clone(),
+                checkpoint_id: Some(question.checkpoint_id.clone()),
+                run_id: self.control.run_address().map(|run| run.id),
+                operation: "continue_run".to_owned(),
+            }),
             // Kafelek bez wpisanego pytania mówi swoją nazwą — ona też jest zdaniem, które
             // napisał człowiek.
-            text: question.unwrap_or(&step.name).to_owned(),
+            text: question.question.clone(),
             // Warianty odpowiedzi są polem kroku dopiero w T3 §7.1; pusta lista znaczy
             // „odpowiedz własnymi słowami", nie „pytanie bez treści".
-            options: Vec::new(),
+            options: question.options.clone(),
         };
         send_batch(&self.lines, vec![line]);
     }
@@ -13004,8 +15877,28 @@ impl Live {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         self.update(|book| {
-            for (row, &state) in book.steps.iter_mut().zip(states) {
+            for (index, (row, &state)) in book.steps.iter_mut().zip(states).enumerate() {
                 row.status = state;
+                if row.end_cause.is_none() {
+                    row.end_cause = match state {
+                        StepState::Cancelled => Some(super::run_inputs::EndCause::Cancelled),
+                        StepState::Skipped if cancelled => {
+                            Some(super::run_inputs::EndCause::Cancelled)
+                        }
+                        StepState::Skipped
+                            if stopped_by_the_budget
+                                .get(index)
+                                .is_some_and(Option::is_some) =>
+                        {
+                            Some(super::run_inputs::EndCause::InfrastructureFailed)
+                        }
+                        StepState::Skipped if blamed.iter().any(|(at, _)| *at == index) => {
+                            Some(super::run_inputs::EndCause::DependencySkipped)
+                        }
+                        StepState::Skipped => Some(super::run_inputs::EndCause::BranchNotSelected),
+                        _ => None,
+                    };
+                }
             }
             for (row, why) in book.steps.iter_mut().zip(stopped_by_the_budget.iter()) {
                 if row.status == StepState::Skipped
@@ -13435,7 +16328,22 @@ fn weight_of(job: &Job) -> limits::Weight {
 /// (`library::agents::Agent`), nie nasz schemat.
 #[derive(Debug, Serialize)]
 struct RunFile<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lead_origin: Option<&'a super::lead_start::LeadStartOrigin>,
     id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_snapshot: Option<Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    workspace_inputs: BTreeMap<String, super::workspace_inputs::SeedRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_instructions: Option<&'a Value>,
+    memory_sources: super::memory_sources::Binding,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    starting_results: &'a BTreeMap<String, StartingResult>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    copy_results: &'a BTreeMap<String, SavedCopy>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pending_finalization: &'a BTreeSet<String>,
     workflow_id: &'a str,
     /// Odcisk pliku workflow — „czy to był ten sam plan?".
     workflow_hash: &'a str,
@@ -13501,9 +16409,81 @@ struct RunFile<'a> {
     steps: Vec<StepEntry<'a>>,
 }
 
+fn step_entry<'a>(planned: &'a Planned, run: &'a StepRun) -> StepEntry<'a> {
+    StepEntry {
+        id: &planned.id,
+        node_key: &planned.node_key,
+        name: &planned.name,
+        agent: &planned.vendor,
+        kind: match &planned.job {
+            Job::Agent(_) => "agent",
+            Job::Check(_) => "check",
+            Job::Ask { .. } => "checkpoint",
+            Job::Serve(_) => "serve",
+        },
+        depends_on: &planned.depends_on,
+        status: run.status,
+        end_cause: run.end_cause,
+        assessment: run.assessment.as_ref(),
+        result_files: run.result_files.as_ref(),
+        execution: ExecutionEntry {
+            executed: run.execution.executed,
+            process_started: run.execution.process_started,
+        },
+        not_run_because: run.not_run_because.as_deref(),
+        round_outcome: run.round_outcome,
+        // Ponowienie kroku („uruchom jeszcze raz od tego miejsca") jest w v1.1
+        // [PLAN §7], więc każdy krok ma tu dziś dokładnie jedno podejście.
+        attempt: 0,
+        agent_session_id: match &planned.job {
+            Job::Agent(job) if run.execution.process_started => Some(job.session.to_string()),
+            Job::Agent(_) | Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
+            // Kafelek kontrolny i krok „sprawdź" nie mają sesji, bo nie mają vendora.
+            // Wpisany identyfikator byłby numerem, pod którym wznowienie szukałoby
+            // kiedyś rozmowy, której nigdy nie było.
+        },
+        pid: run.pid,
+        pgid: run.pgid,
+        pgids: &run.pgids,
+        exit_code: run.exit_code,
+        death_proof: run.death_proof,
+        started_at: run.started_at,
+        ended_at: run.ended_at,
+        cost_usd: run.cost_usd,
+        cost_estimate: run.cost_estimate,
+        uncached_input: run.uncached_input,
+        cache_read: run.cache_read,
+        cache_write: run.cache_write,
+        output: run.output,
+        vendor_turns: run.vendor_turns,
+        summary: run.summary.as_deref(),
+        error: run.error.as_deref(),
+        stopped_from_outside: run.stopped_from_outside,
+        ran_without: &run.ran_without,
+        effective: match &planned.job {
+            Job::Agent(job) => Some(&job.effective),
+            // Nie ma czego zamrażać: ani kafelek kontrolny, ani krok „sprawdź" nie mają
+            // konfiguracji agenta, bo żadnego agenta nie wołają.
+            // 2026-08-23 — kafelek „uruchom i zostaw" też nie ma czego zamrażać: nie woła
+            // agenta, tylko odpala polecenie i idzie dalej.
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
+        },
+        repaired: &run.repaired,
+        truncated: run.truncated,
+        loaded_by_the_app: run.loaded_by_the_app.as_ref(),
+        borrowed_concerns: &run.borrowed_concerns,
+    }
+}
+
 /// Krok w `run.json`.
 #[derive(Debug, Serialize)]
 struct StepEntry<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assessment: Option<&'a crate::engine::drivers::command::assessment::Assessment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_cause: Option<super::run_inputs::EndCause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_files: Option<&'a super::run_inputs::ResultFiles>,
     id: &'a str,
     node_key: &'a str,
     name: &'a str,

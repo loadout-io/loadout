@@ -241,9 +241,13 @@ async fn starting_a_workflow_puts_it_on_the_screen_before_anything_runs()
     let project = tempfile::tempdir()?;
     saved_workflow(home.path(), "ship-a-feature.json", "Ship a feature");
     let (desk, mut stream) = desk_that_shows(home.path(), project.path());
-
-    let said = desk
-        .answer(Call {
+    let starts = Arc::new(loadout_lib::commands::lead_start::LeadStarts::default());
+    let desk = desk.starting_with(
+        Arc::clone(&starts),
+        Arc::new(Mutex::new(uuid::Uuid::now_v7())),
+    );
+    let said = tokio::spawn(async move {
+        desk.answer(Call {
             id: Value::from(1),
             call: "start_workflow".to_owned(),
             input: serde_json::json!({
@@ -251,44 +255,54 @@ async fn starting_a_workflow_puts_it_on_the_screen_before_anything_runs()
                 "task": "build the CSV parser",
             }),
         })
-        .await;
+        .await
+    });
+    let line = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(line) = stream.try_next() {
+                break line;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await?;
     assert!(
-        matches!(said, Answer::Ok(_)),
-        "a workflow this person has must be accepted"
+        !said.is_finished(),
+        "a request on screen is not a real start acknowledgement"
     );
-
-    let line = stream
-        .try_next()
-        .expect("asking for a start has to put a row on the screen");
     match line {
-        Line::Suggested {
-            auto,
-            command,
+        Line::RunRequested {
+            request_id,
+            workspace,
+            file_name,
             text,
             ..
         } => {
-            assert!(
-                auto,
-                "the row the lead's own decision produced runs by itself. Without this flag the \
-                 person is back to copying a command out of a sentence, which is the whole thing \
-                 they asked to stop doing"
-            );
             assert_eq!(
-                command, "/run ship-a-feature build the CSV parser",
-                "the command is byte for byte what a person would type, because the window \
-                 takes it apart with the SAME function Enter uses. A second start policy would \
-                 drift in silence: the 'how many at once' number would be read, logged, and \
-                 different"
+                workspace,
+                project.path().canonicalize()?.to_string_lossy(),
+                "the transport carries this conversation's canonical workspace"
             );
+            assert_eq!(file_name, "ship-a-feature.json");
             assert!(
                 text.contains("Ship a feature"),
                 "and the row says what is starting, by its real name — the person's only \
                  protection under 'it just starts' is seeing what started, in the second it \
-                 started. It said: {text}"
+                started. It said: {text}"
+            );
+            // Ten test mierzy transport, nie uruchamia grafu. Prawdziwe ack po prepare
+            // sprawdza lead_start_is_bound_to_its_workspace przez AppState i run.json.
+            starts.refuse(
+                &request_id,
+                "No execution was requested by this transport test.".to_owned(),
             );
         }
-        other => panic!("the row has to be the one carrying a command: {other:?}"),
+        other => panic!("the row has to carry an addressed request: {other:?}"),
     }
+    assert!(
+        matches!(said.await?, Answer::Refused(_)),
+        "transport cannot invent a successful start"
+    );
     Ok(())
 }
 

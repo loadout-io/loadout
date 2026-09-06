@@ -88,6 +88,8 @@ function spying(): { readonly io: LabIo; readonly seen: Seen } {
       return Promise.resolve(OPEN);
     },
     putVariant: () => Promise.resolve(OPEN),
+    saveProtection: () => Promise.reject(new Error('this test does not change protection')),
+    previewRun: () => Promise.reject(new Error('this agent comparison does not preview workflows')),
     dropVariant: () => Promise.resolve(OPEN),
   };
   return { io, seen };

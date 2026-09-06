@@ -155,6 +155,8 @@ export type OverridableField =
   | 'tools'
   | 'skills'
   | 'connections'
+  | 'serviceAccess'
+  | 'agentMessages'
   | 'writeResultsTo';
 
 /** Patch RFC 7396 nad definicją agenta: brak klucza znaczy „weź z agenta" [T4 §5.1].
@@ -208,6 +210,8 @@ export interface AgentStep {
    * bajtu. Bez tego jedyną drogą byłoby zapisanie `{}`, czyli wiersza szumu w każdym kroku,
    * który kiedykolwiek czegoś dotknął. */
   borrow?: Borrow | undefined;
+  /** WF-12: brak/null dziedziczy jawny wybór projektu, false wyłącza tylko wkład Loadouta. */
+  projectInstructions?: boolean | null | undefined;
   folder: Folder;
   handover: Handover;
   /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */
@@ -259,9 +263,34 @@ export interface ServeStep {
    * tamtej stronie znika przy zapisie (`skip_serializing_if`), więc klucz dopisany tu na siłę
    * rozjeżdżałby plik z tym, co Rust naprawdę zapisuje.
    */
-  commandFrom?: { field: string } | undefined;
+  commandFrom?:
+    | {
+        field: string;
+        producer?: string | undefined;
+        format?: 'command' | 'launch-description' | undefined;
+      }
+    | undefined;
+  lifetime?: 'window' | 'run' | undefined;
+  startWhen?: 'reached' | 'asked' | undefined;
+  readiness?: ReadinessSpec | undefined;
+  endpoints?: readonly ServiceEndpointSpec[] | undefined;
   folder: Folder;
   at: Point;
+}
+
+export interface ReadinessSpec {
+  kind: 'http' | 'tcp';
+  endpoint: string;
+  path: string;
+  timeoutSeconds: number;
+  expectedStatus: number;
+}
+
+export interface ServiceEndpointSpec {
+  name: string;
+  host: string;
+  port: number;
+  portEnv?: string | undefined;
 }
 
 /** Krok, który uruchamia komendę należącą do Loadouta i SAM wystawia wynik — z kodu wyjścia
@@ -311,6 +340,8 @@ export interface WorkflowFile {
   id: string;
   name: string;
   description?: string;
+  /** Jawne dodatkowe wejście wspólnego obrazu wszystkich świeżych kopii (WF-14). */
+  additionalInputs?: string[];
   /** Kolejność WSTAWIANIA, nigdy przesortowana [T3 §8.2 reguła 2]. */
   steps: Step[];
   links: Link[];

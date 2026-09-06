@@ -13,6 +13,25 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
+export interface SkillSource {
+  path: string;
+  digest: string | null;
+  bytes: number | null;
+  files: number | null;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface SkillSources {
+  name: string;
+  requiresChoice: boolean;
+  sources: SkillSource[];
+}
+
+export function listSkillSources(folder: string | null, names: string[]): Promise<SkillSources[]> {
+  return invoke<SkillSources[]>('list_skill_sources', { folder, names });
+}
+
 import type { Authored, Import, InstalledSkill, Landing } from '../../state/skills';
 
 /**

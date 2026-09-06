@@ -74,6 +74,44 @@ export function readSettings(): Promise<Settings> {
   return invoke<Settings>('read_settings');
 }
 
+/** Instrukcje tekstowe projektu, osobno od ustawień i uprawnień programów agentów. */
+export interface ProjectInstructionSource {
+  readonly path: string;
+  readonly kind: string;
+  readonly directory: string;
+  readonly paths: readonly string[];
+  readonly digest?: string;
+  readonly bytes: number;
+  readonly local: boolean;
+}
+
+export interface ProjectSettings {
+  readonly instructions: { readonly enabled: boolean; readonly includeLocal: boolean };
+  readonly leadInstructions: boolean | null;
+  readonly sources: readonly ProjectInstructionSource[];
+  readonly limits: {
+    readonly files: number;
+    readonly fileBytes: number;
+    readonly totalBytes: number;
+  };
+}
+
+export interface ProjectSettingsPatch {
+  readonly instructions?: { readonly enabled?: boolean; readonly includeLocal?: boolean };
+  readonly leadInstructions?: boolean | null;
+}
+
+export function readProjectSettings(folder: string): Promise<ProjectSettings> {
+  return invoke<ProjectSettings>('read_project_settings', { folder });
+}
+
+export function saveProjectSettings(
+  folder: string,
+  patch: ProjectSettingsPatch,
+): Promise<ProjectSettings> {
+  return invoke<ProjectSettings>('save_project_settings', { folder, patch });
+}
+
 /**
  * Zapisuje wszystkie domyślne wybory i oddaje to, co ma teraz plik.
  *

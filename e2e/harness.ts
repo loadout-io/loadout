@@ -341,7 +341,7 @@ function recorder(setup: RecorderSetup): void {
       minted += 1;
       return 'e2e-id-' + String(minted);
     }
-    if (cmd.startsWith('list_')) return [];
+    if (cmd.startsWith('list_') || cmd === 'step_message_recipients') return [];
     return null;
   };
 
@@ -403,7 +403,7 @@ function settleDeferred(input: {
       >
     | undefined;
   const one = waiting?.[input.id];
-  if (one === undefined) {
+  if (waiting === undefined || one === undefined) {
     throw new Error('nothing is waiting under deferred Tauri reply ' + JSON.stringify(input.id));
   }
   Reflect.deleteProperty(waiting, input.id);

@@ -47,6 +47,8 @@ use std::collections::BTreeSet;
 
 use super::WorkflowFile;
 
+pub mod folders;
+
 /// Jeden węzeł rozwiniętego grafu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Node {
@@ -199,13 +201,14 @@ pub fn body_of(judge: usize, entry: usize, forward: &[(usize, usize)]) -> BTreeS
         .collect()
 }
 
-/// Rozwija każdą pętlę pliku na jej rundy.
-///
-/// Plik bez ani jednego powrotu wychodzi stąd **niezmieniony co do kształtu**: jeden węzeł na
-/// krok, `turn: 0`, strzałki jak w pliku. To jest warunek, na którym stoi cała wstecznina —
-/// dołożenie tej funkcji do planisty nie ma prawa zmienić ani jednego istniejącego biegu.
-#[must_use]
-pub fn unroll(file: &WorkflowFile) -> Unrolled {
+struct Shape {
+    forward: Vec<(usize, usize)>,
+    loops: Vec<Loop>,
+    copies: Vec<u8>,
+}
+
+/// Ten sam literalny kształt dla rachunku przed alokacją i dla właściwego rozwinięcia.
+fn shape(file: &WorkflowFile) -> Shape {
     let at: std::collections::BTreeMap<&str, usize> = file
         .steps
         .iter()
@@ -254,6 +257,72 @@ pub fn unroll(file: &WorkflowFile) -> Unrolled {
     // Ile kopii ma każdy krok, policzone raz: pytanie stoi w pętli po strzałkach, czyli
     // w miejscu, w którym liczy się je tyle razy, ile jest par.
     let copies: Vec<u8> = file.steps.iter().map(copies_of).collect();
+
+    Shape {
+        forward,
+        loops,
+        copies,
+    }
+}
+
+/// Rozmiar wykonania, nie liczba kafelków i strzałek na płótnie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpandedSize {
+    pub nodes: usize,
+    pub edges: usize,
+}
+
+/// Checked arithmetic przed utworzeniem węzłów i iloczynów strzałek.
+/// Wspólny Shape zachowuje zasady unroll: rozłączne pętle, pierwsza/ostatnia runda,
+/// pełny iloczyn kopii i deduplikacja powtórzonych literalnych strzałek.
+pub fn checked_size(file: &WorkflowFile) -> Result<ExpandedSize, &'static str> {
+    let Shape {
+        forward,
+        loops,
+        copies,
+    } = shape(file);
+    let overflow = "This workflow is too large to count safely.";
+    let nodes = copies
+        .iter()
+        .enumerate()
+        .try_fold(0usize, |sum, (step, copies)| {
+            let turns = loop_of(step, &loops).map_or(1, |which| loops[which].turns);
+            usize::from(*copies)
+                .checked_mul(usize::from(turns))
+                .and_then(|count| sum.checked_add(count))
+                .ok_or(overflow)
+        })?;
+    let unique: BTreeSet<_> = forward.into_iter().collect();
+    let mut edges = 0usize;
+    for (from, to) in unique {
+        let rounds = loop_of(from, &loops)
+            .zip(loop_of(to, &loops))
+            .filter(|(one, other)| one == other)
+            .map_or(1, |(which, _)| loops[which].turns);
+        edges = usize::from(copies[from])
+            .checked_mul(usize::from(copies[to]))
+            .and_then(|count| count.checked_mul(usize::from(rounds)))
+            .and_then(|count| edges.checked_add(count))
+            .ok_or(overflow)?;
+    }
+    for one in loops {
+        edges = usize::from(copies[one.judge])
+            .checked_mul(usize::from(copies[one.entry]))
+            .and_then(|count| count.checked_mul(usize::from(one.turns.saturating_sub(1))))
+            .and_then(|count| edges.checked_add(count))
+            .ok_or(overflow)?;
+    }
+    Ok(ExpandedSize { nodes, edges })
+}
+
+/// Rozwija każdą pętlę i kopię. Plik bez nich zachowuje kształt 1:1.
+#[must_use]
+pub fn unroll(file: &WorkflowFile) -> Unrolled {
+    let Shape {
+        forward,
+        loops,
+        copies,
+    } = shape(file);
 
     let mut nodes: Vec<Node> = Vec::new();
     // Numer węzła dla (krok, runda, kopia). Kroki spoza ciała mają rundę zero.

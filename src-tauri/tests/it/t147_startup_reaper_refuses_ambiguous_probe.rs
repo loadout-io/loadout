@@ -48,6 +48,53 @@ fn refused_probe_returns_alive_without_escalating() {
     );
 }
 
+#[test]
+fn a_temporarily_refused_probe_can_observe_later_death_without_another_signal() {
+    let mut trace = Vec::new();
+    let proof = reap_group_with_signaler(Duration::from_millis(50), Duration::ZERO, |action| {
+        trace.push(action);
+        match trace.len() {
+            1 => ReapResponse::Delivered,
+            2 => ReapResponse::Refused,
+            _ => ReapResponse::NoSuchGroup,
+        }
+    });
+    assert!(
+        matches!(proof, GroupProof::Dead { .. }),
+        "a brief EPERM while the group exits must not hide a later real ESRCH: {trace:?}"
+    );
+    assert_eq!(
+        trace,
+        [ReapAction::Term, ReapAction::Probe, ReapAction::Probe]
+    );
+    assert!(
+        !trace.contains(&ReapAction::Kill),
+        "a refused probe must never authorize KILL"
+    );
+}
+
+#[test]
+fn probing_after_any_refusal_never_recovers_permission_to_escalate() {
+    let mut trace = Vec::new();
+    let proof = reap_group_with_signaler(Duration::from_millis(25), Duration::ZERO, |action| {
+        trace.push(action);
+        if trace.len() == 2 {
+            ReapResponse::Refused
+        } else {
+            ReapResponse::Delivered
+        }
+    });
+    assert!(matches!(proof, GroupProof::Alive { .. }));
+    assert!(
+        trace.len() >= 3,
+        "the bounded observation stopped at the first temporary refusal"
+    );
+    assert!(
+        !trace.contains(&ReapAction::Kill),
+        "a later successful probe cannot erase the earlier refusal: {trace:?}"
+    );
+}
+
 fn scripted_reap(script: &[(ReapAction, ReapResponse)]) -> (GroupProof, Vec<ReapAction>) {
     let mut remaining = script.iter().copied().collect::<VecDeque<_>>();
     let mut trace = Vec::new();

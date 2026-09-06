@@ -23,6 +23,7 @@
  * zapomniał.
  */
 import { readFileSync } from 'node:fs';
+import { Channel } from '@tauri-apps/api/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as agentApps from '../state/agent-apps-io';
@@ -289,6 +290,13 @@ const WIRES: readonly Wire[] = [
     call: () => workflows.listHostMaterial(FOLDER),
   },
   {
+    where: 'workflows',
+    what: 'previewAdditionalInputs',
+    command: 'preview_additional_inputs',
+    given: ['/project', ['fixtures/*.json']],
+    call: () => workflows.previewAdditionalInputs('/project', ['fixtures/*.json']),
+  },
+  {
     where: 'skills',
     what: 'readLink',
     command: 'review_skill',
@@ -363,6 +371,13 @@ const WIRES: readonly Wire[] = [
     command: 'list_skills',
     given: [FOLDER],
     call: () => skills.listSkills(FOLDER),
+  },
+  {
+    where: 'skills',
+    what: 'listSkillSources',
+    command: 'list_skill_sources',
+    given: [FOLDER, ['bundle-reader']],
+    call: () => skills.listSkillSources(FOLDER, ['bundle-reader']),
   },
   /* 2026-08-18 (fala pieciu sekcji) — DWIE KOLEJNE KRAWEDZIE, znowu dopisane, znowu nic
    * nie usuniete. Ten plik zlapal je w tej samej godzinie, w ktorej powstaly, i to jest jego
@@ -454,6 +469,69 @@ const WIRES: readonly Wire[] = [
     command: 'run_workflow',
     given: [FILE_NAME, 3],
     call: () => run.start(FILE_NAME, 3, { name: 'Ship a feature', steps: [] }, null),
+  },
+  {
+    where: 'run',
+    what: 'acceptLeadStart',
+    command: 'accept_lead_start',
+    given: ['session:request', 3, 17, false],
+    call: () => run.acceptLeadStart('session:request', 3, 17, false, new Channel<unknown[]>()),
+  },
+  {
+    where: 'run',
+    what: 'prepareReplay',
+    command: 'prepare_replay',
+    given: [FOLDER, 'saved-run-id', 'recorded'],
+    call: () => run.prepareReplay(FOLDER, 'saved-run-id', 'recorded'),
+  },
+  {
+    where: 'run',
+    what: 'copyRecordedWorkflow',
+    command: 'copy_recorded_workflow',
+    given: [FOLDER, 'saved-run-id'],
+    call: () => run.copyRecordedWorkflow(FOLDER, 'saved-run-id'),
+  },
+  {
+    where: 'run',
+    what: 'prepareResultRestore',
+    command: 'prepare_result_restore',
+    given: [FOLDER, 'saved-run-id', 'writer'],
+    call: () => run.prepareResultRestore(FOLDER, 'saved-run-id', 'writer'),
+  },
+  {
+    where: 'run',
+    what: 'restoreResult',
+    command: 'restore_result',
+    given: [FOLDER, 'saved-preview-id', 'Restore files'],
+    call: () => run.restoreResult(FOLDER, 'saved-preview-id', 'Restore files'),
+  },
+  {
+    where: 'run',
+    what: 'openRestoredFolder',
+    command: 'open_restored_folder',
+    given: [FOLDER, FOLDER + '/.loadout/restored/saved-result'],
+    call: () => run.openRestoredFolder(FOLDER, FOLDER + '/.loadout/restored/saved-result'),
+  },
+  {
+    where: 'run',
+    what: 'setResultKept',
+    command: 'set_result_kept',
+    given: [FOLDER, 'saved-run-id', 'writer', true, 'Keep result'],
+    call: () => run.setResultKept(FOLDER, 'saved-run-id', 'writer', true, 'Keep result'),
+  },
+  {
+    where: 'run',
+    what: 'authorizeReplay',
+    command: 'start_replay',
+    given: [FOLDER, 'saved-preview-id', 'Start replay'],
+    call: () => run.authorizeReplay(FOLDER, 'saved-preview-id', 'Start replay'),
+  },
+  {
+    where: 'run',
+    what: 'startReplay',
+    command: 'start_replay',
+    given: [FOLDER, 'saved-preview-id'],
+    call: () => run.startReplay(FOLDER, 'saved-preview-id'),
   },
   /* 2026-09 (Z-35) — `given` NIESIE FOLDER, bo on JEST tu całym wywołaniem. `stop_run` bierze
    * od tego dnia folder karty i zatrzymuje wyłącznie bieg z niego; wiersz wołany bez niego
@@ -562,6 +640,20 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'lab',
+    what: 'previewRun',
+    command: 'preview_eval_run',
+    given: ['review-rubric', REVISION],
+    call: () => lab.previewRun(null, 'review-rubric', REVISION),
+  },
+  {
+    where: 'lab',
+    what: 'saveProtection',
+    command: 'save_eval_protection',
+    given: ['review-rubric', REVISION],
+    call: () => lab.saveProtection(null, 'review-rubric', true, REVISION),
+  },
+  {
+    where: 'lab',
     what: 'putCase',
     command: 'put_eval_case',
     given: ['review-rubric', 'reads-the-guard', REVISION],
@@ -614,10 +706,32 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'run',
+    what: 'answerCheckpoint',
+    command: 'answer_checkpoint',
+    given: [FOLDER, 'run-question', 'question-generation', '  original answer  '],
+    call: () =>
+      run.answerCheckpoint(FOLDER, 'run-question', 'question-generation', '  original answer  '),
+  },
+  {
+    where: 'run',
     what: 'sayToAgent',
     command: 'say_to_agent',
     given: ['also add a dark mode toggle', FOLDER],
     call: () => run.sayToAgent('also add a dark mode toggle', null, FOLDER),
+  },
+  {
+    where: 'run',
+    what: 'sendToStep',
+    command: 'send_to_step',
+    given: [FOLDER, 'run-message', 'builder#2', 'exact text'],
+    call: () => run.sendToStep(FOLDER, 'run-message', 'builder#2', 'exact text'),
+  },
+  {
+    where: 'run',
+    what: 'stepMessageRecipients',
+    command: 'step_message_recipients',
+    given: [FOLDER],
+    call: () => run.stepMessageRecipients(FOLDER),
   },
   /* 2026-08-19 — DWIE KRAWĘDZIE ROZMOWY Z AGENTEM WIODĄCYM. Rozstrzygnięcie właściciela: górny
    * wiersz jest rozmową, a sztywny przebieg zaczyna wyłącznie komenda. Rozmowa ma więc własne
@@ -690,7 +804,7 @@ const WIRES: readonly Wire[] = [
     where: 'run',
     what: 'answerTheLead',
     command: 'answer_the_lead',
-    given: [FOLDER, 'Lead', 'the left one'],
+    given: [FOLDER, 'Lead', 'the left one', null],
     call: () => run.answerTheLead(FOLDER, FOLDER, 'Lead', 'the left one'),
   },
   /* 2026-09 (Z-40) — PRZERWANIE TURY LIDERA. Krawędź bez wiersza jest krawędzią, której nikt nie
@@ -755,6 +869,18 @@ const WIRES: readonly Wire[] = [
     command: 'forget_run',
     given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'],
     call: () => run.forgetRun(FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004'),
+  },
+  {
+    where: 'run',
+    what: 'openResultFolder',
+    command: 'open_result_folder',
+    given: [FOLDER, '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004', 'writer'],
+    call: () =>
+      run.openResultFolder(
+        FOLDER,
+        '20260816-194804__0198a1f2-3b4c-7d5e-8f60-000000000004',
+        'writer',
+      ),
   },
   /* 2026-09 (Z-46) — TRZY KRAWĘDZIE ZAMIATACZA, dopisane, nic nie usunięte i żaden istniejący
    * wiersz nie przepisany. Bez nich pierwszy test wyżej jest czerwony, bo `run/io.ts` eksportuje
@@ -834,6 +960,20 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'settings',
+    what: 'readProjectSettings',
+    command: 'read_project_settings',
+    given: ['/project'],
+    call: () => settings.readProjectSettings('/project'),
+  },
+  {
+    where: 'settings',
+    what: 'saveProjectSettings',
+    command: 'save_project_settings',
+    given: ['/project', { instructions: { enabled: true } }],
+    call: () => settings.saveProjectSettings('/project', { instructions: { enabled: true } }),
+  },
+  {
+    where: 'settings',
     what: 'saveSettings',
     command: 'save_settings',
     given: [
@@ -908,7 +1048,7 @@ const WIRES: readonly Wire[] = [
     where: 'run',
     what: 'stopProcess',
     command: 'stop_process',
-    given: [4213],
+    given: [4213, null],
     call: () => run.stopProcess(4213),
   },
   {

@@ -293,6 +293,15 @@ pub(super) fn runtime_turns(value: u32) -> Option<u8> {
 /// 2026-08-24 (T-114) — planista biegu i walidator kolizji muszą kodować kopię identycznie.
 /// Jedna funkcja zapobiega sytuacji, w której Start rezerwuje inny ref niż ten sprawdzony tutaj.
 #[must_use]
+pub(crate) fn node_key_for(tile_key: &str, turn: u8, copy: u8) -> String {
+    let key = work_key_for(tile_key, copy);
+    if turn == 0 {
+        key
+    } else {
+        format!("{key}#{turn}")
+    }
+}
+
 pub(crate) fn work_key_for(tile_key: &str, copy: u8) -> String {
     if copy == 0 {
         return tile_key.to_owned();
@@ -383,7 +392,24 @@ enum When {
 }
 
 fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
-    let steps: Vec<Facts<'_>> = workflow.steps.iter().map(facts).collect();
+    let inputs = match super::execution::RunInputs::from_graph(workflow) {
+        Ok(inputs) => inputs,
+        Err(message) => return vec![problem(None, message)],
+    };
+    let steps: Vec<Facts<'_>> = workflow
+        .steps
+        .iter()
+        .map(|step| {
+            let mut one = facts(step);
+            one.project_owner = inputs.project_owner(workflow, step.id()).and_then(|id| {
+                workflow
+                    .steps
+                    .iter()
+                    .position(|candidate| candidate.id() == id)
+            });
+            one
+        })
+        .collect();
 
     // Pusty plik kończy sprawdzanie. Każda następna reguła mówiłaby o krokach, których nie ma,
     // a użytkownik ma tu dokładnie jedną rzecz do zrobienia i chce usłyszeć o niej raz.
@@ -412,6 +438,17 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     // zdaniem PIERWSZEGO problemu — więc idzie od „ten plik nie trzyma się kupy" do „ten bieg
     // by nie wyszedł". Ostrzeżenia na końcu: nie blokują niczego.
     let mut notes = Vec::new();
+    if let Err(message) = workflow.additional_inputs() {
+        notes.push(problem(None, message));
+    }
+    for step in &workflow.steps {
+        if let Step::Agent(agent) = step
+            && let Err(error) =
+                crate::inherit::instructions::override_from(agent.extra.get("projectInstructions"))
+        {
+            notes.push(problem(Some(&agent.id), error.to_string()));
+        }
+    }
     one_id_two_steps(&steps, &mut notes);
     arrows_into_nowhere(&workflow.links, &steps, &position, &mut notes);
     copies_out_of_range(&steps, &mut notes);
@@ -425,6 +462,13 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     a_command_step_left_empty(&steps, &mut notes);
     nobody_hands_over_the_command(workflow, &steps, when, &mut notes);
     a_command_carrying_a_secret(&steps, &mut notes);
+    for step in &workflow.steps {
+        if let Step::Serve(serve) = step
+            && let Err(message) = service_readiness(&serve.endpoints, serve.readiness.as_ref())
+        {
+            notes.push(problem(Some(&serve.id), message));
+        }
+    }
     conditional_routes(workflow, &mut notes);
     the_passthrough(&steps, &mut notes);
     a_circle(&steps, &forward, &mut notes);
@@ -436,6 +480,178 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     one_folder_two_steps(&steps, &arrows, &forward, when, &mut notes);
     islands(&steps, &arrows, &mut notes);
     notes
+}
+
+/// Jeden walidator konfiguracji dla pliku oraz opisu wyprodukowanego w czasie biegu.
+pub(crate) fn service_readiness(
+    endpoints: &[super::ServiceEndpointSpec],
+    readiness: Option<&super::ReadinessSpec>,
+) -> Result<(), String> {
+    let mut names = BTreeSet::new();
+    let mut variables = BTreeSet::new();
+    if endpoints.len() > 8 {
+        return Err("An app can have at most eight named addresses.".to_owned());
+    }
+    for endpoint in endpoints {
+        if endpoint.name.is_empty()
+            || endpoint.name.len() > 64
+            || !endpoint
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+            || !names.insert(endpoint.name.as_str())
+        {
+            return Err(
+                "Each app address needs a different short name using letters, numbers, - or _."
+                    .to_owned(),
+            );
+        }
+        if !matches!(endpoint.host.as_str(), "127.0.0.1" | "::1") {
+            return Err(
+                "An app address must use 127.0.0.1 or ::1; checking other hosts is not supported."
+                    .to_owned(),
+            );
+        }
+        if endpoint.port == 0 && endpoint.port_env.as_deref().is_none_or(str::is_empty) {
+            return Err(
+                "Choosing a port needs a variable name so the app can receive it.".to_owned(),
+            );
+        }
+        if let Some(variable) = &endpoint.port_env
+            && (!service_environment_name(variable) || !variables.insert(variable))
+        {
+            return Err("Each port needs a different non-secret variable name; process ownership and system variables cannot be replaced.".to_owned());
+        }
+    }
+    if let Some(ready) = readiness {
+        if ready.kind == super::ReadinessKind::Unknown || !names.contains(ready.endpoint.as_str()) {
+            return Err(
+                "Choose HTTP or an open connection and a named address for the app to check."
+                    .to_owned(),
+            );
+        }
+        if !(1..=120).contains(&ready.timeout_seconds)
+            || !(100..=599).contains(&ready.expected_status)
+        {
+            return Err(
+                "Wait between 1 and 120 seconds and choose an HTTP response from 100 to 599."
+                    .to_owned(),
+            );
+        }
+        if !ready.path.starts_with('/')
+            || ready.path.starts_with("//")
+            || ready.path.len() > 2048
+            || ready
+                .path
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+            || a_command_carrying_a_secret_shape(&ready.path).is_some()
+        {
+            return Err("The app check needs a local path beginning with /, without spaces, control characters or secrets.".to_owned());
+        }
+    }
+    Ok(())
+}
+
+/// Jawne zmienne aplikacji nie mogą zastąpić konfiguracji supervisora ani tagów recovery.
+fn service_environment_name(variable: &str) -> bool {
+    !variable.is_empty()
+        && variable.len() <= 64
+        && variable.bytes().enumerate().all(|(at, byte)| {
+            byte.is_ascii_uppercase() || byte == b'_' || (at > 0 && byte.is_ascii_digit())
+        })
+        && !variable.starts_with("LOADOUT_RUN")
+        && !variable.starts_with("LOADOUT_STEP")
+        && !variable.starts_with("DYLD_")
+        && !variable.starts_with("LD_")
+        && !matches!(
+            variable,
+            "HOME" | "PATH" | "SHELL" | "ENV" | "BASH_ENV" | "ZDOTDIR"
+        )
+}
+
+/// WF-27: jeden walidator runtime opisu, przed lease i przed uruchomieniem powłoki.
+pub(crate) fn launch_description(launch: &super::LaunchDescription) -> Result<(), String> {
+    if launch.command.trim().is_empty()
+        || launch.command.len() > 8192
+        || launch.command.contains('\0')
+    {
+        return Err("The app needs a non-empty command of at most 8192 bytes.".to_owned());
+    }
+    if let Some(what) = a_command_carrying_a_secret_shape(&launch.command) {
+        return Err(format!(
+            "The step before this one handed over a command that looks like it carries {what}, so Loadout did not run it. Commands reach the shell as plain text."
+        ));
+    }
+    let directory = std::path::Path::new(&launch.subdirectory);
+    if launch.subdirectory.len() > 1024
+        || launch.subdirectory.contains('\0')
+        || directory.is_absolute()
+        || directory.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err("The app folder must stay inside this step's working folder.".to_owned());
+    }
+    service_readiness(&launch.endpoints, launch.readiness.as_ref())?;
+    if launch.environment.len() > 64 || launch.required_env.len() > 64 {
+        return Err("An app can name at most 64 environment variables.".to_owned());
+    }
+    let port_names: BTreeSet<&str> = launch
+        .endpoints
+        .iter()
+        .filter_map(|endpoint| endpoint.port_env.as_deref())
+        .collect();
+    let mut bytes = 0usize;
+    for (name, value) in &launch.environment {
+        if !service_environment_name(name) || port_names.contains(name.as_str()) {
+            return Err(format!(
+                "The app cannot replace the environment variable {name}."
+            ));
+        }
+        if [
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "CREDENTIAL",
+            "API_KEY",
+            "PRIVATE_KEY",
+        ]
+        .iter()
+        .any(|part| name.contains(part))
+            || a_command_carrying_a_secret_shape(value).is_some()
+        {
+            return Err(format!(
+                "The app description cannot carry a secret in {name}. Configure a supported secure connection instead."
+            ));
+        }
+        bytes = bytes.saturating_add(name.len()).saturating_add(value.len());
+        if value.len() > 4096 || value.contains('\0') || bytes > 32768 {
+            return Err(
+                "The app environment is too large or contains an unsupported character.".to_owned(),
+            );
+        }
+    }
+    for name in &launch.required_env {
+        if !service_environment_name(name) {
+            return Err("The app requires an unsupported environment variable.".to_owned());
+        }
+        // Nie sięgamy do globalnego środowiska ani sąsiedniego workspace po brakujący sekret.
+        if launch
+            .environment
+            .get(name)
+            .is_none_or(std::string::String::is_empty)
+            && !port_names.contains(name.as_str())
+        {
+            return Err(format!(
+                "The app requires {name}, but this run has no supported way to supply it."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Czy folder każdego kroku jest kopią należącą do biegu — po rozwiązaniu `same-copy`.
@@ -565,6 +781,7 @@ fn conditional_routes(workflow: &WorkflowFile, notes: &mut Vec<Note>) {
 /// kłamliwe niż udawanie, że checkpoint ma folder projektu.
 #[derive(Debug, Clone, Copy)]
 struct Facts<'a> {
+    project_owner: Option<usize>,
     id: &'a str,
     /// Nazwa z kafelka. To ona pada w uwagach: `s_lonely` nie jest niczym, co użytkownik widzi.
     name: &'a str,
@@ -609,6 +826,7 @@ struct Facts<'a> {
 fn facts(step: &Step) -> Facts<'_> {
     match step {
         Step::Agent(agent) => Facts {
+            project_owner: None,
             id: &agent.id,
             name: &agent.name,
             copies: agent.copies,
@@ -622,6 +840,7 @@ fn facts(step: &Step) -> Facts<'_> {
             proof: None,
         },
         Step::Checkpoint(checkpoint) => Facts {
+            project_owner: None,
             id: &checkpoint.id,
             name: &checkpoint.name,
             copies: 1,
@@ -645,6 +864,7 @@ fn facts(step: &Step) -> Facts<'_> {
         // żadnego vendora: reguła o pustym agencie i reguła o pustym zadaniu mają go pomijać,
         // a nie żądać od niego pól, których nie ma.
         Step::Check(check) => Facts {
+            project_owner: None,
             id: &check.id,
             name: &check.name,
             copies: 1,
@@ -653,15 +873,28 @@ fn facts(step: &Step) -> Facts<'_> {
             passthrough: None,
             instructions: None,
             agent: None,
-            command: Some(&check.command),
+            command: if super::execution::Examiner::from_check(&check.extra)
+                .is_ok_and(|one| one.is_some())
+            {
+                None
+            } else {
+                Some(&check.command)
+            },
             command_from: None,
-            proof: Some(&check.proof),
+            proof: if super::execution::Examiner::from_check(&check.extra)
+                .is_ok_and(|one| one.is_some())
+            {
+                None
+            } else {
+                Some(&check.proof)
+            },
         },
         /* `proof: None` I TO JEST TREŚĆ, nie przeoczenie. Krok „sprawdź" bez dowodu jest odmową
          * (niezmiennik 19: kod wyjścia to nie dowód), bo jego zadaniem jest ORZEC. Ten kafelek
          * niczego nie orzeka — ma coś podnieść i zostawić żywe — a żądanie od niego wzorca
          * dowodu byłoby polem, którego nie da się sensownie wypełnić. */
         Step::Serve(serve) => Facts {
+            project_owner: None,
             id: &serve.id,
             name: &serve.name,
             copies: 1,
@@ -930,10 +1163,53 @@ fn nobody_hands_over_the_command(
     when: When,
     notes: &mut Vec<Note>,
 ) {
+    let exact = workflow.steps.iter().any(|step| matches!(step,
+        Step::Serve(serve) if serve.command_from.as_ref().is_some_and(|source| source.producer.is_some())));
+    let expanded = exact.then(|| super::unroll::unroll(workflow));
+    let reach = expanded
+        .as_ref()
+        .map(|graph| reachable(graph.nodes.len(), &graph.arrows));
     for step in steps {
         let Some(field) = step.command_from else {
             continue;
         };
+        if let Some(Step::Serve(serve)) = workflow.steps.iter().find(|one| one.id() == step.id)
+            && let Some(producer) = serve
+                .command_from
+                .as_ref()
+                .and_then(|source| source.producer.as_ref())
+            && let Some((graph, reach)) = expanded.as_ref().zip(reach.as_ref())
+        {
+            let at = graph.nodes.iter().position(|node| {
+                node_key_for(workflow.steps[node.step].id(), node.turn, node.copy) == *producer
+            });
+            let selected = at.and_then(|at| {
+                graph
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| workflow.steps[node.step].id() == step.id)
+                    .all(|(child, _)| child != at && reach[at][child])
+                    .then_some(&workflow.steps[graph.nodes[at].step])
+            });
+            let message = match selected {
+                Some(source) if is_asked_for(source, field) => continue,
+                Some(source) => format!(
+                    "\"{}\" waits for a field called \"{field}\", but its selected earlier step \"{}\" is not asked for it. Add the field under \"What it hands over\".",
+                    step.name,
+                    source.name()
+                ),
+                None => format!(
+                    "\"{}\" needs an exact earlier step, copy and attempt for its app description. The selected result is not before this step in the workflow.",
+                    step.name
+                ),
+            };
+            notes.push(match when {
+                When::Saving => warning(Some(step.id), message),
+                When::Running => problem(Some(step.id), message),
+            });
+            continue;
+        }
 
         let before: Vec<&Step> = workflow
             .links
@@ -1727,6 +2003,11 @@ fn named_spot(folder: &Folder, index: usize) -> Option<Spot<'_>> {
 /// graf bez cykli, a każdy krok obchodu cofa się o co najmniej jedną strzałkę.
 fn spot_of<'a>(index: usize, steps: &[Facts<'a>], forward: &[(usize, usize)]) -> Option<Spot<'a>> {
     let folder = steps.get(index)?.folder?;
+    if matches!(folder, Folder::Project)
+        && let Some(owner) = steps[index].project_owner
+    {
+        return Some(Spot::OwnCopy(owner));
+    }
     if let Some(named) = named_spot(folder, index) {
         return Some(named);
     }
