@@ -23,6 +23,7 @@ use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Probe, RunSpec,
     SessionRef, ToAgent, Tokens, Voice,
 };
+use loadout_lib::engine::line::Line;
 use loadout_lib::engine::supervisor::{GroupId, GroupProof};
 use loadout_lib::ipc::{AppState, line_channel};
 use loadout_lib::library::agents::{Agent, write_agent_file};
@@ -201,6 +202,63 @@ async fn a_full_queue_and_an_oversized_message_are_refused() -> Result<(), Box<d
     Ok(())
 }
 
+/// L-01: sufit czasu należy do KROKU, nie do tury. Wiadomość nie kupuje agentowi nowego zegara,
+/// a praca zostawiona w kolejce po limicie jest widoczna, nie milcząca.
+///
+/// Zatrzymany zegar: pierwsza tura pracuje 40 s, druga chce 40 s, a krok ma minutę. Kiedy limit
+/// jest liczony od początku kroku, druga tura pada na 60. sekundzie. Gdyby zegar startował od
+/// nowa przy każdej wiadomości, obie tury zmieściłyby się w limicie i krok skończyłby się dobrze.
+#[tokio::test(start_paused = true)]
+async fn a_message_does_not_buy_the_step_a_fresh_clock() -> Result<(), Box<dyn Error>> {
+    let world = World::working(
+        false,
+        1,
+        Duration::from_secs(600),
+        Duration::from_secs(40),
+    )?;
+    let (run, _) = world
+        .drive(async |address: &str| {
+            assert_eq!(
+                world.say(address, "first note").result,
+                StepMessageResult::AcceptedBySession
+            );
+            assert_eq!(
+                world.say(address, "second note").result,
+                StepMessageResult::AcceptedBySession
+            );
+            world.session.release.notify_one();
+            Ok(())
+        })
+        .await?;
+    let step = row(&run, "Builder")?;
+    let said = step.get("error").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        said.contains("ran longer than its 1 minute limit"),
+        "the step outlived its own limit because a message restarted the clock: {said:?}"
+    );
+    assert_eq!(
+        world.delivered(),
+        vec!["first note".to_owned()],
+        "the limit stopped the step, so only the message it actually got may be delivered"
+    );
+    // Praca przyjęta i nieoddana jest faktem na ekranie, nie ciszą.
+    let left = world
+        .said
+        .borrow()
+        .iter()
+        .filter_map(|line| match line {
+            Line::Problem { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .find(|text| text.contains("could read"));
+    assert_eq!(
+        left.as_deref(),
+        Some("Builder stopped before it could read 1 message you sent to it."),
+        "the run never said that an accepted message was never read"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Świat testu: prawdziwy `AppState`, prawdziwy bieg, dubler wyłącznie w miejscu vendora.
 // ---------------------------------------------------------------------------------------------
@@ -211,6 +269,11 @@ struct World {
     workflow: PathBuf,
     state: AppState,
     session: Arc<Session>,
+    /// Sufit cierpliwości samego testu. Pod zatrzymanym zegarem musi być dalej niż limit kroku,
+    /// bo tokio przewija czas do NAJBLIŻSZEGO terminu — a tym ma być limit, nie ten sufit.
+    patience: Duration,
+    /// Wiersze, które bieg pokazał człowiekowi.
+    said: std::cell::RefCell<Vec<Line>>,
 }
 
 struct Session {
@@ -227,16 +290,32 @@ struct Session {
 
 impl World {
     fn new() -> Result<Self, Box<dyn Error>> {
-        Self::with_a_step_after(false)
+        Self::of(false, 0, Duration::from_secs(30))
     }
 
     fn with_a_step_after(second: bool) -> Result<Self, Box<dyn Error>> {
+        Self::of(second, 0, Duration::from_secs(30))
+    }
+
+    fn of(second: bool, minutes: u32, patience: Duration) -> Result<Self, Box<dyn Error>> {
+        Self::working(second, minutes, patience, Duration::ZERO)
+    }
+
+    fn working(
+        second: bool,
+        minutes: u32,
+        patience: Duration,
+        works: Duration,
+    ) -> Result<Self, Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let project = root.path().canonicalize()?.join("project");
         let home = root.path().canonicalize()?.join("home");
         fs::create_dir_all(project.join(".loadout"))?;
         fs::create_dir_all(home.join("workflows"))?;
-        let agent = Agent::example();
+        let mut agent = Agent::example();
+        if minutes > 0 {
+            agent.give_up_after_minutes = minutes;
+        }
         write_agent_file(&home.join("agents"), &agent, None)?;
         let workflow = home.join("workflows/message.json");
         let mut steps = vec![json!({"kind":"agent","id":"builder","name":"Builder",
@@ -266,6 +345,7 @@ impl World {
         });
         let driver: Arc<dyn AgentDriver> = Arc::new(Driver {
             session: Arc::clone(&session),
+            works_for: works,
         });
         let drivers: Drivers = Arc::new(move |_| Arc::clone(&driver));
         let state = AppState::new(
@@ -280,6 +360,8 @@ impl World {
             workflow,
             state,
             session,
+            patience,
+            said: std::cell::RefCell::new(Vec::new()),
         })
     }
 
@@ -319,9 +401,9 @@ impl World {
             part: None,
             handoffs_from: None,
         };
-        let (sink, _output) = line_channel(256);
+        let (sink, mut output) = line_channel(1024);
         let address = std::cell::RefCell::new(String::new());
-        let (ran, checked) = tokio::time::timeout(Duration::from_secs(30), async {
+        let (ran, checked) = tokio::time::timeout(self.patience, async {
             let running = run_workflow_inner(&deps, &request, sink);
             tokio::pin!(running);
             tokio::select! {
@@ -343,6 +425,9 @@ impl World {
         })
         .await?;
         checked?;
+        while let Some(line) = output.try_next() {
+            self.said.borrow_mut().push(line);
+        }
         let report = ran?;
         let run = serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
         let here = address.borrow().clone();
@@ -363,6 +448,7 @@ fn row<'a>(run: &'a Value, name: &str) -> Result<&'a Value, Box<dyn Error>> {
 
 struct Driver {
     session: Arc<Session>,
+    works_for: Duration,
 }
 
 #[async_trait]
@@ -389,6 +475,7 @@ impl AgentDriver for Driver {
         Ok(Box::new(Handle {
             session: Arc::clone(&self.session),
             index,
+            works_for: self.works_for,
             voice,
             inbox,
             turns: 0,
@@ -405,6 +492,8 @@ struct Handle {
     session: Arc<Session>,
     /// Który to krok grafu, w kolejności startu.
     index: usize,
+    /// Ile każda tura „pracuje" na zegarze. Zero znaczy: kończy się natychmiast.
+    works_for: Duration,
     voice: Voice,
     inbox: mpsc::Receiver<ToAgent>,
     turns: u32,
@@ -451,6 +540,9 @@ impl AgentHandle for Handle {
                 .push(said.clone());
             format!("turn {} handled: {said}", self.turns)
         };
+        if self.works_for > Duration::ZERO {
+            tokio::time::sleep(self.works_for).await;
+        }
         let index = (self.turns as usize).min(TURN_COSTS.len()) - 1;
         let result = Outcome {
             ok: true,

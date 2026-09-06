@@ -102,7 +102,10 @@ export interface StepMessageReply {
     | 'noSuchStep'
     | 'staleRun'
     | 'disconnected'
-    | 'fixedInputs';
+    | 'fixedInputs'
+    // L-01: kolejka tur należy do Loadouta, więc ma własne sufity i własne odmowy.
+    | 'queueFull'
+    | 'tooLong';
   readonly said: string;
 }
 

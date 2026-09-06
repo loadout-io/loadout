@@ -20,6 +20,15 @@ it.each([
     result: 'fixedInputs',
     said: 'This comparison uses fixed inputs. Start a new run to change them.',
   },
+  // L-01: kolejka jest po stronie Loadouta, więc jej sufity mają swoje zdania na ekranie.
+  {
+    result: 'queueFull',
+    said: 'Builder already has 8 messages waiting. Wait for it to answer.',
+  },
+  {
+    result: 'tooLong',
+    said: 'That message is too long to send. Keep it under 8192 bytes.',
+  },
 ])(
   'shows one $result refusal beside the real Entry and retains the exact unsent draft',
   async ({ result, said }) => {
