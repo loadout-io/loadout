@@ -226,6 +226,10 @@ struct StepInput {
     kind: String,
     #[serde(default)]
     not_run_because: Option<String>,
+    /// L-02: powód końca kroku ZAPISANY przez bieg. Stare pliki go nie mają i to jest
+    /// jedyna droga, na której zgadywanie niżej wciąż ma coś do roboty.
+    #[serde(default)]
+    end_cause: Option<String>,
     #[serde(default)]
     started_at: Option<i64>,
     #[serde(default)]
@@ -463,8 +467,14 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
             };
             let set = step_artifacts(&run_dir, &step_id, ordinal);
             let kind = safe_step_kind(&step.kind, &step.agent);
-            let failure_kind =
-                safe_failure_kind(kind, &step.status, step.exit_code, step.death_proof, &set);
+            let failure_kind = safe_failure_kind(
+                kind,
+                &step.status,
+                step.end_cause.as_deref(),
+                step.exit_code,
+                step.death_proof,
+                &set,
+            );
             // Przekazania zostały już policzone raz na poziomie biegu. Po Z-48 widać je
             // także przy kroku, ale receipt nadal liczy fizyczne pliki, nie dwa widoki tego
             // samego pliku (2026-09, niezmiennik 13).
@@ -823,15 +833,41 @@ fn is_terminal_run(value: &str) -> bool {
     )
 }
 
+/// Powód końca przepisany z `run.json` na zamkniętą listę bezpiecznych słów.
+///
+/// L-02 (incydent I-02, 2026-09-06): lokalny zapis miał `infrastructure-failed`, a eksport
+/// meldował `unknown`. Powód nie ginął po drodze — nikt go nie czytał. `None` znaczy tu
+/// „ten powód nie mówi, DLACZEGO krok padł" (np. `loop-settled`), więc zgadywanie niżej
+/// zachowuje swoją dotychczasową robotę.
+fn safe_end_cause(cause: &str) -> Option<&'static str> {
+    match cause {
+        "infrastructure-failed" => Some("infrastructureFailed"),
+        "task-failed" => Some("taskFailed"),
+        "cancelled" | "canceled" => Some("cancelled"),
+        "limit-reached" => Some("limitReached"),
+        "refused" => Some("refused"),
+        "unproven-stop" => Some("unprovenStop"),
+        _ => None,
+    }
+}
+
 fn safe_failure_kind(
     kind: &str,
     state: &str,
+    end_cause: Option<&str>,
     exit_code: Option<i64>,
     death_proof: bool,
     artifacts: &ArtifactSet,
 ) -> Option<&'static str> {
     if state != "failed" {
         return None;
+    }
+    /* ZAPISANY POWÓD WYGRYWA Z KAŻDYM ZGADYWANIEM (L-02). Bieg wiedział, dlaczego ten krok
+     * się skończył, i zapisał to; czytelnik, który zamiast tego patrzy na kod wyjścia
+     * i obecność plików, odpowiada na inne pytanie — i przy zerowym kodzie oraz komplecie
+     * artefaktów każdy powód wygląda u niego tak samo. */
+    if let Some(known) = end_cause.and_then(safe_end_cause) {
+        return Some(known);
     }
     if kind == "agent"
         && (!artifacts.stdout.present

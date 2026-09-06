@@ -62,6 +62,7 @@ mod a_run_leaves_one_branch_to_look_at;
 mod a_run_leaves_suggestions;
 mod a_run_stops_at_its_budget;
 mod a_run_will_not_start_what_it_cannot_pay_a_cent_for;
+mod a_saved_end_cause_beats_a_guess;
 mod a_saved_result_can_be_restored_without_an_agent;
 mod a_saved_result_precedes_copy_cleanup;
 mod a_set_refuses_what_it_could_not_measure;

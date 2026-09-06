@@ -209,6 +209,13 @@ struct Step {
     summary: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    /// L-02: dlaczego ten krok się skończył, prosto z `run.json`.
+    ///
+    /// Bez tego nowo otwarta rozmowa widzi wyłącznie `failed` i nie ma jak odróżnić awarii
+    /// Loadouta od oceny agenta — a to są dwie różne rzeczy do zrobienia przez człowieka.
+    /// Stare pliki nie mają tego pola i zostają przy `null`, czyli przy uczciwym braku.
+    #[serde(default)]
+    end_cause: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -322,6 +329,7 @@ fn summary(source: &RunSource, file: &Description, details: bool) -> Value {
                     "name": limited(&step.name, 256), "state": limited(&step.state, 64),
                     "summary": step.summary.as_ref().map(|text| limited(text, 256)),
                     "error": step.error.as_ref().map(|text| limited(text, 256)),
+                    "cause": step.end_cause.as_ref().map(|text| limited(text, 64)),
                 })
             })
             .collect()
