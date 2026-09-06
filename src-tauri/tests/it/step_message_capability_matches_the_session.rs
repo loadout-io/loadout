@@ -1,6 +1,8 @@
 //! WF-08 RED: public `AppState` → prawdziwe planowanie → utworzony `AgentHandle`.
 //! Dubler zastępuje wyłącznie vendora, nigdy rejestr sesji ani wynik wysyłki.
 
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
+
 use std::error::Error;
 use std::fs;
 use std::sync::Arc;

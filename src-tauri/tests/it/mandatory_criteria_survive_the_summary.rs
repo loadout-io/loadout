@@ -7,6 +7,9 @@
 //! Kryterium sądzi PRODUKCYJNĄ drogę: prawdziwy bieg, prawdziwa pętla, zapisany `run.json`.
 
 #![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
+#![allow(clippy::assigning_clones, clippy::duration_suboptimal_units)]
+#![allow(clippy::struct_field_names, clippy::implicit_clone)]
 
 use std::error::Error;
 use std::fs;

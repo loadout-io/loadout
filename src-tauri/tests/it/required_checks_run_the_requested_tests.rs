@@ -8,6 +8,11 @@
 //! Prawdziwy `CommandDriver`, prawdziwy proces, prawdziwe potoki. Dubler zastępuje wyłącznie
 //! suitę testową — tekstem, który drukuje ten sam kształt, co libtest i TAP.
 
+#![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
+#![allow(clippy::assigning_clones, clippy::duration_suboptimal_units)]
+#![allow(clippy::struct_field_names, clippy::implicit_clone)]
+
 use std::error::Error;
 use std::time::Duration;
 

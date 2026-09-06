@@ -37,7 +37,7 @@ pub const DRAFT_LIMIT_BYTES: usize = 64 * 1024;
 pub const DESCRIPTION_LIMIT_BYTES: usize = 8 * 1024;
 
 /// Domyślny sufit czasu całej operacji, razem z jedną korektą formatu.
-pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(180);
+pub const DEFAULT_DEADLINE: Duration = Duration::from_mins(3);
 
 /// Co wolno wygenerowanemu agentowi wskazać — migawka wzięta PRZED wysłaniem opisu.
 ///

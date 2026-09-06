@@ -150,13 +150,13 @@ impl Scan {
     pub fn take(&mut self, text: &str) {
         for part in text.split_inclusive('\n') {
             if let Some(rest) = part.strip_suffix('\n') {
-                if !self.too_long {
+                if self.too_long {
+                    self.line.clear();
+                    self.too_long = false;
+                } else {
                     self.line.push_str(rest);
                     let line = std::mem::take(&mut self.line);
                     self.record(&line);
-                } else {
-                    self.line.clear();
-                    self.too_long = false;
                 }
             } else if self.line.len() + part.len() > LONGEST_LINE {
                 self.too_long = true;

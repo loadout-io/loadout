@@ -56,8 +56,10 @@ impl GenerationFailed {
     #[must_use]
     pub fn said(&self) -> String {
         match self {
-            Self::NoVendor { said } | Self::OutOfTime { said } => said.clone(),
-            Self::NotADraft { said } | Self::Broke { said } => said.clone(),
+            Self::NoVendor { said }
+            | Self::OutOfTime { said }
+            | Self::NotADraft { said }
+            | Self::Broke { said } => said.clone(),
             Self::Cancelled => "You stopped this before it finished. Nothing was saved.".to_owned(),
         }
     }
@@ -229,7 +231,7 @@ async fn one_turn(
         }
         last
     });
-    let waited = tokio::select! {
+    let ended = tokio::select! {
         // Stop człowieka wygrywa z wynikiem, który przyszedł w tej samej chwili: i tak
         // niczego nie zapisujemy, a odpowiedź „przecież zdążyło" nie jest tą, o którą prosił.
         biased;
@@ -252,7 +254,7 @@ async fn one_turn(
      * wisiał kilkanaście minut, zanim to zeszło. */
     drop(handle);
     let _ = drain.await;
-    match waited {
+    match ended {
         Ok(outcome) if matches!(outcome.reason, FinishReason::Completed) || outcome.ok => {
             Ok(outcome.text)
         }

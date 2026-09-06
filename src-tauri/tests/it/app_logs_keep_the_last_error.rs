@@ -11,6 +11,7 @@ use loadout_lib::commands::processes::{Processes, ServiceOwner, ServiceRef};
 use loadout_lib::engine::supervisor::{self, GroupProof, StepTag};
 use loadout_lib::library::agents::{ServiceGrant, ServiceOperation};
 use loadout_lib::workflow::{LaunchDescription, ServiceLifetime};
+use loadout_lib::workflow::TargetKind;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -37,7 +38,7 @@ async fn a_read_only_consumer_can_read_the_last_error_and_exit_reason_after_natu
     let started = processes.start_owned_description(
         &LaunchDescription {
             command: "printf 'The app could not load its entry point.\\n' >&2; exit 7".to_owned(),
-            kind: Default::default(),
+            kind: TargetKind::default(),
             test_data_env: None,
             subdirectory: String::new(),
             environment: Default::default(),

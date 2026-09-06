@@ -620,6 +620,7 @@ fn fan_in_workflow(helper: &Agent) -> WorkflowFile {
                     id: one.key.to_owned(),
                     name: one.name.to_owned(),
                     agent: helper.id.to_string(),
+                    criteria: Vec::new(),
                     overrides: serde_json::Map::new(),
                     vendor_options: std::collections::BTreeMap::new(),
                     copies: 1,

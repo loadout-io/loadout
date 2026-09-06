@@ -7,6 +7,10 @@
 //! Dubler zastępuje wyłącznie vendora. Rejestr sesji, kolejka, sumowanie zużycia i domknięcie
 //! sesji pochodzą z produkcyjnego `run_workflow_inner`.
 
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
+#![allow(clippy::assigning_clones, clippy::duration_suboptimal_units)]
+#![allow(clippy::struct_field_names, clippy::implicit_clone)]
+
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;

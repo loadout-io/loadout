@@ -6,6 +6,7 @@
 //! wyłącznie błąd Cargo — prawdziwy i milczący o kopii — i palił tury na ratowanie środowiska.
 
 #![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
 
 use std::error::Error;
 use std::fs;

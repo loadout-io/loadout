@@ -15,6 +15,7 @@ use loadout_lib::engine::supervisor::{self, GroupProof, StepTag};
 use loadout_lib::ipc::{LineSource, line_channel};
 use loadout_lib::library::agents::{Agent, Overrides, ServiceGrant, ServiceOperation, resolve};
 use loadout_lib::workflow::{LaunchDescription, ServiceLifetime};
+use loadout_lib::workflow::TargetKind;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -112,7 +113,7 @@ impl ServiceBench {
         Ok(self.processes.configure_description(
             &LaunchDescription {
                 command: "printf 'app started\\n'; sleep 10".to_owned(),
-                kind: Default::default(),
+                kind: TargetKind::default(),
                 test_data_env: None,
                 subdirectory: String::new(),
                 environment: Default::default(),
@@ -160,7 +161,7 @@ impl ServiceBench {
         let started = self.processes.start_owned_description(
             &LaunchDescription {
                 command: "printf 'app started\\n'; sleep 10".to_owned(),
-                kind: Default::default(),
+                kind: TargetKind::default(),
                 test_data_env: None,
                 subdirectory: String::new(),
                 environment: Default::default(),

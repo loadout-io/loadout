@@ -8,6 +8,9 @@
 //! Fixture jest syntetyczny. Prywatnych transkryptów z badanego biegu nie kopiujemy.
 
 #![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
+#![allow(clippy::assigning_clones, clippy::duration_suboptimal_units)]
+#![allow(clippy::struct_field_names, clippy::implicit_clone)]
 
 use std::error::Error;
 use std::fs;
@@ -28,7 +31,7 @@ fn the_export_reads_the_saved_cause_instead_of_guessing_from_the_exit_code()
 -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     write_run(root.path(), Some("infrastructure-failed"))?;
-    let report: Value = serde_json::from_str(&support_report(root.path())?.text())?;
+    let report: Value = serde_json::from_str(support_report(root.path())?.text())?;
     let step = &report["runs"][0]["steps"][0];
     assert_eq!(
         step["failureKind"].as_str(),
@@ -52,7 +55,7 @@ fn every_saved_cause_keeps_its_own_answer() -> Result<(), Box<dyn Error>> {
     ] {
         let root = tempfile::tempdir()?;
         write_run(root.path(), Some(saved))?;
-        let report: Value = serde_json::from_str(&support_report(root.path())?.text())?;
+        let report: Value = serde_json::from_str(support_report(root.path())?.text())?;
         assert_eq!(
             report["runs"][0]["steps"][0]["failureKind"].as_str(),
             Some(expected),
@@ -68,7 +71,7 @@ fn every_saved_cause_keeps_its_own_answer() -> Result<(), Box<dyn Error>> {
 fn a_report_without_a_saved_cause_keeps_the_old_answer() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     write_run(root.path(), None)?;
-    let report: Value = serde_json::from_str(&support_report(root.path())?.text())?;
+    let report: Value = serde_json::from_str(support_report(root.path())?.text())?;
     assert_eq!(
         report["runs"][0]["steps"][0]["failureKind"].as_str(),
         Some("unknown"),

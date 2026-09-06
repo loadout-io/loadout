@@ -10,6 +10,8 @@
 //! kończy się dokładnie tak, jak `osascript` bez zgody. Uprawnień maszyny, na której biegnie
 //! ten test, nie zmieniamy i nie potrzebujemy.
 
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
+
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;

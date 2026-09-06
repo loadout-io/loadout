@@ -6,6 +6,7 @@
 //! przechodziłaby na komentarzu (niezmiennik 20).
 
 #![allow(clippy::panic)]
+#![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
 
 use std::error::Error;
 use std::path::{Path, PathBuf};

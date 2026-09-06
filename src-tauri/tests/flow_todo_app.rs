@@ -387,6 +387,7 @@ fn todo_workflow(lead: &Agent, scout: &Agent, builder: &Agent, checker: &Agent) 
                     id: one.key.to_owned(),
                     name: one.name.to_owned(),
                     agent: one.who.id.to_string(),
+                    criteria: Vec::new(),
                     overrides: serde_json::Map::new(),
                     vendor_options: std::collections::BTreeMap::new(),
                     copies: 1,
