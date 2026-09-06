@@ -823,8 +823,8 @@ impl CommandDriver {
         }
         /* V-01 (incydent I-03, 2026-09-06): KATALOG SPRAWDZAMY PRZED STARTEM, NIE PO NIM.
          *
-         * Krok, którego `cd src-tauri` nie powiodło się, uruchamiał komendę tam, gdzie akurat
-         * stał — a `cargo test` z innego katalogu to inna suita, nie brak suity. Sam system
+         * Krok, którego zejście do podkatalogu nie powiodło się, uruchamiał komendę tam, gdzie
+         * akurat stał — a `cargo test` z innego katalogu to inna suita, nie brak suity. System
          * odmawia tu `No such file or directory (os error 2)`: prawda, która nie mówi CZEGO
          * nie ma, więc człowiek czyta ją przy kroku i nie wie, czy zabrakło katalogu, komendy,
          * czy pliku, którego ta komenda szukała. */

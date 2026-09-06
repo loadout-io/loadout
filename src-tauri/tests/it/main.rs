@@ -286,6 +286,7 @@ mod memory_reaches_only_its_agent;
 mod memory_snapshot_is_frozen;
 mod no_command_freezes_the_window;
 mod no_start_orphans_the_previous;
+mod native_scenarios_need_a_real_route_to_the_window;
 mod non_git_results_survive_run_completion;
 mod nothing_dies_on_a_broken_stderr;
 mod nothing_to_check_ends_the_loop;

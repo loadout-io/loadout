@@ -353,6 +353,46 @@ pub fn judge(approved: &[Criterion], said: &str) -> Judgement {
     judgement
 }
 
+/// Zdejmuje potwierdzenia, których TA maszyna nie mogła wykonać.
+///
+/// P-03a: kryterium wymagające pełnej aplikacji, zameldowane jako zdane na maszynie, która
+/// nie ma zgody na sterowanie cudzym oknem, nie jest potwierdzeniem. Nie jest też wadą
+/// produktu — nikt niczego nie zmierzył. Wynik przechodzi więc do „nie zmierzono", czyli
+/// do człowieka.
+///
+/// Egzekwowane KODEM, nie prośbą w prompcie: instrukcja „napisz not tested, jeśli nie masz
+/// narzędzia" jest miękka dokładnie tam, gdzie model najchętniej zgaduje (niezmiennik 28).
+pub fn without_a_native_route(approved: &[Criterion], judged: &mut Judgement) {
+    let native: Vec<String> = approved
+        .iter()
+        .filter(|one| one.required && one.method == Method::FullRuntime)
+        .map(|one| one.id.clone())
+        .collect();
+    if native.is_empty() {
+        return;
+    }
+    let mut moved = false;
+    for id in native {
+        let already_open = judged.failed.contains(&id)
+            || judged.missing.contains(&id)
+            || judged.not_tested.contains(&id)
+            || judged.weaker_method.contains(&id);
+        if !already_open {
+            judged.not_tested.push(id);
+            moved = true;
+        }
+    }
+    if moved {
+        judged.not_tested.sort();
+        judged.not_tested.dedup();
+        judged.outcome = if judged.failed.is_empty() {
+            Outcome::NotJudged
+        } else {
+            Outcome::DidNotPass
+        };
+    }
+}
+
 /// Blok promptu dla weryfikatora, który dostał zatwierdzoną listę.
 ///
 /// Wzmacnia instrukcję **tego kroku**, nie wszystkich użyć uniwersalnego bloku o wyniku:

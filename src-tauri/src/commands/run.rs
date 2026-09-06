@@ -10415,6 +10415,12 @@ struct Live {
     /// mieści się w jednym wywołaniu bez `await` (niezmiennik 8, `clippy::await_holding_lock`
     /// = deny).
     book: Mutex<Book>,
+    /// P-03a: czy ta maszyna umie w ogole obsluzyc natywne okno.
+    ///
+    /// Liczone RAZ na bieg i tylko wtedy, gdy ktorys krok naprawde tego wymaga: sonda odpala
+    /// proces, wiec pytanie zadawane przy kazdym kroku byloby cena placona takze przez biegi,
+    /// ktorych to nie dotyczy.
+    native_ui: tokio::sync::OnceCell<crate::engine::native_ui::NativeUiAccess>,
     /// Linie na ekran, **po jednej**. Sklejaniem zajmuje się pompa z T-07 i tylko ona: bieg,
     /// który skleja u siebie, ustala okno, którego nikt nie zmierzył, i odbiera pompie jedyną
     /// rzecz, dla której ta pompa powstała.
@@ -11002,6 +11008,7 @@ impl Live {
         ));
         Self {
             plan,
+            native_ui: tokio::sync::OnceCell::new(),
             book: Mutex::new(Book {
                 pending_finalization: BTreeSet::new(),
                 copy_results: BTreeMap::new(),
@@ -11263,7 +11270,12 @@ impl Live {
     /// `Failed`, żeby stożek za pętlą został `Skipped` i praca nie pojechała dalej na czymś, co
     /// nie przeszło. To jest cała treść limitu tur: bez tego wyczerpanie prób wyglądałoby jak
     /// sukces.
-    fn verdict_after(&self, id: StepId, said: &str) -> Option<&'static str> {
+    fn verdict_after(
+        &self,
+        id: StepId,
+        said: &str,
+        native: Option<&crate::engine::native_ui::NativeUiAccess>,
+    ) -> Option<&'static str> {
         let step = &self.plan.steps[id];
         let (which, the_loop) = self.judging(step)?;
         /* V-02 (incydent I-05): ZATWIERDZONA LISTA BIJE OSTATNI WIERSZ. Krok QA opisał braki
@@ -11275,7 +11287,21 @@ impl Live {
             Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
         };
         let judged = (!approved.is_empty())
-            .then(|| crate::workflow::criteria::judge(&approved, said))
+            .then(|| {
+                let mut judged = crate::workflow::criteria::judge(&approved, said);
+                /* P-03a: POTWIERDZENIE, KTÓREGO TA MASZYNA NIE MOGŁA WYKONAĆ, NIE JEST
+                 * POTWIERDZENIEM. Zgoda na sterowanie cudzym oknem jest uprawnieniem systemu,
+                 * przyznawanym przez człowieka; bez niej scenariusz natywny nie miał czym się
+                 * odbyć, cokolwiek weryfikator o nim napisał. To nie jest też wada produktu —
+                 * nikt niczego nie zmierzył — więc wynik idzie do „nie zmierzono", czyli
+                 * do człowieka. */
+                if native.is_some_and(|access: &crate::engine::native_ui::NativeUiAccess| {
+                    !access.can_judge_the_product()
+                }) {
+                    crate::workflow::criteria::without_a_native_route(&approved, &mut judged);
+                }
+                judged
+            })
             .filter(|one| one.outcome != crate::workflow::criteria::Outcome::Passed);
         let verdict = match &judged {
             Some(_) => crate::memory::handoff::Verdict::Fail,
@@ -11602,6 +11628,39 @@ impl Live {
             .iter()
             .enumerate()
             .find(|(_, one)| step.tile_key == one.judge)
+    }
+
+    /// P-03a: czy da się tu wykonać scenariusz na pełnej aplikacji — pytane raz na bieg
+    /// i **wyłącznie** dla kroku, który tego naprawdę wymaga.
+    ///
+    /// Zdanie o braku możliwości pokazujemy człowiekowi od razu: bez niego jedynym śladem
+    /// byłoby „nie zmierzono" przy kryterium, a to nie mówi, czego brakuje ani kto to nada.
+    async fn native_route_for(
+        &self,
+        id: StepId,
+    ) -> Option<crate::engine::native_ui::NativeUiAccess> {
+        let needed = match &self.plan.steps[id].job {
+            Job::Agent(job) => job.criteria.iter().any(|one| {
+                one.required && one.method == crate::workflow::criteria::Method::FullRuntime
+            }),
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => false,
+        };
+        if !needed {
+            return None;
+        }
+        let access = self
+            .native_ui
+            .get_or_init(|| async { crate::engine::native_ui::can_drive_native_ui().await })
+            .await
+            .clone();
+        if !access.can_judge_the_product() {
+            let _ = self.control.show_in_the_run(Line::Problem {
+                agent: self.plan.steps[id].name.clone(),
+                text: access.said().to_owned(),
+                resets_at: None,
+            });
+        }
+        Some(access)
     }
 
     /// Zapala „ta pętla się domknęła w tej rundzie".
@@ -14863,11 +14922,15 @@ impl Live {
             // Przekazanie schodzi na dysk przed zwolnieniem potomków przez scheduler.
             self.hand_over(id, &outcome.text, turn.reads);
             self.remember_handoff_evidence(id, &outcome.text);
+            let native = self.native_route_for(id).await;
             let why = self
                 .file_the_answer(id, &outcome.text)
                 .err()
                 .or_else(|| self.missing_a_required_field(id, &outcome.text))
-                .or_else(|| self.verdict_after(id, &outcome.text).map(str::to_owned));
+                .or_else(|| {
+                    self.verdict_after(id, &outcome.text, native.as_ref())
+                        .map(str::to_owned)
+                });
             match why {
                 Some(why) => self.when_this_one_fails(id, &why).await,
                 None => StepReport::Succeeded,

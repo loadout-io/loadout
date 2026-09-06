@@ -30,6 +30,7 @@ pub mod dag;
 pub mod drivers;
 pub mod limits;
 pub mod line;
+pub mod native_ui;
 pub mod scheduler;
 pub mod step;
 pub mod stream;
