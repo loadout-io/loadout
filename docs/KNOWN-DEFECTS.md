@@ -61,3 +61,36 @@ bocznymi drzwiami — odpowiadało na pytania, których nikt nie zadał, więc p
 mierzyło już tylko strażnika. Scena zadaje dziś pytania, zanim na nie odpowie. Dowód mutacyjny:
 ze zdjętym `answers.slice(-LINE_LIMIT)` przypadek jest czerwony na zdaniu „the stream answer
 list grew past the same ceiling as its line window" (2001 zamiast 2000).
+
+---
+
+## D-2 — poświadczenie notaryzacji jest doklejone do obrazu, nie do aplikacji
+
+**Zmierzone:** 2026-09-07, na opublikowanym pliku wydania 0.3.0.
+**Wydanie:** obecne w 0.3.0.
+
+### Co się dzieje
+
+`xcrun stapler staple` biegnie na DMG i tam poświadczenie jest. Aplikacja przeciągnięta z tego
+obrazu do Programów **swojego poświadczenia nie ma**: `xcrun stapler validate` na skopiowanej
+aplikacji mówi „Loadout.app does not have a ticket stapled to it."
+
+### Co widzi człowiek
+
+Przy komputerze z siecią: nic. Gatekeeper pyta wtedy Apple i odpowiada `accepted`,
+`source=Notarized Developer ID` — sprawdzone na aplikacji pobranej z wydania i zainstalowanej
+do świeżego katalogu. Pierwsze uruchomienie **bez sieci** może natomiast skończyć się odmową,
+bo nie ma czego sprawdzić lokalnie ani u kogo zapytać.
+
+### Dlaczego tak wyszło
+
+`tauri build` ze zmienną `APPLE_SIGNING_IDENTITY` podpisuje aplikację i obraz, ale nie dokleja
+poświadczenia — notaryzacja jest krokiem osobnym i późniejszym. Kolejność, która to zamyka, jest
+odwrotna niż użyta: notaryzuj aplikację, doklej poświadczenie DO NIEJ, dopiero z niej złóż obraz,
+znotaryzuj go i doklej poświadczenie także jemu.
+
+### Jak to zamknąć
+
+Runbook wydania (`docs/RELEASE.md`) opisuje dziś jedno doklejenie, do DMG. Ma opisywać dwa,
+w tej kolejności. Poprawka należy do runbooka i do najbliższego wydania — nie da się jej
+dołożyć do pliku, który już jest opublikowany.
