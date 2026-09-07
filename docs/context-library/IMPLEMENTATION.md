@@ -119,7 +119,20 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 
 | Etap | Bieg | Commit | RED | GREEN | CI przy lądowaniu | Koszt | Stan |
 |---|---|---|---|---|---|---|---|
-| CT-01 | `h-ct-01` | — | mutacja, patrz §1a | 4 Rust + pełna suita frontu | — | 55,17 USD | **DZIALA**, 1 runda, 46 min |
+| CT-01 | `h-ct-01` | `a6113319` | mutacja, patrz §1a | 4 Rust + pełna suita frontu | **zielone, 523 s** | 55,17 USD | **WYLĄDOWANY** |
+
+**Lądowanie.** `scripts/h land ct-01` → merge `a6113319`, potem pełne CI na trunku.
+Pierwszy przebieg poszedł na czerwono **nie na kodzie**, tylko na moim niezacommitowanym
+dzienniku: `guards NOT RUN: the tree is dirty, so planting a violation proves nothing`.
+Po zacommitowaniu, powtórka: **`CI_EXIT=0`, `CI green (stage: full, 523 s)`**, strażnicy
+`10 fired as expected, 0 misfired`. Front urósł z 401/2080 na **402 pliki / 2096 testów**.
+Gęstość na trunku: `textElements 54/60`, pod sufitem i pod zapadką.
+
+Zależności dołożone przeze mnie poza pętlą zadaniową (bieg nie ma prawa pisać do
+`Cargo.toml` ani `package.json`) i zweryfikowane tym samym CI:
+`pdfjs-dist 6.3.289` (`31ac51ca`) i `image 0.25` z cechami `png,jpeg,webp` (`9820db7c`) —
+ta druga dołożyła do drzewa **dokładnie jedną** nową skrzynię, `image-webp`, bo `image`
+stał już w `Cargo.lock` przechodnio przez Tauri. `cargo deny check`: wszystko ok.
 
 ### 1a. CT-01 — co dokładnie dowiedzione
 
@@ -161,7 +174,7 @@ tekstu: etykietę i skrót.
 i `e2e/tests/two-buttons-ask-two-different-vendors.spec.ts`. Zgłosił też jako
 `POZA ZAKRESEM`, że kolejność paska jest dziś przypięta w **trzech** wyroczniach naraz
 (makieta, egzekutor, nav-groups), wbrew niezmiennikowi 13. Nie naprawiał tego — słusznie.
-| CT-02 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-02 | `h-ct-02` | — | — | — | — | — | **w toku** |
 | CT-03 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-04 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-05 | — | — | — | — | — | — | nie rozpoczęty |
