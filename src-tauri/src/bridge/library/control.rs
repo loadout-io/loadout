@@ -248,7 +248,12 @@ impl Desk {
         }
     }
 
-    pub(super) async fn send_addressed(&self, input: &Value) -> Result<Value, String> {
+    /// Podanie wiadomości jest dziś SYNCHRONICZNE i dlatego ta funkcja nie jest `async`.
+    ///
+    /// Po L-01 kolejka tur należy do Loadouta, a nie do vendora: `step_message::send` odkłada
+    /// zdanie w `SessionChannel::waiting` pod zamkiem i wraca, zamiast czekać na transport.
+    /// `async` bez `await` obiecywałoby tu punkt zawieszenia, którego nie ma.
+    pub(super) fn send_addressed(&self, input: &Value) -> Result<Value, String> {
         let (run, control) = self.addressed_run(input)?;
         let node = input
             .get("node_key")

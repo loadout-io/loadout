@@ -830,7 +830,7 @@ impl Answers for Desk {
             "stop_run" => return self.show_control_reply(self.stop_addressed(&call.input).await),
             "continue_run" => return self.show_control_reply(self.continue_addressed(&call.input)),
             "send_to_step" => {
-                return self.show_control_reply(self.send_addressed(&call.input).await);
+                return self.show_control_reply(self.send_addressed(&call.input));
             }
             "ask_the_person" if call.input.get("operation").is_some() => {
                 if call

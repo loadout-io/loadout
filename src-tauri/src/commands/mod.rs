@@ -617,13 +617,11 @@ impl RunControl {
         let session = sessions
             .get_mut(node_key)
             .filter(|one| one.generation == generation)?;
-        match session.waiting.pop_front() {
-            Some(text) => Some(text),
-            None => {
-                session.accepting = false;
-                None
-            }
+        if let Some(text) = session.waiting.pop_front() {
+            return Some(text);
         }
+        session.accepting = false;
+        None
     }
 
     /// Zamyka przyjmowanie bez zabierania niczego z kolejki.

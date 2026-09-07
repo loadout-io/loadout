@@ -137,7 +137,8 @@ function handlers(tree: unknown): {
       if (field === 'criterion-method') found.method = props['onChange'] as never;
       if (typeof props['children'] === 'string' && props['onClick']) {
         if (props['children'] === 'Remove') found.remove = props['onClick'] as never;
-        if (props['children'] === '+ Ask it to confirm one more') found.add = props['onClick'] as never;
+        if (props['children'] === '+ Ask it to confirm one more')
+          found.add = props['onClick'] as never;
       }
       walk(props['children']);
     }

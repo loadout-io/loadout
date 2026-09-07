@@ -194,8 +194,8 @@ export function DraftNotes({ draft }: { draft: GeneratedDraft }): ReactElement |
       <span className="label">What was checked, and what was not</span>
       <span className="lead" data-field="draft-status">
         The settings below were checked against what this computer actually has. How this agent
-        behaves was <strong>not tested</strong>: nothing has run it yet. Save it, then use
-        Evaluate to try it on a real case — that is the only thing that can say it works.
+        behaves was <strong>not tested</strong>: nothing has run it yet. Save it, then use Evaluate
+        to try it on a real case — that is the only thing that can say it works.
       </span>
       {draft.missing.length > 0 ? (
         <>
