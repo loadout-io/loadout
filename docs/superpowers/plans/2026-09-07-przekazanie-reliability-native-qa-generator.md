@@ -13,7 +13,7 @@ obok liczby.
 | Repo | `/Users/jakubgawronski/Projects/loadout-reliability-native-qa-generator` (worktree Loadouta) |
 | Gałąź | `feat/reliability-native-qa-generator` |
 | Baza | `f81d4b11` — snapshot WIP z `workflow-reliability-build`, wierny co do pliku |
-| HEAD | `89aa8490`, czternaście commitów nad bazą |
+| HEAD | `0dac2e02`, dwadzieścia commitów nad bazą |
 | Niezacommitowane | **brak** (`git status` pusty) |
 | Nie zmergowane | nic z tego nie jest na `main`; niczego nie opublikowano, niczego nie wypchnięto |
 
@@ -23,14 +23,38 @@ między drzewami różni się wyłącznie o `src-tauri/gen` (artefakt buildu).
 
 ### Baza NIE jest zielona i nigdy nie była
 
-Odziedziczony WIP ma **35 czerwonych testów** i **81 ostrzeżeń clippy**. Zmierzone na osobnym
-worktree stojącym na samym `f81d4b11` (`/Users/jakubgawronski/Projects/loadout-baseline-check`),
-żeby nie było wątpliwości, czyje to jest. Czerwień dotyczy sprzątania kopii roboczych, transakcji
-prestartu i izolacji — obszarów, których to zadanie nie tyka.
+Odziedziczony WIP ma kilkadziesiąt czerwonych testów `it` i 13 błędów `clippy --all-targets
+-- -D warnings`. Zmierzone na osobnym worktree stojącym na samym `f81d4b11`
+(`/Users/jakubgawronski/Projects/loadout-baseline-check`), żeby nie było wątpliwości, czyje to
+jest. Czerwień dotyczy sprzątania kopii roboczych, transakcji prestartu i izolacji — obszarów,
+których to zadanie nie tyka.
 
-Po całej pracy: **1639 passed, 35 failed** i **81 ostrzeżeń**. Lista porażek jest identyczna co do
-nazwy (`diff` pusty), a ostrzeżeń jest dokładnie tyle samo. Zero regresji, zero dołożonych
-ostrzeżeń.
+**„Kilkadziesiąt", a nie jedna liczba, i to jest zmierzony fakt, nie ostrożność.** Część tych
+przypadków sądzi OKNA CZASOWE sygnałów (`SIGTERM` przed `SIGKILL`, gotowość procesu), więc ich
+wynik zależy od tego, ile testów biegnie obok. Cztery przebiegi:
+
+| Drzewo | `--test-threads` | passed | failed |
+|---|---|---|---|
+| baza `f81d4b11` | domyślne (16) | 1578 | 34 |
+| baza `f81d4b11` | domyślne (16) | 1576 | **36** |
+| ta gałąź | domyślne (16) | 1644 | 35 |
+| ta gałąź | domyślne (16) | 1644 | 35 |
+| baza `f81d4b11` | 4 | 1580 | **32** |
+| ta gałąź | 4 | 1647 | **32** |
+
+Baza sama w sobie zmienia listę między przebiegami (drugi przebieg dołożył dwa przypadki,
+których w pierwszym nie było). Porównanie ma więc sens wyłącznie przy TEJ SAMEJ równoległości:
+**32 = 32**, a listy różnią się o jeden przypadek po każdej stronie — oba z tej samej puli
+wędrujących. Zero regresji; testów przechodzących jest o 67 więcej.
+
+Clippy porównane po NAZWIE funkcji, nie po numerze linii — moje zmiany przesuwają linie, więc
+`diff` po `plik:linia` pokazywałby dziesięć „regresji", których nie ma. Po nazwie: **13 = 13,
+te same funkcje**. Dwa błędy, które faktycznie dołożyłem, są naprawione (commit `c3403ed1`).
+
+Front: baza 1859 passed / 3 failed, ta gałąź 1875 passed / 3 failed — te same cztery pliki.
+Checki repo: `boundary`, `vocabulary`, `tests-listed`, `wired`, `suppressions`, `tokens`,
+`invoke-args` — 7/7. `density` jest czerwona **także na bazie**: mówi „could not measure", bo
+kolektor nie jest wpięty w ten check.
 
 ## 2. Co zrobione, a co nie
 
@@ -45,17 +69,20 @@ ostrzeżeń.
 | P-01 | zrobione w części I-08 | `cargo test --test it a_neighbour_repository_is_named_before_the_run::` → 4/4 |
 | P-02 | zrobione w części izolacji danych | `cargo test --test it a_test_instance_keeps_its_data_apart::` → 4/4 |
 | P-03a | **rozpoznane i zamknięte werdyktem** | `cargo test --test it native_scenarios_need_a_real_route_to_the_window::` → 6/6 + 1 żywa `--ignored` |
-| P-03b | **NIE zrobione** | powód w §5 |
-| G-01, G-02 | zrobione | `cargo test --test it an_agent_is_written_by_the_vendor_that_was_asked::` → 11/11 |
+| P-03b | zrobione w części egzekwowalnej | `cargo test --test it a_test_instance_keeps_its_data_apart::` → 8/8; granica w §5 |
+| G-01, G-02 | zrobione, **potwierdzone żywym biegiem** | `… an_agent_is_written_by_the_vendor_that_was_asked::` → 14/14 + żywa `--ignored` na obu vendorach (§4a) |
 | G-03 | zrobione | `npx vitest run e2e/tests/two-buttons-ask-two-different-vendors.spec.ts` → 2/2 w chromium |
 | G-04 | zrobione w części rozróżnienia | `npx vitest run src/sections/agents/an-agent-can-be-written-from-a-description.test.tsx` → 4/4 |
-| M-01…M-04 | **NIE zrobione** | powód w §5 |
-| E-01 | macierz zrobiona, pełny odbiór **nie** | §4 |
+| M-01 | zrobione, zacommitowane | `cargo test --lib` w meetnotes → 3731/0 |
+| M-02 | zrobione | `commands::queue_ownership_tests` → 5/5 |
+| M-03 | zrobione | `e2e/processing` → 14/14 (chromium + webkit) |
+| M-04 | **NIE zrobione** | powód w §5 |
+| E-01 | macierz zrobiona; z pełnego odbioru §11 wykonane punkty 1, 2, 6 i 7, **punkt 4 nie** | §4 i §4a |
 
-Front: **2043 passed, 5 failed** — te same pięć, które są czerwone na bazie.
-Checki repo: `boundary`, `vocabulary`, `tests-listed`, `invoke-args`, `wired`, `suppressions`,
-`tokens` — 7/7. `density` jest czerwona **także na bazie**: mówi „could not measure", bo kolektor
-nie jest wpięty w ten check.
+| P-02 (kafelek) | zrobione | `npx vitest run src/sections/workflows/start-and-leave-has-a-panel.test.tsx` → 10/10 |
+
+Liczby całych suit i porównanie z bazą stoją w §1; tutaj są tylko adresy, pod którymi każde
+z tych ID da się obejrzeć osobno.
 
 ## 3. Co się naprawdę zmieniło, incydent po incydencie
 
@@ -84,6 +111,24 @@ niezmierzone kryterium nie jest ani zaliczeniem, ani dowodem wady.
 aplikacji, zameldowane jako zdane na maszynie bez zgody na sterowanie oknem, przechodzi do
 „nie zmierzono" — **kodem**, nie prośbą w prompcie.
 
+**Zielony bieg skarżył się na własną pracę — wada BAZY, nie tego zadania.** Krok pracujący
+we własnej kopii i zmieniający w niej cokolwiek zawsze ją zostawia; zdejmowania nikt nawet nie
+próbuje. Zdanie o tym szło jednak do `StepRun::error`, czyli do pola, którym okno maluje kafelek
+na czerwono. Żywa wyrocznia całego przepływu (`flow_todo_app`) padała przez to **na samej bazie**
+`f81d4b11` i po mojej pracy tak samo — trzy zielone kroki Scout „obwiniały" coś za to, że zrobiły,
+o co je poproszono. Ścieżka nie ginie i nigdy nie potrzebowała tej kopii: niesie ją `copy_results`,
+a pokazuje `ResultFolder` w panelu biegu minionego, razem z nazwą kroku, zdaniem „Changes kept in
+this folder." i przyciskiem, który ten folder otwiera (niezmiennik 13). Do pola błędu wraca
+wyłącznie kopia, której zdjęcie NAPRAWDĘ odmówiło.
+
+Przy okazji wyszło, że kryterium, które miało tego pilnować
+(`a_copy_that_could_not_be_cleared_away_is_named_in_the_run_record`), sądziło inną ścieżkę, niż
+mówi jego nazwa: dubler pisał plik do kopii, więc kopia była „zmieniona", zdejmowania nie było
+i zamek na katalogu nie miał czego zatrzymać. **Dowód mutacyjny:** z usuniętym
+`seal_the_folder` przypadek był tak samo zielony. Dubler nic już w tym jednym wariancie nie pisze,
+więc `remove_dir_all` rusza naprawdę i odmawia na `notes.txt` — a z usuniętym zamkiem przypadek
+jest dziś czerwony na własnej przesłance.
+
 **I-08 — zależność od sąsiedniego repo.** Krok pracujący we własnej kopii słyszy, zanim ruszy
 pierwszy proces, że `src-tauri/Cargo.toml` potrzebuje `../murmur-server`, którego w kopii nie
 będzie — razem z obiema drogami wyjścia.
@@ -105,21 +150,46 @@ będzie — razem z obiema drogami wyjścia.
 | Brak CLI, loginu, uprawnienia | `an_agent_is_written_...::a_missing_app_says_so`, `native_scenarios_...::` |
 | Próba zmiany egzaminatora przez mierzony bieg | odziedziczone: `processes_cannot_rewrite_their_examiner` |
 
+## 4a. Żywy odbiór §11 — co naprawdę pobiegło, na prawdziwych agentach
+
+Właściciel ma subskrypcję, więc „płatne próby" z §11 nie kosztują osobno; zgoda padła
+2026-09-06. Poniżej wyłącznie biegi, które naprawdę się odbyły — osobno pozytywne i negatywne
+(§11 punkt 7), bez sumowania kilku prób w jedną.
+
+| Bieg | Kiedy | Wynik |
+|---|---|---|
+| `flow_todo_app` na SAMEJ bazie `f81d4b11` | 09-06 23:49, 209,6 s | **czerwony** — trzy kroki Scout niosły zdanie o zachowanej kopii w polu błędu |
+| `flow_todo_app` po naprawie, maszyna obciążona | 09-07 01:57, 475,9 s | Lead, Scout A/B/C, Builder: `error: null` — wada z bazy zniknęła. Czerwony na czym innym: Checker przekroczył swój limit 6 minut, bo obok szły suity frontu |
+| `flow_todo_app`, maszyna wolna | 09-07 02:22, **235,9 s** | **zielony** — cały przepływ sześciu agentów, ani jeden krok niczego nie obwinia |
+| `flow_say_to_agent` (żywa sesja `claude`) | 09-07 02:22, **5,7 s** | **zielony** — słowo wysłane w środku pracy wraca w prozie modelu, czyli doprecyzowanie z §11 punktu 2 naprawdę dochodzi |
+| `flow_todo_app` na DOKŁADNIE tym HEAD (`0dac2e02`) | 09-07 02:55, **423,7 s** | **zielony** — ta sama wyrocznia na wersji, która stoi w repo, a nie na tej sprzed czterech commitów (§12 zakazuje zamknięcia, gdy kod różni się od sprawdzonego) |
+| `both_buttons_really_write_an_agent_with_their_own_app` | 09-07 02:47, **36,9 s** | **zielony po czterech poprawkach** — oba przyciski, prawdziwy `claude` i prawdziwy `codex`, oba uszanowały `file_access: look-only` |
+| brak osieroconych procesów | po każdym z powyższych | `ps -eo pid,ppid` — ani jednego procesu z `PPID 1` od Loadouta (§11 punkt 6) |
+
+Pierwsza pozycja jest tu ważniejsza niż trzecia: dowodzi, że skarga trzech kroków na własną
+pracę **nie była regresją tego zadania**, tylko wadą odziedziczonego WIP-u — i że jest zamknięta.
+
+### Czego nie dało się zobaczyć bez żywej próby
+
+Wszystkie kryteria generatora były pod dublerem zielone, a **przycisk „Create with Claude" nie
+oddawał ani jednego szkicu**. Cztery wady naraz, opisane w commicie `0dac2e02`: wyrzucany powód
+vendora, ten sam numer sesji w obu turach („Session ID … is already in use"), korekta bez
+pierwotnej prośby oraz prośba wymieniająca nazwy kluczy bez ani jednej dopuszczalnej wartości
+i bez kształtu. To jest cała odpowiedź na pytanie, po co §11 chce prawdziwego biegu obok
+zielonego harnessu: dubler odpowiada dokładnie tym, co mu wpiszemy.
+
 ## 5. Czego NIE zrobiłem i dlaczego — bez chowania pod „non-blocking"
 
-**P-03b — QA nie obsługuje jeszcze okna w biegu.** Droga jest rozpoznana i zmierzona (§6), ale
-scenariusze natywne nie są jeszcze wykonywane przez krok QA. Brakuje trzech rzeczy, każda
-nazwana: przekazania kroku QA tożsamości uruchomionej instancji (PID), potwierdzenia okna po
-stronie readiness i zapisu dowodów pomocniczych. Do tego czasu **status native QA to
-„nie zmierzono"** — i to jest egzekwowane kodem, a nie deklarowane.
+**P-03b — czego NIE da się wymusić kodem, i dlaczego to jest wybór.** Zrobione: potwierdzenie
+OKNA przed ogłoszeniem gotowości celu natywnego (`native_ui::windows_of`, trzy różne wyniki),
+tożsamość instancji dostępna dla agenta przez `service_status` → `pgid`, oraz rola QA mówiąca
+wprost „adresuj `first process whose unix id is <pgid>`, nigdy po nazwie aplikacji".
 
-**Potwierdzenie okna dla celu natywnego (P-02 punkt 6).** `wait_until_ready` nie dostaje dziś
-opisu uruchomienia, więc `TargetKind` tam nie dociera. Sonda okna czekałaby bez wołającego,
-a `checks/wired.sh` słusznie by to złapał. Nazwane zamiast wpół wpięte.
-
-**Kafelek „uruchom i zostaw" nie umie powiedzieć, że startuje aplikację natywną.**
-`kind`/`testDataEnv` stoją na `LaunchDescription` (opis od agenta), a `ServeStep` ich nie ma.
-Dopisanie ich bez kontrolki w panelu byłoby polem, którego nikt nie ustawi (niezmiennik 16).
+Nie da się wymusić kodem JEDNEJ rzeczy: że agent naprawdę adresuje każdą akcję tym pidem.
+Steruje oknem przez `Bash` i `osascript`, więc przechwycenie każdej akcji znaczyłoby napisanie
+własnego systemu Computer Use — czego plan zabrania wprost. Egzekwowalne jest to, co obok, i to
+jest zrobione: metoda `full-runtime`, potwierdzone okno przed startem QA i „nie zmierzono" bez
+drogi do okna.
 
 **„Sesja bez ani jednego narzędzia" jest dziś niewyrażalna.** Sprawdzone w API sterowników,
 zgodnie z poleceniem planu: u Claude'a pusta lista narzędzi jest w tym drzewie ODMOWĄ
@@ -131,10 +201,27 @@ wyłączona sieć i **pusty katalog roboczy**. Żadnego fallbacku do `Everything
 „nie sprawdzamy" — i model wskazany przez generatora przechodzi, a widzi go człowiek. Stara
 statyczna lista z formularza nie jest dowodem bieżącej dostępności, więc jej nie użyłem.
 
-**M-01…M-04 (Murmur) — nie zaczęte.** To osobne repozytorium z własnymi regułami, a w pliku,
-który M-01 ma zmieniać (`src-tauri/src/storage/processing_queue_store.rs`), leży czyjaś
-niezacommitowana zmiana. Ta sama dyscyplina, którą plan nakłada w L-00, mówi tu: uzgodnij bazę
-z właścicielem, zanim cokolwiek ruszysz.
+**M-04 (Murmur) — nie zrobione, i blokada jest konkretna.** Wymaga scenariuszy P-03 na osobnej
+instancji. Murmur ma dziś izolację danych, ale **na profil buildu, nie na bieg**:
+`state::app_dir_name()` oddaje `MeetNotes-dev` dla builda debug (albo przy ustawionym
+`MURMUR_DEV_DEK`) i `MeetNotes` dla wydania notaryzowanego — więc `tauri dev` faktycznie nie
+dotyka biblioteki człowieka, ale każdy taki bieg pisze do TEGO SAMEGO drugiego katalogu.
+Ustawienia, którym dałoby się wskazać katalog na jeden bieg, nie ma w całym drzewie
+(`grep -rn "env::var" src-tauri/src` — same DEK-i, bake-off i repro).
+
+Skutek jest sprawdzalny i jest nim MOJA WŁASNA reguła z P-02: cel natywny bez `testDataEnv`
+dostaje odmowę startu („This app has no way to keep test data apart from yours…"). Żeby M-04
+wykonać naprawdę, ktoś musi najpierw dodać Murmurowi to jedno ustawienie — a to jest zmiana
+w rozwiązywaniu ścieżki do zaszyfrowanej bazy, więc należy do przeglądu lock/security i do
+decyzji właściciela, nie do tego zadania.
+
+Sam przegląd lock/security dla M-01…M-03 nie jest wyzwolony: te zmiany nie dotykają modelu
+zamków — nie dokładają ani jednego odczytu treści, eksportu ani pieczęci.
+
+**M-01…M-03 (Murmur) — zrobione i zacommitowane** w `../.murmur-agent-tasks/m01-queue-ownership-repro`,
+regułą tamtego repo (autor `JakubGawr`, bez trailerów AI, merge przez PR). Szczegóły
+w `M-01-REPRODUKCJA-I-NAPRAWA.md` obok. Werdykt „done" należy tam do `adversarial-verifier`,
+nie do implementującego — trzy commity czekają na PR.
 
 **Pełny odbiór produktu z §11 — nie wykonany.** Wymaga płatnych biegów i zgody, a plan wprost
 mówi, że sam ich nie zleca.
@@ -147,9 +234,12 @@ mówi, że sam ich nie zleca.
    testowego mówi `Ready`. Ale zgody macOS są przypisane do BINARKI: „Ready" zmierzone z procesu
    testowego nie jest zgodą dla aplikacji Loadout. Ta poprosi o nią własnym oknem systemowym przy
    pierwszym użyciu i tylko człowiek może ją dać.
-2. **Decyzji o torze M** — czy ruszać meetnotes, mając w docelowym pliku czyjąś niezacommitowaną
-   zmianę.
-3. **Zgody na płatne biegi**, jeżeli §11 ma zostać wykonane naprawdę.
+2. ~~Decyzji o torze M~~ — **dane 2026-09-06**: wolno. Tor M stoi w osobnym worktree, trzy
+   commity, opisane wyżej.
+3. ~~Zgody na płatne biegi~~ — **dane 2026-09-06**: właściciel ma subskrypcję, więc biegi nie
+   kosztują osobno. Żywa wyrocznia przepływu została na tej zgodzie wykonana (§4a).
+4. **Jednego ustawienia w Murmurze** — nazwy zmiennej, którą aplikacja przyjmie katalog danych
+   na czas testu. Bez niej M-04 jest zablokowane przez regułę P-02, opisaną w §5.
 
 Czego **nie** potrzebuję i czego nie ruszałem: aktywnej biblioteki użytkownika (`~/.loadout`),
 restartu aplikacji, instalacji połączeń, mikrofonu, publikacji.
@@ -165,7 +255,7 @@ kryterium, nie luka**, więc poprawkę wycofałem, a szablon z V-03 ustawia na t
 Nowe jest wyłącznie to, że wynik BEZ POMIARU (`CheckOutcome::NotJudged`) w ogóle dociera do
 wyboru drogi jako własna wartość, zamiast udawać zaliczenie albo wadę.
 
-## 8. Trzy wady, które znalazłem we własnej pracy, zanim znalazł je ktoś inny
+## 8. Wady, które znalazłem we własnej pracy, zanim znalazł je ktoś inny
 
 1. **Sądzenie wymaganych testów po zebranym tekście.** Krok „sprawdź" zachowuje ostatnie 64 KiB,
    więc każdy test prawdziwej suity sprzed ogona wyglądałby na niewykonany. Poprawione na skan
@@ -177,7 +267,23 @@ wyboru drogi jako własna wartość, zamiast udawać zaliczenie albo wadę.
    renderu; prawdziwa przeglądarka zgłaszała to jako błąd, a w StrictMode szkic wchodziłby dwa
    razy. Aktualność operacji rozstrzyga dziś `useRef`, poza renderem.
 
+4. **Cztery wady generatora naraz, wszystkie niewidoczne pod dublerem.** Opisane w §4a
+   i w commicie `0dac2e02`. Najgorsza z nich nie była techniczna: własne zdanie „and did not say
+   what it wrote" **zastępowało powód, który program podał**, więc trzech pozostałych nie dało
+   się w ogóle zobaczyć. Dopóki tego nie zdjąłem, każda kolejna próba wyglądała tak samo.
+
+5. **Zdanie odmowy z osiemnastoma spacjami w środku.** Złamany literal bez `\` w
+   `isolated_data`. Czytał to człowiek, któremu Loadout właśnie odmówił uruchomienia aplikacji.
+
+6. **Zgadywanie zamiast pomiaru.** Kiedy prawdziwy `claude` nie oddał szkicu, dopisałem
+   zdejmowanie płotka z bloku kodu — bo „modele przecież owijają JSON". Nie owijał; prawdziwą
+   przyczyną było `"color": "amber"`. Kod poszedł do kosza, a nie do repo: leniency bez
+   ani jednego pomiaru to poszerzenie kontraktu w ciemno.
+
 ## 9. Jak to obejrzeć
+
+Wersja, o której mówi ten raport: `0dac2e02` na `feat/reliability-native-qa-generator`.
+Niezacommitowany jest wyłącznie ten plik.
 
 ```bash
 cd /Users/jakubgawronski/Projects/loadout-reliability-native-qa-generator
@@ -192,6 +298,15 @@ cargo test --manifest-path src-tauri/Cargo.toml --test it native_scenarios -- --
 
 # oba przyciski, prawdziwe kliknięcie, prawdziwa przeglądarka
 npx --no-install vitest run e2e/tests/two-buttons-ask-two-different-vendors.spec.ts
+
+# ŻYWE — płacą i odpowiadają o tej maszynie, nie o kodzie
+cargo test --manifest-path src-tauri/Cargo.toml --test it \
+  an_agent_is_written_by_the_vendor_that_was_asked::both_buttons -- --ignored --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --test flow_say_to_agent -- --ignored --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml --test flow_todo_app -- --ignored --nocapture
+
+# porównanie z bazą MA sens tylko przy tej samej równoległości (§1)
+cargo test --manifest-path src-tauri/Cargo.toml --test it -- --test-threads=4
 ```
 
 Szablon i rola do obejrzenia przed importem:
