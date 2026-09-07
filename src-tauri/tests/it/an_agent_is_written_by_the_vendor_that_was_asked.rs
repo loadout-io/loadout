@@ -47,8 +47,14 @@ fn the_model_cannot_choose_the_identity() {
 
     let clean = json!({"name": "QA", "summary": "Checks the work", "instructions": "Verify."});
     let draft = read_draft(&wanted, clean.to_string().as_bytes()).expect("a clean answer");
-    assert_eq!(draft.agent.schema, loadout_lib::library::agents::Agent::example().schema);
-    assert_ne!(draft.agent.id.to_string(), "01990000-0000-7000-8000-000000009999");
+    assert_eq!(
+        draft.agent.schema,
+        loadout_lib::library::agents::Agent::example().schema
+    );
+    assert_ne!(
+        draft.agent.id.to_string(),
+        "01990000-0000-7000-8000-000000009999"
+    );
 }
 
 /// Vendor bierze się z przycisku, nie z odpowiedzi.
@@ -95,7 +101,12 @@ fn a_generated_agent_cannot_widen_itself_through_raw_settings() {
         }}
     });
     let draft = read_draft(&wanted, asked.to_string().as_bytes()).expect("a draft");
-    let kept = draft.agent.vendor_options.get("claude").cloned().unwrap_or_default();
+    let kept = draft
+        .agent
+        .vendor_options
+        .get("claude")
+        .cloned()
+        .unwrap_or_default();
     assert!(
         !kept.contains_key("--dangerously-skip-permissions"),
         "a generated agent widened what it may do through a raw setting"
@@ -131,7 +142,10 @@ fn a_tool_list_does_not_pretend_to_work_where_there_is_none() {
         "a list of tools was kept for an app that has no list of tools"
     );
     assert!(
-        dropped.refused.iter().any(|one| one.contains("does not take a list of tools")),
+        dropped
+            .refused
+            .iter()
+            .any(|one| one.contains("does not take a list of tools")),
         "the person was not told the list was dropped: {:?}",
         dropped.refused
     );
@@ -141,11 +155,15 @@ fn a_tool_list_does_not_pretend_to_work_where_there_is_none() {
 #[test]
 fn a_model_nobody_verified_does_not_go_in_silently() {
     let wanted = Wanted::from_one_vendor("t".to_owned(), Vendor::ClaudeCode, available());
-    let asked = json!({"name":"QA","summary":"s","instructions":"i","model":"opus-from-the-future"});
+    let asked =
+        json!({"name":"QA","summary":"s","instructions":"i","model":"opus-from-the-future"});
     let draft = read_draft(&wanted, asked.to_string().as_bytes()).expect("a draft");
     assert!(draft.agent.model.is_empty());
     assert!(
-        draft.refused.iter().any(|one| one.contains("opus-from-the-future")),
+        draft
+            .refused
+            .iter()
+            .any(|one| one.contains("opus-from-the-future")),
         "{:?}",
         draft.refused
     );
@@ -239,13 +257,19 @@ async fn a_broken_answer_gets_exactly_one_correction() -> Result<(), Box<dyn Err
     let asked = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
     assert_eq!(asked.len(), 2, "the correction did not happen exactly once");
     assert!(
-        asked[1].prompt.contains("Answer again with the single JSON object"),
+        asked[1]
+            .prompt
+            .contains("Answer again with the single JSON object"),
         "the correction did not carry the validator's own sentence"
     );
 
     let stubborn = Writer {
         id: "claude-code",
-        answers: Arc::new(Mutex::new(vec!["no".to_owned(), "still no".to_owned(), "no".to_owned()])),
+        answers: Arc::new(Mutex::new(vec![
+            "no".to_owned(),
+            "still no".to_owned(),
+            "no".to_owned(),
+        ])),
         seen: Arc::new(Mutex::new(Vec::new())),
         found: true,
     };
@@ -312,10 +336,16 @@ async fn the_request_names_every_word_the_reader_will_accept() -> Result<(), Box
         );
     }
     for word in ["quick", "balanced", "deep", "deepest"] {
-        assert!(asked.contains(word), "the request hides the thinking levels: {asked}");
+        assert!(
+            asked.contains(word),
+            "the request hides the thinking levels: {asked}"
+        );
     }
     for word in ["look-only", "ask-first", "work-freely"] {
-        assert!(asked.contains(word), "the request hides the file-access words: {asked}");
+        assert!(
+            asked.contains(word),
+            "the request hides the file-access words: {asked}"
+        );
     }
     Ok(())
 }
@@ -347,9 +377,7 @@ async fn the_request_shows_the_shape_and_that_shape_is_one_this_reader_accepts()
     /* PRZYKŁAD MUSI SAM PRZECHODZIĆ WŁASNY KONTRAKT. Prośba pokazująca kształt, którego
      * czytelnik nie przyjmuje, jest gorsza niż brak przykładu: model robi dokładnie to, o co
      * poprosiliśmy, i dostaje odmowę. */
-    let example = serde_json::to_vec(
-        &loadout_lib::library::agent_generation::Answered::example(),
-    )?;
+    let example = serde_json::to_vec(&loadout_lib::library::agent_generation::Answered::example())?;
     read_draft(&wanted, &example)
         .expect("the shape the request shows is not a shape read_draft accepts");
     let shown = String::from_utf8(example)?;
@@ -577,7 +605,9 @@ async fn both_buttons_really_write_an_agent_with_their_own_app() {
         .to_owned();
     for vendor in [Vendor::ClaudeCode, Vendor::Codex] {
         let driver: Box<dyn AgentDriver> = match vendor {
-            Vendor::ClaudeCode => Box::new(loadout_lib::engine::drivers::claude::ClaudeDriver::new()),
+            Vendor::ClaudeCode => {
+                Box::new(loadout_lib::engine::drivers::claude::ClaudeDriver::new())
+            }
             Vendor::Codex => Box::new(loadout_lib::engine::drivers::codex::CodexDriver::new()),
         };
         let wanted = Wanted::from_one_vendor(described.clone(), vendor, available());

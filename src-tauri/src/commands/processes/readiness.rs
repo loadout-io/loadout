@@ -246,7 +246,9 @@ impl Processes {
             match checked {
                 // Powód, dla którego port to nie wszystko, stoi przy `native_window_confirmed`.
                 Ok(true) => match self.native_window_confirmed(reference, &entry).await {
-                    Ok(true) => return self.mark_ready(reference, service, &endpoint, &entry).await,
+                    Ok(true) => {
+                        return self.mark_ready(reference, service, &endpoint, &entry).await;
+                    }
                     Ok(false) => {}
                     Err(said) => return self.readiness_failed(reference, service, said).await,
                 },
@@ -302,7 +304,9 @@ impl Processes {
         reference: &ServiceRef,
         entry: &super::HeldProcess,
     ) -> Result<bool, String> {
-        let slot = self.managed_service(reference).map_err(|why| why.to_string())?;
+        let slot = self
+            .managed_service(reference)
+            .map_err(|why| why.to_string())?;
         if slot.description.kind != crate::workflow::TargetKind::Native {
             return Ok(true);
         }

@@ -15870,7 +15870,14 @@ impl Live {
             .await;
         }
         let report = self
-            .finish_agent_turn(handle, finished, cost_is_estimate, limit, &mut turn, &carried)
+            .finish_agent_turn(
+                handle,
+                finished,
+                cost_is_estimate,
+                limit,
+                &mut turn,
+                &carried,
+            )
             .await;
         self.control
             .step_session_finished(&self.plan.steps[id].node_key, message_generation);

@@ -153,8 +153,9 @@ fn asked_for(wanted: &Wanted) -> String {
     /* Kształt wypisany z typu kontraktu, a nie przepisany do napisu obok — powód stoi przy
      * `Answered::example`. Gdyby serializacja kiedykolwiek zawiodła, prośba nadal jedzie:
      * model dostanie o jedno zdanie mniej, a nie prośbę uciętą w połowie. */
-    let shape = serde_json::to_string_pretty(&crate::library::agent_generation::Answered::example())
-        .unwrap_or_default();
+    let shape =
+        serde_json::to_string_pretty(&crate::library::agent_generation::Answered::example())
+            .unwrap_or_default();
     let colors = wire_words(&every_color());
     let thinking = wire_words(&every_thinking());
     let access = wire_words(&every_file_access());
@@ -259,7 +260,9 @@ pub async fn generate(
     Err(GenerationFailed::NotADraft {
         said: last.map_or_else(
             || "Nothing usable came back.".to_owned(),
-            |_| "The answer was still not the settings this asks for. Nothing was saved.".to_owned(),
+            |_| {
+                "The answer was still not the settings this asks for. Nothing was saved.".to_owned()
+            },
         ),
     })
 }

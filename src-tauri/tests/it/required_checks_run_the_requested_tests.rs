@@ -166,7 +166,9 @@ async fn a_missing_working_directory_stops_before_anything_runs() -> Result<(), 
     let driver = CommandDriver::new();
     let started = driver.start(&spec);
     let said = match started {
-        Ok(_) => return Err("the driver spawned a check into a directory that does not exist".into()),
+        Ok(_) => {
+            return Err("the driver spawned a check into a directory that does not exist".into());
+        }
         Err(error) => error.to_string(),
     };
     // `No such file or directory (os error 2)` jest prawdą i nie mówi CZEGO nie ma. Człowiek
@@ -201,7 +203,9 @@ async fn a_pass_printed_before_the_kept_tail_still_counts() -> Result<(), Box<dy
     // Bez tej asercji kryterium nie sądzi niczego: gdyby wyjście zmieściło się w ogonie,
     // przechodziłoby także po zebranym tekście, czyli po kodzie sprzed tej poprawki.
     assert!(
-        report.kept.starts_with("[Loadout omitted earlier output from this check.]"),
+        report
+            .kept
+            .starts_with("[Loadout omitted earlier output from this check.]"),
         "the fixture did not print past the kept tail, so this criterion proves nothing"
     );
     assert!(
@@ -267,9 +271,7 @@ async fn the_run_says_which_required_tests_never_ran() -> Result<(), Box<dyn Err
             "folder":{"use":"project"},"at":{"x":0,"y":0}}],"links":[]})
         .to_string(),
     )?;
-    let drivers: Drivers = std::sync::Arc::new(|_| {
-        unreachable_driver()
-    });
+    let drivers: Drivers = std::sync::Arc::new(|_| unreachable_driver());
     let state = AppState::new(
         home,
         project.clone(),

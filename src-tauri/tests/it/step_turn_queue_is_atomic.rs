@@ -19,9 +19,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
-use loadout_lib::commands::step_message::{
-    MESSAGE_LIMIT_BYTES, QUEUE_LIMIT, StepMessageResult,
-};
+use loadout_lib::commands::step_message::{MESSAGE_LIMIT_BYTES, QUEUE_LIMIT, StepMessageResult};
 use loadout_lib::commands::{Drivers, RunRequest};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Probe, RunSpec,
@@ -177,7 +175,10 @@ async fn a_full_queue_and_an_oversized_message_are_refused() -> Result<(), Box<d
             Ok(())
         })
         .await?;
-    let results = replies.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let results = replies
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
     assert_eq!(
         results
             .iter()
@@ -214,12 +215,7 @@ async fn a_full_queue_and_an_oversized_message_are_refused() -> Result<(), Box<d
 /// nowa przy każdej wiadomości, obie tury zmieściłyby się w limicie i krok skończyłby się dobrze.
 #[tokio::test(start_paused = true)]
 async fn a_message_does_not_buy_the_step_a_fresh_clock() -> Result<(), Box<dyn Error>> {
-    let world = World::working(
-        false,
-        1,
-        Duration::from_secs(600),
-        Duration::from_secs(40),
-    )?;
+    let world = World::working(false, 1, Duration::from_secs(600), Duration::from_secs(40))?;
     let (run, _) = world
         .drive(async |address: &str| {
             assert_eq!(
@@ -235,7 +231,10 @@ async fn a_message_does_not_buy_the_step_a_fresh_clock() -> Result<(), Box<dyn E
         })
         .await?;
     let step = row(&run, "Builder")?;
-    let said = step.get("error").and_then(Value::as_str).unwrap_or_default();
+    let said = step
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
         said.contains("ran longer than its 1 minute limit"),
         "the step outlived its own limit because a message restarted the clock: {said:?}"
@@ -327,9 +326,11 @@ impl World {
             "folder":{"use":"project"},"at":{"x":0,"y":0}})];
         let mut links = Vec::new();
         if second {
-            steps.push(json!({"kind":"agent","id":"packer","name":"Packer","agent":agent.id,
+            steps.push(
+                json!({"kind":"agent","id":"packer","name":"Packer","agent":agent.id,
                 "instructions":"Return a brief result.","overrides":{},
-                "folder":{"use":"project"},"at":{"x":200,"y":0}}));
+                "folder":{"use":"project"},"at":{"x":200,"y":0}}),
+            );
             links.push(json!({"from":"builder","to":"packer"}));
         }
         fs::write(
@@ -369,7 +370,11 @@ impl World {
         })
     }
 
-    fn say(&self, run_id: &str, text: &str) -> loadout_lib::commands::step_message::StepMessageReply {
+    fn say(
+        &self,
+        run_id: &str,
+        text: &str,
+    ) -> loadout_lib::commands::step_message::StepMessageReply {
         self.say_to(run_id, "builder", text)
     }
 

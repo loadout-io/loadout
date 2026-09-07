@@ -43,7 +43,8 @@ fn the_repair_loop_gives_exactly_two_tries_after_the_first() -> Result<(), Box<d
         .first()
         .ok_or("the shipped workflow has no repair loop at all")?;
     assert_eq!(
-        the_loop.turns, 3,
+        the_loop.turns,
+        3,
         "the repair loop gives {} tries in total, so the work gets {} repairs, not two",
         the_loop.turns,
         the_loop.turns.saturating_sub(1)
@@ -78,8 +79,7 @@ fn the_checks_name_the_tests_they_must_confirm() -> Result<(), Box<dyn Error>> {
 /// Wymagania QA są zachowaniami widocznymi dla człowieka i potwierdza się je DZIAŁAJĄCĄ
 /// aplikacją. Mock nie zaspokaja tych kryteriów — pilnuje tego `criteria::Method`.
 #[test]
-fn the_running_app_is_the_only_way_to_confirm_the_qa_requirements()
--> Result<(), Box<dyn Error>> {
+fn the_running_app_is_the_only_way_to_confirm_the_qa_requirements() -> Result<(), Box<dyn Error>> {
     let file = shipped()?;
     let qa = agent_named(&file, "Check the running app")?;
     assert!(

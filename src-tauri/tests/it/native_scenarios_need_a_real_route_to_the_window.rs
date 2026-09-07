@@ -201,7 +201,10 @@ async fn a_real_window_is_counted_and_driven_by_the_identity_it_was_given() {
     let mut mine = None;
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        if let Some(pid) = own_instances().into_iter().find(|pid| !before.contains(pid)) {
+        if let Some(pid) = own_instances()
+            .into_iter()
+            .find(|pid| !before.contains(pid))
+        {
             mine = Some(pid);
             break;
         }

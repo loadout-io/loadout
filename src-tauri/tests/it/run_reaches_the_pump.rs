@@ -200,8 +200,7 @@ async fn every_line_of_the_run_reaches_the_pump_in_order() -> Result<(), Box<dyn
         .filter(|row| row.get("kind").and_then(Json::as_str) == Some("stepState"))
         .count();
     assert_eq!(
-        changes,
-        2,
+        changes, 2,
         "one step means exactly two state changes on the wire — running, then succeeded. \
          Anything else means the strip either never moves or moves on facts nobody produced. \
          The rows were {mine:?}"

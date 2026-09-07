@@ -406,7 +406,8 @@ fn a_committed_env_template_survives_the_copy_and_a_real_secret_does_not()
     // Prawdziwy sekret: NIEŚLEDZONY, bo tak trzyma go każdy.
     fs::write(project.join(".env"), "API_KEY=this-is-real\n")?;
 
-    let captured = loadout_lib::commands::input_snapshot::capture_selected(&project, &run_dir, &[])?;
+    let captured =
+        loadout_lib::commands::input_snapshot::capture_selected(&project, &run_dir, &[])?;
     let inside: Vec<&Path> = captured.entries().keys().map(PathBuf::as_path).collect();
 
     assert!(

@@ -87,12 +87,15 @@ async fn the_lead_sees_the_saved_cause_in_its_history_lookup() -> Result<(), Box
     let root = tempfile::tempdir()?;
     write_run(root.path(), Some("infrastructure-failed"))?;
     let desk = Desk::at(Some(root.path().to_path_buf()), root.path().to_path_buf());
-    let answer = Answers::answer(&desk, Call {
+    let answer = Answers::answer(
+        &desk,
+        Call {
             id: json!(1),
             call: "read_run_summary".to_owned(),
             input: json!({"run_id": RUN}),
-        })
-        .await;
+        },
+    )
+    .await;
     let summary = match answer {
         Answer::Ok(value) => value,
         Answer::Refused(said) => panic!("the Lead could not read the run: {said}"),
@@ -127,12 +130,15 @@ async fn a_step_that_never_ran_has_no_invented_cause() -> Result<(), Box<dyn Err
         .to_string(),
     )?;
     let desk = Desk::at(Some(root.path().to_path_buf()), root.path().to_path_buf());
-    let answer = Answers::answer(&desk, Call {
+    let answer = Answers::answer(
+        &desk,
+        Call {
             id: json!(1),
             call: "read_run_summary".to_owned(),
             input: json!({"run_id": RUN}),
-        })
-        .await;
+        },
+    )
+    .await;
     let summary = match answer {
         Answer::Ok(value) => value,
         Answer::Refused(said) => panic!("the Lead could not read the run: {said}"),

@@ -190,10 +190,7 @@ fn step_names(subject: &WorkflowFile, scope: &str) -> BTreeMap<String, String> {
 /// Wiązania komórek adresują węzły PO rozwinięciu — z turą i kopią w kluczu, a nie
 /// same kroki wzorca. Ta mapa tłumaczy klucz węzła wzorca na klucz tego samego węzła
 /// w kafelku, żeby odczyt wyników nie musiał znać reguł prefiksowania.
-fn node_keys(
-    subject: &WorkflowFile,
-    names: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
+fn node_keys(subject: &WorkflowFile, names: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     crate::workflow::unroll::unroll(subject)
         .nodes
         .into_iter()

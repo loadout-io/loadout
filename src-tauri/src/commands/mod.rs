@@ -571,7 +571,10 @@ impl RunControl {
             // L-01: kolejka niepusta w tym miejscu znaczy, że krok zszedł, zanim zdążył
             // obsłużyć przyjętą pracę — po anulowaniu albo po limicie czasu. Człowiek ma
             // zobaczyć, ile jego zdań nie dojechało, a nie domyślić się tego z ciszy.
-            (session.name.clone(), std::mem::take(&mut session.waiting).len())
+            (
+                session.name.clone(),
+                std::mem::take(&mut session.waiting).len(),
+            )
         };
         if unsent > 0 {
             let _ = self.show_in_the_run(crate::engine::line::Line::Problem {

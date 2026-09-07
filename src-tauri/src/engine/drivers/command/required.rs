@@ -237,7 +237,10 @@ fn tap_line(line: &str) -> Option<Seen> {
     };
     // Numer przypadku należy do protokołu, nie do tożsamości testu.
     let rest = rest.trim_start_matches(|character: char| character.is_ascii_digit());
-    let name = rest.trim_start().strip_prefix("- ").unwrap_or(rest.trim_start());
+    let name = rest
+        .trim_start()
+        .strip_prefix("- ")
+        .unwrap_or(rest.trim_start());
     let (name, directive) = match name.split_once(" # ") {
         Some((name, directive)) => (name, Some(directive)),
         None => (name, None),

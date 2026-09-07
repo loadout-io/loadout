@@ -374,7 +374,13 @@ fn a_serve_tile_says_what_it_starts_and_survives_the_file() -> Result<(), Box<dy
 #[tokio::test]
 async fn a_test_data_setting_cannot_replace_a_reserved_variable() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
-    for name in ["HOME", "PATH", "DYLD_INSERT_LIBRARIES", "LOADOUT_RUN_ID", "SHELL"] {
+    for name in [
+        "HOME",
+        "PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "LOADOUT_RUN_ID",
+        "SHELL",
+    ] {
         let why = bench
             .start(LaunchDescription {
                 command: "true".to_owned(),

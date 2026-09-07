@@ -134,7 +134,8 @@ pub struct Answered {
     #[serde(default)]
     pub agent_messages: Option<bool>,
     #[serde(default)]
-    pub vendor_options: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub vendor_options:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     /// Czego model musiał się domyślić. To nie jest tok rozumowania, tylko lista rzeczy,
     /// które człowiek ma potwierdzić albo poprawić.
     #[serde(default)]
@@ -237,15 +238,14 @@ pub fn read_draft(wanted: &Wanted, answered: &[u8]) -> Result<Draft, NotADraft> 
     if answered.len() > DRAFT_LIMIT_BYTES {
         return Err(NotADraft::TooLong);
     }
-    let said: Answered = serde_json::from_slice(answered).map_err(|error| {
-        NotADraft::NotTheContract {
+    let said: Answered =
+        serde_json::from_slice(answered).map_err(|error| NotADraft::NotTheContract {
             said: format!(
                 "The answer was not an agent's settings in the shape this asks for ({}). Nothing \
                  was saved.",
                 one_line(&error.to_string())
             ),
-        }
-    })?;
+        })?;
     if said.name.trim().is_empty() {
         return Err(NotADraft::NotTheContract {
             said: "The answer did not name the agent, so there is nothing to save it as."
@@ -256,7 +256,12 @@ pub fn read_draft(wanted: &Wanted, answered: &[u8]) -> Result<Draft, NotADraft> 
     let mut refused = Vec::new();
     let mut missing = Vec::new();
 
-    let skills = kept(&said.skills, &wanted.available.skills, "skill", &mut missing);
+    let skills = kept(
+        &said.skills,
+        &wanted.available.skills,
+        "skill",
+        &mut missing,
+    );
     let connections = kept(
         &said.connections,
         &wanted.available.connections,
@@ -322,7 +327,12 @@ pub fn read_draft(wanted: &Wanted, answered: &[u8]) -> Result<Draft, NotADraft> 
 }
 
 /// Nazwy, które naprawdę istnieją w zatwierdzonym kontekście.
-fn kept(asked: &[String], available: &[String], what: &str, missing: &mut Vec<String>) -> Vec<String> {
+fn kept(
+    asked: &[String],
+    available: &[String],
+    what: &str,
+    missing: &mut Vec<String>,
+) -> Vec<String> {
     let known: BTreeSet<&String> = available.iter().collect();
     asked
         .iter()
@@ -342,11 +352,16 @@ fn kept(asked: &[String], available: &[String], what: &str, missing: &mut Vec<St
 /// Nie odpalamy promptu, żeby zgadywał najnowsze nazwy, i nie ufamy starej statycznej liście
 /// z formularza: jedno i drugie odpowiada na pytanie „co model pamięta", a nie „co dziś działa".
 fn model_from_the_catalogue(said: &Answered, wanted: &Wanted, refused: &mut Vec<String>) -> String {
-    let Some(asked) = said.model.as_ref().map(|one| one.trim()).filter(|one| !one.is_empty())
+    let Some(asked) = said
+        .model
+        .as_ref()
+        .map(|one| one.trim())
+        .filter(|one| !one.is_empty())
     else {
         return String::new();
     };
-    if wanted.available.models.is_empty() || wanted.available.models.iter().any(|one| one == asked) {
+    if wanted.available.models.is_empty() || wanted.available.models.iter().any(|one| one == asked)
+    {
         return asked.to_owned();
     }
     refused.push(format!(

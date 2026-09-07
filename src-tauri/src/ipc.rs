@@ -2777,12 +2777,17 @@ pub async fn generate_agent(
     described: &str,
     runs_with: crate::library::agents::Vendor,
 ) -> Result<serde_json::Value, String> {
-    state.generate_agent_in(operation, described, runs_with).await
+    state
+        .generate_agent_in(operation, described, runs_with)
+        .await
 }
 
 /// Zatrzymuje JEDNO generowanie. Bieg workflow się o tym nie dowiaduje.
 #[tauri::command]
-pub async fn stop_generating_agent(state: State<'_, AppState>, operation: &str) -> Result<(), String> {
+pub async fn stop_generating_agent(
+    state: State<'_, AppState>,
+    operation: &str,
+) -> Result<(), String> {
     state.stop_generating_agent_in(operation);
     Ok(())
 }

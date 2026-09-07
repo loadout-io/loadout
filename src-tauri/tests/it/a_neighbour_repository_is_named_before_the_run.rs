@@ -30,8 +30,8 @@ use tokio::sync::mpsc;
 
 /// I-08 wprost: krok we własnej kopii, projekt zależny od katalogu wyżej.
 #[tokio::test]
-async fn a_step_in_its_own_copy_hears_which_folder_will_not_be_there()
--> Result<(), Box<dyn Error>> {
+async fn a_step_in_its_own_copy_hears_which_folder_will_not_be_there() -> Result<(), Box<dyn Error>>
+{
     let said = complaints("fresh-copy", CARGO_WITH_A_NEIGHBOUR).await?;
     let about = said
         .iter()

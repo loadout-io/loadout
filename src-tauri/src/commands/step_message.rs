@@ -76,12 +76,7 @@ pub struct StepRecipient {
 
 /// L-01: bez `async`, bo od dnia, w którym kolejka jest po stronie Loadouta, przyjęcie
 /// wiadomości nie dotyka już transportu. Podaje ją sesji `Live::one_turn`, między turami.
-pub fn send(
-    control: &RunControl,
-    run_id: &str,
-    node_key: &str,
-    text: &str,
-) -> StepMessageReply {
+pub fn send(control: &RunControl, run_id: &str, node_key: &str, text: &str) -> StepMessageReply {
     let address = control.run_address();
     if address.as_ref().is_some_and(|address| address.id == run_id)
         && let Some(reply) = fixed_input_refusal(control, run_id, node_key)

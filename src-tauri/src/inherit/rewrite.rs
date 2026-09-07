@@ -121,7 +121,9 @@ pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Re
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.into()),
         }
-        let source = file.parent().ok_or_else(|| io::Error::other(NOT_A_SINGLE_FOLDER))?;
+        let source = file
+            .parent()
+            .ok_or_else(|| io::Error::other(NOT_A_SINGLE_FOLDER))?;
         carried.push(crate::skills::bundle::borrowed_from_source(name, source)?);
     }
 

@@ -81,7 +81,10 @@ fn a_requirement_nobody_could_measure_is_not_a_pass_and_not_a_defect() {
     );
     assert_eq!(judged.outcome, Verdict::NotJudged);
     assert_eq!(judged.not_tested, vec!["c2".to_owned()]);
-    assert!(judged.failed.is_empty(), "a missing measurement was recorded as a product defect");
+    assert!(
+        judged.failed.is_empty(),
+        "a missing measurement was recorded as a product defect"
+    );
     assert!(
         judged.said().contains("could not measure 1"),
         "the sentence does not separate a missing measurement from a defect: {:?}",
@@ -199,7 +202,10 @@ async fn the_saved_run_says_which_requirement_was_never_answered() -> Result<(),
                 outcome: pass\n";
     let run = judged_run(said).await?;
     let tester = row(&run, "Tester")?;
-    let error = tester.get("error").and_then(Value::as_str).unwrap_or_default();
+    let error = tester
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
         error.contains("said nothing about 1") && error.contains("c2"),
         "the saved run does not say which requirement the tester skipped: {error:?}"
@@ -240,7 +246,10 @@ async fn the_tester_is_given_the_approved_list() -> Result<(), Box<dyn Error>> {
         Some(seen),
     )
     .await?;
-    let asked = prompts.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let asked = prompts
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
     let tester = asked
         .iter()
         .find(|one| one.contains("criterion <id>"))
@@ -314,7 +323,9 @@ async fn run_with(
         ),
     )
     .await??;
-    Ok(serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?)
+    Ok(serde_json::from_slice(&fs::read(
+        report.dir.join("run.json"),
+    )?)?)
 }
 
 fn row<'a>(run: &'a Value, name: &str) -> Result<&'a Value, Box<dyn Error>> {

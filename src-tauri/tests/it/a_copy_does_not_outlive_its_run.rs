@@ -313,12 +313,12 @@ fn nothing_is_left(bench: &Bench, report: &RunReport) -> Result<(), Box<dyn Erro
             )
         })?;
     assert_eq!(
-        named.path,
-        kept,
+        named.path, kept,
         "the run names a folder other than the one on disk, so the button in the window opens          somewhere else"
     );
     assert_eq!(
-        named.state, "changed",
+        named.state,
+        "changed",
         "the copy outlived its run without being a checked result of the step ({} said {}).          Only work Loadout could verify may stay",
         kept.display(),
         named.state
