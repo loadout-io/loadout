@@ -24,7 +24,12 @@ import { DEFAULT_LEAD_LABEL } from './index';
 const PROJECT = '/Users/somebody/Projects/instruction-fixture';
 
 /** Zapisany agent: kontrolka lidera ma czym się wypełnić, więc jej brak znaczy „ekranu nie ma”. */
-const AGENT = { id: 'agent-instruction-fixture', name: 'Scout', summary: 'Reads first', skills: [] };
+const AGENT = {
+  id: 'agent-instruction-fixture',
+  name: 'Scout',
+  summary: 'Reads first',
+  skills: [],
+};
 
 /** Zdanie, które Rust naprawdę pisze przy dowiązaniu: `open_regular_file` idzie z `O_NOFOLLOW`. */
 const REFUSED =
@@ -110,7 +115,6 @@ it('keeps a choice that reaches Rust when this project’s files cannot be read'
     await app.close();
   }
 }, 90_000);
-
 
 /* DRUGI PRZYPADEK: granica odpowiada CZYMŚ INNYM niż ustawienia projektu (2026-09-07).
  *

@@ -21,7 +21,7 @@ import { kinds } from './kinds';
 import type { Feed } from './model';
 import { createFeed } from './model';
 
-/** Dziesięć rodzajów rozwiniętych domyślnie — proza, pytania, błędy i struktura. */
+/** Jedenaście rodzajów rozwiniętych domyślnie — proza, pytania, błędy i struktura. */
 const OPEN = [
   'agent',
   'asked',
@@ -30,6 +30,10 @@ const OPEN = [
   'note',
   'problem',
   'run',
+  /* 2026-09-07 — prośba o bieg. Struktura, ta sama rodzina co `run` i `step`: zdanie
+   * „Starting <workflow>" mówi, co się właśnie zaczyna. Snapshot WIP (`f81d4b11`) dołożył
+   * ten rodzaj razem z `runSource` i oba otworzył; tylko ten jeden należy do reguły 2. */
+  'runRequested',
   'step',
   /* 2026-08-20 — propozycja biegu. Wybór świadomy, nie dopisek: powód, dla którego ten rodzaj
    * stoi otwarty, stoi przy jego wpisie w `kinds.ts`. */
@@ -40,8 +44,30 @@ const OPEN = [
   'told',
 ];
 
-/** Osiem zwiniętych — mechanika oraz fakty stanu spoza historii. */
-const SHUT = ['edit', 'memory', 'ran', 'read', 'search', 'stepCarriedOn', 'stepState', 'thinking'];
+/**
+ * Dwanaście zwiniętych — mechanika oraz fakty stanu spoza historii.
+ *
+ * Cztery ostatnie dołożył snapshot WIP. `runSource` schodzi tu z `open`, bo „<tytuł> has saved
+ * source material." mówi, co leży na dysku, a nie co się dzieje. `stepSession`
+ * i `questionAnswered` nie mają wiersza w widoku wcale: model konsumuje je efektem ubocznym
+ * i przerywa przed trasowaniem, a wpis w rejestrze jest im potrzebny wyłącznie po to, żeby
+ * przejść przez drzwi `known()`. Pole `expanded` jest dla nich martwe i dlatego stoi na `false`:
+ * wartość, za którą nie stoi żaden render, ma mówić „nic nie otwieramy".
+ */
+const SHUT = [
+  'edit',
+  'memory',
+  'messageStored',
+  'questionAnswered',
+  'ran',
+  'read',
+  'runSource',
+  'search',
+  'stepCarriedOn',
+  'stepSession',
+  'stepState',
+  'thinking',
+];
 
 /** Czterdzieści linii wyjścia, każda rozpoznawalna po numerze. */
 const OUTPUT = Array.from({ length: 40 }, (_, i) => 'output line ' + String(i + 1));
@@ -86,7 +112,7 @@ function rowFor(feed: Feed, id: number) {
 }
 
 describe('collapsed by default; a failure opens itself and nothing else', () => {
-  it('opens exactly nine kinds by default and shuts exactly seven', () => {
+  it('opens exactly eleven kinds by default and shuts exactly twelve', () => {
     const registry = kinds();
     const open = Object.entries(registry)
       .filter(([, entry]) => entry.expanded)
@@ -104,7 +130,7 @@ describe('collapsed by default; a failure opens itself and nothing else', () => 
         'still nine. Which kinds open is a design decision [T2 §7.3 rule 2], not something the ' +
         'wire can be asked about — unlike the SET of kinds, which kinds.test.ts reads from the mirror.',
     ).toEqual(OPEN);
-    expect(shut, 'and the other seven stay shut until somebody asks').toEqual(SHUT);
+    expect(shut, 'and the other twelve stay shut until somebody asks').toEqual(SHUT);
   });
 
   it('opens the failed line and leaves its neighbours alone', () => {

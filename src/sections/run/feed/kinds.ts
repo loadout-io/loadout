@@ -57,8 +57,9 @@ const REGISTRY: Registry = Object.freeze({
    * widać: zdanie lidera i przycisk siedziałyby oba za kliknięciem, o którym nikt nie wie, że
    * trzeba je zrobić — a wtedy „jedno kliknięcie zamiast przepisywania" jest dwoma. */
   suggested: { route: 'history', expanded: true },
+  /* Prośba o bieg jest STRUKTURĄ, tą samą rodziną co `run` i `step` — „Starting <workflow>"
+   * odpowiada na pytanie, co się właśnie zaczyna, więc reguła 2 [T2 §7.3] zostawia ją otwartą. */
   runRequested: { route: 'history', expanded: true },
-  runSource: { route: 'history', expanded: true },
   asked: { route: 'history', expanded: true },
   handoff: { route: 'history', expanded: true },
   problem: { route: 'history', expanded: true },
@@ -71,6 +72,10 @@ const REGISTRY: Registry = Object.freeze({
   ran: { route: 'history', expanded: false },
   memory: { route: 'history', expanded: false },
   messageStored: { route: 'history', expanded: false },
+  /* Materiał źródłowy biegu jest MECHANIKĄ, nie żadną z czterech kategorii reguły 2: zdanie
+   * „<tytuł> has saved source material." mówi, że coś leży na dysku, a nie co się dzieje.
+   * Snapshot WIP dał mu `true` razem z `runRequested`; te dwa rodzaje nie są jedną rodziną. */
+  runSource: { route: 'history', expanded: false },
 
   /* ── dwa rodzaje, które nie wchodzą do historii [T2 §7.3 reguła 5] ── */
   thinking: { route: 'now', expanded: false },

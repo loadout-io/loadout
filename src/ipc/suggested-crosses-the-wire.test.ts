@@ -85,15 +85,51 @@ function goldenRow(kind: string): Record<string, unknown> {
   return found;
 }
 
+/**
+ * Rodzaje dołożone PO migawce, każdy z miejscem, z którego Rust go wysyła.
+ *
+ * Druga stała stoi obok pierwszej z tego samego powodu, dla którego pierwsza jest wpisana
+ * z palca: „co przyszło po drodze" jest twierdzeniem o zmianie, a nie o dzisiejszym pliku.
+ * Wpisanie nowej nazwy TUTAJ jest świadomym zdaniem „ten rodzaj naprawdę przechodzi drut" —
+ * i dlatego każda niesie adres, pod którym to sprawdzono. Dopisanie nazwy bez takiego adresu
+ * jest dokładnie tą wadą, przed którą broni ten plik: rodzajem, który zna wyłącznie okno.
+ *
+ * Pięć ostatnich dołożył snapshot WIP (`f81d4b11`) i nie ruszył tej listy — stąd czerwień.
+ * Wszystkie pięć ma wiersz w `line-wire.golden.json` i nadajnik w kodzie produkcyjnym:
+ *   messageStored     `src-tauri/src/bridge/messages.rs`
+ *   stepSession       `src-tauri/src/commands/mod.rs`
+ *   runSource         `src-tauri/src/bridge/library.rs`
+ *   runRequested      `src-tauri/src/bridge/library.rs`, `bridge/library/replay.rs`
+ *   questionAnswered  `src-tauri/src/commands/run.rs`
+ *
+ * Dwa z nich — `stepSession` i `questionAnswered` — nie mają WIERSZA w widoku i to jest
+ * poprawne: model konsumuje je efektem ubocznym i przerywa przed trasowaniem. Wpis w rejestrze
+ * jest im potrzebny wyłącznie po to, żeby przejść przez drzwi `known()`.
+ */
+const SINCE: readonly string[] = [
+  'suggested',
+  'stepCarriedOn',
+  'messageStored',
+  'stepSession',
+  'runSource',
+  'runRequested',
+  'questionAnswered',
+];
+
 describe('the run a lead suggested crosses the wire and has a place in the view', () => {
   it('is a kind the wire declares, and it is genuinely a new one', () => {
+    expect(
+      SINCE.includes(SUGGESTED),
+      'the kind this file is about fell out of the list of what arrived after the snapshot, so ' +
+        'the comparison below stopped saying anything about it',
+    ).toBe(true);
     expect(
       [...WIRE_KINDS].sort(),
       'the mirror in src/ipc/types.ts has to declare exactly the old kinds plus this one. ' +
         'Compared as a whole list, so the two failures nobody looks for both show up here: a ' +
         'kind added only in the view (which the wire will never send, leaving a row that cannot ' +
         'arrive) and a kind quietly dropped or renamed while the count still looked right.',
-    ).toEqual([...BEFORE, SUGGESTED, 'stepCarriedOn'].sort());
+    ).toEqual([...BEFORE, ...SINCE].sort());
     expect(
       BEFORE.includes(SUGGESTED),
       'and it was not there before, or this whole file is checking a row that already existed',

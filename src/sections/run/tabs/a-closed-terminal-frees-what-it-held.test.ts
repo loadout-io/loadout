@@ -20,6 +20,7 @@ const { createFeed } = await import('../feed/model');
 const { feedsAlive, feedFor } = await import('../feed/live');
 const { runTabs } = await import('./store');
 const { createRunStore, LINE_LIMIT, sessionsAlive } = await import('../../../state/run');
+const { line } = await import('../feed/fixtures/lines');
 
 it('closing twenty terminals leaves the two registries where they were', async () => {
   const feedsBefore = feedsAlive();
@@ -69,6 +70,18 @@ it('keeps only the answers that can still point into the line window', () => {
     scrollTo: () => {},
     scrollIntoView: () => {},
   });
+
+  /* PRZEZ FRONTOWE DRZWI, poprawione 2026-09-07. Strumień przyjmuje odpowiedź wyłącznie na
+     pytanie, które NAPRAWDĘ stoi w kolejce (`recordAnswer` w `feed/model.ts`) — jedna przyjęta
+     odpowiedź to jeden wiersz, bo odpowiedź z granicy i zdarzenie biegu przyjeżdżają w dowolnej
+     kolejności. Do dziś ta scena odpowiadała na pytania, których nikt nie zadał, więc mierzyła
+     samego strażnika, a nie sufit, o którym mówi jej nazwa. Sufit sprawdzamy tak, jak powstaje
+     w produkcie: najpierw pytania, potem odpowiedzi. */
+  feed.appendLines(
+    Array.from({ length: LINE_LIMIT + 1 }, (_, index) =>
+      line.asked(index + 1, index + 1, 'Scout', `question ${String(index + 1)}`, ['yes', 'no']),
+    ),
+  );
 
   for (let id = 1; id <= LINE_LIMIT + 1; id += 1) {
     run.getState().answer(id, `run answer ${String(id)}`);
