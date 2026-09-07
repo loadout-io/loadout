@@ -63,10 +63,26 @@ function settingsFrom(answer: ProjectSettings): ProjectSettings | null {
   const instructions = one['instructions'];
   const limits = one['limits'];
   if (typeof instructions !== 'object' || instructions === null) return null;
-  if (typeof (instructions as Record<string, unknown>)['enabled'] !== 'boolean') return null;
-  if (!Array.isArray(one['sources'])) return null;
+  const choice = instructions as Record<string, unknown>;
+  if (typeof choice['enabled'] !== 'boolean' || typeof choice['includeLocal'] !== 'boolean') {
+    return null;
+  }
   if (typeof limits !== 'object' || limits === null) return null;
-  if (typeof (limits as Record<string, unknown>)['files'] !== 'number') return null;
+  const ceilings = limits as Record<string, unknown>;
+  if (['files', 'fileBytes', 'totalBytes'].some((key) => typeof ceilings[key] !== 'number')) {
+    return null;
+  }
+  const sources = one['sources'];
+  if (!Array.isArray(sources)) return null;
+  /* Wiersze źródeł też, bo render sięga po ich pola — lista poprawna z jednym pustym wierszem
+     wywraca sekcję dokładnie tak samo jak odpowiedź pusta, tylko o jedno pole później. */
+  const rows: readonly unknown[] = sources;
+  const complete = rows.every((row) => {
+    if (typeof row !== 'object' || row === null) return false;
+    const source = row as Record<string, unknown>;
+    return typeof source['path'] === 'string' && Array.isArray(source['paths']);
+  });
+  if (!complete) return null;
   return value as ProjectSettings;
 }
 

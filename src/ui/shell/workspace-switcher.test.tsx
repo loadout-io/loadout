@@ -251,6 +251,27 @@ describe('the store changes only after the disk confirms', () => {
     ).toBe(SECOND.id);
   });
 
+  it('switches to the row the disk wrote, not to the spelling it was handed', async () => {
+    /* 2026-09-07. Lista kart nazywa MIEJSCE: Rust rozwiązuje folder przy zapisie
+       (`workspaces::save_workspace_inner`), więc odpowiedź niesie pisownię rzeczywistą, a okno
+       trzyma tę, którą podało okno wyboru folderu. Wybór aktywnego wiersza po argumencie nie
+       trafiał wtedy w nic i cofał się do PIERWSZEGO wiersza listy — człowiek dodawał projekt B
+       i lądował w projekcie A, bez ani jednego zdania na ekranie. */
+    const asked = '/Users/somebody/work/roster';
+    const wrote: Workspace = { id: SECOND.id, name: 'Roster', folder: SECOND.folder };
+    useWorkspaces.setState({ all: [FIRST], activeId: FIRST.id });
+    disk.answer = { kind: 'ok', all: [FIRST, wrote] };
+
+    const done = await useWorkspaces.getState().add('Roster', asked);
+
+    expect(done).toBe(true);
+    expect(
+      useWorkspaces.getState().activeId,
+      'adding a folder under a name the disk resolves differently left the window standing in ' +
+        'another project, and said nothing about it',
+    ).toBe(SECOND.id);
+  });
+
   it('renames through the folder of the entry it was given', async () => {
     useWorkspaces.setState({ all: [FIRST], activeId: FIRST.id });
     disk.answer = { kind: 'ok', all: [{ ...FIRST, name: 'Notes' }] };

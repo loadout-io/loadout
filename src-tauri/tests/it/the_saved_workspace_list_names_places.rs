@@ -205,3 +205,69 @@ fn a_trigger_frozen_with_an_older_spelling_still_names_its_project() -> Result<(
     );
     Ok(())
 }
+
+/* PIATY PRZYPADEK: plik wyzwalacza zapisany wczesniej oddaje oknu pisownie, ktora lista zna.
+ *
+ * `require_registered_workspace` szuka juz po miejscu, wiec BIEG takiego wyzwalacza rusza. Okno
+ * jednak porownuje napisy: formularz zestawia `value.workspace` z `workspace.folder` wiersza
+ * listy (`src/sections/triggers/form.tsx`) i przy rozjezdzie pisze „Saved workspace is no longer
+ * available", a Save blokuje zdaniem „Choose an available workspace to save this trigger."
+ * Czlowiek nie ma wtedy jak poprawic wyzwalacza, ktory dziala.
+ *
+ * Loader ma na to precedens dwa pola wyzej: `condition` zapisane jako „assigned to me" wraca
+ * z niego jako jedyny kanon „assigned-to-me". Ta sama zasada, to samo miejsce.
+ */
+#[test]
+fn a_trigger_file_written_earlier_hands_the_window_the_spelling_the_list_knows()
+-> Result<(), Box<dyn Error>> {
+    use loadout_lib::commands::triggers;
+
+    let home = tempfile::tempdir()?;
+    let real = tempfile::tempdir()?;
+    let link = home.path().join("project-link");
+    std::os::unix::fs::symlink(real.path(), &link)?;
+    fs::create_dir_all(home.path().join("triggers"))?;
+
+    save_workspace_inner(
+        home.path(),
+        "The project",
+        real.path().to_str().ok_or("the path is not valid text")?,
+    )?;
+
+    /* Plik dokladnie taki, jaki zapisywala wczesniejsza wersja: pisownia z okna, znak w znak. */
+    fs::write(
+        home.path().join("triggers/linear-old.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "source": "linear",
+            "enabled": true,
+            "workflow": "ship.json",
+            "workspace": link.to_string_lossy(),
+            "condition": "assigned-to-me",
+            "poll_every_minutes": 1,
+            "token_environment": "LOADOUT_TEST_TRIGGER_TOKEN"
+        }))?,
+    )?;
+
+    /* Przez `list`, bo to jest droga, ktora okno naprawde czyta wyzwalacze. Prawda na dysku
+    zostaje nietknieta: `load` oddaje dalej pisownie z pliku, bo karmi tez sprawdzenie
+    „czy plik zmienil sie pod edytorem". */
+    let listed = triggers::list(home.path())?;
+    let loaded = listed
+        .into_iter()
+        .find(|one| one.slug == "linear-old")
+        .ok_or("the trigger written by hand did not reach the window at all")?;
+    assert_eq!(
+        loaded.workspace.as_deref(),
+        Some(
+            std::fs::canonicalize(&link)?
+                .to_string_lossy()
+                .into_owned()
+                .as_str()
+        ),
+        "a trigger saved before the card list started naming places hands the window a folder no \
+         row on that list carries, so the editor calls its own workspace unavailable and refuses \
+         to save the trigger a person is trying to correct"
+    );
+    Ok(())
+}

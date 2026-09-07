@@ -186,3 +186,57 @@ it('keeps the rest of Settings standing when the answer is not this project’s 
     await app.close();
   }
 }, 90_000);
+
+/* TRZECI PRZYPADEK: kształt NIEPEŁNY, nie pusty (2026-09-07).
+ *
+ * Pustka jest łatwym przypadkiem i to ją zmierzono jako pierwszą. Groźniejsza jest odpowiedź,
+ * która wygląda na ustawienia: ma `instructions`, ma listę źródeł, ma limity — a brakuje w niej
+ * jednego pola, po które sięga render. Wywraca sekcję dokładnie tak samo, tylko o jedno pole
+ * później, więc strażnik sprawdzający „czy to obiekt" przepuszcza ją i niczego nie chroni.
+ *
+ * Wiersz źródła bez `paths` to nie jest przypadek wymyślony: to jest kształt, który powstaje,
+ * gdy pole zostanie dołożone po stronie Rusta i lustro po tej stronie się z nim rozjedzie.
+ */
+it('keeps Settings standing when the answer is settings-shaped but not complete', async () => {
+  const app = await openApp({
+    replies: {
+      list_workspaces: always({
+        value: [{ id: PROJECT, folder: PROJECT, name: 'Instruction fixture' }],
+      }),
+      list_agents: always({ value: [AGENT] }),
+      read_settings: always({ value: { defaultLead: '' } }),
+      read_project_settings: always({
+        value: {
+          instructions: { enabled: true, includeLocal: false },
+          leadInstructions: null,
+          sources: [{ path: '/p/AGENTS.md' }],
+          limits: { files: 256, fileBytes: 65536, totalBytes: 524288 },
+        },
+      }),
+    },
+  });
+  try {
+    await app.page.locator('[data-section-switch="settings"]').click();
+    await app.page.locator('main[data-section="settings"]').waitFor({ state: 'attached' });
+    const section = app.page.getByRole('region', { name: 'Project instructions', exact: true });
+    await expect
+      .poll(async () => {
+        const broke = await app.page.locator('[data-screen-broke]').count();
+        const said = (await section.textContent().catch(() => '')) ?? '';
+        return broke > 0 || (said !== '' && !said.includes('Reading this project'));
+      })
+      .toBe(true);
+
+    expect(
+      await app.page.locator('[data-screen-broke]').count(),
+      'an answer that is settings-shaped but missing one field the card draws took the whole of ' +
+        'Settings with it, exactly as an empty answer used to',
+    ).toBe(0);
+    expect(
+      await app.page.getByRole('combobox', { name: DEFAULT_LEAD_LABEL, exact: true }).count(),
+      'a control that has nothing to do with this project\u2019s files disappeared with them',
+    ).toBe(1);
+  } finally {
+    await app.close();
+  }
+}, 90_000);

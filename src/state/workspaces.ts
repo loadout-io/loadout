@@ -144,10 +144,24 @@ export const useWorkspaces: UseBoundStore<StoreApi<WorkspacesState>> = create<Wo
          * odmawia folderowi, którego nie ma, i przy DRUGIM zapisie tego samego folderu zmienia
          * nazwę zamiast dokładać wiersz. Lista złożona tutaj z `[...all, { name, folder }]`
          * pokazywałaby duplikat, którego w pliku nie ma. */
+        const before = get().all;
         const all = await saveWorkspace({ name, folder });
         /* Nowy zakres staje się aktywny, bo dodanie go JEST zdaniem „chcę tu pracować".
-         * Wersja, która tylko dokłada wiersz, zostawia człowieka z listą i bez skutku. */
-        set({ all, activeId: pick(all, folder), said: null });
+         * Wersja, która tylko dokłada wiersz, zostawia człowieka z listą i bez skutku.
+         *
+         * WIERSZ, KTÓRY DYSK NAPRAWDĘ NAPISAŁ, a nie pisownia, którą podało okno wyboru folderu
+         * (2026-09-07). Klucz listy nazywa MIEJSCE: Rust rozwiązuje folder przy zapisie, więc
+         * `~/work/roster` wraca jako `~/Projects/roster`. Wybór po argumencie nie trafiał wtedy
+         * w nic i cofał się do PIERWSZEGO wiersza listy — człowiek dodawał projekt B i lądował
+         * w projekcie A, bez ani jednego zdania. Okno nie umie rozwiązywać ścieżek, więc pyta
+         * o to, co się zmieniło: wiersz nowy, a jak nie, to ten, który dostał właśnie tę nazwę. */
+        const wanted = name.trim();
+        const named = all.filter((one) => one.name === wanted);
+        const written =
+          named.find((one) => !before.some((had) => had.id === one.id)) ??
+          named.at(0) ??
+          all.find((one) => !before.some((had) => had.id === one.id));
+        set({ all, activeId: pick(all, written?.id ?? folder), said: null });
         return true;
       } catch (error) {
         set({ said: why(error, 'Loadout could not add that workspace.') });

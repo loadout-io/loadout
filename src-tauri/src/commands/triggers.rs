@@ -518,7 +518,21 @@ where
                 source: Some(trigger.source),
                 condition: Some(trigger.condition),
                 workflow: Some(trigger.workflow),
-                workspace: trigger.workspace,
+                /* 2026-09-07 — MIGRACJA ODCZYTU NA GRANICY OKNA, nie w loaderze. Plik zapisany
+                wcześniej niesie pisownię, którą człowiek wpisał; lista kart nazywa dziś
+                MIEJSCE. Bieg takiego wyzwalacza rusza, bo `require_registered_workspace`
+                szuka po miejscu — ale formularz porównuje NAPISY i pisał „Saved workspace is
+                no longer available" o projekcie, który stoi tam, gdzie stał, blokując zapis
+                   poprawki.
+                   TUTAJ, A NIE W `parse_trigger`: tamten loader karmi także `snapshot_for`, czyli
+                   sprawdzenie „czy plik zmienił się pod edytorem". Rozwiązywanie ścieżki tam
+                zamieniało zgodny plik w `ConfigChanged` i przewracało sześć kryteriów edytora.
+                Prawda na dysku zostaje nietknięta; jedno zdanie zmienia to, co widzi okno. */
+                workspace: trigger.workspace.map(|one| {
+                    crate::workspace::the_real_folder(PathBuf::from(one))
+                        .to_string_lossy()
+                        .into_owned()
+                }),
                 enabled: Some(trigger.enabled),
                 poll_every_minutes: Some(trigger.poll_every_minutes),
                 key_saved: Some(trigger.api_key.requires_migration()),
