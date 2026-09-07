@@ -463,10 +463,23 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     nobody_hands_over_the_command(workflow, &steps, when, &mut notes);
     a_command_carrying_a_secret(&steps, &mut notes);
     for step in &workflow.steps {
-        if let Step::Serve(serve) = step
-            && let Err(message) = service_readiness(&serve.endpoints, serve.readiness.as_ref())
-        {
-            notes.push(problem(Some(&serve.id), message));
+        if let Step::Serve(serve) = step {
+            if let Err(message) = service_readiness(&serve.endpoints, serve.readiness.as_ref()) {
+                notes.push(problem(Some(&serve.id), message));
+            }
+            // Ta sama odmowa, co przy opisie od agenta — tu widać ją na płótnie, przed biegiem.
+            if let Some(name) = &serve.test_data_env
+                && !name.trim().is_empty()
+                && !service_environment_name(name.trim())
+            {
+                notes.push(problem(
+                    Some(&serve.id),
+                    format!(
+                        "The app cannot replace the environment variable {}.",
+                        name.trim()
+                    ),
+                ));
+            }
         }
     }
     conditional_routes(workflow, &mut notes);
@@ -634,6 +647,22 @@ pub(crate) fn launch_description(launch: &super::LaunchDescription) -> Result<()
                 "The app environment is too large or contains an unsupported character.".to_owned(),
             );
         }
+    }
+    /* TEST_DATA_ENV IDZIE PRZEZ TEN SAM PREDYKAT, CO KAŻDA INNA ZMIENNA (niezmiennik 23).
+     *
+     * 2026-09-07: pole dołożone w P-02 nie było sprawdzane NIGDZIE, a `isolated_data` ustawia
+     * je na procesie potomnym. `testDataEnv: "HOME"` podmieniał więc katalog domowy aplikacji,
+     * `"PATH"` jej wyszukiwanie programów, a `"DYLD_INSERT_LIBRARIES"` wstrzykiwał do niej
+     * bibliotekę — wszystko trzy zabronione o dwadzieścia linii wyżej, dla zmiennych wpisanych
+     * do `environment`. Jedna reguła z dwiema furtkami to reguła, której nie ma. */
+    if let Some(name) = &launch.test_data_env
+        && !name.trim().is_empty()
+        && (!service_environment_name(name.trim()) || port_names.contains(name.trim()))
+    {
+        return Err(format!(
+            "The app cannot replace the environment variable {}.",
+            name.trim()
+        ));
     }
     for name in &launch.required_env {
         if !service_environment_name(name) {

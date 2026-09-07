@@ -16,6 +16,7 @@ use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use loadout_lib::engine::native_ui::{NativeUiAccess, probe_with};
 use loadout_lib::workflow::criteria::{
@@ -165,4 +166,130 @@ fn pretending(body: &str) -> Result<PathBuf, Box<dyn Error>> {
     // Katalog zostaje na dysku do końca procesu testowego; sonda odpala go raz.
     std::mem::forget(home);
     Ok(at)
+}
+
+/// ŻYWY DOWÓD DROGI DO OKNA: prawdziwe okno, policzone i sterowane po `unix id`.
+///
+/// `what_this_computer_can_actually_do` wyżej mówi tylko, że `osascript` odpowiada. To jest
+/// o jeden krok dalej i o to, co P-03 naprawdę obiecuje: że Loadout **policzy okna procesu,
+/// który sam uruchomił**, i że działanie zaadresowane jego `unix id` naprawdę w nie trafia.
+/// Dublerem tego się nie dowiedzie — dubler oddaje liczbę, którą mu wpiszemy.
+///
+/// Instancja jest WŁASNA i sprzątana: `open -na` startuje NOWY egzemplarz, scenariusz dotyka
+/// wyłącznie jego pustego okna, a `quit` na tym samym `unix id` go zamyka. Okno człowieka nie
+/// jest ani czytane, ani zamykane — o to właśnie chodzi w adresowaniu po `unix id` zamiast po
+/// nazwie aplikacji.
+///
+/// `--ignored`, bo odpowiada o uprawnieniach TEJ maszyny i otwiera na niej okno.
+///
+/// ```text
+/// cargo test --manifest-path src-tauri/Cargo.toml --test it \
+///   native_scenarios_need_a_real_route_to_the_window::a_real_window -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "opens a real window on this computer and drives it"]
+async fn a_real_window_is_counted_and_driven_by_the_identity_it_was_given() {
+    let interpreter = loadout_lib::engine::native_ui::interpreter();
+    let before = own_instances();
+
+    std::process::Command::new("/usr/bin/open")
+        .args(["-na", "TextEdit"])
+        .status()
+        .expect("a fresh instance could not be started");
+
+    let mut mine = None;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Some(pid) = own_instances().into_iter().find(|pid| !before.contains(pid)) {
+            mine = Some(pid);
+            break;
+        }
+    }
+    let pid = mine.expect("the instance this test started never appeared");
+
+    // 1. OKNO JEST POLICZONE — i to jest ta połowa prawdy, której otwarty port nie daje.
+    let mut windows = 0;
+    for _ in 0..40 {
+        windows = loadout_lib::engine::native_ui::windows_of(&interpreter, pid)
+            .await
+            .unwrap_or(0);
+        if windows > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    println!("windows of the instance this test started (pid {pid}): {windows}");
+
+    // 2. DZIAŁANIE TRAFIA W TĘ INSTANCJĘ — nazwa okna wraca z procesu wskazanego `unix id`.
+    let named = std::process::Command::new(&interpreter)
+        .arg("-e")
+        .arg(format!(
+            "tell application \"System Events\" to tell (first process whose unix id is {pid}) \
+             to get name of window 1"
+        ))
+        .output()
+        .expect("the window could not be asked for its name");
+    let title = String::from_utf8_lossy(&named.stdout).trim().to_owned();
+    println!("window 1 of pid {pid} is named {title:?}");
+
+    /* 3. SPRZĄTANIE PO SOBIE, tym samym adresem, i robione PRZED asercjami, żeby czerwień nie
+     *    zostawiała okna na ekranie człowieka.
+     *
+     * Samo `quit` nie wystarcza i to jest zmierzony fakt, nie ostrożność: świeży egzemplarz
+     * TextEdit staje z otwartym oknem dialogowym („Otwórz"), a aplikacja z modalnym oknem
+     * odkłada zamknięcie. Czekamy więc na SKUTEK, a nie na wysłanie polecenia — i dopiero
+     * gdy skutku nie ma, sięgamy po sygnał do TEGO pid. */
+    let _ = std::process::Command::new(&interpreter)
+        .arg("-e")
+        .arg(format!(
+            "tell application \"System Events\" to tell (first process whose unix id is {pid}) \
+             to quit"
+        ))
+        .output();
+    for _ in 0..20 {
+        if !own_instances().contains(&pid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    if own_instances().contains(&pid) {
+        let _ = std::process::Command::new("/bin/kill")
+            .arg(pid.to_string())
+            .status();
+        for _ in 0..20 {
+            if !own_instances().contains(&pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    assert!(
+        windows > 0,
+        "Loadout started an application, saw it alive, and could not confirm a single window — \
+         which is exactly the state in which a scenario meant to happen in a window gets a \
+         verdict anyway"
+    );
+    assert!(
+        !title.is_empty(),
+        "an action addressed by unix id reached no window, so the identity Loadout hands the \
+         QA step is not usable for anything"
+    );
+    assert!(
+        !own_instances().contains(&pid),
+        "the instance this test started is still running: {pid}"
+    );
+}
+
+/// PID-y egzemplarzy TextEdit widziane teraz.
+fn own_instances() -> Vec<u32> {
+    let listed = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .expect("this computer cannot list its own processes");
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter(|line| line.contains("TextEdit.app/Contents/MacOS/TextEdit"))
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect()
 }

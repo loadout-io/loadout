@@ -358,3 +358,62 @@ fn a_serve_tile_says_what_it_starts_and_survives_the_file() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+/// P-02, DZIURA ZNALEZIONA WE WŁASNEJ PRACY (2026-09-07): `testDataEnv` omijało regułę
+/// zastrzeżonych zmiennych.
+///
+/// `isolated_data` ustawia tę zmienną na procesie potomnym, a walidator nie oglądał jej nigdy —
+/// więc `"HOME"` podmieniał aplikacji katalog domowy, `"PATH"` jej wyszukiwanie programów,
+/// a `"DYLD_INSERT_LIBRARIES"` wstrzykiwał do niej bibliotekę. Dokładnie te trzy są od dawna
+/// zabronione dla zmiennych wpisanych do `environment` (`a_replaced_home_folder_is_refused`
+/// wyżej). Jedna reguła z dwiema furtkami to reguła, której nie ma.
+///
+/// Sądzone od strony STARTU, tak jak jej starsza siostra: to jest ta strona, po której instancja
+/// testowa naprawdę mogłaby napisać do katalogu człowieka.
+#[tokio::test]
+async fn a_test_data_setting_cannot_replace_a_reserved_variable() -> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    for name in ["HOME", "PATH", "DYLD_INSERT_LIBRARIES", "LOADOUT_RUN_ID", "SHELL"] {
+        let why = bench
+            .start(LaunchDescription {
+                command: "true".to_owned(),
+                kind: TargetKind::Native,
+                test_data_env: Some(name.to_owned()),
+                subdirectory: String::new(),
+                environment: std::collections::BTreeMap::new(),
+                required_env: Vec::new(),
+                endpoints: Vec::new(),
+                readiness: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            why.contains(&format!("cannot replace the environment variable {name}")),
+            "a test instance was allowed to replace {name} through its test data setting: {why:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Ta sama odmowa na PŁÓTNIE, zanim ktokolwiek uruchomi bieg.
+///
+/// Odmowa dochodząca dopiero przy starcie każe się jej dowiedzieć z biegu, który zapłacił już
+/// za kroki przed tym (niezmiennik 29).
+#[test]
+fn a_tile_asking_for_a_reserved_variable_is_named_on_the_canvas() {
+    let file: loadout_lib::workflow::WorkflowFile = serde_json::from_value(serde_json::json!({
+        "format": 1, "id": "wf", "name": "W",
+        "steps": [{
+            "kind": "serve", "id": "s_app", "name": "The app", "command": "./app",
+            "targetKind": "native", "testDataEnv": "HOME",
+            "folder": {"use": "project"}, "at": {"x": 0, "y": 0}
+        }],
+        "links": []
+    }))
+    .expect("the tile does not load");
+    let said = loadout_lib::workflow::check::check(&file);
+    assert!(
+        said.iter().any(|note| note.message.contains("HOME")),
+        "the canvas says nothing about a tile that replaces the app's home folder: {said:?}"
+    );
+}
