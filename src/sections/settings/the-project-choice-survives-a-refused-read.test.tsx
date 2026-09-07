@@ -19,8 +19,12 @@ import { afterAll, expect, it } from 'vitest';
 
 import { closeEverything, openApp } from '../../../e2e/harness';
 import type { TauriReply } from '../../../e2e/harness';
+import { DEFAULT_LEAD_LABEL } from './index';
 
 const PROJECT = '/Users/somebody/Projects/instruction-fixture';
+
+/** Zapisany agent: kontrolka lidera ma czym się wypełnić, więc jej brak znaczy „ekranu nie ma”. */
+const AGENT = { id: 'agent-instruction-fixture', name: 'Scout', summary: 'Reads first', skills: [] };
 
 /** Zdanie, które Rust naprawdę pisze przy dowiązaniu: `open_regular_file` idzie z `O_NOFOLLOW`. */
 const REFUSED =
@@ -102,6 +106,78 @@ it('keeps a choice that reaches Rust when this project’s files cannot be read'
     });
     await expect.poll(async () => checkbox.count()).toBe(1);
     expect(await checkbox.isChecked()).toBe(false);
+  } finally {
+    await app.close();
+  }
+}, 90_000);
+
+
+/* DRUGI PRZYPADEK: granica odpowiada CZYMŚ INNYM niż ustawienia projektu (2026-09-07).
+ *
+ * Odmowa i odpowiedź o złym kształcie to nie to samo zdarzenie. Odmowa idzie w `.catch` i karta
+ * ma dla niej drogę, sprawdzoną wyżej. Odpowiedź, która nie jest ustawieniami, idzie w `.then`
+ * i była WPISYWANA DO STANU jako „przeczytane": pierwszy render sięgał wtedy po `instructions`
+ * na wartości pustej i rzucał. Osłona sekcji łapie ten rzut i podmienia CAŁY ekran Settings
+ * na kartę awarii — więc jedna karta, która nie zrozumiała jednej odpowiedzi, zabiera człowiekowi
+ * także wybór lidera, sufit wydatku i przełącznik projektu. Zmierzone: `main[data-section=
+ * "settings"]` zostaje w drzewie, a w środku stoi „This screen stopped working…" i zero `select`.
+ *
+ * SŁABA WERSJA: sprawdzić, że karta pokazuje zdanie o nieudanym odczycie. Przechodzi ją kod,
+ * który przy tym wywala resztę ekranu — bo zdanie osłony też jest zdaniem. Dlatego kryterium
+ * pyta najpierw o to, czy ekran w ogóle jeszcze jest sobą: żadnej karty awarii i kontrolka,
+ * która z tą odpowiedzią nie ma nic wspólnego, dalej stoi.
+ */
+it('keeps the rest of Settings standing when the answer is not this project’s settings', async () => {
+  const app = await openApp({
+    replies: {
+      list_workspaces: always({
+        value: [{ id: PROJECT, folder: PROJECT, name: 'Instruction fixture' }],
+      }),
+      list_agents: always({ value: [AGENT] }),
+      read_settings: always({ value: { defaultLead: '' } }),
+      /* Dokładnie to, co oddaje granica, która tej komendy nie zna. */
+      read_project_settings: always({ value: null }),
+    },
+  });
+  try {
+    await app.page.locator('[data-section-switch="settings"]').click();
+    /* Czekamy na `main` POWŁOKI, nie na ekran sekcji: ekran sekcji jest dokładnie tym, co ta
+       wada zabiera, więc czekanie na niego zamieniłoby kryterium w limit czasu bez zdania. */
+    await app.page.locator('main[data-section="settings"]').waitFor({ state: 'attached' });
+    const section = app.page.getByRole('region', { name: 'Project instructions', exact: true });
+
+    /* Odpowiedź doszła: albo karta przestała czytać, albo ekran już padł. */
+    await expect
+      .poll(async () => {
+        const broke = await app.page.locator('[data-screen-broke]').count();
+        const said = (await section.textContent().catch(() => '')) ?? '';
+        return broke > 0 || (said !== '' && !said.includes('Reading this project'));
+      })
+      .toBe(true);
+
+    expect(
+      await app.page.locator('[data-screen-broke]').count(),
+      'one card that did not understand one answer took the whole of Settings with it: the ' +
+        'person loses the lead choice, the spend ceiling and the project switch, and the only ' +
+        'way back is to restart the app',
+    ).toBe(0);
+    expect(
+      await app.page.getByRole('combobox', { name: DEFAULT_LEAD_LABEL, exact: true }).count(),
+      'a control that has nothing to do with this project’s files disappeared with them',
+    ).toBe(1);
+    expect(
+      await section.getByRole('alert').count(),
+      'the card swallowed an answer it could not use and says nothing, so the person reads an ' +
+        'empty card as "this project has no instructions"',
+    ).toBe(1);
+
+    /* I droga wyjścia jest ta sama, co przy odmowie: wybór, którego karta nie wyczytała. */
+    const choice = app.page.getByRole('combobox', {
+      name: 'Use project instructions',
+      exact: true,
+    });
+    expect(await choice.count()).toBe(1);
+    expect(await choice.inputValue()).toBe('');
   } finally {
     await app.close();
   }

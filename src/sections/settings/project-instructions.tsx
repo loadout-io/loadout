@@ -42,6 +42,37 @@ type ProjectChoice =
 /** Co karta wysyła do Rusta, kiedy człowiek wybierze wartość. */
 type Save = (patch: ProjectSettingsPatch) => void;
 
+/**
+ * To, co przyjechało, ALBO `null`, jeśli to nie są ustawienia tego projektu.
+ *
+ * PO CO, zmierzone 2026-09-07. Typ `Promise<ProjectSettings>` w `state/settings-io.ts` jest
+ * RZUTOWANIEM (`invoke<ProjectSettings>`), nie sprawdzeniem — granica może oddać cokolwiek,
+ * a okno i tak zapisze to jako „przeczytane". Odpowiedź pusta wchodziła więc do stanu, pierwszy
+ * render sięgał po `instructions` na pustej wartości i rzucał. Osłona sekcji
+ * (`ui/shell/screen-boundary.tsx`) łapie ten rzut i podmienia CAŁY ekran Settings na kartę
+ * awarii, więc jedna karta zabierała człowiekowi także wybór lidera, sufit wydatku i przełącznik
+ * projektu — a jedyną drogą powrotu był restart aplikacji.
+ *
+ * SPRAWDZAMY POLA, PO KTÓRE SIĘGA RENDER, a nie „czy to obiekt": kształt niepełny wywala się
+ * dokładnie tak samo jak pusty, tylko o jedno pole później.
+ */
+function settingsFrom(answer: ProjectSettings): ProjectSettings | null {
+  const value: unknown = answer;
+  if (typeof value !== 'object' || value === null) return null;
+  const one = value as Record<string, unknown>;
+  const instructions = one['instructions'];
+  const limits = one['limits'];
+  if (typeof instructions !== 'object' || instructions === null) return null;
+  if (typeof (instructions as Record<string, unknown>)['enabled'] !== 'boolean') return null;
+  if (!Array.isArray(one['sources'])) return null;
+  if (typeof limits !== 'object' || limits === null) return null;
+  if (typeof (limits as Record<string, unknown>)['files'] !== 'number') return null;
+  return value as ProjectSettings;
+}
+
+/** Zdanie dla człowieka, kiedy odpowiedź przyszła, ale nie było w niej ustawień projektu. */
+const NOT_SETTINGS = 'Project instructions could not be read. Reopen this project to try again.';
+
 export function ProjectInstructions(): ReactElement | null {
   const folder = useWorkspaces(
     (state) => state.all.find((one) => one.id === state.activeId)?.folder ?? null,
@@ -59,7 +90,14 @@ function ProjectInstructionsForFolder({ folder }: { readonly folder: string }): 
     mounted.current = true;
     void readProjectSettings(folder)
       .then((value) => {
-        if (mounted.current) setChoice({ kind: 'read', settings: value });
+        if (!mounted.current) return;
+        const settings = settingsFrom(value);
+        if (settings === null) {
+          setSaid(NOT_SETTINGS);
+          setChoice({ kind: 'unread' });
+          return;
+        }
+        setChoice({ kind: 'read', settings });
       })
       .catch((error: unknown) => {
         if (!mounted.current) return;
@@ -78,7 +116,15 @@ function ProjectInstructionsForFolder({ folder }: { readonly folder: string }): 
     setSaid(null);
     try {
       const value = await saveProjectSettings(folder, patch);
-      if (mounted.current) setChoice({ kind: 'read', settings: value });
+      if (!mounted.current) return;
+      /* Ta sama droga po zapisie: potwierdzenie o złym kształcie zabierało ekran tak samo. */
+      const settings = settingsFrom(value);
+      if (settings === null) {
+        setSaid(NOT_SETTINGS);
+        setChoice({ kind: 'unread' });
+        return;
+      }
+      setChoice({ kind: 'read', settings });
     } catch (error) {
       if (mounted.current) setSaid(why(error, 'Project instructions could not be saved.'));
     } finally {
