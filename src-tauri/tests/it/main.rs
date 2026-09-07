@@ -142,6 +142,7 @@ mod complete_skill_bundle_reaches_every_supported_session;
 mod conditional_edges_choose_one_branch;
 mod connection_tools_are_approved;
 mod context_failures_take_the_chosen_path;
+mod context_library_survives_restart;
 mod continue_from_a_past_run;
 mod copies_carry_the_try_they_hold;
 mod copies_run_side_by_side;

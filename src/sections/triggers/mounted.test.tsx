@@ -16,7 +16,17 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 /* SZEŚĆ, nie siedem: 2026-08-31 Skills i Memory zeszły się w jedną sekcję Knowledge
  * (`src/ui/sections.tsx`). Nazwa stałej nie mówi już liczby z tego samego powodu, dla którego
  * nie mówiła jej wcześniej dobrze — liczba zmienia się częściej niż lista. */
-const IDS = ['agents', 'workflows', 'run', 'triggers', 'knowledge', 'lab', 'settings'] as const;
+const IDS = [
+  'agents',
+  'workflows',
+  'run',
+  'triggers',
+  'knowledge',
+  /* Ósma pozycja od 2026-09-07 (CT-01): Context stoi obok Knowledge i jest osobną szufladą. */
+  'context',
+  'lab',
+  'settings',
+] as const;
 
 function textOf(path: string): string {
   return existsSync(path) ? readFileSync(path, 'utf8') : '';
@@ -104,6 +114,16 @@ describe('Triggers is a real section with a screen of its own', () => {
     // Lab jest szóstą sekcją LISTOWĄ: rysuje listę zestawów, tabelę i karty kandydatek, więc
     // pasmo promieni obowiązuje w nim tak samo. Pominięcie go zostawiłoby najnowszy ekran jako
     // jedyny, którego ta wyrocznia nie ogląda.
-    expect(literals(body)).toEqual(['agents', 'skills', 'memory', 'workflows', 'triggers', 'lab']);
+    // 2026-09-07 (CT-01): Context jest siódmą sekcją LISTOWĄ — rysuje listę zestawów i karty —
+    // więc należy do tej samej wyroczni z tego samego powodu.
+    expect(literals(body)).toEqual([
+      'agents',
+      'skills',
+      'memory',
+      'workflows',
+      'triggers',
+      'lab',
+      'context',
+    ]);
   });
 });

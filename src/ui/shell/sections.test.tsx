@@ -40,6 +40,7 @@ const EXPECTED = [
   { id: 'run', label: 'Run' },
   { id: 'triggers', label: 'Triggers' },
   { id: 'knowledge', label: 'Knowledge' },
+  { id: 'context', label: 'Context' },
   { id: 'lab', label: 'Lab' },
   { id: 'settings', label: 'Settings' },
 ] as const;

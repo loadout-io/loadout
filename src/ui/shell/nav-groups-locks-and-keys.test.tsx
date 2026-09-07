@@ -127,6 +127,8 @@ describe('the list of places says what to do first, not just where you are', () 
       'triggers',
       'GROUP',
       'knowledge',
+      /* Ósma pozycja od 2026-09-07 (CT-01): Context stoi w Know, między Knowledge a Lab. */
+      'context',
       'lab',
       'settings',
     ]);

@@ -36,7 +36,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
  * w nim ani jednego pojemnika treści. Dopisany tu przewracałby asercję „ta sekcja ma pojemnik
  * z promieniem" za brak rzeczy, której poprawnie nie ma; pojemniki tej sekcji stoją w dwóch
  * katalogach półek wymienionych obok. */
-const SECTIONS = ['agents', 'skills', 'memory', 'workflows', 'triggers', 'lab'] as const;
+/* 2026-09-07 (CT-01): `context/` dochodzi jako siódmy katalog LISTOWY. Ma własne pojemniki —
+ * kafelek zestawu i kartę edytora — więc pasmo promieni obowiązuje go tak samo; pominięty
+ * zostawiałby najnowszy ekran jako jedyny, którego ta wyrocznia nie ogląda. */
+const SECTIONS = ['agents', 'skills', 'memory', 'workflows', 'triggers', 'lab', 'context'] as const;
 const BAND = ['sm', 'md', 'lg', 'pill'];
 
 /* Zrodlo bez komentarzy blokowych, i to nie jest ostroznosc na zapas: naglowek

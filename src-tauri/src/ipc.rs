@@ -3488,6 +3488,81 @@ pub async fn forget_runs_older_than(
         .map_err(|error| did_not_finish("forgetting the runs older than that", &error))
 }
 
+/// Wszystkie gotowe zestawy biblioteki Context.
+///
+/// # Cztery skorupy, jeden korzeń
+///
+/// Wszystkie cztery biorą `state.home` i nic poza nim: katalog biblioteki rozstrzyga
+/// `commands::context`, więc okno nie wysyła ani jednej ścieżki, a druga instancja aplikacji nie
+/// ma jak wskazać cudzego folderu. **`SQLite` nie ma tu ani jednego wywołania** i to jest treść,
+/// nie przeoczenie — skasowanie `loadout.db` nie może zabrać ani jednego zestawu (niezmiennik 4).
+#[tauri::command]
+pub async fn list_context_sets(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::context::ContextSet>, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::context::list_context_sets_inner(&home))
+        .await
+        .map_err(|error| did_not_finish("reading the context sets you have saved", &error))?
+        .map_err(|error| error.to_string())
+}
+
+/// Jeden zestaw w całości: manifest, szkic i rewizja, którą okno odda przy następnym zapisie.
+#[tauri::command]
+pub async fn read_context_set(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::context::read_context_set_inner(&home, &id))
+        .await
+        .map_err(|error| did_not_finish("opening that context set", &error))?
+        .map_err(|error| error.to_string())
+}
+
+/// Nowy zestaw pod nazwą, którą wpisał człowiek.
+#[tauri::command]
+pub async fn create_context_set(
+    state: State<'_, AppState>,
+    title: String,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || commands::context::create_context_set_inner(&home, &title))
+        .await
+        .map_err(|error| did_not_finish("making that context set", &error))?
+        .map_err(|error| error.to_string())
+}
+
+/// Zapisuje tytuł, opis i szkic zestawu — albo odmawia, kiedy na dysku leży nowsza praca.
+///
+/// `expected_revision` to rewizja `draft.json`, którą okno PRZECZYTAŁO. Bez niej zapis z okna
+/// otwartego pięć minut temu kasuje pracę zapisaną minutę temu i wygląda przy tym na udany;
+/// odmowa wraca gotowym angielskim zdaniem, bo front nie wyciąga sensu z surowego błędu (D5).
+#[tauri::command]
+pub async fn save_context_draft(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+    description: String,
+    draft: crate::context::ContextDraft,
+    expected_revision: Option<String>,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context::save_context_draft_inner(
+            &home,
+            &id,
+            &title,
+            &description,
+            draft,
+            expected_revision,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that context set", &error))?
+    .map_err(|error| error.to_string())
+}
+
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
 ///
 /// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
@@ -5091,6 +5166,7 @@ macro_rules! every_command_the_window_can_call {
             continue_run,
             answer_checkpoint,
             copy_diagnostics,
+            create_context_set,
             create_eval_set,
             create_trigger,
             decide_eval_case,
@@ -5115,6 +5191,7 @@ macro_rules! every_command_the_window_can_call {
             install_skill,
             interrupt_the_lead,
             list_agents,
+            list_context_sets,
             list_eval_sets,
             list_handoffs,
             list_host_material,
@@ -5138,6 +5215,7 @@ macro_rules! every_command_the_window_can_call {
             put_eval_case,
             put_eval_variant,
             put_note_to_use,
+            read_context_set,
             read_eval_board,
             read_run,
             read_settings,
@@ -5154,6 +5232,7 @@ macro_rules! every_command_the_window_can_call {
             generate_agent,
             stop_generating_agent,
             save_agent,
+            save_context_draft,
             save_eval_protection,
             save_settings,
             save_project_settings,
