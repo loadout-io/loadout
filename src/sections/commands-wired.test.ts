@@ -30,6 +30,7 @@ import * as agentApps from '../state/agent-apps-io';
 import * as settings from '../state/settings-io';
 import * as workspaces from '../state/workspaces-io';
 import * as agents from './agents/io';
+import * as context from './context/io';
 import * as lab from './lab/io';
 import { ipcSource, windowSideArguments } from './ipc-signature';
 import * as memory from './memory/io';
@@ -39,6 +40,7 @@ import * as triggers from './triggers/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
+import type { ContextDraft } from '../state/context';
 import type { Authored, Import, Landing } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
@@ -76,6 +78,7 @@ const rust = ipcSource();
 const WHERE_PATH: Readonly<Record<string, string>> = {
   'agent-apps': 'src/state/agent-apps-io.ts',
   agents: 'src/sections/agents/io.ts',
+  context: 'src/sections/context/io.ts',
   lab: 'src/sections/lab/io.ts',
   memory: 'src/sections/memory/io.ts',
   run: 'src/sections/run/io.ts',
@@ -158,6 +161,27 @@ const NAV_COLLAPSED = true;
 const KEEP_LAST_RUNS = 20;
 /** Wyłączone, czyli nie domyślne: lustro wykryje zgubiony piąty klucz (2026-09, Z-18). */
 const LEARN_FROM_RUNS = false;
+
+/* 2026-09-07 (CT-01) — CZTERY KRAWĘDZIE BIBLIOTEKI CONTEXT. Zestaw jest materiałem, który
+ * człowiek wpisał sam, więc krawędź, która gubi ładunek, gubi jego pracę: `draft` niesie tu
+ * KOMPLET pól, bo `insides()` niżej sprawdza każdą wartość z osobna, a szkic wysłany bez
+ * wymagań albo bez instrukcji budowania jest zapisem, po którym połowa ekranu wraca pusta. */
+const CONTEXT_ID = '0198a1f2-3b4c-7d5e-8f60-5566778899aa';
+const CONTEXT_DRAFT: ContextDraft = {
+  schema: 1,
+  sources: [
+    {
+      id: 'typed',
+      kind: 'text',
+      name: 'Bug notes',
+      description: 'What QA wrote down while clicking through it.',
+      text: 'The checkout drops the promo code when the cart is edited.',
+    },
+  ],
+  excluded: [],
+  howToPrepare: 'Keep the exact numbers and say which screen each one is from.',
+  requirements: ['The promo code must survive a quantity change.'],
+};
 
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
 const TRIGGER_DRAFT: triggers.TriggerDraft = {
@@ -249,6 +273,54 @@ const WIRES: readonly Wire[] = [
     command: 'stop_generating_agent',
     given: ['op-1'],
     call: () => agents.stopGenerating('op-1'),
+  },
+  /* 2026-09-07 (CT-01) — CZTERY KRAWĘDZIE SEKCJI CONTEXT, dopisane, nic nie usunięte. Bez nich
+   * pierwszy test wyżej jest czerwony, bo `context/io.ts` eksportuje te cztery funkcje,
+   * a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył docierającej do Rusta.
+   *
+   * `saveDraft` waży najwięcej z czwórki: niesie `expectedRevision`, czyli JEDYNĄ rzecz, która
+   * powstrzymuje okno otwarte pięć minut temu przed skasowaniem pracy zapisanej minutę temu.
+   * Wiersz wołany bez niej przechodziłby także dla krawędzi, która zapisuje bezwarunkowo. */
+  {
+    where: 'context',
+    what: 'list',
+    command: 'list_context_sets',
+    given: [],
+    call: () => context.list(),
+  },
+  {
+    where: 'context',
+    what: 'read',
+    command: 'read_context_set',
+    given: [CONTEXT_ID],
+    call: () => context.read(CONTEXT_ID),
+  },
+  {
+    where: 'context',
+    what: 'create',
+    command: 'create_context_set',
+    given: ['Checkout redesign'],
+    call: () => context.create('Checkout redesign'),
+  },
+  {
+    where: 'context',
+    what: 'saveDraft',
+    command: 'save_context_draft',
+    given: [
+      CONTEXT_ID,
+      'Checkout redesign',
+      'Everything it has to keep doing.',
+      CONTEXT_DRAFT,
+      REVISION,
+    ],
+    call: () =>
+      context.saveDraft({
+        id: CONTEXT_ID,
+        title: 'Checkout redesign',
+        description: 'Everything it has to keep doing.',
+        draft: CONTEXT_DRAFT,
+        expectedRevision: REVISION,
+      }),
   },
   {
     where: 'workflows',
@@ -1140,6 +1212,7 @@ const WIRES: readonly Wire[] = [
 const EDGES: ReadonlyArray<readonly [string, object]> = [
   ['agent-apps', agentApps],
   ['agents', agents],
+  ['context', context],
   ['memory', memory],
   ['run', run],
   ['settings', settings],

@@ -41,6 +41,16 @@ const PATHS: Readonly<Record<string, readonly ReactElement[]>> = {
     <rect key="a" x="2.4" y="3" width="11.2" height="4" rx="1.4" />,
     <rect key="b" x="2.4" y="9" width="11.2" height="4" rx="1.4" />,
   ],
+  /* Ramka z materialem w srodku: zestaw, ktory czlowiek podaje do konkretnej roboty.
+   *
+   * Ani okregu, ani `<line>` — to nie jest graf i nie obiecuje relacji miedzy materialami
+   * (niezmiennik 17). Ramka jest ZESTAWEM, dwie belki w niej sa jego trescia, wiec rysunek mowi
+   * „cos w srodku", a nie „cos z czyms polaczone". Rozny od stosu Knowledge z rozmyslem: tamto
+   * jest polka, ktora model czyta sam, a to jest teczka, ktora sie komus wrecza. */
+  context: [
+    <rect key="b" x="2.4" y="2.6" width="11.2" height="10.8" rx="1.8" />,
+    <path key="m" d="M5.2 6.2 H10.8 M5.2 9.4 H8.8" />,
+  ],
   /* Trzy slupki roznej wysokosci: pomiar, ktory da sie porownac z sasiadem. Ani okregu, ani
    * krawedzi — to nie jest graf i nie obiecuje relacji miedzy kolumnami (niezmiennik 17); ani
    * plyt w stosie, bo zestaw nie jest kolejna polka biblioteki, tylko odczytem z niej. */

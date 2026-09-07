@@ -32,6 +32,8 @@ const EXPECTED = [
   'triggers',
   /* Jeden identyfikator zamiast dwóch od 2026-08-31: Skills i Memory zeszły się w Knowledge. */
   'knowledge',
+  /* Ósma pozycja od 2026-09-07 (CT-01): Context stoi obok Knowledge i jest osobną szufladą. */
+  'context',
   'lab',
   'settings',
 ] as const;

@@ -51,54 +51,57 @@ afterAll(closeEverything, 30_000);
 it.each([
   { field: 'create-with-codex', vendor: 'codex' },
   { field: 'create-with-claude', vendor: 'claude-code' },
-])('$field asks $vendor and opens what came back', async ({ field, vendor }) => {
-  const app = await openApp({
-    replies: {
-      list_agents: replies([AGENT]),
-      generate_agent: replies({
-        operation: 'op-1',
-        agent: { ...AGENT, id: '01990000-0000-7000-8000-000000000002', name: 'Recording QA' },
-        assumptions: ['You did not say which project.'],
-        because: ['It only reads, because checking does not change the work.'],
-        missing: ['the connection "screen-control", which is not available here'],
-        refused: [],
-      }),
-    },
-  });
-  try {
-    await app.page.locator(SWITCH).click();
-    const described = app.page.locator('#agent-description');
-    await expect.poll(async () => described.count()).toBe(1);
-    await described.fill(DESCRIBED);
-    await app.page.locator(`[data-field="${field}"]`).click();
+])(
+  '$field asks $vendor and opens what came back',
+  async ({ field, vendor }) => {
+    const app = await openApp({
+      replies: {
+        list_agents: replies([AGENT]),
+        generate_agent: replies({
+          operation: 'op-1',
+          agent: { ...AGENT, id: '01990000-0000-7000-8000-000000000002', name: 'Recording QA' },
+          assumptions: ['You did not say which project.'],
+          because: ['It only reads, because checking does not change the work.'],
+          missing: ['the connection "screen-control", which is not available here'],
+          refused: [],
+        }),
+      },
+    });
+    try {
+      await app.page.locator(SWITCH).click();
+      const described = app.page.locator('#agent-description');
+      await expect.poll(async () => described.count()).toBe(1);
+      await described.fill(DESCRIBED);
+      await app.page.locator(`[data-field="${field}"]`).click();
 
-    const asked = await app.page
-      .waitForFunction(() => true)
-      .then(async () => (await app.calls()).filter((call) => call.cmd === 'generate_agent'));
-    expect(
-      asked,
-      'the button did not reach the backend at all, so the description never left the window',
-    ).toHaveLength(1);
-    expect(
-      asked[0]?.args['runsWith'],
-      'the button asked a different app than the one written on it',
-    ).toBe(vendor);
-    expect(
-      asked[0]?.args['described'],
-      'what the person typed did not travel with the request',
-    ).toBe(DESCRIBED);
+      const asked = await app.page
+        .waitForFunction(() => true)
+        .then(async () => (await app.calls()).filter((call) => call.cmd === 'generate_agent'));
+      expect(
+        asked,
+        'the button did not reach the backend at all, so the description never left the window',
+      ).toHaveLength(1);
+      expect(
+        asked[0]?.args['runsWith'],
+        'the button asked a different app than the one written on it',
+      ).toBe(vendor);
+      expect(
+        asked[0]?.args['described'],
+        'what the person typed did not travel with the request',
+      ).toBe(DESCRIBED);
 
-    // Szkic wraca do TEGO SAMEGO edytora, w którym powstają role ręczne.
-    await expect
-      .poll(async () => app.page.locator('body').innerText(), { timeout: 5_000 })
-      .toContain('Recording QA');
-    await expect
-      .poll(
-        async () => app.page.locator('body').innerText(),
-        { message: 'what the draft cannot have here was never shown before Save' },
-      )
-      .toContain('screen-control');
-  } finally {
-    await app.close();
-  }
-}, 60_000);
+      // Szkic wraca do TEGO SAMEGO edytora, w którym powstają role ręczne.
+      await expect
+        .poll(async () => app.page.locator('body').innerText(), { timeout: 5_000 })
+        .toContain('Recording QA');
+      await expect
+        .poll(async () => app.page.locator('body').innerText(), {
+          message: 'what the draft cannot have here was never shown before Save',
+        })
+        .toContain('screen-control');
+    } finally {
+      await app.close();
+    }
+  },
+  60_000,
+);

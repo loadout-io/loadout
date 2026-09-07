@@ -51,6 +51,9 @@ pub mod import;
 /// Polaczenia narzedziowe zarzadzane przez Loadout. Wypelnia T-75.
 pub mod connections;
 
+/// Biblioteka Context: nazwane zestawy materialow, ktore czlowiek wybiera do pracy. CT-01.
+pub mod context;
+
 /// Trwała publikacja plików będących prawdą: jeden rdzeń replace i create-if-absent.
 pub mod durable_file;
 

@@ -100,6 +100,24 @@ export const SECTIONS = [
     needs: null,
     empty: 'What your agents know will be listed here.',
   },
+  /* `context` STOI OBOK `knowledge` I JEST OSOBNĄ SZUFLADĄ, decyzja właściciela 2026-09-07
+   * (`docs/context-library/PLAN.md` §3 i §12). Kusi, żeby dołożyć zestawy do Knowledge — obie
+   * pozycje dotyczą tego, co model czyta. To ta sama pomyłka, którą Knowledge właśnie naprawia,
+   * tylko o piętro wyżej: Knowledge odpowiada na „co model WIE o mojej pracy" i wchodzi do
+   * KAŻDEGO promptu samo, a Context na „który materiał daję mu do TEJ roboty" i jest wybierany
+   * za każdym razem, per krok. Jedna szuflada na oba dawałaby jeden wybór w odpowiedzi na dwa
+   * różne pytania.
+   *
+   * Nic tu nie blokujemy: zestaw można zapisać i przeczytać bez agenta i bez vendora
+   * (PLAN §2), więc kłódka nad tą pozycją mówiłaby nieprawdę o tym, co da się zrobić. */
+  {
+    id: 'context',
+    label: 'Context',
+    purpose: 'Know',
+    holds: null,
+    needs: null,
+    empty: 'Material you hand to an agent will be listed here.',
+  },
   /* `lab` PRZYSZŁO Z TRUNKU, nie z tej gałęzi, i zostaje osobną pozycją. 2026-08-31, scalenie.
    *
    * Kusi, żeby dołożyć je do Knowledge — obie rzeczy dotyczą agentów. To byłby błąd tej samej

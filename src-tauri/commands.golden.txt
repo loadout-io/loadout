@@ -34,6 +34,7 @@ close_terminal
 compare_import_copies
 continue_run
 copy_diagnostics
+create_context_set
 create_eval_set
 create_trigger
 decide_eval_case
@@ -54,6 +55,7 @@ forget_what_the_old_runs_left
 install_skill
 interrupt_the_lead
 list_agents
+list_context_sets
 list_eval_sets
 list_handoffs
 list_host_material
@@ -76,6 +78,7 @@ propose_eval_fix
 put_eval_case
 put_eval_variant
 put_note_to_use
+read_context_set
 read_eval_board
 read_project_settings
 read_run
@@ -89,6 +92,7 @@ run_agent
 run_eval_set
 run_workflow
 save_agent
+save_context_draft
 save_eval_protection
 save_project_settings
 save_settings
