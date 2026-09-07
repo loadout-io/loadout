@@ -6815,13 +6815,22 @@ fn lay_out_the_run_dir(
     if !run_directory_was_missing && provisional.can_reclaim_bound_directory(&plan.id, &plan.dir) {
         provisional.owns_reclaimed_run_directory(plan.dir.clone());
     }
-    let needs_input = plan.steps.iter().any(|step| match &step.job {
-        Job::Agent(job) => job.ours,
-        Job::Check(job) => job.ours,
-        Job::Serve(job) => job.ours,
-        Job::Ask { .. } => false,
-    });
-    let input = if needs_input {
+    /* WSPOLNY OBRAZ WEJSCIA POWSTAJE WYLACZNIE DLA KROKOW Z WLASNA KOPIA, wiec jego odmowa JEST
+     * odmowa zrobienia tej kopii i ma niesc to samo zdanie, co odmowa z `make_or_recover_tree`.
+     * `RunError::Io` jest przezroczysty: czlowiek czyta z niego „Permission denied (os error 13)"
+     * — prawde o tym, co nie udalo sie SYSTEMOWI, bez nazwy wlasnego kafelka i bez powodu,
+     * dla ktorego bieg w ogole stanal. */
+    let wants_its_own_copy = plan
+        .steps
+        .iter()
+        .find(|step| match &step.job {
+            Job::Agent(job) => job.ours,
+            Job::Check(job) => job.ours,
+            Job::Serve(job) => job.ours,
+            Job::Ask { .. } => false,
+        })
+        .map(|step| step.name.clone());
+    let input = if let Some(step_wanting_a_copy) = wants_its_own_copy {
         if !run_directory_was_missing
             && !plan.dir.join(super::input_snapshot::DIRECTORY).exists()
             && fs::read_dir(plan.dir.join(WORK_DIR))
@@ -6881,7 +6890,11 @@ fn lay_out_the_run_dir(
             }
             original.copy_to(&plan.dir)?
         } else {
-            super::input_snapshot::capture_selected(project, &plan.dir, &plan.additional_inputs)?
+            super::input_snapshot::capture_selected(project, &plan.dir, &plan.additional_inputs)
+                .map_err(|why| RunError::NoFreshCopy {
+                    step: step_wanting_a_copy,
+                    why: why.to_string(),
+                })?
         };
         Some(captured)
     } else {
@@ -8021,9 +8034,22 @@ fn change_native_skills(
             ))
         };
     };
-    let mut marker = read_isolation_marker(&path)
-        .map_err(io::Error::other)?
-        .ok_or_else(|| io::Error::other("The working copy's saved ownership is missing."))?;
+    let Some(mut marker) = read_isolation_marker(&path).map_err(io::Error::other)? else {
+        /* Bez zapisu o kopii nie ma zapisu o dostarczonej polce, wiec nie ma czego sprzatac.
+         * Sprzatanie NIE MOZE tu odmowic: odmowa przerywa domykanie drzewa przed
+         * `isolate::finish`, czyli zostawia i katalog, i galaz — a wtedy krok o nieznanym
+         * punkcie startu nie dostaje ostroznego wyboru, tylko brak domkniecia.
+         * Instalacja bez zapisu wlasnosci dalej jest odmowa. To doslowne lustro galezi trzy
+         * linie wyzej (`native_marker_path` -> `None`) i tego, jak brak markera czyta
+         * `native_cleanup_needed`. */
+        return if skills.is_none() {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "The working copy's saved ownership is missing.",
+            ))
+        };
+    };
     let mut native = match marker.native_skills() {
         Some(native) => native.clone(),
         None if skills.is_none() => return Ok(()),

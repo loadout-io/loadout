@@ -298,6 +298,14 @@ pub fn make_from_snapshot_after_add(
 ) -> Result<Made, Trouble> {
     snapshot.validate().map_err(Trouble::Copying)?;
     let Some(head) = from.or_else(|| snapshot.git_oid()) else {
+        /* REPOZYTORIUM BEZ COMMITA NIE MA `HEAD`, wiec nie ma z czego odbic drzewa — a cicha
+         * kopia plikowa jest tu GORSZA niz odmowa: krok konczy sie „sukcesem", ktorego nie da
+         * sie scalic, i zaden kafelek nie mowi, ze izolacji nie bylo. Ten sam straznik, slowo
+         * w slowo, stoi w `make_from_after_add`; nowa droga zapisanego wejscia go zgubila.
+         * Pytamy ZANIM cokolwiek powstanie: odmowa po zalozeniu katalogu zostawia smiec. */
+        if is_a_repo(project) && git(project, &["rev-parse", "--verify", "HEAD"]).is_err() {
+            return Err(Trouble::NoCommitYet);
+        }
         snapshot.materialize(dest).map_err(Trouble::Copying)?;
         return Ok(Made {
             how: How::Copy,

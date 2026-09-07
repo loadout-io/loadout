@@ -207,15 +207,7 @@ fn capture_input(
             .tempdir_in(run_dir)?;
         let files = staging.path().join("files");
         fs::create_dir(&files)?;
-        let oid = if is_git {
-            Some(
-                git_text(project, &["rev-parse", "--verify", "HEAD"])?
-                    .trim()
-                    .to_owned(),
-            )
-        } else {
-            None
-        };
+        let oid = head_oid(project, is_git);
         let paths = selected_paths(project, is_git, additional, complete_copy)?;
         let before = inspect_selected(project, paths.as_ref())?;
         observed(attempt)?;
@@ -227,15 +219,7 @@ fn capture_input(
         }
         let after_paths = selected_paths(project, is_git, additional, complete_copy)?;
         let after = inspect_selected(project, after_paths.as_ref())?;
-        let current_oid = if is_git {
-            Some(
-                git_text(project, &["rev-parse", "--verify", "HEAD"])?
-                    .trim()
-                    .to_owned(),
-            )
-        } else {
-            None
-        };
+        let current_oid = head_oid(project, is_git);
         if before != after || paths != after_paths || oid != current_oid {
             if attempt < 2 {
                 continue;
@@ -694,6 +678,24 @@ fn validate_paths(entries: &BTreeMap<PathBuf, Entry>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Repozytorium bez ani jednego commita nie ma `HEAD` — i to NIE jest awaria zapisu wejścia.
+///
+/// `git_text(…)?` robił z tego `RunError::Io`, czyli zdanie o tym, co nie udało się SYSTEMOWI
+/// („fatal: ambiguous argument 'HEAD'"). Zdanie dla człowieka składa dopiero izolacja kroku
+/// ([`super::isolate::Trouble::NoCommitYet`]), bo tylko ona zna nazwę kafelka i tylko ona wie,
+/// że to jest powód, żeby biegu nie zaczynać. `git_oid` jest `Option` dokładnie po to: pusty
+/// adres znaczy „nie ma z czego odbić drzewa", a nie „git przestał działać".
+///
+/// Porównanie `oid != current_oid` zostaje szczelne: dwa razy `None` to dalej ten sam stan.
+fn head_oid(project: &Path, is_git: bool) -> Option<String> {
+    if !is_git {
+        return None;
+    }
+    git_text(project, &["rev-parse", "--verify", "HEAD"])
+        .ok()
+        .map(|text| text.trim().to_owned())
 }
 
 fn tracked_paths(project: &Path) -> io::Result<BTreeSet<PathBuf>> {
