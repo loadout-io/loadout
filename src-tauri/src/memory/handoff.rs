@@ -1247,10 +1247,11 @@ fn keep_decision_once(body: &mut String, decision: &str) {
 /// wierszem wskaźnika — nagłówek zostaje, bo sekcja skasowana razem z nim nie zostawia
 /// następnemu agentowi żadnego znaku, że cokolwiek tam było.
 ///
-/// Wewnątrz sekcji tniemy tylko wtedy, gdy nie zachowała się jeszcze żadna treść — inaczej
-/// pierwsza sekcja zjadałaby cały budżet. Taka sekcja dostaje **jedną trzecią** limitu, czyli
-/// swój udział z trzech: bez tego jedna rozdęta sekcja z góry skazuje dwie pozostałe na sam
-/// wskaźnik, nawet gdy miały po dwa wiersze i zmieściłyby się bez trudu.
+/// Wewnątrz sekcji tniemy tylko wtedy, gdy nie zachowała się jeszcze żadna treść **sekcji**.
+/// Preambuła nie może zapalić tej zapadki: jedno zdanie przed `## Answer` zamieniałoby wtedy
+/// wszystkie trzy sekcje w same wskaźniki. Pierwsza cięta sekcja dostaje **jedną trzecią**
+/// limitu, czyli swój udział z trzech; wszystko po niej zostaje jawnym wskaźnikiem do pełnej
+/// kopii, zamiast udawać, że niczego tam nie było.
 fn cap(body: &str, pointer: &str) -> (String, bool) {
     if body.len() <= BODY_CAP {
         return (body.to_owned(), false);
@@ -1284,7 +1285,9 @@ fn cap(body: &str, pointer: &str) -> (String, bool) {
     let preamble_truncated = preamble_end < preamble.len();
     let mut out = String::from(&preamble[..preamble_end]);
     let mut truncated = preamble_truncated;
-    let mut kept = !out.trim().is_empty();
+    // 2026-09-08 (WP-04a) — `kept` oznacza treść SEKCJI: 26 B preambuły zapalało tę zapadkę
+    // i redukowało 9 KB odpowiedzi do 207 B samych nagłówków i wskaźników.
+    let mut kept = false;
 
     for (index, (head, content)) in heads.iter().zip(contents.iter()).enumerate() {
         let rest: usize = costs.iter().skip(index + 1).sum();
