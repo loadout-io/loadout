@@ -76,7 +76,7 @@ kolektor nie jest wpięty w ten check.
 | M-01 | zrobione, zacommitowane | `cargo test --lib` w meetnotes → 3731/0 |
 | M-02 | zrobione | `commands::queue_ownership_tests` → 5/5 |
 | M-03 | zrobione | `e2e/processing` → 14/14 (chromium + webkit) |
-| M-04 | częściowo: instancja i scenariusze okna **tak**, scenariusze kolejki **nie** | §4a i §5 |
+| M-04 | **zrobione**, z jednym niezmierzonym kryterium i jednym znaleziskiem | §4a |
 | E-01 | macierz zrobiona; z §11 wykonane punkty **1, 2, 4, 6 i 7** | §4 i §4a |
 
 | P-02 (kafelek) | zrobione | `npx vitest run src/sections/workflows/start-and-leave-has-a-panel.test.tsx` → 10/10 |
@@ -196,11 +196,41 @@ To jest ta jedna rzecz z P-03b, której Loadout nie umie wymusić kodem — i tu
 jest: gdyby scenariusz adresował „Murmur", trafiłby w aplikację, na którą akurat wskazuje
 menedżer okien, czyli potencjalnie w prawdziwą aplikację człowieka z jego nagraniami.
 
-**Czego świadomie NIE zrobiłem:** nie nagrywałem dźwięku. Zabrania tego rola QA, którą sam
-dowożę (`.loadout/agents/verifies-the-running-app.md`: „do not record audio"), bo prawdziwa
-rozmowa nie jest materiałem testowym. Scenariusze kolejki przetwarzania (M-01…M-03) potrzebują
-zasianych nagrań, więc na pustej bibliotece nie mają czego sądzić — to jest granica tej próby
-i nazywam ją wprost, zamiast meldować ją jako przejście.
+### Scenariusze KOLEJKI — wykonane na zasianej bibliotece
+
+Zasianie biblioteki to nie nagrywanie: mikrofon nie jest otwierany, a dźwiękiem jest wygenerowany
+**cichy WAV**, czyli materiał testowy z definicji. Wiersze wchodzą **własnym magazynem aplikacji**
+(`park_meeting_for_deferred_processing`), więc stan jest co do bajta tym, który aplikacja zapisuje
+sama, kiedy człowiek naciska „Process later" (`f453261e`, `src-tauri/examples/seed_qa_library.rs`).
+
+Trzy nagrania, bieg prowadzony **wyłącznie przez okno**, klawiaturą, z ogniskiem sprawdzanym po
+`AXFocusedUIElement`:
+
+| Kryterium | Co zobaczono |
+|---|---|
+| M-01: odroczone nagranie to `Queued`, nie `Error` | trzy karty ze statusem **Queued**; w bazie `meetings.status` jest `ERROR`, więc projekcja API-only działa całą drogą do ekranu |
+| M-02: JEDNO ciężkie zadanie naraz | „Run all" przy trzech w kolejce → **„1 processing, 2 queued"**, karta biegnąca na `Transcribe / Running` z paskiem postępu, dwie pozostałe nietknięte na `Queued` |
+| M-03: etapy widać, ZANIM się wydarzą | `Transcribe / Note / Export` jako trzy pełnoprawne kroki z własnym stanem — a nie Export dopisywany po fakcie |
+| uczciwość porażki | whisper naprawdę policzył VAD na urządzeniu i oddał *„No speech detected in the recording — nothing to transcribe"*; etapy zeszły na **`Not run`**, nie na fałszywe zaliczenie |
+| **brak utraty audio** | karta mówi „The recording's audio is untouched" — **sprawdzone na dysku**: trzy pliki WAV zachowały rozmiar co do bajta i swój `mtime` |
+
+**Czego NIE udało się zobaczyć:** napisu `Cancelling` w trakcie trwania ciężkiego kroku. Zadanie
+padło po ~5 sekundach, więc nie ma okna, w którym dałoby się nacisnąć Cancel ręką. To jedno
+kryterium zostaje przypięte specyfikacją `e2e/processing` (14/14), a nie żywym biegiem — i mówię
+to wprost, zamiast meldować je jako wykonane.
+
+### ZNALEZISKO: pamięć webview NIE jest objęta izolacją
+
+To jest wynik QA, a nie dodatek. WebKit kluczuje swój magazyn **NAZWĄ PLIKU WYKONYWALNEGO**
+(`~/Library/WebKit/Murmur`), a nie katalogiem danych — więc instancja QA startuje z otwartymi
+kartami notatek dewelopera. Zmierzone: pasek kart „czystej" instancji wymieniał **prawdziwe,
+osobiste tytuły notatek** człowieka (odczytane po `AXFocusedUIElement`). To jest dokładnie to,
+czego §11 punkt 4 zabrania („nie używa danych użytkownika").
+
+Obejście jest jednym `cp` i zostało **zweryfikowane**: ta sama binarka skopiowana pod unikatową
+nazwą dostała własny `~/Library/WebKit/<nazwa>`, pusty pasek kart i wyłącznie zasiane nagrania.
+Domyślne zachowanie zostaje jednak wyciekiem napisów widocznych dla człowieka i należy do decyzji
+właściciela Murmura.
 
 ### Czego nie dało się zobaczyć bez żywej próby
 
@@ -242,13 +272,16 @@ więc powierzchni bezpieczeństwa w produkcie nie przybyło — ale **dotyka to 
 do zaszyfrowanej bazy i dlatego należy do przeglądu lock/security**. Zgłaszam to wprost, zamiast
 chować pod „non-blocking"; commit niesie ten sam akapit.
 
-**M-04 — częściowo.** Wykonane: osobna instancja, jej własna biblioteka, scenariusze na oknie,
-sprzątanie. Niewykonane: scenariusze KOLEJKI PRZETWARZANIA, czyli te, które sądziłyby M-01…M-03.
-Potrzebują zasianych nagrań, a nagrywania zabrania rola QA, którą sam dowożę („do not record
-audio") — prawdziwa rozmowa nie jest materiałem testowym. Droga naprzód jest znana i nie wymaga
-zgody: fikstura nagrań w bibliotece biegu (plik audio + wiersz w `meetings`), zasiewana przed
-startem instancji. Nie zrobiłem jej, bo wymaga klucza DEK do bazy SQLCipher tej instancji, czyli
-osobnego kawałka pracy po stronie Murmura, a nie Loadouta.
+**M-04 — wykonane.** Osobna instancja, jej własna biblioteka, scenariusze okna ORAZ scenariusze
+kolejki na zasianych nagraniach — wszystko z liczbami w §4a. Zasianie idzie własnym magazynem
+aplikacji i cichym WAV-em, więc nie jest nagrywaniem: rola QA zabrania traktować prawdziwą rozmowę
+jak materiał testowy, a nie zabrania mieć plik audio.
+
+Zostają dwie rzeczy, obie nazwane wprost, żadna schowana pod „non-blocking":
+* napisu `Cancelling` w trakcie ciężkiego kroku nie dało się złapać ręką (zadanie padło po ~5 s);
+  to kryterium jest przypięte specyfikacją `e2e/processing`, nie żywym biegiem;
+* pamięć webview nie jest objęta izolacją i wnosi do instancji QA tytuły notatek człowieka —
+  znalezisko z tego biegu, z zweryfikowanym obejściem i z decyzją należącą do właściciela.
 
 **M-01…M-03 (Murmur) — zrobione i zacommitowane** w `../.murmur-agent-tasks/m01-queue-ownership-repro`,
 regułą tamtego repo (autor `JakubGawr`, bez trailerów AI, merge przez PR). Szczegóły
