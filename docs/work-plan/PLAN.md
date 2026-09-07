@@ -73,6 +73,27 @@ Stawka jest większa niż ten plan: jeżeli odmawia, to **lider Codeksa nie moż
 (`bridge/verbs.rs:117`, `:149`, `:84`) — czyli byłaby to **żywa wada w wydanym produkcie**,
 niezależna od funkcji Plan. Do czasu pomiaru: `not-tested`, bez domysłów w żadną stronę.
 
+**Próbowałem i przerwałem — co z tego wiem, a czego nie.** Napisałem sondę mówiącą do
+`codex app-server --listen stdio://` protokołem z `codex.rs:1606-1720`. Ustalone:
+
+- App Server **wstaje i ładuje serwery MCP**: mój `probe2` zameldował
+  `mcpServer/startupStatus/updated → status: "ready"`;
+- `thread/start` z `{ephemeral, approvalPolicy: "never", sandbox: "read-only", model}`
+  **zakłada wątek**; identyfikator wraca w `result.thread.id`, a nie `result.threadId`;
+- ta droga wciąga też **prywatne serwery MCP użytkownika**, dlatego Loadout je wycisza
+  przez `curated_mcp_overrides` (`codex.rs:1364`) — sonda bez tego widziała cudze `notion`
+  i `linear-server`.
+
+**Czego NIE ustaliłem:** `turn/start` nie oddał w mojej sondzie ani jednego zdarzenia tury,
+więc **do samego wywołania narzędzia nigdy nie doszło**. To nie jest odpowiedź „App Server
+odmawia" — to jest „moja sonda nie dojechała do pytania".
+
+**Dlaczego przerwałem i co jest właściwą drogą.** Wierne odtworzenie tego handshake'u to
+osobny projekt: dochodzi `config/read`, kuratela serwerów i dokładny kształt `input`.
+Tańszy i uczciwszy pomiar to **przejście tej drogi produktem** — lider Codeksa w działającej
+aplikacji, proszony o czasownik mutujący. To i tak należy do natywnego QA (WP-07 / CT-09),
+więc pomiar wykonuję tam, zamiast utrzymywać drugą, niewierną implementację protokołu.
+
 ---
 
 ## 1. Zależności od etapów Context
