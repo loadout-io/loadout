@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Bez tego wyjatku od hardened runtime krok QA nie ma jak sprawdzic, czy testowana
+       aplikacja ma w ogole okno: `native_ui` odpala `osascript`, a ten rozmawia z
+       „System Events" Apple eventem. Wydanie 0.2.x bylo podpisane z ZEREM uprawnien, wiec
+       funkcja odpowiadala u czlowieka zawsze „nie zmierzono" — poprawnie, ale bezuzytecznie. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

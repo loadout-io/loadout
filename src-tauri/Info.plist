@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Loadout asks System Events whether an app a workflow started has opened its window, and drives that app's window when a step you approved says to. It only ever addresses the process Loadout itself started.</string>
   <key>NSDesktopFolderUsageDescription</key>
   <string>Loadout needs access to projects on your Desktop to run workflows and keep their history.</string>
   <key>NSDocumentsFolderUsageDescription</key>
