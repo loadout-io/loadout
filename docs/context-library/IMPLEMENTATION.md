@@ -216,6 +216,24 @@ Ryzyko jest **małe, ale niezerowe**: `commands/context.rs` to cztery jednolinij
 `checks/invoke-args.sh`. Zamyka to dopiero **natywna próba z CT-09** — i dopóki jej nie ma,
 kryterium „Trwały paste" stoi na `not-tested`, a nie na `passed`.
 
+**D-5. Natywne QA: izolacja da się zrobić, sterowanie oknem wymaga zgody CZŁOWIEKA.**
+Sprawdzone przed CT-09, żeby nie odkryć tego na końcu.
+
+- **Izolacja: jest droga.** `lib.rs::loadout_dir()` składa bibliotekę jako `$HOME/.loadout`
+  i czyta **wyłącznie `HOME`** — Loadout nie ma własnej zmiennej katalogu danych. Izolowaną
+  instancję uruchamia się więc przez podmianę `HOME` przy starcie binarki. To dotyczy
+  **mojego uruchomienia do testu**, nie konfiguracji usług w workflow, gdzie `HOME` stoi na
+  liście zastrzeżonych (`workflow::check::service_environment_name`) i ma tam zostać.
+- **Sterowanie oknem: bloker po stronie uprawnień.** Świeżo zbudowana binarka potrzebuje
+  własnych zgód macOS, a TCC przypina je **do binarki**. Syntetyczne `Cmd+V` wymaga zgody
+  Accessibility, której nie mogę sobie nadać.
+
+**Skutek dla odbioru:** kryterium „Trwały paste" da się domknąć albo (a) zgodą Accessibility
+dla binarki testowej, albo (b) **udokumentowanym testem ręcznym** właściciela — zlecenie
+dopuszcza obie drogi. Bez jednej z nich zostaje `not-tested` i **blokuje** deklarację
+gotowości. Przeglądarkowe e2e z atrapą IPC **nie zastępuje** natywnego Cmd+V i nie będzie
+tak liczone.
+
 **D-3. CSP i zasoby bundla ograniczają dwa warianty PDF — ROZSTRZYGNIĘTE: zostawiamy.**
 Zgłoszone przez plan CT-02 zamiast wykonane (AGENTS.md §7). `src-tauri/tauri.conf.json` nie ma
 `wasm-unsafe-eval` w CSP ani `resources` w `bundle`, więc PDF z obrazami **JPEG 2000**
