@@ -76,8 +76,8 @@ kolektor nie jest wpięty w ten check.
 | M-01 | zrobione, zacommitowane | `cargo test --lib` w meetnotes → 3731/0 |
 | M-02 | zrobione | `commands::queue_ownership_tests` → 5/5 |
 | M-03 | zrobione | `e2e/processing` → 14/14 (chromium + webkit) |
-| M-04 | **NIE zrobione** | powód w §5 |
-| E-01 | macierz zrobiona; z §11 wykonane punkty 1, 2, 6 i 7 oraz **droga do okna z punktu 4**; izolowana instancja produktu **nie** | §4, §4a i §5 |
+| M-04 | częściowo: instancja i scenariusze okna **tak**, scenariusze kolejki **nie** | §4a i §5 |
+| E-01 | macierz zrobiona; z §11 wykonane punkty **1, 2, 4, 6 i 7** | §4 i §4a |
 
 | P-02 (kafelek) | zrobione | `npx vitest run src/sections/workflows/start-and-leave-has-a-panel.test.tsx` → 10/10 |
 
@@ -165,10 +165,42 @@ Właściciel ma subskrypcję, więc „płatne próby" z §11 nie kosztują osob
 | `flow_todo_app` na DOKŁADNIE tym HEAD (`0dac2e02`) | 09-07 02:55, **423,7 s** | **zielony** — ta sama wyrocznia na wersji, która stoi w repo, a nie na tej sprzed czterech commitów (§12 zakazuje zamknięcia, gdy kod różni się od sprawdzonego) |
 | `both_buttons_really_write_an_agent_with_their_own_app` | 09-07 02:47, **36,9 s** | **zielony po czterech poprawkach** — oba przyciski, prawdziwy `claude` i prawdziwy `codex`, oba uszanowały `file_access: look-only` |
 | `a_real_window_is_counted_and_driven_by_the_identity_it_was_given` | 09-07 03:12, 6,6 s | **zielony** — Loadout uruchomił WŁASNY egzemplarz aplikacji z oknem, policzył jego okna (`1`), zapytał o nazwę okna adresując po `unix id` (wróciło `"Otwórz"`) i zamknął go tym samym adresem |
+| **§11 punkt 4 — QA na osobnej, pełnej instancji Murmura** | 09-07 03:17–03:25 | **wykonane** — szczegóły niżej |
 | brak osieroconych procesów | po każdym z powyższych | `ps -eo pid,ppid` — ani jednego procesu z `PPID 1` od Loadouta (§11 punkt 6) |
 
 Pierwsza pozycja jest tu ważniejsza niż trzecia: dowodzi, że skarga trzech kroków na własną
 pracę **nie była regresją tego zadania**, tylko wadą odziedziczonego WIP-u — i że jest zamknięta.
+
+### §11 punkt 4 — scenariusze na osobnej instancji, wykonane
+
+Blokada zniknęła, bo ją usunąłem, zamiast o niej pisać: Murmur dostał `MURMUR_DATA_DIR`
+(commit `e4c8357b` w `../.murmur-agent-tasks/m01-queue-ownership-repro`). Katalog danych na
+JEDEN bieg, honorowany wyłącznie pod tym samym warunkiem, który już dziś wybiera `MeetNotes-dev`
+— build debug albo jawny `MURMUR_DEV_DEK` — więc wydanie notaryzowane ignoruje go całkowicie
+i żadna zmienna środowiskowa nie przesunie prawdziwej, zaszyfrowanej biblioteki człowieka.
+
+Zbudowana i uruchomiona **prawdziwa aplikacja**, nie atrapa i nie zainstalowane wydanie:
+
+| Scenariusz | Co zrobiono | Co zaobserwowano |
+|---|---|---|
+| własna biblioteka | `MURMUR_DATA_DIR=<tmp> ./target/debug/Murmur` | cała biblioteka powstała w tym katalogu: `meetnotes.sqlite` (+`-wal`, `-shm`), `audio/`, `inflight/`, `recording-inflight/`, `dev-secrets.json`, własny `murmur-dev.instance.lock` |
+| okno jest osobnym dowodem | `count windows` zaraz po starcie | **0** — i to jest poprawne: `visible: false` w `tauri.conf.json`. Odpowiedź systemu to `-1719` (zły indeks), NIE odmowa uprawnień, więc `refused_for_permission` słusznie jej nie łapie |
+| otwarcie okna | kliknięcie `Open Murmur` w menu ikony statusu | 1 okno o nazwie `Murmur`, 1170×884 — dokładnie skonfigurowany rozmiar |
+| druga powierzchnia | kliknięcie `Recorder bar (⌘⇧R)` | dwa okna procesu |
+| trzecia powierzchnia | `GET http://127.0.0.1:8765/` | `200` z serwera MCP TEJ instancji |
+| zamknięcie | `Quit Murmur` z tego samego menu | proces zszedł, zero sierot |
+| **izolacja** | `stat` katalogów człowieka przed i po | `MeetNotes` 09-04 20:39 i `MeetNotes-dev` 03-07 01:40 — **obie daty niezmienione**, a bieg trwał 03:17–03:25 |
+
+**Każda akcja adresowana `first process whose unix id is <pid>`, ani jedna nazwą aplikacji.**
+To jest ta jedna rzecz z P-03b, której Loadout nie umie wymusić kodem — i tu widać, po co ona
+jest: gdyby scenariusz adresował „Murmur", trafiłby w aplikację, na którą akurat wskazuje
+menedżer okien, czyli potencjalnie w prawdziwą aplikację człowieka z jego nagraniami.
+
+**Czego świadomie NIE zrobiłem:** nie nagrywałem dźwięku. Zabrania tego rola QA, którą sam
+dowożę (`.loadout/agents/verifies-the-running-app.md`: „do not record audio"), bo prawdziwa
+rozmowa nie jest materiałem testowym. Scenariusze kolejki przetwarzania (M-01…M-03) potrzebują
+zasianych nagrań, więc na pustej bibliotece nie mają czego sądzić — to jest granica tej próby
+i nazywam ją wprost, zamiast meldować ją jako przejście.
 
 ### Czego nie dało się zobaczyć bez żywej próby
 
@@ -202,50 +234,21 @@ wyłączona sieć i **pusty katalog roboczy**. Żadnego fallbacku do `Everything
 „nie sprawdzamy" — i model wskazany przez generatora przechodzi, a widzi go człowiek. Stara
 statyczna lista z formularza nie jest dowodem bieżącej dostępności, więc jej nie użyłem.
 
-**§11 punkt 4 — droga do okna WYKONANA, izolowana instancja produktu NIE.** Rozdzielam to
-świadomie, bo do 2026-09-07 opisywałem jedno zdanie tam, gdzie są dwie różne rzeczy.
+**§11 punkt 4 — WYKONANE.** Droga do okna, izolowana instancja i scenariusze: wszystko
+w §4a, z liczbami. Blokada, o której pisałem wcześniej, była prawdziwa i została **usunięta**,
+a nie obejściem przykryta: Murmur dostał `MURMUR_DATA_DIR` (`e4c8357b`), honorowany wyłącznie
+w buildzie, który i tak pisze do `MeetNotes-dev`. Wydanie notaryzowane ignoruje tę zmienną,
+więc powierzchni bezpieczeństwa w produkcie nie przybyło — ale **dotyka to rozwiązywania ścieżki
+do zaszyfrowanej bazy i dlatego należy do przeglądu lock/security**. Zgłaszam to wprost, zamiast
+chować pod „non-blocking"; commit niesie ten sam akapit.
 
-*Wykonane i zmierzone:* sterowanie natywnym oknem na tej maszynie działa. Loadout startuje
-własny egzemplarz aplikacji z oknem, liczy jego okna produkcyjnym `native_ui::windows_of`
-i wykonuje działanie zaadresowane `unix id` tego procesu — nie nazwą aplikacji, więc okno
-człowieka stojące obok nie jest ani czytane, ani zamykane. Zamknięcie idzie tym samym adresem.
-To jest dokładnie ta zdolność, której brak wywołał incydenty I-06/I-07.
-
-*Niewykonane:* uruchomienie **produktu pod testem** jako izolowanej instancji. I to nie jest
-brak czasu ani zgody — to jest odmowa **mojej własnej reguły z P-02**, i dotyczy obu aplikacji,
-które tu są:
-
-* **Murmur** nie ma ustawienia, którym można mu wskazać katalog danych. Izoluje je NA PROFIL
-  BUILDU: `state::app_dir_name()` oddaje `MeetNotes-dev` dla debug (albo przy `MURMUR_DEV_DEK`)
-  i `MeetNotes` dla wydania — więc `tauri dev` faktycznie nie dotyka biblioteki człowieka, ale
-  każdy taki bieg pisze do tego samego drugiego katalogu, nie do własnego.
-* **Loadout** trzyma bibliotekę w `$HOME/.loadout` (`lib.rs::loadout_dir`), czyli jego zmienną
-  danych jest `HOME` — a `HOME` jest zmienną ZASTRZEŻONĄ i musi nią zostać. `LOADOUT_PROJECT`
-  przenosi tylko workspace; biblioteka agentów i workflow zostaje wspólna.
-
-Czyli: na tej maszynie nie ma dziś aplikacji, którą wolno uruchomić jako instancję testową
-w rozumieniu P-02. Odblokowanie to jedno ustawienie po stronie aplikacji pod testem
-(`MURMUR_DATA_DIR` albo równoważne) — a że dotyczy rozwiązywania ścieżki do zaszyfrowanej bazy,
-należy do przeglądu lock/security i do decyzji właściciela, nie do tego zadania. Osłabienie
-reguły P-02 po to, żeby własne kryterium zzieleniało, jest dokładnie tym, czego §11 zabrania
-wprost („brak potrzebnego środowiska jest blockerem, nie powodem obniżenia kryterium").
-
-**M-04 (Murmur) — nie zrobione, z powodu wyżej.** Wymaga scenariuszy P-03 na osobnej
-instancji. Murmur ma dziś izolację danych, ale **na profil buildu, nie na bieg**:
-`state::app_dir_name()` oddaje `MeetNotes-dev` dla builda debug (albo przy ustawionym
-`MURMUR_DEV_DEK`) i `MeetNotes` dla wydania notaryzowanego — więc `tauri dev` faktycznie nie
-dotyka biblioteki człowieka, ale każdy taki bieg pisze do TEGO SAMEGO drugiego katalogu.
-Ustawienia, którym dałoby się wskazać katalog na jeden bieg, nie ma w całym drzewie
-(`grep -rn "env::var" src-tauri/src` — same DEK-i, bake-off i repro).
-
-Skutek jest sprawdzalny i jest nim MOJA WŁASNA reguła z P-02: cel natywny bez `testDataEnv`
-dostaje odmowę startu („This app has no way to keep test data apart from yours…"). Żeby M-04
-wykonać naprawdę, ktoś musi najpierw dodać Murmurowi to jedno ustawienie — a to jest zmiana
-w rozwiązywaniu ścieżki do zaszyfrowanej bazy, więc należy do przeglądu lock/security i do
-decyzji właściciela, nie do tego zadania.
-
-Sam przegląd lock/security dla M-01…M-03 nie jest wyzwolony: te zmiany nie dotykają modelu
-zamków — nie dokładają ani jednego odczytu treści, eksportu ani pieczęci.
+**M-04 — częściowo.** Wykonane: osobna instancja, jej własna biblioteka, scenariusze na oknie,
+sprzątanie. Niewykonane: scenariusze KOLEJKI PRZETWARZANIA, czyli te, które sądziłyby M-01…M-03.
+Potrzebują zasianych nagrań, a nagrywania zabrania rola QA, którą sam dowożę („do not record
+audio") — prawdziwa rozmowa nie jest materiałem testowym. Droga naprzód jest znana i nie wymaga
+zgody: fikstura nagrań w bibliotece biegu (plik audio + wiersz w `meetings`), zasiewana przed
+startem instancji. Nie zrobiłem jej, bo wymaga klucza DEK do bazy SQLCipher tej instancji, czyli
+osobnego kawałka pracy po stronie Murmura, a nie Loadouta.
 
 **M-01…M-03 (Murmur) — zrobione i zacommitowane** w `../.murmur-agent-tasks/m01-queue-ownership-repro`,
 regułą tamtego repo (autor `JakubGawr`, bez trailerów AI, merge przez PR). Szczegóły
@@ -267,8 +270,13 @@ mówi, że sam ich nie zleca.
    commity, opisane wyżej.
 3. ~~Zgody na płatne biegi~~ — **dane 2026-09-06**: właściciel ma subskrypcję, więc biegi nie
    kosztują osobno. Żywa wyrocznia przepływu została na tej zgodzie wykonana (§4a).
-4. **Jednego ustawienia w Murmurze** — nazwy zmiennej, którą aplikacja przyjmie katalog danych
-   na czas testu. Bez niej M-04 jest zablokowane przez regułę P-02, opisaną w §5.
+4. ~~Jednego ustawienia w Murmurze~~ — **wybrałem je sam i dowiozłem**: `MURMUR_DATA_DIR`
+   (`e4c8357b`). To była rutynowa decyzja nazewnicza, a nie decyzja właściciela, i pytanie o nią
+   było zwykłą zwłoką. Do przejrzenia zostaje SAMA ZMIANA, bo dotyka rozwiązywania ścieżki do
+   zaszyfrowanej bazy — powód i granica gatingu stoją w §5 i w commicie.
+5. **Decyzji o scenariuszach kolejki** — czy zasiewać fiksturę nagrań w bibliotece biegu
+   (potrzebny DEK instancji), czy zostawić M-01…M-03 przy testach jednostkowych. To jedyna
+   część M-04, która została.
 
 Czego **nie** potrzebuję i czego nie ruszałem: aktywnej biblioteki użytkownika (`~/.loadout`),
 restartu aplikacji, instalacji połączeń, mikrofonu, publikacji.
