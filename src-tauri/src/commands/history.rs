@@ -535,12 +535,30 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     // przeczytać, oddaje tu `None` — i to jest ta sama odpowiedź, co dla pliku bez tego klucza:
     // w obu przypadkach po prostu nie wiemy, i tak ma to zabrzmieć na ekranie.
     let reflection = described.as_ref().and_then(|file| file.reflection);
-    let saved_results = described
+    /* BIEG OTWIERA SIE TAKZE WTEDY, KIEDY JEGO WYNIKOW NIE DA SIE WYMIENIC (niezmiennik 5).
+     *
+     * Restore jest DODATKIEM do tego ekranu, nie warunkiem jego otwarcia: brak listy wynikow
+     * to brak przycisku, a nie powod, zeby historia biegu przestala sie czytac. `saved_results`
+     * bylo jedynym z pieciu nowych pododczytow w tej funkcji, ktory wywracal caly odczyt —
+     * pozostale cztery (`saved_input_in`, opis instrukcji, `handoffs_of_run`, `kept_folders_in`)
+     * oddaja pare (wartosc, zdanie) i tak ma byc tutaj.
+     *
+     * `HistoryError::ResultsAreKept` mowi o ODMOWIE USUNIECIA, wiec jako wynik ODCZYTU brzmial
+     * o czyms, o co nikt nie pytal. */
+    let (saved_results, saved_results_problem) = match described
         .as_ref()
         .map(|file| super::result_restore::saved_results(project, &file.id))
         .transpose()
-        .map_err(|said| HistoryError::ResultsAreKept { said })?
-        .unwrap_or_default();
+    {
+        Ok(results) => (results.unwrap_or_default(), None),
+        Err(said) => (
+            Vec::new(),
+            Some(format!(
+                "Loadout could not list this run's saved results, so Restore is not offered \
+                 here: {said}"
+            )),
+        ),
+    };
     let (handoffs, handoffs_said) = match handoffs_of_run(project, &dir) {
         Ok(handed) => (handed, None),
         Err(said) => (Vec::new(), Some(said)),
@@ -578,6 +596,10 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         ),
     };
     let result_problem = match (result_problem, instruction_problem) {
+        (Some(one), Some(other)) => Some(format!("{one} {other}")),
+        (one, other) => one.or(other),
+    };
+    let result_problem = match (result_problem, saved_results_problem) {
         (Some(one), Some(other)) => Some(format!("{one} {other}")),
         (one, other) => one.or(other),
     };

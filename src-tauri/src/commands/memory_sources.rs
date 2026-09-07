@@ -147,7 +147,14 @@ impl Snapshot {
         }
         let mut reached = BTreeSet::new();
         for (key, selected) in &self.manifest.nodes {
-            normal_id(key)?;
+            /* KLUCZ KROKU TO NIE ADRES PAMIĘCI, więc odmowa nie może mówić o pakiecie.
+             *
+             * Klucz spoza jednego komponentu jest złym IDENTYFIKATOREM KROKU: adresuje folder
+             * poza biegiem. Ta bramka stoi wcześniej niż granica ścieżki roboczej
+             * (`prove_generated_work_path`), więc to ona odzywa się pierwsza — i ma powiedzieć
+             * ten sam fakt, tymi samymi słowami co tamta, zamiast wysyłać człowieka do
+             * szukania nieistniejącego problemu z pamięcią. */
+            step_key_stays_inside(key)?;
             let unique: BTreeSet<_> = selected.iter().collect();
             if unique.len() != selected.len()
                 || unique.iter().any(|address| !addresses.contains(*address))
@@ -365,6 +372,21 @@ fn bounded_read(root: &PublicationRoot, relative: &Path, limit: usize) -> io::Re
         return Err(too_large());
     }
     Ok(bytes)
+}
+
+/// Klucz kroku, który zostaje pojedynczą nazwą wewnątrz folderów tego biegu.
+///
+/// Ten sam fakt, co [`crate::commands::run`] nazywa granicą ścieżki roboczej — i celowo to samo
+/// zdanie, bo człowiek ma przeczytać jedną prawdę niezależnie od tego, która bramka odezwie się
+/// pierwsza.
+fn step_key_stays_inside(value: &str) -> io::Result<()> {
+    let mut parts = Path::new(value).components();
+    if !matches!(parts.next(), Some(Component::Normal(_))) || parts.next().is_some() {
+        return Err(unavailable(
+            "a step id must be a single name: this one leaves this run's folders",
+        ));
+    }
+    Ok(())
 }
 
 fn normal_id(value: &str) -> io::Result<()> {

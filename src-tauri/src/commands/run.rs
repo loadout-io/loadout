@@ -6815,6 +6815,16 @@ fn lay_out_the_run_dir(
     if !run_directory_was_missing && provisional.can_reclaim_bound_directory(&plan.id, &plan.dir) {
         provisional.owns_reclaimed_run_directory(plan.dir.clone());
     }
+    /* `handoffs_from` NIESIE DWA FAKTY NARAZ: skąd skopiować przekazania i który bieg wznowić.
+     *
+     * Katalog BEZ `run.json` nie jest biegiem — nie ma tam wyniku kopii, którego moglibyśmy nie
+     * znaleźć, więc nie ma też czego bronić odmową. Głośne wznowienie broni biegu, który
+     * ISTNIEJE, a jego zapisanego wejścia brakuje; „nie było poprzedniego biegu" zostaje stanem
+     * zwykłym, a nie awarią. */
+    let resumed_from: Option<PathBuf> = plan
+        .seeded_from
+        .clone()
+        .filter(|previous| previous.join(RUN_FILE).exists());
     /* WSPOLNY OBRAZ WEJSCIA POWSTAJE WYLACZNIE DLA KROKOW Z WLASNA KOPIA, wiec jego odmowa JEST
      * odmowa zrobienia tej kopii i ma niesc to samo zdanie, co odmowa z `make_or_recover_tree`.
      * `RunError::Io` jest przezroczysty: czlowiek czyta z niego „Permission denied (os error 13)"
@@ -6831,16 +6841,16 @@ fn lay_out_the_run_dir(
         })
         .map(|step| step.name.clone());
     let input = if let Some(step_wanting_a_copy) = wants_its_own_copy {
-        if !run_directory_was_missing
-            && !plan.dir.join(super::input_snapshot::DIRECTORY).exists()
-            && fs::read_dir(plan.dir.join(WORK_DIR))
-                .is_ok_and(|mut children| children.next().is_some())
-        {
-            provisional.block_reclaimed_parent_cleanup(&plan.dir);
-            return Err(RunError::Io(io::Error::other(
-                "The saved input of these existing copies is missing. Their folders were kept; start a new independent run.",
-            )));
-        }
+        /* TU NIE MA PRZED CZYM BRONIC, a bramka sadzila kazdy zastany `work/`.
+         *
+         * `bound_prestart` ustawia sie dla KAZDEGO biegu triggera, wiec `run_directory_was_missing`
+         * bywa falszywe rowniez wtedy, gdy zaden sterownik nigdy nie ruszyl. Zastana, polzapisana
+         * kopia plikowa jest wtedy zwyklym stanem po awarii, a jej naprawe obiecuja wprost
+         * `make_or_recover_file_copy` i `make_or_recover_git_tree` — odmowa odbierala im te prace
+         * i konczyla bieg zdaniem, ktorego nikt w repo nie czytal.
+         *
+         * Glosna odmowa zostaje TAM, GDZIE BRONI PRACY: sciezka wznowienia ma wlasne, osobne
+         * zdanie („The earlier run's saved input is unavailable"), ktorego to nie dotyka. */
         let captured = if let Some(replay) = plan
             .replay
             .as_ref()
@@ -6855,7 +6865,7 @@ fn lay_out_the_run_dir(
                     ))
                 })?
                 .copy_to(&plan.dir)?
-        } else if let Some(previous) = plan.seeded_from.as_deref() {
+        } else if let Some(previous) = resumed_from.as_deref() {
             let original = super::input_snapshot::read(previous).map_err(|error| RunError::Io(
                 io::Error::other(format!("The earlier run's saved input is unavailable: {error}. Start a new independent run."))
             ))?;
@@ -6908,7 +6918,7 @@ fn lay_out_the_run_dir(
         .as_ref()
         .filter(|replay| replay.mode == super::replay::ReplayMode::Recorded)
         .map(|replay| replay.source_dir.as_path())
-        .or(plan.seeded_from.as_deref());
+        .or(resumed_from.as_deref());
     let needed_seeds = plan
         .steps
         .iter()
@@ -6960,7 +6970,7 @@ fn lay_out_the_run_dir(
              * na której TEN KAFELEK skończył poprzednio. Powód stoi przy [`where_it_left_off`]
              * i jest z pomiaru, nie z symetrii. */
             let from =
-                where_it_left_off(project, plan.seeded_from.as_deref(), work_key, &plan.dir)?;
+                where_it_left_off(project, resumed_from.as_deref(), work_key, &plan.dir)?;
             if let Some(start) = &from {
                 plan.starting_results
                     .insert(work_key.to_owned(), start.record());
@@ -7017,7 +7027,7 @@ fn lay_out_the_run_dir(
                 }
             })?;
             if from.is_some()
-                && let Some(previous) = plan.seeded_from.as_deref()
+                && let Some(previous) = resumed_from.as_deref()
             {
                 carry_previous_import(previous, &plan.dir, work_key, origin)?;
             }

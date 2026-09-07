@@ -874,10 +874,16 @@ fn score_one(project: &Path, set: &EvalSet, past: PastRun) -> PastEvalWire {
         }
         Some(definition) if past.invalid.is_none() => results::score(&definition.set, &past.steps),
         Some(definition) => results::score(&definition.set, &[]),
-        None => results::score(set, &[]),
+        None => results::score_by_the_run_alone(set, &past.steps),
     };
     if past.definition.is_none() || past.invalid.is_some() {
         for cell in &mut scored.cells {
+            // Powód porażki powiedział sam BIEG, nie dzisiejszy formularz. Nadpisanie go notatką
+            // o kryteriach skasowałoby jedyne zdanie o tym, co poszło nie tak — a to jest
+            // dokładnie to zdanie, które Lab wysyła agentowi, prosząc o poprawkę.
+            if cell.outcome == results::Outcome::DidNotPass {
+                continue;
+            }
             cell.said = past.invalid.clone().unwrap_or_else(||
                 "Criteria snapshot unavailable. This run has not been graded with today's criteria.".to_owned());
         }

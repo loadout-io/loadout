@@ -176,6 +176,38 @@ pub fn score(set: &EvalSet, finished: &[Finished]) -> Scored {
     }
 }
 
+/// Wynik biegu, którego DZISIEJSZYMI kryteriami sądzić nie wolno.
+///
+/// Dawny bieg nie ma zamrożonej definicji, więc formularz nie ma prawa nic orzec. Sądzi tu
+/// wyłącznie raport samego biegu: krok, który się nie udał, nie udał się niezależnie od tego,
+/// co dziś stoi w `expect`, i zostaje porażką z powodem, który powiedział BIEG. Krok zakończony
+/// sukcesem zostaje NIEZMIERZONY — „przeszedł" znaczy „spełnił kryteria", a tych właśnie
+/// przyłożyć nie wolno.
+#[must_use]
+pub fn score_by_the_run_alone(set: &EvalSet, finished: &[Finished]) -> Scored {
+    // Kryteria schodzą PRZED sądem, inaczej ten sam formularz wróciłby tylnymi drzwiami jako
+    // zdanie „to pole nie mówi tego, czego chciano".
+    let mut without = set.clone();
+    for case in &mut without.cases {
+        case.expect.clear();
+        case.command = String::new();
+        case.proof = String::new();
+    }
+    let mut scored = score(&without, finished);
+    for cell in &mut scored.cells {
+        if cell.outcome == Outcome::Passed {
+            cell.outcome = Outcome::NotJudged;
+        }
+    }
+    scored.passed = 0;
+    scored.judged = scored
+        .cells
+        .iter()
+        .filter(|cell| cell.outcome == Outcome::DidNotPass)
+        .count();
+    scored
+}
+
 /// Werdykt jednej komórki.
 fn judge(case: &Case, variant: &Variant, by_tile: &BTreeMap<&str, &Finished>) -> CellResult {
     let work_key = key_for(&case.id, &variant.id, Half::Work);

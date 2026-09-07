@@ -1823,9 +1823,17 @@ async fn a_fresh_copy_key_cannot_escape_or_nest_under_the_runs_work_folder()
         let said = refused
             .expect_err("a malicious fresh-copy path reached the layout")
             .to_string();
+        /* PRZYPINAMY FAKT, NIE POSŁAŃCA.
+         *
+         * Granicę folderów biegu strzeże dziś więcej niż jedna bramka i pierwsza z nich stoi
+         * wcześniej niż `prove_generated_work_path` — złośliwy identyfikator kroku nie dochodzi
+         * już do ścieżki roboczej, bo nie może zaadresować pamięci. Obie odmowy mówią to samo
+         * zdanie o wyjściu poza foldery biegu, więc kryterium żąda TEGO faktu, a nie tego, która
+         * bramka zdążyła pierwsza. Cała reszta tej ławki jest bez zmian: zero startów, drzewo
+         * ofiary co do bajta, żadnej ucieczki. */
         assert!(
-            said.contains("file-copy path"),
-            "{attack} was refused by an unrelated check instead of the path boundary: {said}"
+            said.contains("leaves this run's folders"),
+            "{attack} was refused by an unrelated check instead of the folder boundary: {said}"
         );
         assert_eq!(
             starts.load(Ordering::Acquire),
