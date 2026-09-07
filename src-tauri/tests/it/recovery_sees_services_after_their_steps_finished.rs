@@ -2,6 +2,8 @@
 //! Rekord własności powstaje przez prawdziwe `start_owned`; reaper jest podstawiany tylko
 //! w scenach niepewnego wyniku. Jeden przypadek idzie pełną produkcyjną eskalacją.
 
+#![allow(clippy::expect_used)]
+
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};

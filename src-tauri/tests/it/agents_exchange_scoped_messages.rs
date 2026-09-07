@@ -1,4 +1,7 @@
 //! WF-11: dwaj vendorzy, rzeczywiste konfiguracje MCP i host, nie bezpośredni mailbox-helper.
+
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::assigning_clones, clippy::match_wildcard_for_single_variants)]
 use async_trait::async_trait;
 use loadout_lib::{
     bridge::{Answer, Call, Greeting, Reply},

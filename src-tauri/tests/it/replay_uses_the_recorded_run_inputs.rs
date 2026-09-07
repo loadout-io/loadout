@@ -1,5 +1,7 @@
 //! WF-23 RED: zapisany graf i Agent wchodzą do tego samego produkcyjnego Startu.
 //! Nie ma vendora; dubler obserwuje rzeczywiste `RunSpec` i bajty przygotowanej kopii.
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::assigning_clones)]
 #![allow(clippy::panic)]
 
 use async_trait::async_trait;

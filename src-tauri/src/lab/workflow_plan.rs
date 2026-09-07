@@ -117,26 +117,8 @@ pub fn compose_selected(
             for repeat in 0..case.repeats()? {
                 let scope = format!("cell_{row}_{column}_{repeat}");
                 let judge_scope = format!("judge_{row}_{column}_{repeat}");
-                let names: BTreeMap<_, _> = subject
-                    .steps
-                    .iter()
-                    .map(|step| (step.id().to_owned(), format!("{scope}__{}", step.id())))
-                    .collect();
-                let nodes: BTreeMap<String, String> = crate::workflow::unroll::unroll(subject)
-                    .nodes
-                    .into_iter()
-                    .map(|node| {
-                        let original = subject.steps[node.step].id();
-                        (
-                            crate::workflow::check::node_key_for(original, node.turn, node.copy),
-                            crate::workflow::check::node_key_for(
-                                &names[original],
-                                node.turn,
-                                node.copy,
-                            ),
-                        )
-                    })
-                    .collect();
+                let names = step_names(subject, &scope);
+                let nodes = node_keys(subject, &names);
                 let inputs =
                     super::workflow_inputs::for_cell(subject, case, &scope, &names, &nodes)?;
                 append_json(&mut contexts, inputs.contexts)?;
@@ -192,6 +174,37 @@ pub fn compose_selected(
         );
     }
     Ok(graph)
+}
+
+/// Każdy kafelek jest osobną kopią tego samego wzorca, więc jego kroki muszą mieć
+/// własne ID w skompilowanym grafie. Ta mapa pilnuje, że prefiks kafelka powstaje w
+/// jednym miejscu — nikt nie skleja tych ID ręcznie gdzie indziej.
+fn step_names(subject: &WorkflowFile, scope: &str) -> BTreeMap<String, String> {
+    subject
+        .steps
+        .iter()
+        .map(|step| (step.id().to_owned(), format!("{scope}__{}", step.id())))
+        .collect()
+}
+
+/// Wiązania komórek adresują węzły PO rozwinięciu — z turą i kopią w kluczu, a nie
+/// same kroki wzorca. Ta mapa tłumaczy klucz węzła wzorca na klucz tego samego węzła
+/// w kafelku, żeby odczyt wyników nie musiał znać reguł prefiksowania.
+fn node_keys(
+    subject: &WorkflowFile,
+    names: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    crate::workflow::unroll::unroll(subject)
+        .nodes
+        .into_iter()
+        .map(|node| {
+            let original = subject.steps[node.step].id();
+            (
+                crate::workflow::check::node_key_for(original, node.turn, node.copy),
+                crate::workflow::check::node_key_for(&names[original], node.turn, node.copy),
+            )
+        })
+        .collect()
 }
 
 fn append_json<T: Serialize>(

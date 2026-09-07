@@ -1,5 +1,7 @@
 //! WF-16: sprawdzamy rzeczywiste `RunSpec` i katalogi przekazań, nie izolację systemową.
 
+#![allow(clippy::too_many_lines)]
+
 use std::error::Error;
 use std::fs;
 use std::sync::{Arc, Mutex};

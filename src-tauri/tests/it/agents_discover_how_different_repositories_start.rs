@@ -1,6 +1,8 @@
 //! WF-27: model oddaje typowany opis, ale realne wykonanie/port/cwd mierzy host.
 //! Ten sam graf w dwóch repo. Dubler czyta manifest repo zamiast otrzymywać
 //! gotową komendę z testu wywołującego — symuluje tylko odpowiedź modelu.
+
+#![allow(clippy::expect_used)]
 use std::error::Error;
 use std::fs;
 use std::path::Path;

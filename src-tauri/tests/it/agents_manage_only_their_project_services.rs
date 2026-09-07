@@ -1,5 +1,9 @@
 //! WF-28: ukrycie nazwy w tools/list nie jest odmową bezpośredniego wywołania.
 //! Łączymy się z rzeczywistym hostem i rzeczywistym Desk, bez atrapy dispatchera.
+
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::match_wildcard_for_single_variants)]
+#![allow(clippy::default_trait_access, clippy::similar_names)]
 use std::error::Error;
 use std::sync::Arc;
 use std::sync::Mutex;

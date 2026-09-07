@@ -1,6 +1,7 @@
 //! WF-10: prawdziwy Desk nie może zamienić deklaracji modelu w zgodę człowieka.
 //! Runtime to rzeczywisty bieg z checkpointem; żaden vendor ani zewnętrzny proces nie jest potrzebny.
 
+#![allow(clippy::too_many_lines)]
 #![allow(clippy::panic)]
 
 use std::error::Error;

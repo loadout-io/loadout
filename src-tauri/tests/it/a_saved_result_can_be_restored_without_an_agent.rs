@@ -1,4 +1,5 @@
 //! WF-24 RED: wynik jest OID, nie ruchomą nazwą gałęzi ani nową odpowiedzią modelu.
+#![allow(clippy::too_many_lines, clippy::unreadable_literal)]
 #![allow(clippy::panic)]
 
 use loadout_lib::bridge::host::Answers;

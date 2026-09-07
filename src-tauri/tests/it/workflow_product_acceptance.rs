@@ -1,6 +1,8 @@
 //! WF-20: jeden realny bieg łączy przygotowanie, repo context, równoległość,
 //! operacje plikowe, poprawkę pętli i odczyt Leada. Dubel zastępuje wyłącznie model.
 
+#![allow(clippy::too_many_lines)]
+
 use std::{
     error::Error,
     fs,

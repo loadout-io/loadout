@@ -1,6 +1,8 @@
 //! 2026-09-05 (WF-01): zmiana projektu pomiędzy kopiami nie zmienia wejścia biegu.
 //! Szew tylko edytuje źródło po pierwszej izolacji; cały layout i odczyt cwd są produkcyjne.
 
+#![allow(clippy::too_many_lines)]
+
 use std::error::Error;
 use std::fs;
 use std::io;

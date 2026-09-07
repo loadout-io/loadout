@@ -1,4 +1,7 @@
 //! WF-18: rzeczywisty pomiar nie pozwala procesowi subjectu przepisać wyroczni.
+
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::expect_used)]
 use loadout_lib::{
     commands::{RunControl, RunDeps},
     store::Store,

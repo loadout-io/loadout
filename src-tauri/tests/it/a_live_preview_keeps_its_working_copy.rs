@@ -4,6 +4,8 @@
 //! usuwania worktree spod żywego procesu. Bramka synchronizuje rzeczywisty start;
 //! późniejszy odczyt wykonuje sam proces, nie asercja nad polem `alive`.
 
+#![allow(clippy::needless_pass_by_value)]
+
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};

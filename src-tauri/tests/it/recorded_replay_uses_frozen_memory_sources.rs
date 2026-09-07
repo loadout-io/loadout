@@ -1,6 +1,9 @@
 //! WF-23: źródła notatek jadą przez zwykły Start/replay, bez rekonstrukcji z dzisiejszej biblioteki.
 //! Dubler mierzy `RunSpec`, nie składa promptu ani nie odtwarza selekcji pamięci.
 
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::assigning_clones)]
+
 use async_trait::async_trait;
 use loadout_lib::commands::run::run_workflow_inner;
 use loadout_lib::commands::{Drivers, RunRequest};

@@ -1,5 +1,6 @@
 //! WF-21 RED: zapytanie historii przechodzi przez produkcyjne narzędzia mostu.
 
+#![allow(clippy::unreadable_literal)]
 #![allow(clippy::panic)]
 use std::error::Error;
 use std::fs;

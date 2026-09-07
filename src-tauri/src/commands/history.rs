@@ -503,23 +503,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     let workflows = workflow_files();
     let head = summary(&dir, &workflows);
     let described = read_description(&dir);
-    let (instruction_package, instruction_problem) = if described
-        .as_ref()
-        .is_some_and(|file| file.project_instructions.is_some())
-        || fs::symlink_metadata(dir.join("instructions/manifest.json")).is_ok()
-    {
-        match crate::inherit::instructions::read_snapshot(&dir) {
-            Ok(package) => (Some(package), None),
-            Err(error) => (
-                None,
-                Some(format!(
-                    "The saved project instructions could not be verified: {error}"
-                )),
-            ),
-        }
-    } else {
-        (None, None)
-    };
+    let (instruction_package, instruction_problem) = instructions_of_run(&dir, described.as_ref());
     let steps = past_steps(
         project,
         &dir,
@@ -563,7 +547,81 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
         Ok(handed) => (handed, None),
         Err(said) => (Vec::new(), Some(said)),
     };
-    let (result_folders, result_problem) = match super::run::kept_folders_in(&dir) {
+    let (result_folders, result_problem) = result_folders_of_run(&dir, &steps);
+    let result_problem = both_sentences(result_problem, instruction_problem);
+    let result_problem = both_sentences(result_problem, saved_results_problem);
+    let said = both_sentences(head.said, result_problem);
+
+    Ok(PastRunWire {
+        saved_input,
+        saved_input_said,
+        folder: head.folder,
+        when: head.when,
+        title: head.title,
+        state: head.state,
+        workflow_file: head.workflow_file,
+        steps,
+        // Przekazania są prawdziwe niezależnie od `run.json`: to osobne pliki z własnym
+        // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
+        handoffs,
+        // Osobne od `said`: tamto mówi wyłącznie o nieczytelnym `run.json`, a jedno pole na oba
+        // fakty złamałoby zasadę jednego miejsca dla jednego faktu (niezmiennik 13).
+        handoffs_said,
+        branches,
+        result_folders,
+        saved_results,
+        reflection,
+        said,
+    })
+}
+
+/// Zamrożony pakiet instrukcji projektu tego biegu — albo zdanie, dlaczego go nie ma.
+///
+/// Osobno od reszty odczytu, bo „czy ten bieg cokolwiek zamroził" ma DWA źródła naraz: klucz
+/// w `run.json` i sam manifest na dysku. Bieg zapisany, zanim opis zaczął o tym mówić, ma jedno
+/// bez drugiego — więc pytamy o oba, zanim w ogóle sięgniemy po migawkę.
+///
+/// Migawka, której nie da się zweryfikować, oddaje ZDANIE, a nie wywraca odczytu całego biegu
+/// (niezmiennik 5): niesprawdzony pakiet nie ma prawa pojechać do okna jako wiedza, ale to nie
+/// jest powód, żeby historia tego biegu przestała się otwierać.
+fn instructions_of_run(
+    dir: &Path,
+    described: Option<&Description>,
+) -> (
+    Option<crate::inherit::instructions::InstructionSnapshot>,
+    Option<String>,
+) {
+    if described.is_some_and(|file| file.project_instructions.is_some())
+        || fs::symlink_metadata(dir.join("instructions/manifest.json")).is_ok()
+    {
+        match crate::inherit::instructions::read_snapshot(dir) {
+            Ok(package) => (Some(package), None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "The saved project instructions could not be verified: {error}"
+                )),
+            ),
+        }
+    } else {
+        (None, None)
+    }
+}
+
+/// Foldery, które ten bieg zostawił po sobie na dysku, przełożone na wiersze dla okna.
+///
+/// Wiersz nazywa się KROKIEM, nie kluczem pracy: człowiek szuka na tej liście tego, co widział
+/// na ekranie biegu. Kopia robocza, która nie należy do żadnego kroku, dostaje nazwę zastępczą,
+/// bo wiersz bez nazwy jest wierszem, którego nie da się z niczym zestawić.
+///
+/// Lista, której nie da się przeczytać, to pusta lista i JEDNO ZDANIE, nie awaria odczytu
+/// (niezmiennik 5). Zdanie mówi wprost, że nic nie zostało usunięte — czyta je ktoś, kto stoi
+/// przy przycisku usuwającym i musi wiedzieć, w jakim stanie jest dysk.
+fn result_folders_of_run(
+    dir: &Path,
+    steps: &[PastStepWire],
+) -> (Vec<ResultFolderWire>, Option<String>) {
+    match super::run::kept_folders_in(dir) {
         Ok(folders) => (
             folders
                 .into_iter()
@@ -594,41 +652,19 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
                 "Loadout could not read the kept folders: {error}. Nothing was removed."
             )),
         ),
-    };
-    let result_problem = match (result_problem, instruction_problem) {
-        (Some(one), Some(other)) => Some(format!("{one} {other}")),
-        (one, other) => one.or(other),
-    };
-    let result_problem = match (result_problem, saved_results_problem) {
-        (Some(one), Some(other)) => Some(format!("{one} {other}")),
-        (one, other) => one.or(other),
-    };
-    let said = match (head.said, result_problem) {
-        (Some(one), Some(other)) => Some(format!("{one} {other}")),
-        (one, other) => one.or(other),
-    };
+    }
+}
 
-    Ok(PastRunWire {
-        saved_input,
-        saved_input_said,
-        folder: head.folder,
-        when: head.when,
-        title: head.title,
-        state: head.state,
-        workflow_file: head.workflow_file,
-        steps,
-        // Przekazania są prawdziwe niezależnie od `run.json`: to osobne pliki z własnym
-        // front-matterem, więc bieg z zepsutym opisem nadal pokazuje, co jego kroki oddały.
-        handoffs,
-        // Osobne od `said`: tamto mówi wyłącznie o nieczytelnym `run.json`, a jedno pole na oba
-        // fakty złamałoby zasadę jednego miejsca dla jednego faktu (niezmiennik 13).
-        handoffs_said,
-        branches,
-        result_folders,
-        saved_results,
-        reflection,
-        said,
-    })
+/// Dwa kłopoty, jedno pole: sklejenie zdań, które jadą do okna tym samym drutem.
+///
+/// Rzeczy, które mogą pójść nie tak przy otwieraniu biegu, jest kilka, a pole na zdanie jest
+/// jedno. Zdanie o drugiej z nich nie ma prawa zjeść zdania o pierwszej — człowiek dostaje oba
+/// albo to jedno, które w ogóle jest.
+fn both_sentences(one: Option<String>, other: Option<String>) -> Option<String> {
+    match (one, other) {
+        (Some(one), Some(other)) => Some(format!("{one} {other}")),
+        (one, other) => one.or(other),
+    }
 }
 
 fn saved_input_in(project: &Path, dir: &Path) -> (Option<SavedInputWire>, Option<String>) {

@@ -1,5 +1,8 @@
 //! WF-15: rzeczywisty pomiar → edycja zestawu → odczyt tablicy, bez nowej oceny według formularza.
 
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::assigning_clones)]
+
 use std::error::Error;
 use std::fs;
 use std::sync::Arc;

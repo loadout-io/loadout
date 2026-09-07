@@ -1,5 +1,9 @@
 //! WF-28: zwykły graf konfiguruje usługę i przekazuje narzędzia obu sesjom.
 //! Dubler zastępuje model, nie konfigurację vendora, host ani proces usługi.
+
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::match_wildcard_for_single_variants)]
+#![allow(clippy::cast_possible_truncation)]
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};

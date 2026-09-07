@@ -1,4 +1,5 @@
 //! WF-10 RED: dwa prawdziwe checkpointy, jeden oryginał odpowiedzi i żaden broadcast zgody.
+#![allow(clippy::too_many_lines)]
 #![allow(clippy::panic)]
 use loadout_lib::commands::checkpoint::CheckpointResult;
 use loadout_lib::commands::run::run_workflow_inner;

@@ -1,5 +1,7 @@
 //! WF-18: wyrocznia wykonuje własne asercje, a obcy stdout pozostaje danymi.
 
+#![allow(clippy::too_many_lines)]
+
 use loadout_lib::commands::{Drivers, RunControl, RunDeps};
 use loadout_lib::ipc::line_channel;
 use loadout_lib::store::Store;

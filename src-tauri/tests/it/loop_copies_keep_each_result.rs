@@ -4,6 +4,8 @@
 //! podawało drugiej kopii historię pierwszej. Czytamy pliki wskazane przez rzeczywisty
 //! `RunSpec` w chwili startu konsumenta, nie cały katalog wyników znaleziony po biegu.
 
+#![allow(clippy::struct_excessive_bools, clippy::struct_field_names)]
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;

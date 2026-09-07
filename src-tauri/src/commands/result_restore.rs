@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::input_snapshot::Entry;
 use super::lead_start::RunRef;
-use crate::engine::supervisor::{self, PrivateFileModePolicy, PublicationRoot};
+use crate::engine::supervisor::{self, PrivateFileHandle, PrivateFileModePolicy, PublicationRoot};
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
@@ -68,114 +68,178 @@ pub async fn set_kept(
         .open_private_existing(&relative, PrivateFileModePolicy::ExactOwnerOnly)
         .map_err(unavailable)?;
     if kept {
-        let oid = match &result {
-            super::run::SavedCopy::Git { oid } => {
-                tree(project, oid).await?;
-                Some(oid.as_str())
-            }
-            super::run::SavedCopy::Folder { .. } => {
-                super::run::read_saved_folder(&run_dir, result_id, &result).map_err(unavailable)?;
-                None
-            }
-            _ => return Err(unavailable("there is no complete result to keep")),
-        };
+        let oid = complete_result_oid(project, &run_dir, result_id, &result).await?;
         let record = json!({"schema":1,"source":{"workspace":project,"runId":run_id},"resultId":result_id,"result":result,"reference":oid.map(|_| &reference)});
-        let encoded = serde_json::to_vec(&record).map_err(unavailable)?;
-        if let Some(existing) = &existing {
-            let old: Value =
-                serde_json::from_slice(&held.read_regular(&relative, true).map_err(unavailable)?)
-                    .map_err(unavailable)?;
-            if old != record
-                || !held
-                    .validate_private_identity(&relative, existing.identity())
-                    .map_err(unavailable)?
-            {
-                return Err(unavailable(
-                    "the kept-result record changed; nothing was overwritten",
-                ));
-            }
-        } else {
-            crate::durable_file::DurableFilePublisher::new(&run_dir)
-                .atomic_create_if_absent(
-                    &run_dir.join(&relative),
-                    &encoded,
-                    crate::durable_file::ModePolicy::Exact(crate::durable_file::PRIVATE_FILE_MODE),
-                )
-                .map_err(unavailable)?;
-        }
+        write_kept_record(&held, &run_dir, &relative, existing.as_ref(), &record)?;
         // Zapis pinu jest pierwszy: awaria refa ma blokować retencję, nie udawać sukcesu.
         if let Some(oid) = oid {
-            let zero = "0".repeat(oid.len());
-            let current = git(
-                project,
-                &["rev-parse", "--verify", &reference],
-                Vec::new(),
-                1024,
-            )
-            .await;
-            match current {
-                Ok(current) if std::str::from_utf8(&current).ok().map(str::trim) == Some(oid) => {}
-                Ok(_) => {
-                    return Err(unavailable(
-                        "the protection reference points to a different result",
-                    ));
-                }
-                Err(_) => {
-                    git(
-                        project,
-                        &["update-ref", &reference, oid, &zero],
-                        Vec::new(),
-                        1024,
-                    )
-                    .await?;
-                }
-            }
-            let checked = git(
-                project,
-                &["rev-parse", "--verify", &reference],
-                Vec::new(),
-                1024,
-            )
-            .await?;
-            if std::str::from_utf8(&checked).ok().map(str::trim) != Some(oid) {
-                return Err(unavailable("the result protection could not be verified"));
-            }
+            pin_protection_reference(project, &reference, oid).await?;
         }
     } else if let Some(existing) = existing {
-        let record: Value =
-            serde_json::from_slice(&held.read_regular(&relative, true).map_err(unavailable)?)
-                .map_err(unavailable)?;
-        if record.pointer("/source/workspace") != Some(&json!(project))
-            || record.pointer("/source/runId").and_then(Value::as_str) != Some(run_id)
-            || record.get("resultId").and_then(Value::as_str) != Some(result_id)
-            || record.get("result") != Some(&serde_json::to_value(&result).map_err(unavailable)?)
-        {
-            return Err(unavailable(
-                "the kept-result identity changed; review it again",
-            ));
-        }
-        if let super::run::SavedCopy::Git { oid } = &result {
-            git(
-                project,
-                &["update-ref", "-d", &reference, oid],
-                Vec::new(),
-                1024,
-            )
-            .await?;
-        }
-        if !held
-            .remove_regular_file_if_identity(&relative, existing.identity())
-            .map_err(unavailable)?
-        {
-            return Err(unavailable(
-                "the kept-result record changed during cleanup approval",
-            ));
-        }
+        check_kept_identity(&held, &relative, project, run_id, result_id, &result)?;
+        drop_kept_record(project, &reference, &result, &held, &relative, &existing).await?;
     }
     held.validate_path_identity(&run_dir).map_err(unavailable)?;
     Ok(
         json!({"kept":kept,"said":if kept { "This result will be kept." } else { "Cleanup may remove this result. No files were removed now." }}),
     )
+}
+
+/// Wynik wolno przypiąć dopiero wtedy, gdy jego pliki dają się DZIŚ przeczytać: commit oddaje
+/// swój `oid` do pinu, zapisany folder oddaje `None`, a wynik bez kompletu plików jest odmową.
+async fn complete_result_oid<'a>(
+    project: &Path,
+    run_dir: &Path,
+    result_id: &str,
+    result: &'a super::run::SavedCopy,
+) -> Result<Option<&'a str>, String> {
+    match result {
+        super::run::SavedCopy::Git { oid } => {
+            tree(project, oid).await?;
+            Ok(Some(oid.as_str()))
+        }
+        super::run::SavedCopy::Folder { .. } => {
+            super::run::read_saved_folder(run_dir, result_id, result).map_err(unavailable)?;
+            Ok(None)
+        }
+        _ => Err(unavailable("there is no complete result to keep")),
+    }
+}
+
+/// Pierwsze przypięcie tworzy rekord, powtórzone musi zastać dokładnie ten sam rekord pod tym
+/// samym inode'em. Nadpisania nie ma z premedytacją: zjadłoby cudzą decyzję bez śladu.
+fn write_kept_record(
+    held: &PublicationRoot,
+    run_dir: &Path,
+    relative: &Path,
+    existing: Option<&PrivateFileHandle>,
+    record: &Value,
+) -> Result<(), String> {
+    let encoded = serde_json::to_vec(record).map_err(unavailable)?;
+    if let Some(existing) = existing {
+        let old: Value =
+            serde_json::from_slice(&held.read_regular(relative, true).map_err(unavailable)?)
+                .map_err(unavailable)?;
+        if old != *record
+            || !held
+                .validate_private_identity(relative, existing.identity())
+                .map_err(unavailable)?
+        {
+            return Err(unavailable(
+                "the kept-result record changed; nothing was overwritten",
+            ));
+        }
+    } else {
+        crate::durable_file::DurableFilePublisher::new(run_dir)
+            .atomic_create_if_absent(
+                &run_dir.join(relative),
+                &encoded,
+                crate::durable_file::ModePolicy::Exact(crate::durable_file::PRIVATE_FILE_MODE),
+            )
+            .map_err(unavailable)?;
+    }
+    Ok(())
+}
+
+/// Ref ochronny ma po zapisie wskazywać DOKŁADNIE ten commit. Cudzy ref o tej samej nazwie jest
+/// odmową, nie okazją do nadpisania, a stan po zapisie jest czytany ponownie — bo między jednym
+/// a drugim mieści się cała podmiana.
+async fn pin_protection_reference(
+    project: &Path,
+    reference: &str,
+    oid: &str,
+) -> Result<(), String> {
+    let zero = "0".repeat(oid.len());
+    let current = git(
+        project,
+        &["rev-parse", "--verify", reference],
+        Vec::new(),
+        1024,
+    )
+    .await;
+    match current {
+        Ok(current) if std::str::from_utf8(&current).ok().map(str::trim) == Some(oid) => {}
+        Ok(_) => {
+            return Err(unavailable(
+                "the protection reference points to a different result",
+            ));
+        }
+        Err(_) => {
+            git(
+                project,
+                &["update-ref", reference, oid, &zero],
+                Vec::new(),
+                1024,
+            )
+            .await?;
+        }
+    }
+    let checked = git(
+        project,
+        &["rev-parse", "--verify", reference],
+        Vec::new(),
+        1024,
+    )
+    .await?;
+    if std::str::from_utf8(&checked).ok().map(str::trim) != Some(oid) {
+        return Err(unavailable("the result protection could not be verified"));
+    }
+    Ok(())
+}
+
+/// Zgoda na sprzątanie musi trafić w ten sam wynik, który ktoś kiedyś przypiął: rekord ma nadal
+/// mówić o tym projekcie, tym biegu i tym wyniku. Inaczej decyzja dotyczy czegoś innego.
+fn check_kept_identity(
+    held: &PublicationRoot,
+    relative: &Path,
+    project: &Path,
+    run_id: &str,
+    result_id: &str,
+    result: &super::run::SavedCopy,
+) -> Result<(), String> {
+    let record: Value =
+        serde_json::from_slice(&held.read_regular(relative, true).map_err(unavailable)?)
+            .map_err(unavailable)?;
+    if record.pointer("/source/workspace") != Some(&json!(project))
+        || record.pointer("/source/runId").and_then(Value::as_str) != Some(run_id)
+        || record.get("resultId").and_then(Value::as_str) != Some(result_id)
+        || record.get("result") != Some(&serde_json::to_value(result).map_err(unavailable)?)
+    {
+        return Err(unavailable(
+            "the kept-result identity changed; review it again",
+        ));
+    }
+    Ok(())
+}
+
+/// Zdejmowanie pinu w kolejności, która nie zostawia sieroty: najpierw znika ref ochronny, potem
+/// rekord — i tylko wtedy, gdy nazwa nadal prowadzi do wcześniej sprawdzonego inode'u.
+async fn drop_kept_record(
+    project: &Path,
+    reference: &str,
+    result: &super::run::SavedCopy,
+    held: &PublicationRoot,
+    relative: &Path,
+    existing: &PrivateFileHandle,
+) -> Result<(), String> {
+    if let super::run::SavedCopy::Git { oid } = result {
+        git(
+            project,
+            &["update-ref", "-d", reference, oid],
+            Vec::new(),
+            1024,
+        )
+        .await?;
+    }
+    if !held
+        .remove_regular_file_if_identity(relative, existing.identity())
+        .map_err(unavailable)?
+    {
+        return Err(unavailable(
+            "the kept-result record changed during cleanup approval",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn has_pins(run_dir: &Path) -> io::Result<bool> {

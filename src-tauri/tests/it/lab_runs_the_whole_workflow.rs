@@ -1,5 +1,8 @@
 //! WF-17: rzeczywisty wykonawca, równoległe sesje, pętla i zewnętrzny Check stdin.
 
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::expect_used)]
+
 use std::error::Error;
 use std::fs;
 use std::io::Read;

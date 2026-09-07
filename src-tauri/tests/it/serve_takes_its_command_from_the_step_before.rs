@@ -23,6 +23,7 @@
 
 // `expect()` w teście: panika w teście JEST jego wynikiem. Ten sam idiom i ten sam powód, co
 // w pozostałych plikach tego celu.
+#![allow(clippy::default_trait_access)]
 #![allow(clippy::expect_used)]
 
 use loadout_lib::workflow::check::{Level, check, check_to_run};

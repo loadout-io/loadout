@@ -1,4 +1,6 @@
 //! WF-18: właściwy bieg i właściwa tablica, nie sam parser protokołu.
+
+#![allow(clippy::too_many_lines)]
 use loadout_lib::commands::{Drivers, RunControl, RunDeps};
 use loadout_lib::ipc::line_channel;
 use loadout_lib::store::Store;

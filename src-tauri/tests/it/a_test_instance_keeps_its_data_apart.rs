@@ -4,6 +4,7 @@
 //! to, co dostał, więc kryterium sądzi ŚRODOWISKO, które naprawdę dojechało do dziecka —
 //! nie wartość policzoną w funkcji, której nikt nie woła.
 
+#![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
 #![allow(clippy::expect_used, clippy::too_many_lines, clippy::similar_names)]
 

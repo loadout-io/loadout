@@ -1,5 +1,6 @@
 //! WF-09 RED: rzeczywisty handler mostu czyta dokładny bieg z workspace rozmowy.
 
+#![allow(clippy::unreadable_literal)]
 #![allow(clippy::panic)]
 use std::error::Error;
 use std::fs;

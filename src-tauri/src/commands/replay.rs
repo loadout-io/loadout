@@ -12,11 +12,12 @@ use serde_json::{Value, json};
 use super::Part;
 use super::lead_start::RunRef;
 use super::workflows::{
-    WorkflowPlace, library_workflows, list_workflow_definitions_inner, project_workflows,
+    WorkflowEntry, WorkflowPlace, library_workflows, list_workflow_definitions_inner,
+    project_workflows,
 };
 use crate::library::agents::{Agent, Overrides, Tools, policy_of, read_agent_directory, resolve};
 use crate::library::definition::Definition;
-use crate::workflow::{Step, WorkflowFile};
+use crate::workflow::{AgentStep, Step, WorkflowFile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,6 +178,116 @@ pub fn copy_recorded_workflow(
 }
 
 pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayMaterial>, String> {
+    let SavedRunToRepeat {
+        id,
+        mode,
+        source_bytes,
+        saved,
+        budget_usd,
+        source_dir,
+    } = saved_run_to_repeat(project, input)?;
+    let recorded_graph: WorkflowFile = serde_json::from_value(
+        saved
+            .get("workflow_snapshot")
+            .cloned()
+            .ok_or_else(|| unavailable("the workflow was not saved"))?,
+    )
+    .map_err(|_| unavailable("the saved workflow cannot be read"))?;
+    let (current, revision, workflow) = todays_workflow_for(home, project, &recorded_graph.id)?;
+    let changed =
+        serde_json::to_value(&recorded_graph).ok() != serde_json::to_value(&current.workflow).ok();
+    let graph = if mode == ReplayMode::Recorded {
+        recorded_graph
+    } else {
+        current.workflow.clone()
+    };
+    let part = chosen_part(input, &graph)?;
+    let unrolled = crate::workflow::unroll::unroll(&graph);
+    let wanted = super::run::which_nodes(&unrolled, &graph, part.as_ref());
+    let memory_sources = if mode == ReplayMode::Recorded {
+        super::memory_sources::read_bound(&source_dir)
+            .map_err(|error| unavailable(&error.to_string()))?
+    } else {
+        None
+    };
+    let recorded = RecordedSource {
+        mode,
+        saved: &saved,
+        source_dir: &source_dir,
+        memory_sources: memory_sources.as_ref(),
+    };
+    let SelectedSettings {
+        effective,
+        skills,
+        mut policy_revisions,
+        configurations,
+    } = selected_settings(
+        home,
+        &graph,
+        &current.workflow,
+        &unrolled,
+        &wanted,
+        &recorded,
+    )?;
+    policy_revisions.insert(workflow.clone(), revision.clone());
+    let (input_snapshot, instructions) = recorded_starting_files(&recorded)?;
+    let copies = wanted.iter().filter(|&&one| one).count();
+    let source = RunRef {
+        workspace: project.to_path_buf(),
+        run_id: id,
+    };
+    let preview = preview_of(
+        mode,
+        &source,
+        &graph.name,
+        copies,
+        &configurations,
+        changed,
+        budget_usd,
+    );
+    Ok(Arc::new(ReplayMaterial {
+        source,
+        source_dir,
+        mode,
+        workflow,
+        workflow_revision: revision,
+        graph_bytes: serde_json::to_vec(&graph).map_err(|error| error.to_string())?,
+        graph,
+        task: saved
+            .get("task")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
+        budget_usd,
+        part,
+        input: input_snapshot,
+        effective,
+        skills,
+        instructions,
+        memory_sources,
+        preview,
+        source_revision: crate::durable_file::revision_of(&source_bytes),
+        policy_revisions,
+    }))
+}
+
+/// Wskazany zapis w kształcie, w jakim wolno go powtarzać: bez tych sześciu rzeczy podgląd
+/// nie ma o czym mówić.
+struct SavedRunToRepeat {
+    id: String,
+    mode: ReplayMode,
+    source_bytes: Vec<u8>,
+    saved: Value,
+    budget_usd: Option<f64>,
+    source_dir: PathBuf,
+}
+
+/// Czyta zapis wskazany do powtórzenia i odrzuca wszystko, czego powtórzyć nie wolno: cudzy
+/// folder, brak jawnego wyboru trybu, bieg, który jeszcze się nie ustalił, i sufit wydatku,
+/// którego nie da się przeczytać.
+///
+/// Stoi przed jakąkolwiek pracą, bo każda z tych odmów ma zabrzmieć, zanim powstanie podgląd.
+fn saved_run_to_repeat(project: &Path, input: &Value) -> Result<SavedRunToRepeat, String> {
     if input.get("folder").is_some() || input.get("workspace").is_some() {
         return Err("Repeat only addresses the folder of this conversation.".to_owned());
     }
@@ -216,17 +327,29 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
         super::workspace_inputs::read_bound(&source_dir)
             .map_err(|error| unavailable(&error.to_string()))?;
     }
-    let recorded_graph: WorkflowFile = serde_json::from_value(
-        saved
-            .get("workflow_snapshot")
-            .cloned()
-            .ok_or_else(|| unavailable("the workflow was not saved"))?,
-    )
-    .map_err(|_| unavailable("the saved workflow cannot be read"))?;
+    Ok(SavedRunToRepeat {
+        id: id.to_owned(),
+        mode,
+        source_bytes,
+        saved,
+        budget_usd,
+        source_dir,
+    })
+}
+
+/// Dzisiejszy plik o tym samym identyfikatorze workflow: wpis, jego rewizja i ścieżka na półce.
+///
+/// Sufit praw czyta się z pliku, który stoi DZIŚ. Brak takiego pliku jest odmową, a nie cichym
+/// powrotem do praw z zapisu.
+fn todays_workflow_for(
+    home: &Path,
+    project: &Path,
+    workflow_id: &str,
+) -> Result<(WorkflowEntry, String, PathBuf), String> {
     let catalog =
         list_workflow_definitions_inner(home, Some(project)).map_err(|error| error.to_string())?;
     let (current, revision) = catalog.into_iter().find_map(|one| match one {
-        Definition::Healthy { value, revision } if value.workflow.id == recorded_graph.id => Some((value, revision)),
+        Definition::Healthy { value, revision } if value.workflow.id == workflow_id => Some((value, revision)),
         _ => None,
     }).ok_or_else(|| "The current workflow is unavailable, so its current permissions cannot be checked. You can save the old workflow as a separate copy, but that does not authorize repeating this run.".to_owned())?;
     let workflow = match current.place {
@@ -234,18 +357,19 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
         WorkflowPlace::Library => library_workflows(home),
     }
     .join(&current.path);
-    let changed =
-        serde_json::to_value(&recorded_graph).ok() != serde_json::to_value(&current.workflow).ok();
-    let graph = if mode == ReplayMode::Recorded {
-        recorded_graph
-    } else {
-        current.workflow.clone()
-    };
+    Ok((current, revision, workflow))
+}
+
+/// Kawałek biegu wskazany przez człowieka: wszystko, jeden kafelek albo kafelek i to, co po nim.
+///
+/// Adresem jest identyfikator kafelka i tylko on — sesja ani próba nie mają prawa wybrać
+/// kafelka po cichu, a powtórka kafelka bierze wszystkie jego kopie.
+fn chosen_part(input: &Value, graph: &WorkflowFile) -> Result<Option<Part>, String> {
     let selection = input
         .get("selection")
         .ok_or_else(|| "Choose all steps or an exact step tile.".to_owned())?;
-    let part = match selection.get("kind").and_then(Value::as_str) {
-        Some("all") => None,
+    match selection.get("kind").and_then(Value::as_str) {
+        Some("all") => Ok(None),
         Some(kind @ ("step" | "onward")) => {
             let tile = selection
                 .get("step_id")
@@ -254,28 +378,52 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
             if !graph.steps.iter().any(|step| step.id() == tile) {
                 return Err("That is not a step tile in this workflow. A tile repeat includes all its copies; a session or attempt cannot silently select the tile.".to_owned());
             }
-            Some(if kind == "step" {
+            Ok(Some(if kind == "step" {
                 Part::Just(vec![tile.to_owned()])
             } else {
                 Part::Onward(tile.to_owned())
-            })
+            }))
         }
-        _ => return Err("Choose all, step or onward explicitly.".to_owned()),
-    };
-    let unrolled = crate::workflow::unroll::unroll(&graph);
-    let wanted = super::run::which_nodes(&unrolled, &graph, part.as_ref());
+        _ => Err("Choose all, step or onward explicitly.".to_owned()),
+    }
+}
+
+/// Zapis jako źródło ustawień: dokładnie to, z czego tryb `Recorded` odtwarza agenta, i nic
+/// poza tym. W trybie `Current` niesie sam tryb i pozostaje nietknięty.
+struct RecordedSource<'a> {
+    mode: ReplayMode,
+    saved: &'a Value,
+    source_dir: &'a Path,
+    memory_sources: Option<&'a super::memory_sources::Snapshot>,
+}
+
+/// Co wybrane kafelki wnoszą do startu: ustawienia agentów, ich pakiety skilli, rewizje
+/// przeczytanych praw i wiersze podglądu.
+struct SelectedSettings {
+    effective: BTreeMap<String, Agent>,
+    skills: BTreeMap<String, super::run::SavedSkillBundles>,
+    policy_revisions: BTreeMap<PathBuf, String>,
+    configurations: Vec<Value>,
+}
+
+/// Ustawienia agentów dla wybranych węzłów, policzone pod dzisiejszym sufitem praw.
+///
+/// Kafelek, którego dziś nie ma w workflow, i agent, którego dziś nie ma w bibliotece, są
+/// odmową: powtórka nie ma prawa uruchomić kroku, którego uprawnień nikt nie może sprawdzić.
+fn selected_settings(
+    home: &Path,
+    graph: &WorkflowFile,
+    todays_graph: &WorkflowFile,
+    unrolled: &crate::workflow::unroll::Unrolled,
+    wanted: &[bool],
+    recorded: &RecordedSource<'_>,
+) -> Result<SelectedSettings, String> {
     let mut effective = BTreeMap::new();
     let mut skills = BTreeMap::new();
-    let memory_sources = if mode == ReplayMode::Recorded {
-        super::memory_sources::read_bound(&source_dir)
-            .map_err(|error| unavailable(&error.to_string()))?
-    } else {
-        None
-    };
-    let mut policy_revisions = BTreeMap::from([(workflow.clone(), revision.clone())]);
-    let agents = read_agent_directory(&home.join("agents")).map_err(|error| error.to_string())?;
+    let mut policy_revisions = BTreeMap::new();
     let mut configurations = Vec::new();
-    for (node, selected) in unrolled.nodes.iter().zip(&wanted) {
+    let agents = read_agent_directory(&home.join("agents")).map_err(|error| error.to_string())?;
+    for (node, selected) in unrolled.nodes.iter().zip(wanted) {
         if !selected {
             continue;
         }
@@ -283,7 +431,7 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
             continue;
         };
         let key = super::run::node_key_for(&step.id, node.turn, node.copy);
-        let current_step = current.workflow.steps.iter().find_map(|one| match one {
+        let current_step = todays_graph.steps.iter().find_map(|one| match one {
             Step::Agent(one) if one.id == step.id => Some(one), _ => None,
         }).ok_or_else(|| format!("{} is no longer in the current workflow. Review its permissions before repeating it.", step.name))?;
         // 2026-09: sufit należy do DZISIEJSZEGO kafelka. Stary agent pozostawiony w bibliotece
@@ -309,50 +457,8 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
         let ceiling = resolve(&today.agent, &overrides)
             .map_err(|error| error.to_string())?
             .agent;
-        if mode == ReplayMode::Recorded {
-            if let Some(snapshot) = &memory_sources {
-                snapshot
-                    .selected_for(&key)
-                    .map_err(|error| unavailable(&error.to_string()))?;
-            }
-            let mut frozen = saved
-                .get("steps")
-                .and_then(Value::as_array)
-                .and_then(|steps| {
-                    steps.iter().find(|one| {
-                        one.get("node_key").and_then(Value::as_str) == Some(key.as_str())
-                    })
-                })
-                .and_then(|one| one.get("effective"))
-                .cloned()
-                .ok_or_else(|| {
-                    unavailable(&format!("{} has no saved agent settings", step.name))
-                })?;
-            if let Some(object) = frozen.as_object_mut() {
-                object.remove("toolsNote");
-            }
-            let agent: Agent = serde_json::from_value(frozen)
-                .map_err(|_| unavailable("saved agent settings cannot be read"))?;
-            permissions_within(&agent, &ceiling)?;
-            let bundles = super::run::saved_skill_bundles(&source_dir, &key)
-                .map_err(|error| unavailable(&error.to_string()))?;
-            if !agent.skills.is_empty() && bundles.agent.is_none() {
-                return Err(unavailable(&format!(
-                    "{} has no saved skill files",
-                    step.name
-                )));
-            }
-            if !step.borrow.skills.is_empty() && bundles.borrowed.is_none() {
-                return Err(unavailable(&format!(
-                    "{} has no saved borrowed skills",
-                    step.name
-                )));
-            }
-            if step.borrow.agent.is_some() || step.borrow.learnings.is_some() {
-                return Err(unavailable(
-                    "selected native roles or learning notes were not saved as replayable source files",
-                ));
-            }
+        if recorded.mode == ReplayMode::Recorded {
+            let (agent, bundles) = recorded_agent(recorded, step, &key, &ceiling)?;
             configurations.push(json!({"nodeKey":key,"name":step.name,"model":agent.model,"runsWith":agent.runs_with,"fileAccess":agent.file_access}));
             skills.insert(key.clone(), bundles);
             effective.insert(key, agent);
@@ -360,27 +466,117 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
             configurations.push(json!({"nodeKey":key,"name":step.name,"model":ceiling.model,"runsWith":ceiling.runs_with,"fileAccess":ceiling.file_access}));
         }
     }
-    let input_snapshot = if mode == ReplayMode::Recorded {
-        let snapshot = super::input_snapshot::read(&source_dir)
+    Ok(SelectedSettings {
+        effective,
+        skills,
+        policy_revisions,
+        configurations,
+    })
+}
+
+/// Agent odtworzony z zapisu razem z jego plikami skilli — nigdy z dzisiejszej biblioteki.
+///
+/// Zapisane ustawienia muszą zmieścić się w dzisiejszym suficie, a brakujący plik źródłowy
+/// (skille, pożyczone skille, pożyczona rola, notatki z nauki) jest odmową, nie cichym
+/// pominięciem.
+fn recorded_agent(
+    recorded: &RecordedSource<'_>,
+    step: &AgentStep,
+    key: &str,
+    ceiling: &Agent,
+) -> Result<(Agent, super::run::SavedSkillBundles), String> {
+    if let Some(snapshot) = recorded.memory_sources {
+        snapshot
+            .selected_for(key)
             .map_err(|error| unavailable(&error.to_string()))?;
-        if saved.pointer("/input_snapshot/id").and_then(Value::as_str) != Some(snapshot.id()) {
-            return Err(unavailable(
-                "the starting files do not belong to this saved run",
-            ));
-        }
-        Some(snapshot)
-    } else {
-        None
-    };
-    let instructions = if mode == ReplayMode::Recorded {
-        Some(
-            crate::inherit::instructions::read_snapshot(&source_dir)
-                .map_err(|error| unavailable(&error.to_string()))?,
-        )
-    } else {
-        None
-    };
-    let copies = wanted.iter().filter(|&&one| one).count();
+    }
+    let mut frozen = recorded
+        .saved
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| {
+            steps
+                .iter()
+                .find(|one| one.get("node_key").and_then(Value::as_str) == Some(key))
+        })
+        .and_then(|one| one.get("effective"))
+        .cloned()
+        .ok_or_else(|| unavailable(&format!("{} has no saved agent settings", step.name)))?;
+    if let Some(object) = frozen.as_object_mut() {
+        object.remove("toolsNote");
+    }
+    let agent: Agent = serde_json::from_value(frozen)
+        .map_err(|_| unavailable("saved agent settings cannot be read"))?;
+    permissions_within(&agent, ceiling)?;
+    let bundles = super::run::saved_skill_bundles(recorded.source_dir, key)
+        .map_err(|error| unavailable(&error.to_string()))?;
+    if !agent.skills.is_empty() && bundles.agent.is_none() {
+        return Err(unavailable(&format!(
+            "{} has no saved skill files",
+            step.name
+        )));
+    }
+    if !step.borrow.skills.is_empty() && bundles.borrowed.is_none() {
+        return Err(unavailable(&format!(
+            "{} has no saved borrowed skills",
+            step.name
+        )));
+    }
+    if step.borrow.agent.is_some() || step.borrow.learnings.is_some() {
+        return Err(unavailable(
+            "selected native roles or learning notes were not saved as replayable source files",
+        ));
+    }
+    Ok((agent, bundles))
+}
+
+/// Pliki startowe i instrukcje z zapisu; w trybie `Current` nie ma ich wcale.
+///
+/// Migawka wejścia musi należeć DO TEGO zapisu — inaczej powtórka wystartowałaby na cudzych
+/// plikach, wyglądając na tę samą robotę.
+fn recorded_starting_files(
+    recorded: &RecordedSource<'_>,
+) -> Result<
+    (
+        Option<super::input_snapshot::InputSnapshot>,
+        Option<crate::inherit::instructions::InstructionSnapshot>,
+    ),
+    String,
+> {
+    if recorded.mode != ReplayMode::Recorded {
+        return Ok((None, None));
+    }
+    let snapshot = super::input_snapshot::read(recorded.source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?;
+    if recorded
+        .saved
+        .pointer("/input_snapshot/id")
+        .and_then(Value::as_str)
+        != Some(snapshot.id())
+    {
+        return Err(unavailable(
+            "the starting files do not belong to this saved run",
+        ));
+    }
+    let instructions = crate::inherit::instructions::read_snapshot(recorded.source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?;
+    Ok((Some(snapshot), Some(instructions)))
+}
+
+/// Podgląd: wszystko, co człowiek przeczyta, zanim zatwierdzi powtórkę.
+///
+/// Zdania stoją tu obok liczb z premedytacją. Ekran, który pokazuje same liczby, każe
+/// zgadywać, na co właśnie idzie zgoda — a zgoda na powtórkę jest zgodą na wydatek i na
+/// dzisiejsze prawa, nie na „to samo co ostatnio".
+fn preview_of(
+    mode: ReplayMode,
+    source: &RunRef,
+    title: &str,
+    copies: usize,
+    configurations: &[Value],
+    changed: bool,
+    budget_usd: Option<f64>,
+) -> Value {
     let said = match mode {
         ReplayMode::Recorded => format!(
             "Repeat the saved setup: {copies} copies, using the saved starting files. Today's permissions still apply."
@@ -389,7 +585,23 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
             "Repeat the current setup: {copies} copies. This uses today's workflow and models, not a reconstruction of the saved setup."
         ),
     };
-    let budget_said = budget_usd.map_or_else(
+    let budget_said = spending_limit_said(budget_usd);
+    let configuration_said = agent_settings_said(configurations);
+    let differences_said = if changed {
+        vec!["Today's workflow differs from this saved run. The setup selected above determines which steps will run.".to_owned()]
+    } else {
+        vec!["The workflow has not changed. The agent settings above are the settings selected for this repeat.".to_owned()]
+    };
+    json!({"mode":mode,"source":{"workspace":source.workspace,"runId":source.run_id},"title":title,
+        "copies":copies,"settings":configurations,"workflowChanged":changed,"costBoundUsd":budget_usd,
+        "budgetSaid":budget_said,"configurationSaid":configuration_said,"differencesSaid":differences_said,
+        "said":said,"limitations":["External services and model replies may differ.","The earlier native agent app context and version may not be available."]})
+}
+
+/// Zdanie o suficie wydatku. Jawne „bez limitu" też jest zdaniem — cisza w tym miejscu
+/// czytałaby się jak brak decyzji.
+fn spending_limit_said(budget_usd: Option<f64>) -> String {
+    budget_usd.map_or_else(
         || "No spending limit is set for this repeat.".to_owned(),
         |limit| {
             let amount = if (limit * 100.0).fract() == 0.0 {
@@ -399,8 +611,15 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
             };
             format!("Spending limit: ${amount} for this new run.")
         },
-    );
-    let configuration_said: Vec<String> = configurations
+    )
+}
+
+/// Wiersz na kafelek: co pojedzie, w czym i z jakim dostępem do plików.
+///
+/// Nieznana wartość zostaje nazwana wprost („Unavailable"), bo puste miejsce w tym wierszu
+/// czytałoby się jak zgoda na cokolwiek.
+fn agent_settings_said(configurations: &[Value]) -> Vec<String> {
+    configurations
         .iter()
         .map(|one| {
             let text = |key| {
@@ -428,43 +647,7 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
                 access
             )
         })
-        .collect();
-    let differences_said = if changed {
-        vec!["Today's workflow differs from this saved run. The setup selected above determines which steps will run.".to_owned()]
-    } else {
-        vec!["The workflow has not changed. The agent settings above are the settings selected for this repeat.".to_owned()]
-    };
-    let preview = json!({"mode":mode,"source":{"workspace":project,"runId":id},"title":graph.name,
-        "copies":copies,"settings":configurations,"workflowChanged":changed,"costBoundUsd":budget_usd,
-        "budgetSaid":budget_said,"configurationSaid":configuration_said,"differencesSaid":differences_said,
-        "said":said,"limitations":["External services and model replies may differ.","The earlier native agent app context and version may not be available."]});
-    Ok(Arc::new(ReplayMaterial {
-        source: RunRef {
-            workspace: project.to_path_buf(),
-            run_id: id.to_owned(),
-        },
-        source_dir,
-        mode,
-        workflow,
-        workflow_revision: revision,
-        graph_bytes: serde_json::to_vec(&graph).map_err(|error| error.to_string())?,
-        graph,
-        task: saved
-            .get("task")
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned),
-        budget_usd,
-        part,
-        input: input_snapshot,
-        effective,
-        skills,
-        instructions,
-        memory_sources,
-        preview,
-        source_revision: crate::durable_file::revision_of(&source_bytes),
-        policy_revisions,
-    }))
+        .collect()
 }
 
 fn permissions_within(requested: &Agent, ceiling: &Agent) -> Result<(), String> {

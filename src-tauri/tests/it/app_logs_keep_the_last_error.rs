@@ -1,4 +1,7 @@
 //! WF-28: usunięcie żywego procesu nie odbiera przyczyny i ograniczonego ogona.
+
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::default_trait_access, clippy::unreadable_literal)]
 use std::error::Error;
 use std::fs;
 use std::sync::Arc;
