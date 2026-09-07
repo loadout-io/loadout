@@ -179,6 +179,7 @@ mod fresh_copy_degrades_loudly;
 mod fresh_copy_isolates_steps;
 mod handoff_attachment_is_openable;
 mod handoff_index_for_fan_in;
+mod handoff_keeps_substance_under_cap;
 mod handoff_reaches_next_prompt;
 mod handoff_written_after_step;
 mod handoffs_are_scoped_to_one_folder;
