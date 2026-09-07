@@ -498,6 +498,7 @@ mod two_heavy_steps_wait_for_each_other;
 mod typable_names_match_the_window;
 mod vendor_args_keep_their_filtering;
 mod vendor_options_reach_the_argv;
+mod work_plan_versions_are_immutable;
 mod workflow_check_cycles;
 mod workflow_check_ids;
 mod workflow_check_islands;

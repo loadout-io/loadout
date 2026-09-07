@@ -79,6 +79,9 @@ pub mod recovery;
 /// Umiejetnosci: jeden folder, dwa katalogi, szesciu vendorow. Wypelnia T-18 i T-19.
 pub mod skills;
 
+/// Wersjonowany plan konkretnego biegu, publikowany atomowo jako pliki będące prawdą. WP-01.
+pub mod work_plan;
+
 /// Format pliku workflow i walidacja przy zapisie. Wypelnia T-12.
 pub mod workflow;
 
