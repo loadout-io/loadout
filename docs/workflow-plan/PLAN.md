@@ -1,6 +1,6 @@
 # Wspólny plan między krokami — plan wykonawczy
 
-Zlecenie: wspólny plan workflow, etapy WP-01…WP-07.
+Zlecenie: [`CLAUDE-HANDOFF.md`](CLAUDE-HANDOFF.md) — wspólny plan workflow, etapy WP-01…WP-07.
 Ten plik jest **planem wykonania**, wymaganym przez §13 zlecenia: rzeczywiste ścieżki,
 zależności od etapów Context (CT) i test dla każdego etapu.
 
