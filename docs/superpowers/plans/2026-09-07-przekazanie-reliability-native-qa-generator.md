@@ -76,7 +76,7 @@ kolektor nie jest wpięty w ten check.
 | M-01 | zrobione, zacommitowane | `cargo test --lib` w meetnotes → 3731/0 |
 | M-02 | zrobione | `commands::queue_ownership_tests` → 5/5 |
 | M-03 | zrobione | `e2e/processing` → 14/14 (chromium + webkit) |
-| M-04 | **zrobione**, z jednym niezmierzonym kryterium i jednym znaleziskiem | §4a |
+| M-04 | **zrobione**; wszystkie scenariusze zmierzone, plus jedno znalezisko | §4a |
 | E-01 | macierz zrobiona; z §11 wykonane punkty **1, 2, 4, 6 i 7** | §4 i §4a |
 
 | P-02 (kafelek) | zrobione | `npx vitest run src/sections/workflows/start-and-leave-has-a-panel.test.tsx` → 10/10 |
@@ -214,10 +214,35 @@ Trzy nagrania, bieg prowadzony **wyłącznie przez okno**, klawiaturą, z ognisk
 | uczciwość porażki | whisper naprawdę policzył VAD na urządzeniu i oddał *„No speech detected in the recording — nothing to transcribe"*; etapy zeszły na **`Not run`**, nie na fałszywe zaliczenie |
 | **brak utraty audio** | karta mówi „The recording's audio is untouched" — **sprawdzone na dysku**: trzy pliki WAV zachowały rozmiar co do bajta i swój `mtime` |
 
-**Czego NIE udało się zobaczyć:** napisu `Cancelling` w trakcie trwania ciężkiego kroku. Zadanie
-padło po ~5 sekundach, więc nie ma okna, w którym dałoby się nacisnąć Cancel ręką. To jedno
-kryterium zostaje przypięte specyfikacją `e2e/processing` (14/14), a nie żywym biegiem — i mówię
-to wprost, zamiast meldować je jako wykonane.
+#### `Cancelling` — zmierzone, po naprawieniu FIKSTURY, a nie po obniżeniu kryterium
+
+Pierwsze podejście nie zobaczyło tego napisu i napisałem, że „nie ma okna, w którym dałoby się
+nacisnąć Cancel ręką". To była prawda o mojej fiksturze, nie o produkcie: cisza kończy się
+odmową whispera po pięciu sekundach. Kryterium, którego nikt nie umie dosięgnąć, jest
+kryterium, którego nikt nie sprawdza — więc naprawiłem fiksturę.
+
+`say` to syntezator samego macOS, więc dźwięk powstaje z jednego, stałego zdania na tej maszynie:
+dalej niczyja rozmowa, dalej materiał testowy z definicji, ale prawdziwa mowa, którą whisper
+naprawdę transkrybuje tak długo, jak trzeba. Jedno nagranie, ~16 minut mowy (`bc00d20d`).
+
+Zaobserwowane przejście, w całości, na żywej instancji sterowanej wyłącznie przez okno:
+
+| Chwila | Co pokazał produkt |
+|---|---|
+| Cancel wciśnięty przy `Running 0:31` | transkrypcja **wciąż biegnie**, pasek postępu się przesuwa |
+| natychmiast po | pastylka **`Cancelling`** — NIE `Cancelled` — i zdanie **„Cancel requested — finishing the current step."** |
+| po dojściu do bezpiecznej granicy | pastylka **`Cancelled`**, karta w `NEEDS ATTENTION`, `Took 0:32`, trzy etapy `Not run`, przyciski Retry / Remove |
+| przez cały czas | plik audio **31 190 794 bajtów, bez zmiany** — sprawdzone na dysku |
+
+To jest dokładnie semantyka Cancel wymagana w M-02: anulowanie jest kooperatywne, więc nie wolno
+meldować, że praca stanęła, dopóki ona trwa.
+
+**Dwie rzeczy dla właściciela, obie zaobserwowane, nie wywnioskowane:** anulowanie zeszło DOPIERO
+po transkrypcji, a potok stanął następnie na summarizerze ze zdaniem *„[cloud-consent] this
+provider sends meeting content off-device; grant one-time consent before using it"* — brama
+prywatności odmawia domyślnie w świeżej bibliotece, zamiast po cichu wysłać. Oraz: karta pokazuje
+`Attempt 2` na nagraniu, które człowiek uruchomił RAZ; kolejka liczy zaparkowanie „Process later"
+jako próbę pierwszą. Kosmetyka, ale to jest liczba, po której człowiek poznaje, czy coś się ponawia.
 
 ### ZNALEZISKO: pamięć webview NIE jest objęta izolacją
 
@@ -277,11 +302,10 @@ kolejki na zasianych nagraniach — wszystko z liczbami w §4a. Zasianie idzie w
 aplikacji i cichym WAV-em, więc nie jest nagrywaniem: rola QA zabrania traktować prawdziwą rozmowę
 jak materiał testowy, a nie zabrania mieć plik audio.
 
-Zostają dwie rzeczy, obie nazwane wprost, żadna schowana pod „non-blocking":
-* napisu `Cancelling` w trakcie ciężkiego kroku nie dało się złapać ręką (zadanie padło po ~5 s);
-  to kryterium jest przypięte specyfikacją `e2e/processing`, nie żywym biegiem;
-* pamięć webview nie jest objęta izolacją i wnosi do instancji QA tytuły notatek człowieka —
-  znalezisko z tego biegu, z zweryfikowanym obejściem i z decyzją należącą do właściciela.
+Zmierzone zostało też `Cancelling` w trakcie ciężkiego kroku — po naprawieniu fikstury, nie po
+obniżeniu kryterium (§4a). Zostaje **jedno znalezisko**, nazwane wprost i nieschowane pod
+„non-blocking": pamięć webview nie jest objęta izolacją i wnosi do instancji QA tytuły notatek
+człowieka. Obejście jest zweryfikowane, decyzja należy do właściciela Murmura.
 
 **M-01…M-03 (Murmur) — zrobione i zacommitowane** w `../.murmur-agent-tasks/m01-queue-ownership-repro`,
 regułą tamtego repo (autor `JakubGawr`, bez trailerów AI, merge przez PR). Szczegóły
