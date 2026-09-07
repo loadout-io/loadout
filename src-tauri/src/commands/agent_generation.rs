@@ -32,10 +32,11 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::engine::drivers::{AgentEvent, DecodedEvent, FinishReason, Policy, RunSpec};
 use crate::library::agent_generation::{Draft, Wanted, read_draft};
-use crate::library::agents::Vendor;
+use crate::library::agents::{Color, FileAccess, Thinking, Vendor};
 
 /// Czemu nie powstał szkic.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,11 +75,89 @@ const CORRECTIONS: usize = 1;
 
 /// Co model dostaje razem z opisem roli. Krótkie i dosłowne: to jest kontrakt formatu,
 /// a nie druga instrukcja o tym, jak być agentem.
+/* ZAMKNIĘTE ZBIORY WYPISANE Z TYPU, NIE PRZEPISANE RĘCZNIE.
+ *
+ * 2026-09-07, znalezione ŻYWĄ próbą, nie przeglądem: prawdziwy `claude` dostawał listę NAZW
+ * kluczy bez ani jednej dopuszczalnej wartości, więc na `color` odpowiadał `"amber"` — i cały
+ * szkic, razem z instrukcjami i uzasadnieniami, szedł do kosza na jednym słowie. Przycisk
+ * „Create with Claude" nie oddawał wtedy niczego. Dubler vendora nie mógł tego pokazać, bo
+ * odpowiada dokładnie tym, co mu wpiszemy.
+ *
+ * Nazwy biorą się z `serde`, a nie z drugiego napisu obok enuma (niezmiennik 13): przemianowanie
+ * wariantu zmienia je same. Kompletność samych list pilnuje kompilator — patrz niżej. */
+fn wire_words<T: serde::Serialize>(all: &[T]) -> String {
+    all.iter()
+        .filter_map(|one| serde_json::to_value(one).ok())
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/* LISTA I STRAŻNIK STOJĄ RAZEM, W FUNKCJI, KTÓRA NAPRAWDĘ JEST WOŁANA.
+ *
+ * Dopisanie wariantu do któregokolwiek z tych trzech enumów przewraca dopasowanie niżej, więc
+ * nie da się dodać koloru i zostawić modelowi listy, która go nie wymienia. Strażnik stojący
+ * OBOK listy tego nie daje: `dead_code` zdejmuje funkcję, której nikt nie woła, i zostaje
+ * ostrzeżenie zamiast pilnowania. Testem też się tego nie złapie — przeszedłby nad każdą
+ * niepustą listą. */
+fn every_color() -> [Color; 5] {
+    let all = [
+        Color::Slate,
+        Color::Plum,
+        Color::Clay,
+        Color::Moss,
+        Color::Rose,
+    ];
+    for one in all {
+        match one {
+            Color::Slate | Color::Plum | Color::Clay | Color::Moss | Color::Rose => {}
+        }
+    }
+    all
+}
+
+fn every_thinking() -> [Thinking; 4] {
+    let all = [
+        Thinking::Quick,
+        Thinking::Balanced,
+        Thinking::Deep,
+        Thinking::Deepest,
+    ];
+    for one in all {
+        match one {
+            Thinking::Quick | Thinking::Balanced | Thinking::Deep | Thinking::Deepest => {}
+        }
+    }
+    all
+}
+
+fn every_file_access() -> [FileAccess; 3] {
+    let all = [
+        FileAccess::LookOnly,
+        FileAccess::AskFirst,
+        FileAccess::WorkFreely,
+    ];
+    for one in all {
+        match one {
+            FileAccess::LookOnly | FileAccess::AskFirst | FileAccess::WorkFreely => {}
+        }
+    }
+    all
+}
+
 fn asked_for(wanted: &Wanted) -> String {
     let runs_with = match wanted.target {
         Vendor::ClaudeCode => "claude-code",
         Vendor::Codex => "codex",
     };
+    /* Kształt wypisany z typu kontraktu, a nie przepisany do napisu obok — powód stoi przy
+     * `Answered::example`. Gdyby serializacja kiedykolwiek zawiodła, prośba nadal jedzie:
+     * model dostanie o jedno zdanie mniej, a nie prośbę uciętą w połowie. */
+    let shape = serde_json::to_string_pretty(&crate::library::agent_generation::Answered::example())
+        .unwrap_or_default();
+    let colors = wire_words(&every_color());
+    let thinking = wire_words(&every_thinking());
+    let access = wire_words(&every_file_access());
     let skills = list_or_none(&wanted.available.skills);
     let connections = list_or_none(&wanted.available.connections);
     let services = list_or_none(&wanted.available.services);
@@ -88,6 +167,11 @@ fn asked_for(wanted: &Wanted) -> String {
          Keys: name, summary, instructions, color, model, thinking, fileAccess, \
          giveUpAfterMinutes, tools, reachesTheWeb, skills, connections, serviceAccess, \
          agentMessages, vendorOptions, assumptions, because.\n\n\
+         Three of those keys take one of a CLOSED set of words, and any other word throws the \
+         whole answer away: color is one of {colors}; thinking is one of {thinking}; fileAccess \
+         is one of {access}.\n\n\
+         This is the exact shape, with every key at its right type. Replace the values, keep \
+         the structure:\n\n{shape}\n\n\
          `instructions` is the agent's own standing brief, written for it, not about it. \
          `assumptions` lists what you had to guess from the description. `because` gives one \
          short line for each setting a person would question — what it is for, not how you \
@@ -153,12 +237,20 @@ pub async fn generate(
                 if attempt == CORRECTIONS {
                     return Err(GenerationFailed::NotADraft { said: said_why });
                 }
-                /* JEDNA KOREKTA I TYLKO O FORMAT. Prośba niesie zdanie WALIDATORA, nie własne
-                 * tłumaczenie: dwa miejsca z tym samym komunikatem rozjeżdżają się przy
+                /* KOREKTA NIESIE CAŁĄ PROŚBĘ, bo idzie do NOWEJ sesji.
+                 *
+                 * Numer sesji jest własnością jednego uruchomienia programu, więc druga tura
+                 * zaczyna od zera i nie pamięta „the single JSON object described earlier".
+                 * Zmierzone 2026-09-07 na żywym `claude`: samo zażalenie wracało prozą, której
+                 * nie da się wczytać — czyli jedyna korekta była spalona na pytaniu bez treści.
+                 *
+                 * Zdanie o tym, co było nie tak, jest ZDANIEM WALIDATORA, nie naszym
+                 * tłumaczeniem: dwa miejsca z tym samym komunikatem rozjeżdżają się przy
                  * pierwszej poprawce (niezmiennik 13). */
                 asked = format!(
-                    "{said_why}\n\nAnswer again with the single JSON object described earlier, \
-                     and nothing else.",
+                    "{}\n\nAn earlier answer to this was refused: {said_why}\nAnswer again \
+                     with the single JSON object, and nothing else.",
+                    asked_for(wanted)
                 );
                 last = Some(said);
             }
@@ -193,7 +285,15 @@ async fn one_turn(
 ) -> Result<String, GenerationFailed> {
     let (events, mut inbox) = mpsc::channel::<DecodedEvent>(64);
     let spec = RunSpec {
-        run_id: wanted.operation,
+        /* KAŻDA TURA MA WŁASNĄ TOŻSAMOŚĆ SESJI, a `wanted.operation` zostaje tożsamością CAŁEJ
+         * operacji (po niej idzie anulowanie i po niej poznaje się spóźniony wynik).
+         *
+         * Do 2026-09-07 obie tury szły z tym samym `run_id` i prawdziwy `claude` odmawiał
+         * drugiej: „Session ID … is already in use". Znaczyło to, że JEDYNA korekta formatu
+         * nie mogła się nigdy odbyć — a widać to wyłącznie na żywym programie, bo dubler
+         * vendora `run_id` tylko zapamiętuje. Numer sesji jest własnością pojedynczego
+         * uruchomienia programu, nie okna, w którym człowiek czeka. */
+        run_id: Uuid::now_v7(),
         // PUSTY KATALOG. Generator nie stoi w żadnym repozytorium, więc nie ma czego przeczytać
         // ani czego popsuć — i to jest granica procesu, nie prośba w prompcie.
         cwd: PathBuf::from(empty),
@@ -258,14 +358,25 @@ async fn one_turn(
         Ok(outcome) if matches!(outcome.reason, FinishReason::Completed) || outcome.ok => {
             Ok(outcome.text)
         }
+        /* POWÓD VENDORA IDZIE NA EKRAN SŁOWO W SŁOWO, a nie jako nasze streszczenie.
+         *
+         * `FinishReason::Failed` niesie zdanie gotowe dla człowieka — adapter po to je czyta.
+         * Do 2026-09-07 stało tu „and did not say what it wrote", czyli zdanie MÓWIĄCE
+         * NIEPRAWDĘ za każdym razem, gdy program powiedział dokładnie, o co mu chodzi (brak
+         * zalogowania, wyczerpany limit, zły model). Człowiek dostawał wtedy komunikat, z
+         * którym nie da się nic zrobić, i to jest ta sama wada, którą L-02 naprawiło w
+         * diagnostyce: cudzą odpowiedź zastąpiliśmy własnym domysłem. */
         Ok(outcome) => Err(GenerationFailed::NotADraft {
-            said: format!(
-                "That app stopped before writing the agent{}.",
-                match &outcome.reason {
-                    FinishReason::Failed(_) => " and did not say what it wrote",
-                    _ => "",
-                }
-            ),
+            said: match &outcome.reason {
+                FinishReason::Failed(why) if !why.trim().is_empty() => format!(
+                    "That app stopped before writing the agent. It said: {}",
+                    why.trim()
+                ),
+                FinishReason::LimitReached => "That app hit one of its own ceilings before \
+                     writing the agent, so nothing was written."
+                    .to_owned(),
+                _ => "That app stopped before writing the agent.".to_owned(),
+            },
         }),
         Err(_) => Err(GenerationFailed::Broke {
             said: "The connection to that app broke while it was writing the agent.".to_owned(),

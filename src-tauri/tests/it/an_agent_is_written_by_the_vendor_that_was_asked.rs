@@ -274,6 +274,141 @@ async fn a_missing_app_says_so() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/* TRZY KRYTERIA Z ŻYWEJ PRÓBY (2026-09-07).
+ *
+ * Wszystkie trzy wady wyglądały pod dublerem na działające, bo dubler odpowiada dokładnie tym,
+ * co mu wpiszemy, i nie patrzy na numer sesji. Wyszły dopiero na prawdziwym `claude`. Kryteria
+ * sądzą więc to, co Loadout WYSYŁA i CZYM to wysyła — a nie odpowiedź, którą sami podstawiliśmy.
+ */
+
+/// Prośba wymienia dopuszczalne słowa dla zbiorów zamkniętych.
+///
+/// Bez tego model zgaduje: żywy `claude` odpowiadał `"color": "amber"` i cały szkic — razem
+/// z instrukcjami, na których człowiekowi zależy najbardziej — szedł do kosza na jednym słowie.
+#[tokio::test]
+async fn the_request_names_every_word_the_reader_will_accept() -> Result<(), Box<dyn Error>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let driver = Writer {
+        id: "claude-code",
+        answers: Arc::new(Mutex::new(vec![
+            json!({"name": "QA", "summary": "s", "instructions": "i"}).to_string(),
+        ])),
+        seen: Arc::clone(&seen),
+        found: true,
+    };
+    let wanted = Wanted::from_one_vendor("A tester".to_owned(), Vendor::ClaudeCode, available());
+    generate(&driver, &wanted, &CancellationToken::new())
+        .await
+        .expect("a draft");
+
+    let asked = seen.lock().unwrap_or_else(PoisonError::into_inner)[0]
+        .prompt
+        .clone();
+    for word in ["slate", "plum", "clay", "moss", "rose"] {
+        assert!(
+            asked.contains(word),
+            "the request never says {word:?} is a colour this reader takes, so the model has to \
+             guess one of five words it was never shown: {asked}"
+        );
+    }
+    for word in ["quick", "balanced", "deep", "deepest"] {
+        assert!(asked.contains(word), "the request hides the thinking levels: {asked}");
+    }
+    for word in ["look-only", "ask-first", "work-freely"] {
+        assert!(asked.contains(word), "the request hides the file-access words: {asked}");
+    }
+    Ok(())
+}
+
+/// Prośba pokazuje KSZTAŁT odpowiedzi, a nie same nazwy kluczy.
+///
+/// Nazwa bez typu znaczy zgadywanie budowy: żywy `claude` oddawał `agentMessages` obiektem
+/// zamiast wartością tak/nie, a `because` mapą zamiast listą.
+#[tokio::test]
+async fn the_request_shows_the_shape_and_that_shape_is_one_this_reader_accepts()
+-> Result<(), Box<dyn Error>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let driver = Writer {
+        id: "claude-code",
+        answers: Arc::new(Mutex::new(vec![
+            json!({"name": "QA", "summary": "s", "instructions": "i"}).to_string(),
+        ])),
+        seen: Arc::clone(&seen),
+        found: true,
+    };
+    let wanted = Wanted::from_one_vendor("A tester".to_owned(), Vendor::ClaudeCode, available());
+    generate(&driver, &wanted, &CancellationToken::new())
+        .await
+        .expect("a draft");
+    let asked = seen.lock().unwrap_or_else(PoisonError::into_inner)[0]
+        .prompt
+        .clone();
+
+    /* PRZYKŁAD MUSI SAM PRZECHODZIĆ WŁASNY KONTRAKT. Prośba pokazująca kształt, którego
+     * czytelnik nie przyjmuje, jest gorsza niż brak przykładu: model robi dokładnie to, o co
+     * poprosiliśmy, i dostaje odmowę. */
+    let example = serde_json::to_vec(
+        &loadout_lib::library::agent_generation::Answered::example(),
+    )?;
+    read_draft(&wanted, &example)
+        .expect("the shape the request shows is not a shape read_draft accepts");
+    let shown = String::from_utf8(example)?;
+    let one_key = shown
+        .split('"')
+        .find(|piece| *piece == "agentMessages")
+        .unwrap_or("agentMessages");
+    assert!(
+        asked.contains(one_key) && asked.contains("keep the structure"),
+        "the request lists key names without ever showing what shape they take: {asked}"
+    );
+    Ok(())
+}
+
+/// Każda tura ma własny numer sesji, a korekta niesie CAŁĄ prośbę.
+///
+/// Prawdziwy `claude` odmawia drugiego uruchomienia z tym samym numerem („Session ID … is
+/// already in use"), więc jedyna korekta formatu nie mogła się nigdy odbyć. A skoro to nowa
+/// sesja, to nie pamięta niczego: samo zażalenie bez pierwotnej prośby wracało prozą.
+#[tokio::test]
+async fn the_one_correction_is_a_fresh_session_carrying_the_whole_request()
+-> Result<(), Box<dyn Error>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let driver = Writer {
+        id: "claude-code",
+        answers: Arc::new(Mutex::new(vec![
+            json!({"name": "QA", "summary": "s", "color": "amber"}).to_string(),
+            json!({"name": "QA", "summary": "s", "instructions": "i"}).to_string(),
+        ])),
+        seen: Arc::clone(&seen),
+        found: true,
+    };
+    let described = "A reviewer that reads a diff".to_owned();
+    let wanted = Wanted::from_one_vendor(described.clone(), Vendor::ClaudeCode, available());
+    generate(&driver, &wanted, &CancellationToken::new())
+        .await
+        .expect("the correction never produced a draft");
+
+    let turns = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    assert_eq!(turns.len(), 2, "the correction turn never ran at all");
+    assert_ne!(
+        turns[0].session, turns[1].session,
+        "both turns went out under one session number, and the real app refuses the second one \
+         with \"Session ID … is already in use\" — so the only correction is spent on a refusal"
+    );
+    assert!(
+        turns[1].prompt.contains(&described),
+        "the correction went to a fresh session carrying only the complaint, so the model was \
+         asked to answer again a question it was never shown: {}",
+        turns[1].prompt
+    );
+    assert!(
+        turns[1].prompt.contains("amber"),
+        "the correction never says what was wrong the first time: {}",
+        turns[1].prompt
+    );
+    Ok(())
+}
+
 /// Anulowanie dotyczy TEJ operacji.
 #[tokio::test]
 async fn cancelling_one_generation_ends_only_that_one() -> Result<(), Box<dyn Error>> {
@@ -316,6 +451,8 @@ struct Started {
     started_empty: bool,
     policy: Policy,
     web: bool,
+    /// Numer sesji TEJ tury. Prawdziwy `claude` odmawia drugiego uruchomienia z tym samym.
+    session: String,
 }
 
 struct Writer {
@@ -350,6 +487,7 @@ impl AgentDriver for Writer {
                     .is_ok_and(|mut entries| entries.next().is_none()),
                 policy: spec.policy,
                 web: spec.reaches_the_web,
+                session: spec.run_id.to_string(),
             });
         let mut answers = self.answers.lock().unwrap_or_else(PoisonError::into_inner);
         let text = if answers.is_empty() {
@@ -410,5 +548,69 @@ impl AgentHandle for Wrote {
     }
     async fn close(&mut self) -> anyhow::Result<Option<i32>> {
         Ok(Some(0))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// §11 punkt 1, ŻYWA połowa: oba przyciski naprawdę wołają swój własny program
+// ---------------------------------------------------------------------------------------------
+
+/// Wszystko wyżej sądzi produkcyjną logikę na dublerze vendora — i to jest właściwy kształt dla
+/// bramki, bo odpowiada o KODZIE. Ten jeden przypadek odpowiada o czym innym: czy prawdziwy
+/// `claude` i prawdziwy `codex`, zawołane tak, jak woła je przycisk, oddają szkic, który
+/// produkcyjne wczytywanie przyjmuje. Tego nie da się wywnioskować z dublera, bo dubler zawsze
+/// odpowiada tak, jak go napisaliśmy.
+///
+/// `--ignored`, bo odpowiedź zależy od dwóch programów zainstalowanych na TEJ maszynie
+/// i od zalogowania w nich — na komputerze bez nich musiałby być czerwony, choć nic nie jest
+/// zepsute (ten sam powód, co przy `native_scenarios::what_this_computer_can_actually_do`).
+///
+/// ```text
+/// cargo test --manifest-path src-tauri/Cargo.toml --test it \
+///   an_agent_is_written_by_the_vendor_that_was_asked::both_buttons -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "asks the real claude and the real codex on this computer"]
+async fn both_buttons_really_write_an_agent_with_their_own_app() {
+    let described = "A reviewer that reads a diff and names the risk it carries. \
+                     It must not change any files."
+        .to_owned();
+    for vendor in [Vendor::ClaudeCode, Vendor::Codex] {
+        let driver: Box<dyn AgentDriver> = match vendor {
+            Vendor::ClaudeCode => Box::new(loadout_lib::engine::drivers::claude::ClaudeDriver::new()),
+            Vendor::Codex => Box::new(loadout_lib::engine::drivers::codex::CodexDriver::new()),
+        };
+        let wanted = Wanted::from_one_vendor(described.clone(), vendor, available());
+        let cancel = CancellationToken::new();
+
+        let draft = match generate(driver.as_ref(), &wanted, &cancel).await {
+            Ok(draft) => draft,
+            Err(why) => panic!("{vendor:?} was asked for an agent and gave none: {why:?}"),
+        };
+
+        println!(
+            "{vendor:?} wrote: name={:?} model={:?} tools={:?} missing={:?}",
+            draft.agent.name, draft.agent.model, draft.agent.tools, draft.missing
+        );
+
+        assert_eq!(
+            draft.agent.runs_with, vendor,
+            "the app the agent runs on came from the answer instead of the button"
+        );
+        assert!(
+            !draft.agent.instructions.trim().is_empty(),
+            "{vendor:?} returned an agent with no instructions at all, which is a form with \
+             nothing in the field a person came here to get"
+        );
+        assert!(
+            !draft.agent.name.trim().is_empty() && !draft.agent.summary.trim().is_empty(),
+            "{vendor:?} returned an agent the library cannot show: name or summary is empty"
+        );
+        assert_eq!(
+            draft.agent.file_access,
+            loadout_lib::library::agents::FileAccess::LookOnly,
+            "the description said this role must not change files, and {vendor:?} still gave it \
+             the right to write. The draft is the thing a person presses Save on"
+        );
     }
 }

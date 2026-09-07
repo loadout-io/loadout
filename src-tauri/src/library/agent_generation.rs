@@ -100,7 +100,10 @@ impl Wanted {
 }
 
 /// Co model odpowiedział, zanim cokolwiek sprawdzimy.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Serialize` jest tu po to, żeby prośba do modelu mogła pokazać KSZTAŁT tej odpowiedzi,
+/// wypisując [`Answered::example`] — patrz powód przy tamtej funkcji.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Answered {
     pub name: String,
@@ -140,6 +143,47 @@ pub struct Answered {
     /// application", nie łańcuch myśli.
     #[serde(default)]
     pub because: Vec<String>,
+}
+
+impl Answered {
+    /* KSZTAŁT ODPOWIEDZI POKAZUJEMY, A NIE OPISUJEMY SŁOWAMI.
+     *
+     * 2026-09-07, znalezione żywą próbą: prośba wymieniała same NAZWY kluczy, więc prawdziwy
+     * model zgadywał budowę tych złożonych — `agentMessages` wracało obiektem zamiast wartością
+     * tak/nie, a `because` mapą zamiast listą. Każda taka pomyłka wyrzucała cały szkic, razem
+     * z instrukcjami, na których człowiekowi zależy najbardziej.
+     *
+     * Przykład jest WYPISANY Z TEGO SAMEGO TYPU, którym potem czytamy odpowiedź, więc nie ma
+     * jak się z nim rozjechać (niezmiennik 13). Że naprawdę spełnia własny kontrakt, pilnuje
+     * `the_example_shape_is_a_draft_this_reader_accepts`.
+     */
+    /// Wypełniony przykład o dokładnie tym kształcie, którego oczekuje [`read_draft`].
+    #[must_use]
+    pub fn example() -> Self {
+        Self {
+            name: "diff-reviewer".to_owned(),
+            summary: "Reads a diff and names the risk it carries.".to_owned(),
+            instructions: "You review changes and name the risk they carry.".to_owned(),
+            color: Some(Color::Slate),
+            model: Some("opus".to_owned()),
+            thinking: Some(Thinking::Deep),
+            file_access: Some(FileAccess::LookOnly),
+            give_up_after_minutes: Some(20),
+            tools: Some(vec!["Read".to_owned(), "Grep".to_owned()]),
+            reaches_the_web: Some(false),
+            skills: Vec::new(),
+            connections: Vec::new(),
+            service_access: Vec::new(),
+            agent_messages: Some(false),
+            vendor_options: std::collections::BTreeMap::new(),
+            assumptions: vec!["The diff comes from the working tree.".to_owned()],
+            because: vec![
+                "fileAccess is read-only because the person asked for a reviewer that changes \
+                 nothing."
+                    .to_owned(),
+            ],
+        }
+    }
 }
 
 /// Gotowy szkic razem z tym, czego nie udało się dopasować.
