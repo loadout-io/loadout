@@ -13,7 +13,7 @@ obok liczby.
 | Repo | `/Users/jakubgawronski/Projects/loadout-reliability-native-qa-generator` (worktree Loadouta) |
 | Gałąź | `feat/reliability-native-qa-generator` |
 | Baza | `f81d4b11` — snapshot WIP z `workflow-reliability-build`, wierny co do pliku |
-| HEAD | `0dac2e02`, dwadzieścia commitów nad bazą |
+| HEAD | `f2271d32`, dwadzieścia dwa commity nad bazą |
 | Niezacommitowane | **brak** (`git status` pusty) |
 | Nie zmergowane | nic z tego nie jest na `main`; niczego nie opublikowano, niczego nie wypchnięto |
 
@@ -77,7 +77,7 @@ kolektor nie jest wpięty w ten check.
 | M-02 | zrobione | `commands::queue_ownership_tests` → 5/5 |
 | M-03 | zrobione | `e2e/processing` → 14/14 (chromium + webkit) |
 | M-04 | **NIE zrobione** | powód w §5 |
-| E-01 | macierz zrobiona; z pełnego odbioru §11 wykonane punkty 1, 2, 6 i 7, **punkt 4 nie** | §4 i §4a |
+| E-01 | macierz zrobiona; z §11 wykonane punkty 1, 2, 6 i 7 oraz **droga do okna z punktu 4**; izolowana instancja produktu **nie** | §4, §4a i §5 |
 
 | P-02 (kafelek) | zrobione | `npx vitest run src/sections/workflows/start-and-leave-has-a-panel.test.tsx` → 10/10 |
 
@@ -164,6 +164,7 @@ Właściciel ma subskrypcję, więc „płatne próby" z §11 nie kosztują osob
 | `flow_say_to_agent` (żywa sesja `claude`) | 09-07 02:22, **5,7 s** | **zielony** — słowo wysłane w środku pracy wraca w prozie modelu, czyli doprecyzowanie z §11 punktu 2 naprawdę dochodzi |
 | `flow_todo_app` na DOKŁADNIE tym HEAD (`0dac2e02`) | 09-07 02:55, **423,7 s** | **zielony** — ta sama wyrocznia na wersji, która stoi w repo, a nie na tej sprzed czterech commitów (§12 zakazuje zamknięcia, gdy kod różni się od sprawdzonego) |
 | `both_buttons_really_write_an_agent_with_their_own_app` | 09-07 02:47, **36,9 s** | **zielony po czterech poprawkach** — oba przyciski, prawdziwy `claude` i prawdziwy `codex`, oba uszanowały `file_access: look-only` |
+| `a_real_window_is_counted_and_driven_by_the_identity_it_was_given` | 09-07 03:12, 6,6 s | **zielony** — Loadout uruchomił WŁASNY egzemplarz aplikacji z oknem, policzył jego okna (`1`), zapytał o nazwę okna adresując po `unix id` (wróciło `"Otwórz"`) i zamknął go tym samym adresem |
 | brak osieroconych procesów | po każdym z powyższych | `ps -eo pid,ppid` — ani jednego procesu z `PPID 1` od Loadouta (§11 punkt 6) |
 
 Pierwsza pozycja jest tu ważniejsza niż trzecia: dowodzi, że skarga trzech kroków na własną
@@ -201,7 +202,35 @@ wyłączona sieć i **pusty katalog roboczy**. Żadnego fallbacku do `Everything
 „nie sprawdzamy" — i model wskazany przez generatora przechodzi, a widzi go człowiek. Stara
 statyczna lista z formularza nie jest dowodem bieżącej dostępności, więc jej nie użyłem.
 
-**M-04 (Murmur) — nie zrobione, i blokada jest konkretna.** Wymaga scenariuszy P-03 na osobnej
+**§11 punkt 4 — droga do okna WYKONANA, izolowana instancja produktu NIE.** Rozdzielam to
+świadomie, bo do 2026-09-07 opisywałem jedno zdanie tam, gdzie są dwie różne rzeczy.
+
+*Wykonane i zmierzone:* sterowanie natywnym oknem na tej maszynie działa. Loadout startuje
+własny egzemplarz aplikacji z oknem, liczy jego okna produkcyjnym `native_ui::windows_of`
+i wykonuje działanie zaadresowane `unix id` tego procesu — nie nazwą aplikacji, więc okno
+człowieka stojące obok nie jest ani czytane, ani zamykane. Zamknięcie idzie tym samym adresem.
+To jest dokładnie ta zdolność, której brak wywołał incydenty I-06/I-07.
+
+*Niewykonane:* uruchomienie **produktu pod testem** jako izolowanej instancji. I to nie jest
+brak czasu ani zgody — to jest odmowa **mojej własnej reguły z P-02**, i dotyczy obu aplikacji,
+które tu są:
+
+* **Murmur** nie ma ustawienia, którym można mu wskazać katalog danych. Izoluje je NA PROFIL
+  BUILDU: `state::app_dir_name()` oddaje `MeetNotes-dev` dla debug (albo przy `MURMUR_DEV_DEK`)
+  i `MeetNotes` dla wydania — więc `tauri dev` faktycznie nie dotyka biblioteki człowieka, ale
+  każdy taki bieg pisze do tego samego drugiego katalogu, nie do własnego.
+* **Loadout** trzyma bibliotekę w `$HOME/.loadout` (`lib.rs::loadout_dir`), czyli jego zmienną
+  danych jest `HOME` — a `HOME` jest zmienną ZASTRZEŻONĄ i musi nią zostać. `LOADOUT_PROJECT`
+  przenosi tylko workspace; biblioteka agentów i workflow zostaje wspólna.
+
+Czyli: na tej maszynie nie ma dziś aplikacji, którą wolno uruchomić jako instancję testową
+w rozumieniu P-02. Odblokowanie to jedno ustawienie po stronie aplikacji pod testem
+(`MURMUR_DATA_DIR` albo równoważne) — a że dotyczy rozwiązywania ścieżki do zaszyfrowanej bazy,
+należy do przeglądu lock/security i do decyzji właściciela, nie do tego zadania. Osłabienie
+reguły P-02 po to, żeby własne kryterium zzieleniało, jest dokładnie tym, czego §11 zabrania
+wprost („brak potrzebnego środowiska jest blockerem, nie powodem obniżenia kryterium").
+
+**M-04 (Murmur) — nie zrobione, z powodu wyżej.** Wymaga scenariuszy P-03 na osobnej
 instancji. Murmur ma dziś izolację danych, ale **na profil buildu, nie na bieg**:
 `state::app_dir_name()` oddaje `MeetNotes-dev` dla builda debug (albo przy ustawionym
 `MURMUR_DEV_DEK`) i `MeetNotes` dla wydania notaryzowanego — więc `tauri dev` faktycznie nie
@@ -272,17 +301,25 @@ wyboru drogi jako własna wartość, zamiast udawać zaliczenie albo wadę.
    what it wrote" **zastępowało powód, który program podał**, więc trzech pozostałych nie dało
    się w ogóle zobaczyć. Dopóki tego nie zdjąłem, każda kolejna próba wyglądała tak samo.
 
-5. **Zdanie odmowy z osiemnastoma spacjami w środku.** Złamany literal bez `\` w
+5. **`testDataEnv` omijało regułę zastrzeżonych zmiennych.** Pole, które dołożyłem w P-02, nie
+   było sprawdzane nigdzie, a `isolated_data` ustawia je na procesie potomnym — więc
+   `testDataEnv: "HOME"` podmieniał aplikacji katalog domowy, a `"DYLD_INSERT_LIBRARIES"`
+   wstrzykiwał do niej bibliotekę. Wszystkie trzy są zabronione dla zmiennych z `environment`,
+   tą samą funkcją, dwadzieścia linii wyżej. Znalezione przy próbie wykonania §11 punktu 4:
+   szukałem aplikacji, którą wolno uruchomić izolowaną, i zauważyłem, że własna reguła
+   przepuściłaby `HOME`. Naprawione obiema drogami (`f2271d32`).
+
+6. **Zdanie odmowy z osiemnastoma spacjami w środku.** Złamany literal bez `\` w
    `isolated_data`. Czytał to człowiek, któremu Loadout właśnie odmówił uruchomienia aplikacji.
 
-6. **Zgadywanie zamiast pomiaru.** Kiedy prawdziwy `claude` nie oddał szkicu, dopisałem
+7. **Zgadywanie zamiast pomiaru.** Kiedy prawdziwy `claude` nie oddał szkicu, dopisałem
    zdejmowanie płotka z bloku kodu — bo „modele przecież owijają JSON". Nie owijał; prawdziwą
    przyczyną było `"color": "amber"`. Kod poszedł do kosza, a nie do repo: leniency bez
    ani jednego pomiaru to poszerzenie kontraktu w ciemno.
 
 ## 9. Jak to obejrzeć
 
-Wersja, o której mówi ten raport: `0dac2e02` na `feat/reliability-native-qa-generator`.
+Wersja, o której mówi ten raport: `f2271d32` na `feat/reliability-native-qa-generator`.
 Niezacommitowany jest wyłącznie ten plik.
 
 ```bash
@@ -293,7 +330,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --test it step_turn_queue_is_ato
 cargo test --manifest-path src-tauri/Cargo.toml --test it required_checks_run_the_requested_tests::
 cargo test --manifest-path src-tauri/Cargo.toml --test it mandatory_criteria_survive_the_summary::
 
-# co ta maszyna naprawdę potrafi z natywnym oknem
+# co ta maszyna naprawdę potrafi z natywnym oknem — druga otwiera i zamyka własne okno
 cargo test --manifest-path src-tauri/Cargo.toml --test it native_scenarios -- --ignored --nocapture
 
 # oba przyciski, prawdziwe kliknięcie, prawdziwa przeglądarka
