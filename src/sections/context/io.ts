@@ -9,7 +9,18 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { ContextDraft, ContextSet, ContextSetRead, DraftEdit } from '../../state/context';
+import type {
+  ContextDraft,
+  ContextSet,
+  ContextSetRead,
+  DraftEdit,
+  ImportItem,
+  ImportReport,
+  ImportResult,
+  PreparedPage,
+  PreviewImage,
+  SourcePart,
+} from '../../state/context';
 import { emptyDraft } from '../../state/context';
 
 /** Wszystkie gotowe zestawy tej biblioteki. */
@@ -46,6 +57,134 @@ export async function saveDraft(edit: DraftEdit): Promise<ContextSetRead> {
     expectedRevision: edit.expectedRevision,
   });
   return asRead(answer, 'save');
+}
+
+/**
+ * Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił.
+ *
+ * Plik jedzie ŚCIEŻKĄ, nie bajtami: okno nie ma po co czytać pliku, którego i tak nie pokaże,
+ * a 50 MiB przepchnięte base64 przez granicę byłoby jego kopią w pamięci karty. Bajty jadą tylko
+ * ze schowka, bo schowka nie da się otworzyć z Rusta.
+ */
+export async function importSources(
+  setId: string,
+  operationId: string,
+  items: ImportItem[],
+  expectedRevision: string | null,
+): Promise<ImportReport> {
+  const answer = await invoke<unknown>('import_context_sources', {
+    setId,
+    operationId,
+    items,
+    expectedRevision,
+  });
+  if (typeof answer !== 'object' || answer === null) {
+    throw new Error('Loadout could not add those files to this context set.');
+  }
+  const row = answer as Partial<ImportReport>;
+  return {
+    operationId: typeof row.operationId === 'string' ? row.operationId : operationId,
+    results: Array.isArray(row.results) ? row.results.filter(isResult) : [],
+    read: asRead(row.read, 'save'),
+  };
+}
+
+/** Zatwierdza jedną przygotowaną stronę dokumentu. */
+export async function completePreparation(
+  setId: string,
+  sourceId: string,
+  page: PreparedPage,
+  expectedRevision: string | null,
+): Promise<ContextSetRead> {
+  const answer = await invoke<unknown>('complete_context_source_preparation', {
+    setId,
+    sourceId,
+    page,
+    expectedRevision,
+  });
+  return asRead(answer, 'save');
+}
+
+/** Kawałek zatwierdzonego źródła. `page === null` przy dokumencie znaczy „daj cały plik". */
+export async function readSource(
+  setId: string,
+  sourceId: string,
+  page: number | null,
+): Promise<SourcePart> {
+  const answer = await invoke<unknown>('read_context_source', { setId, sourceId, page });
+  return asPart(answer);
+}
+
+/** Zdejmuje źródło z zestawu. */
+export async function removeSource(
+  setId: string,
+  sourceId: string,
+  expectedRevision: string | null,
+): Promise<ContextSetRead> {
+  const answer = await invoke<unknown>('remove_context_source', {
+    setId,
+    sourceId,
+    expectedRevision,
+  });
+  return asRead(answer, 'save');
+}
+
+/** Czy to, co przyszło, jest wierszem wyniku importu. */
+function isResult(value: unknown): value is ImportResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const row = value as Partial<ImportResult>;
+  return typeof row.name === 'string' && Array.isArray(row.added);
+}
+
+/**
+ * Kawałek źródła, sprawdzony co do kształtu.
+ *
+ * Cztery rodzaje i nic poza nimi. Odpowiedź o rodzaju, którego ten build nie zna, wraca jako
+ * pusty tekst — nowszy Loadout ma prawo dopisać piąty, a sekcja ma go MINĄĆ, nie przewrócić na
+ * nim ekranu (niezmiennik 5).
+ */
+function asPart(answer: unknown): SourcePart {
+  if (typeof answer !== 'object' || answer === null) {
+    throw new Error('Loadout could not open that file.');
+  }
+  const row = answer as Record<string, unknown>;
+  if (row['kind'] === 'image') {
+    return { kind: 'image', image: asImage(row['image']) };
+  }
+  if (row['kind'] === 'page') {
+    return {
+      kind: 'page',
+      number: typeof row['number'] === 'number' ? row['number'] : 1,
+      pagesTotal: typeof row['pagesTotal'] === 'number' ? row['pagesTotal'] : 0,
+      text: typeof row['text'] === 'string' ? row['text'] : '',
+      image: row['image'] === null || row['image'] === undefined ? null : asImage(row['image']),
+    };
+  }
+  if (row['kind'] === 'whole') {
+    return {
+      kind: 'whole',
+      mime: typeof row['mime'] === 'string' ? row['mime'] : '',
+      base64: typeof row['base64'] === 'string' ? row['base64'] : '',
+      operationId: typeof row['operationId'] === 'string' ? row['operationId'] : '',
+      fingerprint: typeof row['fingerprint'] === 'string' ? row['fingerprint'] : '',
+    };
+  }
+  return {
+    kind: 'text',
+    text: typeof row['text'] === 'string' ? row['text'] : '',
+    more: row['more'] === true,
+  };
+}
+
+function asImage(value: unknown): PreviewImage {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Loadout could not open that file.');
+  }
+  const row = value as Partial<PreviewImage>;
+  return {
+    mime: typeof row.mime === 'string' ? row.mime : 'image/png',
+    base64: typeof row.base64 === 'string' ? row.base64 : '',
+  };
 }
 
 /** Czy to, co przyszło, jest zestawem, czy tylko czymś o tym kształcie z nowszego Loadouta. */

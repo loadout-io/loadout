@@ -18,6 +18,7 @@
 import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
+import type { PageMaker } from '../../state/context';
 import { createContextStore, matching } from '../../state/context';
 import * as io from './io';
 import ContextEditor from './editor';
@@ -35,6 +36,19 @@ export interface ContextScreenProps {
 /** Zdanie, kiedy katalog jeszcze nie odpowiedział — trzecia odpowiedź, nie druga. */
 const STILL_READING = 'Reading the context sets you have saved.';
 const READING_THE_FOLDER = 'Loadout is looking through the sets you keep for your work.';
+
+/**
+ * Sterownik dokumentów, doczytywany DOPIERO przy pierwszym `Prepare`.
+ *
+ * Biblioteka rysująca strony waży więcej niż cała reszta tej sekcji razem, a większość wejść
+ * do zestawu nie przygotowuje niczego. Doczytanie stoi TUTAJ, a nie w magazynie: magazyn nie
+ * zna ani nazw komend, ani bibliotek, które rysują (niezmiennik 23). Nieudane doczytanie leci
+ * wyjątkiem prosto w `prepareSource`, więc kończy się zdaniem na ekranie, nie ciszą.
+ */
+const readTheDocument: PageMaker = async (file) => {
+  const { openTheDocument } = await import('./pdf-preparation');
+  return openTheDocument(file);
+};
 
 /** Przeczytaliśmy i naprawdę nic tam nie ma (DESIGN §6: pusty stan jest zaproszeniem). */
 const NOTHING_YET = 'No context sets yet.';
@@ -67,7 +81,23 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
           key={state.open.set.id}
           open={state.open}
           refusal={state.refusal}
+          imported={state.imported}
+          preview={state.preview}
+          preparing={state.preparing}
           onSave={store.getState().save}
+          onAdd={(items) => {
+            void store.getState().addSources(items);
+          }}
+          onPrepare={(sourceId) => {
+            void store.getState().prepareSource(sourceId, readTheDocument);
+          }}
+          onPreview={(sourceId, page) => {
+            void store.getState().showSource(sourceId, page);
+          }}
+          onHidePreview={store.getState().hidePreview}
+          onRemove={(sourceId) => {
+            void store.getState().dropSource(sourceId);
+          }}
           onClose={store.getState().close}
         />
       </Shell>

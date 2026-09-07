@@ -1,0 +1,49 @@
+%PDF-1.4
+% This document OPENS and then falls apart. It promises two pages; the first is real and the
+% second is not a page at all, just a number where a page dictionary has to be. That is the
+% whole point of it: a document that survives getDocument and dies while a page is being read
+% is a different failure from one that never opened, and until CT-02 the two were told apart
+% nowhere. A torn content stream would NOT do — pdf.js recovers from those and hands back a
+% blank page, which is exactly the faked empty document this feature may not produce.
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 50 >>
+stream
+BT /F1 14 Tf 20 50 Td (Page one, in words.) Tj ET
+endstream
+endobj
+5 0 obj
+42
+endobj
+6 0 obj
+<< /Length 1 >>
+stream
+
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 8
+0000000000 65535 f
+0000000561 00000 n
+0000000610 00000 n
+0000000673 00000 n
+0000000799 00000 n
+0000000898 00000 n
+0000000916 00000 n
+0000000965 00000 n
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+0000001035
+%%EOF

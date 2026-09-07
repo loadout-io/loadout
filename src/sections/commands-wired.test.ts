@@ -40,7 +40,7 @@ import * as triggers from './triggers/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
-import type { ContextDraft } from '../state/context';
+import type { ContextDraft, PreparedPage } from '../state/context';
 import type { Authored, Import, Landing } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
@@ -183,6 +183,21 @@ const CONTEXT_DRAFT: ContextDraft = {
   requirements: ['The promo code must survive a quantity change.'],
 };
 
+/* CT-02. Numer operacji, wybrany plik i jedna gotowa strona — trzy wartości, których brak
+ * w ładunku widać dopiero na dysku: bez ścieżki nie ma czego skopiować, bez numeru operacji
+ * spóźniona odpowiedź ląduje w cudzym imporcie, a bez odcisku strona opisuje inne bajty. */
+const CONTEXT_OPERATION = '0198a1f2-3b4c-7d5e-8f60-aabbccddeeff';
+const CONTEXT_SOURCE_ID = '0198a1f2-3b4c-7d5e-8f60-102030405060';
+const CONTEXT_PICKED = '/Users/someone/Downloads/checkout.png';
+const CONTEXT_PAGE: PreparedPage = {
+  operationId: CONTEXT_OPERATION,
+  fingerprint: 'e3b0c44298fc1c149afbf4c8996fb924',
+  pagesTotal: 3,
+  number: 2,
+  text: 'Page two, with the totals table.',
+  image: { mime: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUg==' },
+};
+
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
 const TRIGGER_DRAFT: triggers.TriggerDraft = {
   source: 'linear',
@@ -321,6 +336,43 @@ const WIRES: readonly Wire[] = [
         draft: CONTEXT_DRAFT,
         expectedRevision: REVISION,
       }),
+  },
+  /* 2026-09-07 (CT-02) — CZTERY KRAWĘDZIE ŹRÓDEŁ. `importSources` waży najwięcej z czwórki:
+   * niesie ŚCIEŻKĘ pliku i numer operacji. Bez ścieżki po tamtej stronie nie ma czego skopiować,
+   * a bez numeru operacji spóźniona odpowiedź ląduje w tym, co akurat trwa. */
+  {
+    where: 'context',
+    what: 'importSources',
+    command: 'import_context_sources',
+    given: [CONTEXT_ID, CONTEXT_OPERATION, CONTEXT_PICKED, REVISION],
+    call: () =>
+      context.importSources(
+        CONTEXT_ID,
+        CONTEXT_OPERATION,
+        [{ name: '', path: CONTEXT_PICKED, text: null, image: null }],
+        REVISION,
+      ),
+  },
+  {
+    where: 'context',
+    what: 'completePreparation',
+    command: 'complete_context_source_preparation',
+    given: [CONTEXT_ID, CONTEXT_SOURCE_ID, CONTEXT_PAGE, REVISION],
+    call: () => context.completePreparation(CONTEXT_ID, CONTEXT_SOURCE_ID, CONTEXT_PAGE, REVISION),
+  },
+  {
+    where: 'context',
+    what: 'readSource',
+    command: 'read_context_source',
+    given: [CONTEXT_ID, CONTEXT_SOURCE_ID, 2],
+    call: () => context.readSource(CONTEXT_ID, CONTEXT_SOURCE_ID, 2),
+  },
+  {
+    where: 'context',
+    what: 'removeSource',
+    command: 'remove_context_source',
+    given: [CONTEXT_ID, CONTEXT_SOURCE_ID, REVISION],
+    call: () => context.removeSource(CONTEXT_ID, CONTEXT_SOURCE_ID, REVISION),
   },
   {
     where: 'workflows',
