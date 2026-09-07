@@ -120,6 +120,14 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | Etap | Bieg | Commit | RED | GREEN | CI przy lądowaniu | Koszt | Stan |
 |---|---|---|---|---|---|---|---|
 | CT-01 | `h-ct-01` | `a6113319` | mutacja, patrz §1a | 4 Rust + pełna suita frontu | **zielone, 523 s** | 55,17 USD | **WYLĄDOWANY** |
+| CT-02 | `h-ct-02` | — | — | — | — | — | **w toku** |
+| CT-03 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-04 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-05 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-06 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-07 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-08 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-09 | — | — | — | — | — | — | nie rozpoczęty |
 
 **Lądowanie.** `scripts/h land ct-01` → merge `a6113319`, potem pełne CI na trunku.
 Pierwszy przebieg poszedł na czerwono **nie na kodzie**, tylko na moim niezacommitowanym
@@ -174,14 +182,6 @@ tekstu: etykietę i skrót.
 i `e2e/tests/two-buttons-ask-two-different-vendors.spec.ts`. Zgłosił też jako
 `POZA ZAKRESEM`, że kolejność paska jest dziś przypięta w **trzech** wyroczniach naraz
 (makieta, egzekutor, nav-groups), wbrew niezmiennikowi 13. Nie naprawiał tego — słusznie.
-| CT-02 | `h-ct-02` | — | — | — | — | — | **w toku** |
-| CT-03 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-04 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-05 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-06 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-07 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-08 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-09 | — | — | — | — | — | — | nie rozpoczęty |
 
 ---
 
@@ -215,6 +215,27 @@ Ryzyko jest **małe, ale niezerowe**: `commands/context.rs` to cztery jednolinij
 (odwzorowanie `home → contexts/` plus zegar), a nazwy argumentów pilnuje
 `checks/invoke-args.sh`. Zamyka to dopiero **natywna próba z CT-09** — i dopóki jej nie ma,
 kryterium „Trwały paste" stoi na `not-tested`, a nie na `passed`.
+
+**D-3. CSP i zasoby bundla ograniczają dwa warianty PDF — ROZSTRZYGNIĘTE: zostawiamy.**
+Zgłoszone przez plan CT-02 zamiast wykonane (AGENTS.md §7). `src-tauri/tauri.conf.json` nie ma
+`wasm-unsafe-eval` w CSP ani `resources` w `bundle`, więc PDF z obrazami **JPEG 2000**
+(dekoder WASM) i PDF z **nieosadzonymi fontami CJK** (`cmaps/`, `standard_fonts/`) nie
+przygotują się w całości.
+
+**Decyzja: nie rozluźniamy CSP.** `wasm-unsafe-eval` w aplikacji, która uruchamia cudze agenty,
+jest złym kursem wymiany za rzadki wariant formatu; PLAN §2 i tak nie obiecuje ani JPEG 2000,
+ani CJK bez osadzonych fontów. Kontraktem dla takiego pliku jest **nazwany stan `Failed`
+z własnym zdaniem** — nigdy udawany pusty dokument (PLAN §5). Sam worker pdf.js problemu nie
+ma: `worker-src` spada do `default-src 'self'`, a zasób emitowany przez Vite jest same-origin,
+więc **aplikacja działa bez sieci** i to jest sprawdzane na zbudowanym `dist/`, nie na dev.
+
+Warunek zmiany tej decyzji: gdyby natywne QA z CT-09 pokazało, że realne materiały użytkownika
+wpadają w ten wariant częściej niż incydentalnie.
+
+**D-4. Dwie moje własne wady, obie znalezione przez plan CT-02 i naprawione.**
+`pdfjs-dist` wszedł z `^6.3.289`, wbrew pinowaniu reszty `package.json` i wbrew `comment:*`
+w tym samym pliku — przypięte dokładnie. Oraz: mój wtręt o lądowaniu CT-01 rozerwał tabelę
+etapów z §1 na dwie — wiersze wrócone do jednej tabeli.
 
 **D-2. Kolejność paska jest przypięta w trzech wyroczniach naraz** (makieta
 `docs/mockup/index.html`, egzekutor `src/sections/triggers/mounted.test.tsx`, plus
