@@ -953,6 +953,15 @@ export default function Run(): ReactElement {
     let stillHere = true;
     void stepMessageRecipients(folder)
       .then((recipients) => {
+        /* KSZTAŁT SPRAWDZONY, NIE ZAŁOŻONY (2026-09-07). `Promise<readonly StepSession[]>`
+           w `./io.ts` jest RZUTOWANIEM (`invoke<…>`), a nie sprawdzeniem — odpowiedź, która
+           nie jest listą, wchodziła do magazynu i pierwszy render robił na niej `.filter`.
+           Osłona sekcji łapała ten rzut i CAŁY ekran Run schodził na kartę awarii; zmierzone
+           na zbudowanej aplikacji, gdzie granica bez tej komendy oddaje pustą wartość.
+           Nie ma tu zdania dla człowieka i to jest wybór: „nie wiemy, kto słucha" znaczy
+           dokładnie tyle, co „nikt nie słucha" — pole wpisu adresuje wtedy lidera i mówi to
+           wprost, zamiast obiecywać kanał, którego nie potwierdziliśmy. */
+        if (!Array.isArray(recipients)) return;
         // Zdarzenie przyjęte po zapytaniu wygrywa z wolniejszą migawką. Nie cofamy capability.
         if (stillHere && store.getState().messageSessions === before)
           store.getState().rememberStepRecipients(recipients);
