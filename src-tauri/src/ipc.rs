@@ -3563,6 +3563,111 @@ pub async fn save_context_draft(
     .map_err(|error| error.to_string())
 }
 
+/// Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił.
+///
+/// # Cztery kolejne skorupy, ten sam korzeń
+///
+/// Tak jak czwórka wyżej, biorą `state.home` i nic poza nim. Różnica jest jedna i wynika
+/// z rodzaju pracy: te cztery kopiują pliki, dekodują obrazy i publikują strony, więc `home`
+/// jedzie do puli blokującej razem z całą robotą — komenda bez `async` biegnie na wątku, na
+/// którym rysuje się okno, a kopiowanie 50 MiB zamraża je na cały ten czas
+/// (`no_command_freezes_the_window`).
+///
+/// `items` niesie ścieżki plików ALBO wklejone bajty. Ścieżki, bo okno nie ma po co czytać
+/// pliku, którego i tak nie zobaczy; bajty, bo schowka nie da się otworzyć z Rusta.
+#[tauri::command]
+pub async fn import_context_sources(
+    state: State<'_, AppState>,
+    set_id: String,
+    operation_id: String,
+    items: Vec<crate::context::sources::ImportItem>,
+    expected_revision: Option<String>,
+) -> Result<crate::context::sources::ImportReport, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::import_context_sources_inner(
+            &home,
+            &set_id,
+            &operation_id,
+            expected_revision,
+            items,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("adding those files to that context set", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Zatwierdza jedną przygotowaną stronę dokumentu.
+///
+/// Strona niesie numer operacji i odcisk pliku, bo TO są dwie rzeczy, które rozstrzygają, czy
+/// wolno ją przyjąć: wynik poprzedniego importu, który dotarł po następnym, ma trafić do swojej
+/// operacji, a nie do tej, która akurat trwa (PLAN §5).
+#[tauri::command]
+pub async fn complete_context_source_preparation(
+    state: State<'_, AppState>,
+    set_id: String,
+    source_id: String,
+    page: crate::context::sources::PreparedPage,
+    expected_revision: Option<String>,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::complete_context_source_preparation_inner(
+            &home,
+            &set_id,
+            &source_id,
+            &page,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("preparing that file", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Kawałek zatwierdzonego źródła do podglądu — miniatura, strona albo początek tekstu.
+///
+/// **Adresem jest identyfikator ŹRÓDŁA, nigdy ścieżka od okna** (PLAN §12). Ścieżka podana przez
+/// webview byłaby drogą do dowolnego pliku na dysku człowieka, przebraną za podgląd.
+#[tauri::command]
+pub async fn read_context_source(
+    state: State<'_, AppState>,
+    set_id: String,
+    source_id: String,
+    page: Option<u32>,
+) -> Result<crate::context::sources::SourcePart, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::read_context_source_inner(&home, &set_id, &source_id, page)
+    })
+    .await
+    .map_err(|error| did_not_finish("opening that file", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Zdejmuje źródło z zestawu.
+#[tauri::command]
+pub async fn remove_context_source(
+    state: State<'_, AppState>,
+    set_id: String,
+    source_id: String,
+    expected_revision: Option<String>,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::remove_context_source_inner(
+            &home,
+            &set_id,
+            &source_id,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("taking that file out of the set", &error))?
+    .map_err(|error| error.to_string())
+}
+
 /// Wszystkie notatki leżące na dysku — lista, którą sekcja Pamięć czyta przy wejściu.
 ///
 /// 2026-08-18 — powstało z tego samego powodu, co [`list_skills`]: magazyn notatek startował
@@ -5165,6 +5270,7 @@ macro_rules! every_command_the_window_can_call {
             compare_import_copies,
             continue_run,
             answer_checkpoint,
+            complete_context_source_preparation,
             copy_diagnostics,
             create_context_set,
             create_eval_set,
@@ -5188,6 +5294,7 @@ macro_rules! every_command_the_window_can_call {
             set_result_kept,
             forget_runs_older_than,
             forget_what_the_old_runs_left,
+            import_context_sources,
             install_skill,
             interrupt_the_lead,
             list_agents,
@@ -5216,11 +5323,13 @@ macro_rules! every_command_the_window_can_call {
             put_eval_variant,
             put_note_to_use,
             read_context_set,
+            read_context_source,
             read_eval_board,
             read_run,
             read_settings,
             read_project_settings,
             preview_additional_inputs,
+            remove_context_source,
             rerun_step,
             resume_run,
             resume_trigger,

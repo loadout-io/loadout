@@ -176,6 +176,42 @@ pub fn save_draft(library: &Path, edit: &DraftEdit) -> Result<ContextSetRead, Er
     })
 }
 
+/// Katalog, w którym leży zestaw o tym `id` — pytany przez rejestr źródeł.
+///
+/// Publiczne, bo [`super::sources`] kładzie pliki WEWNĄTRZ tego katalogu i musi go znać, a druga
+/// kopia szukania po manifestach byłaby drugą odpowiedzią na „gdzie stoi ten zestaw".
+pub fn folder_of(library: &Path, id: &str) -> Result<PathBuf, Error> {
+    folder_holding(library, id)
+}
+
+/// Publikuje jeden plik ŹRÓDŁA wewnątrz katalogu zestawu.
+///
+/// # Dlaczego `atomic_create_if_absent`, a nie `publish_definition`
+///
+/// `publish_definition` porównuje CAŁE bajty celu przez [`revision_of`], czyli koduje je base64
+/// w pamięci (`durable_file.rs:40`). Dla pliku definicji po kilka kilobajtów to nic; dla
+/// oryginału ważącego 50 MiB to jest odczyt i kodowanie całego pliku przy każdym zapisie.
+/// A przede wszystkim: tu nie ma czego porównywać. Wszystko pod
+/// `sources/<id>/<rewizja>/` jest NIEZMIENNE z konstrukcji — rewizja opisuje jeden zestaw
+/// bajtów, więc podmiana materiału tworzy rewizję obok, a nie nadpisuje tej (PLAN §4).
+///
+/// Dlatego cel, który już istnieje, nie jest błędem: to ta sama strona przygotowana drugi raz
+/// pod tym samym odciskiem. Konflikt jest tu zdaniem „to już leży", nie „ktoś nas uprzedził".
+pub fn publish_source_file(folder: &Path, relative: &str, bytes: &[u8]) -> Result<(), Error> {
+    let target = folder.join(relative);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match DurableFilePublisher::new(folder).atomic_create_if_absent(
+        &target,
+        bytes,
+        ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+    ) {
+        Ok(()) | Err(PublishError::Conflict { .. }) => Ok(()),
+        Err(error) => Err(Error::Unwritable(error.into_io())),
+    }
+}
+
 /// Publikuje oba pliki zestawu w jednej partii i oddaje rewizję świeżego `draft.json`.
 ///
 /// OBA IDĄ PRZEZ `publish_definition`, bo `durable_file` nazywa je jedynym wejściem dla plików

@@ -32,6 +32,7 @@ check_trigger
 check_workflow
 close_terminal
 compare_import_copies
+complete_context_source_preparation
 continue_run
 copy_diagnostics
 create_context_set
@@ -53,6 +54,7 @@ forget_run_branches
 forget_runs_older_than
 forget_what_the_old_runs_left
 install_skill
+import_context_sources
 interrupt_the_lead
 list_agents
 list_context_sets
@@ -79,10 +81,12 @@ put_eval_case
 put_eval_variant
 put_note_to_use
 read_context_set
+read_context_source
 read_eval_board
 read_project_settings
 read_run
 read_settings
+remove_context_source
 rerun_step
 resume_run
 resume_trigger

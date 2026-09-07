@@ -15,8 +15,35 @@ import { create } from 'zustand';
 
 import { why } from '../ipc/why';
 
-/** Rodzaj materiału. Ten etap zapisuje wyłącznie `text`; `unknown` przychodzi z nowszego pliku. */
-export type SourceKind = 'text' | 'unknown';
+/** Rodzaj materiału. `unknown` przychodzi z nowszego pliku i ma być minięty, nie wywrócony. */
+export type SourceKind = 'text' | 'image' | 'pdf' | 'document' | 'unknown';
+
+/** Plik zapisany w bibliotece — KOPIA, nigdy dowiązanie do miejsca, z którego przyszedł. */
+export interface StoredFile {
+  /** Ścieżka względem katalogu zestawu. Okno jej nie używa do niczego poza pokazaniem. */
+  path: string;
+  revision: string;
+  mime: string;
+  bytes: number;
+  fingerprint: string;
+  /** Ile ważą pochodne tego źródła. Osobny budżet od oryginałów. */
+  derived: number;
+  /** Ile stron ma dokument — `null`, dopóki nikt go nie otworzył. */
+  pages: number | null;
+}
+
+/**
+ * Gdzie stoi przygotowanie pliku.
+ *
+ * Unia po `state`, tak jak po stronie Rusta. Wariant `unknown` jest tu, bo nowszy Loadout może
+ * dopisać stan, którego ten build nie zna — i ma go MINĄĆ, nie przewrócić na nim ekranu.
+ */
+export type Preparation =
+  | { state: 'notNeeded' }
+  | { state: 'needs'; pagesDone: number }
+  | { state: 'ready' }
+  | { state: 'failed'; said: string }
+  | { state: 'unknown' };
 
 export interface ContextSource {
   id: string;
@@ -25,9 +52,78 @@ export interface ContextSource {
   name: string;
   /** Po co ten materiał tu leży — jedno zdanie człowieka. */
   description: string;
-  /** Materiał wpisany w polu, słowo w słowo. */
+  /** Materiał wpisany w polu, słowo w słowo. Przy źródle plikowym pusty. */
   text: string;
+  /* Cztery pola niżej są OPCJONALNE po stronie okna, choć Rust wysyła je zawsze: `draft.json`
+   * zapisany przed CT-02 ich nie niesie, a szkic składany w teście nie ma powodu ich wypisywać. */
+  file?: StoredFile | null;
+  preparation?: Preparation;
+  /** Tekst, przy którym stanął ten obraz — szew jednego mieszanego wklejenia. */
+  companionOf?: string | null;
+  /** Widoczne ograniczenia tego źródła, gotowymi zdaniami. */
+  notes?: string[];
 }
+
+/** Bajty ze schowka. Nazwy pliku w tym kształcie nie ma i mieć nie ma. */
+export interface PastedBytes {
+  mime: string;
+  base64: string;
+}
+
+/** Jedna pozycja żądania importu: plik z dysku ALBO to, co niesie schowek. */
+export interface ImportItem {
+  name: string;
+  path?: string | null;
+  text?: string | null;
+  image?: PastedBytes | null;
+}
+
+/** Wynik JEDNEJ pozycji. Pięć wybranych plików daje pięć takich wierszy. */
+export interface ImportResult {
+  name: string;
+  added: string[];
+  /** Zdanie odmowy z Rusta — `null`, kiedy pozycja weszła. */
+  refused: string | null;
+  notes: string[];
+}
+
+export interface ImportReport {
+  operationId: string;
+  results: ImportResult[];
+  read: ContextSetRead;
+}
+
+/** Jedna strona przygotowana przez lokalny worker, ze stemplami, po których się ją rozlicza. */
+export interface PreparedPage {
+  operationId: string;
+  fingerprint: string;
+  pagesTotal: number;
+  number: number;
+  text: string;
+  image: PastedBytes | null;
+  /**
+   * Czym plik zawinił, kiedy nie da się go otworzyć w ogóle — wtedy pola wyżej są puste.
+   *
+   * Tą samą drogą, co strona, bo rozlicza się tak samo: porażka od okna, które pracowało nad
+   * poprzednim importem, nie ma prawa oznaczyć pliku wybranego przed chwilą.
+   */
+  failed?: Unopenable | null;
+}
+
+/** Dlaczego dokumentu nie da się otworzyć. Rozpoznaje to sterownik, ZDANIE pisze Rust. */
+export type Unopenable = 'locked' | 'damaged';
+
+export interface PreviewImage {
+  mime: string;
+  base64: string;
+}
+
+/** Kawałek zatwierdzonego źródła. Adresem jest ID źródła, nigdy ścieżka od okna. */
+export type SourcePart =
+  | { kind: 'image'; image: PreviewImage }
+  | { kind: 'page'; number: number; pagesTotal: number; text: string; image: PreviewImage | null }
+  | { kind: 'text'; text: string; more: boolean }
+  | { kind: 'whole'; mime: string; base64: string; operationId: string; fingerprint: string };
 
 export interface ContextDraft {
   schema: number;
@@ -77,6 +173,25 @@ export interface ContextIo {
   read(id: string): Promise<ContextSetRead>;
   create(title: string): Promise<ContextSetRead>;
   saveDraft(edit: DraftEdit): Promise<ContextSetRead>;
+  /** Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił — jeden wynik na pozycję. */
+  importSources(
+    setId: string,
+    operationId: string,
+    items: ImportItem[],
+    expectedRevision: string | null,
+  ): Promise<ImportReport>;
+  completePreparation(
+    setId: string,
+    sourceId: string,
+    page: PreparedPage,
+    expectedRevision: string | null,
+  ): Promise<ContextSetRead>;
+  readSource(setId: string, sourceId: string, page: number | null): Promise<SourcePart>;
+  removeSource(
+    setId: string,
+    sourceId: string,
+    expectedRevision: string | null,
+  ): Promise<ContextSetRead>;
 }
 
 /**
@@ -88,6 +203,46 @@ export interface ContextIo {
  */
 export type Library = 'reading' | 'read' | 'unreadable';
 
+/**
+ * Otwarty dokument w rękach lokalnego workera.
+ *
+ * Interfejs, a nie import `pdfjs-dist`: magazyn nie ma prawa znać biblioteki, która rysuje
+ * strony — tak samo, jak nie zna nazw komend. Prawdziwy sterownik stoi
+ * w `src/sections/context/pdf-preparation.ts`, a test podaje własny.
+ */
+export interface OpenDocument {
+  /** Ile stron ma ten plik. */
+  readonly pages: number;
+  /** Jedna strona: jej tekst i jej wygląd. Pamięć strony zwalnia sterownik zaraz po oddaniu. */
+  page(number: number): Promise<Made>;
+  /** Zwalnia dokument. Wołane także wtedy, gdy przygotowanie padło w połowie. */
+  close(): void;
+}
+
+/**
+ * Co wyszło z JEDNEJ strony.
+ *
+ * Ta sama unia, co przy otwieraniu, i z tego samego powodu: plik potrafi się otworzyć,
+ * a rozsypać dopiero na trzeciej stronie — przy odczycie jej treści albo przy rysowaniu.
+ * Wyjątek z tego miejsca kończył się zdaniem na ekranie, które znika przy wyjściu z sekcji,
+ * a plik wracał jako „czeka na przygotowanie". Porażka strony jest porażką TEGO PLIKU.
+ */
+export type Made =
+  { readonly made: { text: string; image: PastedBytes | null } } | { readonly failed: Unopenable };
+
+/**
+ * Co wyszło z próby otwarcia pliku.
+ *
+ * Wartość, nie wyjątek (niezmiennik 7): „tego pliku nie da się otworzyć" jest ODPOWIEDZIĄ,
+ * którą trzeba zapisać na dysku, a nie awarią do zalogowania. Rzucony wyjątek kończyłby się
+ * zdaniem na ekranie, które znika przy wyjściu z sekcji — a plik zostawałby na zawsze
+ * „czekający na przygotowanie".
+ */
+export type Opened = { readonly opened: OpenDocument } | { readonly failed: Unopenable };
+
+/** Kto umie otworzyć plik, którego bajty właśnie wróciły z biblioteki. */
+export type PageMaker = (file: { mime: string; base64: string }) => Promise<Opened>;
+
 export interface ContextState {
   sets: ContextSet[];
   library: Library;
@@ -97,6 +252,17 @@ export interface ContextState {
   search: string;
   /** Zdanie po odmowie z Rusta — `null`, kiedy nie ma o czym mówić. Jedno na całą sekcję. */
   refusal: string | null;
+  /**
+   * Wynik ostatniego importu, jeden wiersz na każdą wybraną pozycję.
+   *
+   * Lista, nie jedno zdanie: pięć plików, z których dwa odmówiły, jest pięcioma różnymi
+   * odpowiedziami — a jedno zdanie „część plików nie weszła" każe zgadywać, które.
+   */
+  imported: ImportResult[];
+  /** Otwarty podgląd: źródło i kawałek, który wrócił z granicy. */
+  preview: { sourceId: string; part: SourcePart } | null;
+  /** Źródło, które właśnie się przygotowuje — `null`, kiedy nic nie trwa. */
+  preparing: string | null;
   load: () => Promise<void>;
   create: (title: string) => Promise<void>;
   openSet: (id: string) => Promise<void>;
@@ -105,6 +271,19 @@ export interface ContextState {
   save: (edit: DraftEdit) => Promise<boolean>;
   narrow: (search: string) => void;
   dismiss: () => void;
+  /** Kładzie w otwartym zestawie wszystko, co człowiek wybrał albo wkleił. */
+  addSources: (items: ImportItem[]) => Promise<void>;
+  /** Przygotowuje dokument od pierwszej brakującej strony, jedną stroną naraz. */
+  prepareSource: (sourceId: string, open: PageMaker) => Promise<void>;
+  showSource: (sourceId: string, page: number | null) => Promise<void>;
+  hidePreview: () => void;
+  dropSource: (sourceId: string) => Promise<void>;
+}
+
+/** Ile stron tego źródła jest już gotowych. Nieznany stan liczy się jak zero. */
+export function pagesDone(source: ContextSource | undefined): number {
+  const preparation = source?.preparation;
+  return preparation?.state === 'needs' ? preparation.pagesDone : 0;
 }
 
 /** Zestawy, które pasują do tego, czego człowiek szuka. Po nazwie — tak mówi PLAN §12. */
@@ -132,6 +311,9 @@ export function createContextStore(io: ContextIo) {
     open: null,
     search: '',
     refusal: null,
+    imported: [],
+    preview: null,
+    preparing: null,
 
     load: async () => {
       set({ refusal: null, library: 'reading' });
@@ -169,7 +351,9 @@ export function createContextStore(io: ContextIo) {
     },
 
     close: () => {
-      set({ open: null, refusal: null });
+      /* Wyniki importu i podgląd należą do OTWARTEGO zestawu, więc wychodzą razem z nim.
+       * Zostawione, opowiadałyby o plikach następnego zestawu, do którego ktoś wejdzie. */
+      set({ open: null, refusal: null, imported: [], preview: null });
     },
 
     save: async (edit: DraftEdit) => {
@@ -196,6 +380,139 @@ export function createContextStore(io: ContextIo) {
 
     dismiss: () => {
       set({ refusal: null });
+    },
+
+    addSources: async (items: ImportItem[]) => {
+      const open = get().open;
+      if (open === null || items.length === 0) return;
+      set({ refusal: null, imported: [] });
+      try {
+        /* Numer operacji wybija OKNO i wysyła go razem z żądaniem. Po nim rozlicza się wynik,
+         * także spóźniony: odpowiedź na poprzednie kliknięcie nie ma prawa wylądować w tym,
+         * co człowiek zlecił przed chwilą. */
+        const report = await io.importSources(
+          open.set.id,
+          crypto.randomUUID(),
+          items,
+          open.revision,
+        );
+        set({
+          open: report.read,
+          imported: report.results,
+          sets: upsert(get().sets, report.read.set),
+        });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not add those files to this set.') });
+      }
+    },
+
+    prepareSource: async (sourceId: string, openDocument: PageMaker) => {
+      const open = get().open;
+      if (open === null) return;
+      set({ refusal: null, preparing: sourceId });
+      try {
+        const whole = await io.readSource(open.set.id, sourceId, null);
+        if (whole.kind !== 'whole') {
+          throw new Error('Loadout could not read that file to prepare it.');
+        }
+        /* PLIK, KTÓRY SIĘ NIE PRZYGOTOWAŁ, ZOSTAJE ZAPISANY JAKO TAKI — obojętnie, czy odbił
+           się przy otwarciu, czy dopiero na trzeciej stronie. Samo zdanie na ekranie znika
+           przy wyjściu z sekcji, a źródło wracałoby jako „czeka na przygotowanie", więc
+           człowiek klikałby Prepare bez końca i nigdy nie dowiedziałby się, czemu. Zdanie pisze
+           Rust, bo to on je pokaże następnym razem (PLAN §5). */
+        const givingUp = async (failed: Unopenable): Promise<void> => {
+          set({
+            open: await io.completePreparation(
+              open.set.id,
+              sourceId,
+              {
+                operationId: whole.operationId,
+                fingerprint: whole.fingerprint,
+                pagesTotal: 0,
+                number: 0,
+                text: '',
+                image: null,
+                failed,
+              },
+              get().open?.revision ?? null,
+            ),
+          });
+        };
+
+        const answer = await openDocument({ mime: whole.mime, base64: whole.base64 });
+        if ('failed' in answer) {
+          await givingUp(answer.failed);
+          return;
+        }
+        const document = answer.opened;
+        try {
+          /* OD PIERWSZEJ BRAKUJĄCEJ, nie od początku. Strony gotowe przed zamknięciem okna
+           * zostały na dysku, a przygotowanie ich drugi raz jest czekaniem bez powodu. */
+          const from = pagesDone(open.draft.sources.find((source) => source.id === sourceId)) + 1;
+          for (let number = from; number <= document.pages; number += 1) {
+            const page = await document.page(number);
+            if ('failed' in page) {
+              /* Strony gotowe przed tą ZOSTAJĄ na dysku: są prawdziwe i przygotowane raz.
+                 Stan mówi o pliku, a nie o nich. */
+              await givingUp(page.failed);
+              return;
+            }
+            const saved = await io.completePreparation(
+              open.set.id,
+              sourceId,
+              {
+                operationId: whole.operationId,
+                fingerprint: whole.fingerprint,
+                pagesTotal: document.pages,
+                number,
+                text: page.made.text,
+                image: page.made.image,
+              },
+              get().open?.revision ?? null,
+            );
+            set({ open: saved });
+          }
+        } finally {
+          document.close();
+        }
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not prepare that file.') });
+      } finally {
+        set({ preparing: null });
+      }
+    },
+
+    showSource: async (sourceId: string, page: number | null) => {
+      const open = get().open;
+      if (open === null) return;
+      set({ refusal: null });
+      try {
+        set({ preview: { sourceId, part: await io.readSource(open.set.id, sourceId, page) } });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not open that file.') });
+      }
+    },
+
+    hidePreview: () => {
+      set({ preview: null });
+    },
+
+    dropSource: async (sourceId: string) => {
+      const open = get().open;
+      if (open === null) return;
+      set({ refusal: null });
+      try {
+        const saved = await io.removeSource(open.set.id, sourceId, open.revision);
+        /* Podgląd znika RAZEM ze źródłem: obrazek stojący nad wierszem, którego już nie ma,
+         * jest pokazywaniem czegoś, czego zestaw nie zawiera (niezmiennik 13). */
+        set({
+          open: saved,
+          preview: get().preview?.sourceId === sourceId ? null : get().preview,
+          imported: [],
+        });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not take that file out of this set.') });
+      }
     },
   }));
 }

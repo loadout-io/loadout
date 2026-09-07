@@ -49,12 +49,16 @@ const TITLE: &str = "Checkout redesign";
 fn typed_draft() -> ContextDraft {
     ContextDraft {
         schema: SCHEMA,
+        // 2026-09-07 (CT-02) — `..default()`, bo `ContextSource` dostało wtedy pola pliku,
+        // przygotowania i szwu tekst–obraz. Ten zestaw jest tekstowy i żadnego z nich nie
+        // niesie; wypisane z ręki zerowe wartości mówiłyby o nich coś, czego ten test nie bada.
         sources: vec![ContextSource {
             id: "s-notes".to_owned(),
             kind: SourceKind::Text,
             name: "Bug notes".to_owned(),
             description: "What QA wrote down while clicking through it.".to_owned(),
             text: TYPED.to_owned(),
+            ..ContextSource::default()
         }],
         excluded: Vec::new(),
         how_to_prepare: HOW_TO_PREPARE.to_owned(),
