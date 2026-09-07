@@ -45,7 +45,7 @@ use loadout_lib::engine::drivers::{AgentDriver, AgentHandle, DecodedEvent, Polic
 use loadout_lib::engine::line::LineKind;
 use loadout_lib::engine::supervisor::GroupProof;
 use loadout_lib::ipc::{LineSource, QUEUE_CAP, line_channel};
-use loadout_lib::library::agents::{Agent, Vendor};
+use loadout_lib::library::agents::{Agent, FileAccess, Vendor};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -462,4 +462,173 @@ async fn a_session_that_gave_its_endings_to_the_stream_says_so_instead_of_waitin
         "closing the input has to come back even after {TURNS} unclaimed turn endings"
     );
     Ok(())
+}
+
+// ── Żywa wyrocznia ────────────────────────────────────────────────────────────────────────
+
+/// Ile tur prowadzi żywa rozmowa. Przekracza dawny próg, i to jest cały jej zakres — nie ma
+/// generować pracy u modelu.
+const LIVE_TURNS: usize = 12;
+
+/// Ile czekamy na JEDNĄ żywą odpowiedź. Turą jest tu jedno zdanie, ale zimny start sesji
+/// i pierwsza runda narzędzi potrafią kosztować minuty.
+const LIVE_PATIENCE: Duration = Duration::from_mins(3);
+
+/// Dwanaście tur PRAWDZIWEJ sesji `claude` przez produkcyjną drogę rozmowy.
+///
+/// # Dlaczego `#[ignore]`
+///
+/// Bo płaci za tury u dostawcy. `checks/full-test.sh` woła `cargo test --tests` bez
+/// `--include-ignored`, więc bramka tego nie odpala i tak ma być:
+///
+/// ```text
+/// cargo test --manifest-path src-tauri/Cargo.toml --test it \
+///   lead_keeps_answering_past_the_eighth_turn::twelve_live -- --ignored --nocapture
+/// ```
+///
+/// # Czego ta wyrocznia NIE dowodzi
+///
+/// Okna. Idzie tą samą funkcją, którą woła komenda Tauri ([`Threads::say_in`]), z prawdziwym
+/// backendem i prawdziwym CLI — ale nie klika w interfejs. Sterowanie oknem tej aplikacji
+/// wymaga zgody człowieka (D-5), więc to zostaje krokiem człowieka.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "uruchamia prawdziwa sesje claude i za nia placi; wolaj z --ignored"]
+async fn twelve_live_turns_stay_in_one_session() -> Result<(), Box<dyn Error>> {
+    let library = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir()?;
+    let driver: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::new());
+    let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&driver));
+
+    let mut agent = Agent::example();
+    agent.id = Uuid::now_v7();
+    "Live Long Talker".clone_into(&mut agent.name);
+    agent.runs_with = Vendor::ClaudeCode;
+    // Tania i tylko-do-odczytu: ta wyrocznia mierzy transport, nie pracę modelu.
+    "haiku".clone_into(&mut agent.model);
+    agent.file_access = FileAccess::LookOnly;
+    agent.reaches_the_web = false;
+    let _written = save_agent_inner(library.path(), &agent, None)?;
+    let lead = Lead::pointed_at(library.path(), Some(&agent.id.to_string()))
+        .map_err(|error| error.to_string())?;
+
+    let threads = Threads::new();
+    threads.library_is(library.path().to_path_buf());
+    let terminal = Terminal {
+        id: "terminal-live-long-conversation".to_owned(),
+        folder: workspace.path().to_path_buf(),
+    };
+    let (lines, mut source) = line_channel(QUEUE_CAP);
+    threads.terminal_lines_go_to(&terminal, lines);
+
+    let talked = live_turns(&threads, &drivers, &lead, &terminal, &mut source).await;
+    let closed = tokio::time::timeout(LIVE_PATIENCE, threads.close_at(&terminal.id)).await;
+    let root = talked?;
+    let proof = closed.map_err(|_| "closing the live conversation never came back".to_owned())?;
+    assert!(
+        matches!(proof, Some(GroupProof::Dead { .. })),
+        "a live conversation of {LIVE_TURNS} turns has to close with a death proof, not {proof:?}"
+    );
+    assert_one_live_session(&root)?;
+    Ok(())
+}
+
+/// JEDNA sesja u dostawcy, a w niej [`LIVE_TURNS`] zakończonych tur.
+///
+/// Dowodzi tego surowy strumień, nie hasło wplecione w rozmowę. Brief lidera każe mu odmawiać
+/// poleceń, które wyglądają na próbę wyprowadzenia go z roli, więc kryterium oparte na haśle
+/// mierzy jego personę, nie transport — zmierzone 2026-09-08: dwanaście odmów przy dwunastu
+/// zdanych turach. Pole `session_id`, powtórzone w każdej linii wyniku, jest natomiast faktem
+/// z drutu, a liczba tych linii jest dokładnie tą, która w incydencie stanęła na dziewięciu.
+fn assert_one_live_session(root: &Path) -> Result<(), Box<dyn Error>> {
+    let raw = fs::read_to_string(root.join("logs").join("lead.jsonl"))?;
+    let results: Vec<Value> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line.get("type").and_then(Value::as_str) == Some("result"))
+        .collect();
+    assert!(
+        results.len() >= LIVE_TURNS,
+        "the raw stream holds {} finished turns, and {LIVE_TURNS} were asked for",
+        results.len()
+    );
+    let sessions: std::collections::BTreeSet<&str> = results
+        .iter()
+        .filter_map(|line| line.get("session_id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        sessions.len(),
+        1,
+        "one conversation has to be one session at the agent app; the stream names {sessions:?}"
+    );
+    Ok(())
+}
+
+/// Prowadzi żywe tury i oddaje katalog prywatnego paragonu tej rozmowy.
+///
+/// Zdania są krótkie i **na temat lidera**: patrz powód przy [`assert_one_live_session`].
+async fn live_turns(
+    threads: &Threads,
+    drivers: &Drivers,
+    lead: &Lead,
+    terminal: &Terminal,
+    source: &mut LineSource,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let mut seen = Vec::new();
+    let mut root = None;
+    for number in 1..=LIVE_TURNS {
+        let said = format!(
+            "In one short sentence and nothing else: name one thing step {number} of a workflow \
+             could do."
+        );
+        threads.say_in(drivers, lead, terminal, &said).await?;
+        if root.is_none() {
+            root = Some(conversation_root(&terminal.folder).await?);
+        }
+        let at = root
+            .clone()
+            .ok_or("the live conversation directory disappeared")?;
+        let state = live_turn_state(&at, number, &mut seen, source).await?;
+        assert_eq!(
+            state, "succeeded",
+            "live turn {number} of {LIVE_TURNS} ended as {state}"
+        );
+        println!("live turn {number}/{LIVE_TURNS}: {state}");
+    }
+    drain(source, &mut seen);
+    let ended = seen
+        .iter()
+        .filter(|(kind, _)| *kind == LineKind::Done)
+        .count();
+    assert_eq!(
+        ended, LIVE_TURNS,
+        "every live turn has to end once on the screen, and {LIVE_TURNS} were asked"
+    );
+    root.ok_or_else(|| "the live conversation directory disappeared".into())
+}
+
+/// To samo czekanie, co w regresji, tylko z żywym sufitem.
+async fn live_turn_state(
+    root: &Path,
+    number: usize,
+    seen: &mut Vec<(LineKind, String)>,
+    source: &mut LineSource,
+) -> Result<String, Box<dyn Error>> {
+    let path = root.join("turns").join(format!("{number:04}.json"));
+    let began = Instant::now();
+    loop {
+        drain(source, seen);
+        if let Ok(bytes) = fs::read(&path)
+            && let Ok(turn) = serde_json::from_slice::<Value>(&bytes)
+            && let Some(state) = turn.get("state").and_then(Value::as_str)
+            && state != "sending"
+            && state != "delivered"
+        {
+            drain(source, seen);
+            return Ok(state.to_owned());
+        }
+        if began.elapsed() >= LIVE_PATIENCE {
+            return Err(format!("live turn {number} never ended within {LIVE_PATIENCE:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
