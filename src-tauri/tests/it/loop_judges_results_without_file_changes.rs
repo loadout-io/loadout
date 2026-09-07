@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use loadout_lib::commands::history::{PastRunWire, read_run_inner};
-use loadout_lib::commands::run::run_workflow_inner;
+use loadout_lib::commands::run::run_workflow_with_budget;
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
 use loadout_lib::engine::drivers::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, FinishReason, Outcome, Probe, RunSpec,
@@ -85,6 +85,9 @@ struct Case {
     writes: Writes,
     when: &'static str,
     stop_when_asked: bool,
+    /// Sufit wydatku tego biegu. `None` znaczy „bez sufitu" — tak jak wyczyszczone pole na pasku
+    /// Run, i tak biegnie osiem pozostałych przypadków w tym pliku.
+    ceiling: Option<f64>,
 }
 
 impl Case {
@@ -95,6 +98,7 @@ impl Case {
             writes: Writes::Nothing,
             when,
             stop_when_asked: false,
+            ceiling: None,
         }
     }
 }
@@ -169,6 +173,73 @@ async fn a_change_in_a_later_body_step_does_not_skip_the_judge() -> Result<(), B
     assert_judged(&ran, 1)?;
     assert_eq!(ran.seen.for_role("later").len(), 1);
     assert_future_not_executed(&ran, 1)?;
+    Ok(())
+}
+
+/// WF-04: krok ciała, który naprawdę pobiegł, nie może zniknąć sędziemu z pola widzenia.
+///
+/// # Co się działo
+///
+/// Strażnik pustej rundy pytał wyłącznie o KAFELEK WEJŚCIOWY pętli. Wejście, które odmówiło
+/// startu pod sufitem wydatku, nigdy nie zapala `executed`, więc dla strażnika runda była pusta —
+/// mimo że późniejszy krok ciała pobiegł i zostawił prawdziwą pracę. To nie jest przypadek
+/// teoretyczny: stożek za budżetową odmową ma bramkę sufitu JAWNIE wyłączoną (T-101), czyli ten
+/// krok ma zaprojektowaną zgodę na bieg. Sędzia był wtedy pomijany, pętla domykała się na
+/// `settle()`, kafelek świecił na zielono, a cały stożek za pętlą jechał dalej na pracy, której
+/// nikt nie ocenił. Człowiek czytał przy tym na karcie sędziego, że „krok przed nim nigdy nie
+/// pobiegł" — o kroku, który na strzałce bezpośrednio przed nim właśnie pobiegł i zapłacił.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_entry_does_not_skip_the_judge_over_a_body_step_that_ran()
+-> Result<(), Box<dyn Error>> {
+    let mut case = Case::text(Judge::Agent, 1, "stop");
+    case.writes = Writes::LaterStep;
+    // Sufit poniżej centa odmawia PIERWSZEMU krokowi jeszcze przed sterownikiem, a domyślne
+    // `carry-on` puszcza resztę stożka i zdejmuje mu tę samą bramkę (T-101). Bez sufitu nie da
+    // się mieć wejścia, które nie pobiegło, obok kroku ciała, który pobiegł.
+    case.ceiling = Some(0.001);
+    let ran = run(case).await?;
+
+    let research = ran.seen.for_role("research");
+    assert!(
+        research.is_empty(),
+        "the ceiling did not refuse the loop entry, so this fixture measures something else: {research:?}"
+    );
+    let later = ran.seen.for_role("later");
+    assert_eq!(
+        later.len(),
+        1,
+        "the later body step never reached the driver, so there is no work for a judge to miss"
+    );
+    assert!(
+        later[0].wrote,
+        "the later body step left nothing behind, so a skipped judge would cost nothing"
+    );
+
+    let judge = ran.seen.for_role("judge");
+    assert_eq!(
+        judge.len(),
+        1,
+        "the round was declared empty although a step inside it had just run and left work; the \
+         judge that has to look at that work was never asked, and the loop settled green over it"
+    );
+    let rows = steps(&ran.book)?;
+    let row = rows
+        .iter()
+        .find(|row| row["node_key"] == "s_judge")
+        .ok_or("run.json has no judge row")?;
+    assert_eq!(
+        row["executed"], true,
+        "the run file records the judge as never executed: {row}"
+    );
+    let synthesis = ran.seen.for_role("synthesis");
+    assert_eq!(synthesis.len(), 1, "the work past the loop never started");
+    assert!(
+        synthesis[0]
+            .handoffs
+            .join("\n")
+            .contains("wf04-result-judge-copy1-turn1"),
+        "the step past the loop was fed work that no judge had ever seen"
+    );
     Ok(())
 }
 
@@ -421,7 +492,7 @@ async fn run(case: Case) -> Result<Ran, Box<dyn Error>> {
         handoffs_from: None,
     };
     let (sink, mut source) = line_channel(4096);
-    let execution = run_workflow_inner(&deps, &request, sink);
+    let execution = run_workflow_with_budget(&deps, &request, sink, case.ceiling);
     let intervention = answer_when_paused(project.path(), &control, case);
     let (report, answered) =
         tokio::time::timeout(PATIENCE, async { tokio::join!(execution, intervention) })

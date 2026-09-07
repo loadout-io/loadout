@@ -1479,7 +1479,8 @@ export default function Run(): ReactElement {
      * Rozbiór mieszka w czystym module, a nie w tym ciele, bo to repo nie ma jsdom: polityka
      * zamknięta w `sayIt` byłaby kodem, którego nie umie dotknąć żadne kryterium. Wiersz mówi
      * POD POLEM, do kogo trafi zdanie, zanim ktokolwiek naciśnie Enter (`entry/entry.tsx`,
-     * `whereItGoes`), i czyta to z tej samej listy pracujących kroków. */
+     * `whereItGoes`), i czyta to z tego samego rejestru otwartych kanałów, z którego wysyłka
+     * bierze adresy — jedno źródło, więc obietnica i Enter nie mogą powiedzieć czego innego. */
     /* KTÓRY TERMINAL TO MÓWI I KOGO CZŁOWIEK WSKAZAŁ NA LIDERA — dwie wartości, które od
      * 2026-08-20 dojeżdżają do Rusta, i bez których żadna z nich nie miała nośnika.
      *
@@ -1490,11 +1491,12 @@ export default function Run(): ReactElement {
      * NIE MIAŁO DRUTU: wybór żył w oknie, a Rust rozmawiał zaszytym Claude'em, kimkolwiek by ten
      * wybór nie był. Czytamy je w chwili wysyłki, nie z migawki renderu — zdanie ma pójść do tego
      * lidera, którego widać na pasku teraz. */
-    const going = sessionAddresseeOf(
-      text,
-      run.steps.map((step) => step.name),
-      run.messageSessions,
-    );
+    /* ADRESY Z REJESTRU SESJI, NIE Z PLANU. Do dziś jechała tu lista nazw wszystkich kafelków
+     * planu i to odwracało rozstrzygnięcie z akapitu wyżej: zdanie zaczynające się nazwą kroku,
+     * który nigdy nie otworzył kanału, nie docierało do lidera — wracało odmową o kanale sesji.
+     * Po biegu było najgorzej, bo kroki zostają, a sesje są zerowane (`../../state/run.ts`,
+     * `runEnded`), więc kafelki nieżyjącego biegu przechwytywały prozę, kiedy nic nie biegło. */
+    const going = sessionAddresseeOf(text, run.messageSessions);
     if (going.to === 'refused') return going.said;
     /* `say_to_agent` nie ma nośnika obrazów. Jawna odmowa przed IPC jest węższa i uczciwsza
      * niż ciche zdjęcie załączników ze szkicu adresowanego nazwą żywego kroku. */

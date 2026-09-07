@@ -7,12 +7,16 @@ import { sectionEntry } from '../../ui/sections';
 import type { Section } from '../../ui/sections';
 import { isDirty, nextColumn, typedOf, withTyped } from './columns';
 import type { Typed } from './columns';
-import type { EvalCell, EvalSet, EvalVariant, PastEval } from './io';
+import type { EvalSet, EvalVariant, PastEval } from './io';
 import { Matrix } from './matrix';
 import {
   count,
+  definitionOf,
   howItEnded,
+  howItWasJudged,
   howManyCells,
+  keyOfCell,
+  nameOfCell,
   runningCases,
   scoreOf,
   spendOf,
@@ -421,6 +425,8 @@ function Board({
   if (board === null) return null;
   const newest: PastEval | null = board.runs[0] ?? null;
   const table = tableFor(board.set.set, newest);
+  const measured = definitionOf(board.set.set, newest);
+  const judged = howItWasJudged(newest);
   const waiting = suggestedCases(board.set.set);
   const trend = trendOf(board.runs);
 
@@ -436,6 +442,16 @@ function Board({
           tabela — jest obietnica, ze cos tam jest, i czlowiek szuka wzrokiem czegos, czego
           nikt nie napisal. Czego brakuje, mowi zdanie `cannotRun` nad tym miejscem. */}
       {table.rows.length === 0 ? null : <Matrix table={table} />}
+
+      {/* POZIOM ZAUFANIA PRZY WYNIKU, nie tylko przy formularzu. Panel ochrony niżej opisuje
+          bieg, którego jeszcze nie było; to zdanie opisuje ten, który stoi w tabeli nad nim.
+          Bez niego „przeszło" zmierzone bez żadnej granicy wygląda identycznie jak „przeszło"
+          zmierzone pod pilnowanym dostępem do plików — a to nie jest ten sam fakt. */}
+      {judged === '' ? null : (
+        <p data-lab-judged className="max-w-160 lead">
+          {judged}
+        </p>
+      )}
 
       {/* TREND ZARAZ POD TABELĄ, bo to on odpowiada na pytanie, dla którego ta sekcja powstała.
           Krótszy niż dwa przebiegi nie jest linią — i wtedy mówi to zdaniem, zamiast znikać
@@ -455,7 +471,13 @@ function Board({
 
       <Columns state={state} store={store} />
 
-      <WhatDidNotPass set={board.set.set} run={newest} state={state} store={store} />
+      <WhatDidNotPass
+        set={board.set.set}
+        measured={measured}
+        run={newest}
+        state={state}
+        store={store}
+      />
 
       {state.fix === null ? null : <ProposedFix state={state} store={store} />}
 
@@ -704,14 +726,23 @@ function ProposedFix({
   );
 }
 
-/** Lista tego, co nie przeszło — jedno zdanie na komórkę, w kolejności tabeli. */
+/** Lista tego, co nie przeszło — jedno zdanie na komórkę, w kolejności tabeli.
+ *
+ * DWA ZESTAWY W ARGUMENTACH, DWIE RÓŻNE ROLE, i to nie jest nadmiar. Komórkę NAZYWA definicja
+ * z chwili pomiaru (`measured`), bo identyfikatory w niej są historyczne; o tym, dokąd wysłać
+ * człowieka z porażką, decyduje DZISIEJSZY zestaw (`set`) — poprawkę pisze się dla agenta,
+ * który stoi w zestawie teraz, nie dla tego, który stał tam w chwili biegu.
+ */
 function WhatDidNotPass({
   set,
+  measured,
   run,
   state,
   store,
 }: {
   readonly set: EvalSet;
+  /** Definicja z chwili pomiaru: nazwy wierszy i kolumn biorą się WYŁĄCZNIE stąd. */
+  readonly measured: EvalSet;
   readonly run: PastEval | null;
   readonly state: LabState;
   readonly store: typeof useLab;
@@ -719,16 +750,18 @@ function WhatDidNotPass({
   if (run === null) return null;
   const failed = run.cells.filter((cell) => cell.outcome === 'did-not-pass');
   if (failed.length === 0) return null;
-  const nameOf = (cell: EvalCell): string => {
-    const row = set.cases.find((one) => one.id === cell.case)?.name ?? cell.case;
-    const column = set.variants.find((one) => one.id === cell.variant)?.name ?? cell.variant;
-    return row + ' · ' + column;
-  };
   /* PRZYCISK WYŁĄCZNIE PRZY AGENCIE, i to nie jest niedokończona gałąź. Zmiana `SKILL.md`
    * musi przejść przez ten sam skaner wstrzyknięć, co umiejętność wciągnięta z linku
    * (`skills::ingest`), a jedyną drogą tamtędy jest sekcja Skills. Przycisk odmawiający po
-   * kliknięciu byłby kontrolką, która kłamie; zdanie obok mówi, gdzie iść. */
+   * kliknięciu byłby kontrolką, która kłamie; zdanie obok mówi, gdzie iść.
+   *
+   * ZDANIE O UMIEJĘTNOŚCI WYŁĄCZNIE PRZY UMIEJĘTNOŚCI. Rodzaje podmiotu są trzy, a warunek
+   * był dwustanowy, więc porównanie WORKFLOW dostawało zdanie o `SKILL.md` i odsyłało
+   * człowieka do sekcji, w której workflow się nie edytuje — dokładnie w chwili, gdy szuka,
+   * co zrobić z porażką. Workflow nie dostaje tu zdania wcale: zmienia się go w edytorze,
+   * a ta lista nie jest do niego drogą. */
   const forAnAgent = set.subject.kind === 'agent';
+  const forASkill = set.subject.kind === 'skill';
   const writer = state.agents[0]?.id ?? '';
   return (
     <section data-lab-failures>
@@ -748,20 +781,17 @@ function WhatDidNotPass({
             Propose a fix
           </button>
         ) : null}
-        {forAnAgent ? null : (
+        {forASkill ? (
           <p className="lead">
             A change to a skill goes through the same check as one pasted from a link, so it is
             written over in Skills.
           </p>
-        )}
+        ) : null}
       </div>
       <ul className="paper">
         {failed.map((cell) => (
-          <li
-            key={cell.case + cell.variant}
-            className="border-b border-line-subtle p-3 last:border-b-0"
-          >
-            <p className="text-body text-ink">{nameOf(cell)}</p>
+          <li key={keyOfCell(cell)} className="border-b border-line-subtle p-3 last:border-b-0">
+            <p className="text-body text-ink">{nameOfCell(measured, cell)}</p>
             <p className="mt-1 max-w-160 lead" data-tone="body">
               {cell.said}
             </p>

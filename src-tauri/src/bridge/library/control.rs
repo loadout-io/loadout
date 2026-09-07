@@ -68,6 +68,9 @@ impl Desk {
 
     /// Wspólny seam także dla usług: opis i przyciski muszą pochodzić z hosta wywołującego.
     /// `affirmative: None` zachowuje każdą oryginalną odpowiedź, w tym tekst własnymi słowami.
+    ///
+    /// Odpowiedź, która nie pokrywa się z `affirmative`, też jest odpowiedzią i też wraca do
+    /// modelu — z `approved: false` i bez `approvalToken`, więc nie autoryzuje niczego.
     pub(crate) async fn ask_for_approval(
         &self,
         scope: ApprovalScope,
@@ -122,11 +125,23 @@ impl Desk {
         };
         self.waiting.withdraw(&ticket);
         let original = answer?;
-        let token = self.waiting.token_for(&question_id).ok_or_else(|| {
-            "The person did not approve that operation. Nothing changed.".to_owned()
-        })?;
+        /* ODPOWIEDŹ, KTÓRA NIE JEST ZGODĄ, TO WYNIK — NIE AWARIA.
+         *
+         * Pole „Your answer" stoi na karcie pytania ZAWSZE, także obok przycisków, więc człowiek
+         * odpowiada tu również własnymi słowami („nie, najpierw pokaż mi, czemu krok 3 padł").
+         * Wyjście stąd przez `?` gubiło te słowa: model dostawał samą odmowę i nie miał na co
+         * odpowiedzieć, choć okno pokazało człowiekowi jego odpowiedź jako doręczoną. Zgoda się
+         * przy tym NIE rodzi — token powstaje wyłącznie w [`Waiting::answer_exact`], gdy
+         * odpowiedź pokrywa się z `affirmative` — więc bez `approvalToken` [`Desk::stop_addressed`]
+         * (i tak samo usługi, powtórka oraz przywracanie) dalej odmawia. */
+        let Some(token) = self.waiting.token_for(&question_id) else {
+            return Ok(
+                json!({ "questionId": question_id, "approved": false, "answer": original,
+            "said": "The person did not approve that operation. Nothing changed." }),
+            );
+        };
         Ok(
-            json!({ "questionId": question_id, "approvalToken": token, "answer": original,
+            json!({ "questionId": question_id, "approved": true, "approvalToken": token, "answer": original,
             "said": "The person's answer was recorded for this exact operation. It can be used once." }),
         )
     }

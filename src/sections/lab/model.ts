@@ -163,6 +163,36 @@ export function howItEnded(run: PastEval): string {
 }
 
 /**
+ * Pod jakimi warunkami zmierzono TEN przebieg — albo pusty napis, gdy nie ma z czego to wziąć.
+ *
+ * # Po co, skoro obok stoi panel o ochronie
+ *
+ * Panel czyta DZISIEJSZY zapis zestawu, więc mówi o biegu, którego jeszcze nie było. Po
+ * przestawieniu ochrony jego zdanie stawało nad macierzą zmierzoną na odwrotnych warunkach:
+ * „File access is restricted…" nad wynikiem policzonym bez żadnej granicy, i odwrotnie.
+ * „Przeszło" pod pilnowanym dostępem do plików i „przeszło" bez niego to nie jest ten sam
+ * fakt, a człowiek nie miał przy wyniku ani jednego zdania, które by je rozróżniało.
+ *
+ * PUSTY NAPIS, GDY PRZEBIEG NIE NIESIE DEFINICJI: starszy zapis nie wie, jak go mierzono,
+ * a zdanie zgadnięte z dzisiejszego zestawu jest dokładnie tą wadą, którą to naprawia.
+ */
+export function howItWasJudged(run: PastEval | null): string {
+  const measured = run?.definition ?? null;
+  if (measured === null) return '';
+  if (measured.subject.kind !== 'workflow') return '';
+  if (measured.protected === true) {
+    return (
+      'This run was measured with file access restricted; trusted external checks judged the ' +
+      'result.'
+    );
+  }
+  return (
+    'This run was measured as a diagnostic comparison: the checks ran outside the workflow, ' +
+    'but file access was not restricted.'
+  );
+}
+
+/**
  * Czego ten przypadek żąda, w kolejności czytania i bez pól, których nie ma.
  *
  * `expect` schodzi do jednego wiersza, bo jego rolą jest powiedzieć, CO ma paść w odpowiedzi —
@@ -202,6 +232,19 @@ function keyOf(row: string, column: string, repeat: number): string {
 }
 
 /**
+ * Definicja, KTÓRĄ ZMIERZONO ten przebieg — a dla zestawu bez przebiegu dzisiejszy formularz.
+ *
+ * Jedno miejsce na całą sekcję, bo tę samą odpowiedź czyta tabela i lista pod tabelą. Póki
+ * regułę znała wyłącznie tabela, jeden wynik miał na jednym ekranie dwa podpisy: macierz
+ * nazywała komórkę tak, jak nazywała się w chwili pomiaru, a lista „What did not pass"
+ * dzisiejszym formularzem. Po przemianowaniu kolumny człowiek czytał dwie nazwy tej samej
+ * rzeczy w odległości trzech centymetrów, a po jej usunięciu — surowy identyfikator z drutu.
+ */
+export function definitionOf(set: EvalSet, run: PastEval | null): EvalSet {
+  return run?.definition ?? set;
+}
+
+/**
  * Składa tabelę z zestawu i JEDNEGO przebiegu.
  *
  * 2026-09-05: wynik historyczny musi pokazywać historyczne kryteria. Dzisiejszy formularz
@@ -211,7 +254,7 @@ function keyOf(row: string, column: string, repeat: number): string {
  * komórek. Pusta tabela jest lepsza od jej braku: pokazuje, o co Loadout zapyta po Run.
  */
 export function tableFor(set: EvalSet, run: PastEval | null): TableView {
-  const measured = run?.definition ?? set;
+  const measured = definitionOf(set, run);
   const found = new Map<string, EvalCell>(
     (run?.cells ?? []).map((cell) => [
       keyOf(cell.case, cell.variant, cell.execution?.repeat ?? 0),
@@ -224,7 +267,7 @@ export function tableFor(set: EvalSet, run: PastEval | null): TableView {
       Array.from({ length: repetitions(measured, one) }, (_, repeat) => ({
         caseId: one.id,
         repeat,
-        name: one.name + (repetitions(measured, one) > 1 ? ' · Repeat ' + String(repeat + 1) : ''),
+        name: rowNameOf(measured, one, repeat),
         asks: whatItAsks(one),
         cells: measured.variants.map((variant) => {
           const cell = found.get(keyOf(one.id, variant.id, repeat)) ?? null;
@@ -254,6 +297,49 @@ export function tableFor(set: EvalSet, run: PastEval | null): TableView {
       })),
     ),
   };
+}
+
+/**
+ * Podpis wiersza: nazwa przypadku, a przy powtórzeniach także numer powtórzenia.
+ *
+ * Numer dokleja się WYŁĄCZNIE tam, gdzie powtórzeń jest więcej niż jedno. „· Repeat 1" przy
+ * przypadku, który biegł raz, jest rozróżnieniem, które niczego nie rozróżnia.
+ */
+function rowNameOf(measured: EvalSet, one: EvalCase, repeat: number): string {
+  return one.name + (repetitions(measured, one) > 1 ? ' · Repeat ' + String(repeat + 1) : '');
+}
+
+/**
+ * Jak nazywa się TA komórka poza tabelą: wiersz, powtórzenie i kolumna, jednym napisem.
+ *
+ * TĄ SAMĄ FUNKCJĄ, CO WIERSZ MACIERZY, i to jest cały powód, dla którego nazwa powstaje tutaj,
+ * a nie w komponencie listy. Lista „What did not pass" miała własną kopię tej reguły i kopia
+ * nie znała powtórzeń: dwie nieudane próby tego samego przypadku w tej samej kolumnie
+ * dostawały ten sam podpis dwa razy, podczas gdy tabela nad nimi mówiła „· Repeat 1"
+ * i „· Repeat 2". Z takiej listy nie da się dojść, które powtórzenie padło.
+ *
+ * `measured` jest definicją Z CHWILI POMIARU (`definitionOf`), nie dzisiejszym formularzem:
+ * identyfikatory w komórkach są historyczne, więc szukanie ich w dzisiejszym zestawie mówi
+ * nową nazwę pod starym wynikiem, a po usunięciu kolumny nie znajduje nic i spada na
+ * identyfikator, którego człowiek nigdy nie napisał.
+ */
+export function nameOfCell(measured: EvalSet, cell: EvalCell): string {
+  const repeat = cell.execution?.repeat ?? 0;
+  const one = measured.cases.find((row) => row.id === cell.case);
+  const row = one === undefined ? cell.case : rowNameOf(measured, one, repeat);
+  const column = measured.variants.find((it) => it.id === cell.variant)?.name ?? cell.variant;
+  return row + ' · ' + column;
+}
+
+/**
+ * Czym ta komórka różni się od pozostałych — ten sam napis, którym tabela szuka jej w mapie.
+ *
+ * Lista pod tabelą kluczowała wiersze samą parą przypadek-kolumna, więc dwa powtórzenia tej
+ * samej pary były dla Reacta jednym wierszem. Powtórzenie jest częścią tożsamości komórki
+ * wszędzie indziej (`keyOf`, `lab::results`), więc jest nią i tutaj.
+ */
+export function keyOfCell(cell: EvalCell): string {
+  return keyOf(cell.case, cell.variant, cell.execution?.repeat ?? 0);
 }
 
 /**

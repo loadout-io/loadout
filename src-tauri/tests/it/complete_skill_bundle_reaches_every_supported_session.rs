@@ -818,10 +818,25 @@ fn different_bundles_with_the_same_name_require_a_source_choice() -> Result<(), 
         data: bench.home(),
     };
     let result = StepSkills::wherever_they_lie(&roots, &[SKILL.to_owned()], None, "Reader");
-    assert!(
-        result.is_err(),
-        "two different bundles silently selected the first source: {result:?}"
-    );
+    let said = match result {
+        Err(refused) => refused.to_string(),
+        Ok(found) => {
+            return Err(format!(
+                "two different copies silently selected the first folder: {found:?}"
+            )
+            .into());
+        }
+    };
+    // Odmowa prosi o wybór, więc musi powiedzieć MIĘDZY CZYM. Bez obu katalogów w zdaniu człowiek
+    // zostaje z pracą, którą Loadout właśnie wykonał: obejść półki i porównać kopie ręcznie.
+    // Samo `is_err()` przepuszczało też pusty komunikat.
+    for folder in [bench.skill(), other] {
+        assert!(
+            said.contains(&folder.display().to_string()),
+            "the refusal asked for a choice without naming {}: {said}",
+            folder.display()
+        );
+    }
     Ok(())
 }
 

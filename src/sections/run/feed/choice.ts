@@ -89,3 +89,43 @@ export function keyMayAnswer(pressed: {
 }): boolean {
   return !pressed.modified && !pressed.typing;
 }
+
+/**
+ * Czy WŁASNE SŁOWA w ogóle mogą odpowiedzieć na to pytanie — zanim narysujemy pole na nie.
+ *
+ * ZMIERZONA WADA, KTÓRĄ TO ZAMYKA. Karta potwierdzenia rysowała pole „Your answer" ZAWSZE, także
+ * pod przyciskami pytania związanego z hostem. Człowiek, którego zapytano „Stop this run?",
+ * wpisywał „yes, stop it", naciskał Send — i widział, jak pytanie znika z ekranu, a pod jego
+ * własnym zdaniem staje wiersz „The person did not approve that operation. Nothing changed.".
+ * Aplikacja zaprzeczała człowiekowi, który właśnie się zgodził, i zabierała mu przy tym jedyną
+ * kontrolkę, którą mógł zgodzić się skutecznie: żeby spróbować jeszcze raz, musiał poprosić
+ * lidera o to samo pytanie od nowa. Bieg tymczasem szedł dalej i kosztował pieniądze.
+ *
+ * DLACZEGO TO NIE BYŁO DO NAPRAWIENIA NA SAMYM ZDANIU. Zgodę wystawia host i wyłącznie na
+ * DOSŁOWNY napis przycisku (`src-tauri/src/bridge/library.rs`, `answer_exact`: `affirmative`
+ * porównywane co do bajta). Cokolwiek innego — także „Stop run " ze spacją — nie jest zgodą i
+ * nigdy nią nie będzie. Pole, które przyjmuje tekst nieumiejący nic autoryzować, jest kontrolką
+ * bez skutku (niezmiennik 16), a wygląda gorzej niż jej brak, bo wygląda na rozmowę.
+ *
+ * TRZY WARUNKI, KAŻDY Z INNEGO POWODU:
+ *
+ *   `question` — pytanie WIĄZANE PRZEZ HOSTA. Pytanie agenta (bez adresu) przyjmuje każde zdanie
+ *   i tak ma zostać: tam własne słowa są całą odpowiedzią, a nie próbą trafienia w napis.
+ *
+ *   `continue_run` — jedyna droga hosta, na której własne słowa SĄ odpowiedzią. Punkt kontrolny
+ *   biegu jedzie z `affirmative: None` (`bridge/library/control.rs`, ramię `continue_run`), więc
+ *   host zachowuje oryginał człowieka co do bajta; ekran wie o tej drodze od dawna, bo sam ją
+ *   rozgałęzia (`../index.tsx`, `answerQuestion`). Pozostałe operacje hosta — Stop biegu, start
+ *   powtórki, przywrócenie plików, trzy operacje aplikacji — podają `Some(napis przycisku)`.
+ *
+ *   `options` — NIGDY nie zostawiamy karty bez czego nacisnąć. To jest ta sama wada, którą
+ *   naprawiono 2026-08-18 (pytanie z zerem kontrolek zatrzymywało workflow na zawsze); pusta
+ *   lista opcji znaczy „odpowiedz własnymi słowami", niezależnie od tego, kto pyta.
+ */
+export function ownWordsMayAnswer(question: {
+  readonly options: readonly string[];
+  readonly question?: { readonly operation: string };
+}): boolean {
+  const bound = question.question;
+  return bound === undefined || bound.operation === 'continue_run' || question.options.length === 0;
+}

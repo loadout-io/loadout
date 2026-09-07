@@ -18,7 +18,12 @@ export function WorkflowProtection({
   const refusal = state.previewSaid ?? preview?.cannotRun ?? null;
   return (
     <section data-workflow-protection className="paper p-3 stack" data-gap="3">
-      <h2 className="text-eyebrow">How results are judged</h2>
+      {/* NAGŁÓWEK MÓWI O NASTĘPNYM BIEGU, i to nie jest kosmetyka. Ten panel czyta zestaw
+          zapisany DZIŚ, więc opisuje warunki, na których dopiero pobiegnie. Warunki, na
+          których zmierzono wynik stojący wyżej, mówi zdanie przy macierzy
+          (`model.howItWasJudged`) — a pod nagłówkiem „How results are judged" te dwa fakty
+          czytały się jako jeden, i to ten fałszywy stał bliżej wyniku. */}
+      <h2 className="text-eyebrow">How the next run will be judged</h2>
       <p className="lead">
         {saved
           ? 'File access is restricted; trusted external checks judge the result.'

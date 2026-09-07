@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use loadout_lib::commands::history::forget_run_with_results_inner;
 use loadout_lib::commands::processes::Processes;
 use loadout_lib::commands::run::{run_workflow_inner, stop_run_inner};
 use loadout_lib::commands::{Drivers, RunControl, RunDeps, RunReport, RunRequest};
@@ -247,6 +248,149 @@ async fn a_deferred_result_survives_a_temporarily_missing_run_file() -> Result<(
     );
     assert!(history.is_ok(), "history could not read the recovered run");
     Ok(())
+}
+
+/// WF-06: kopia zwykłego folderu, którą ubita aplikacja zostawiła „w trakcie zapisu".
+///
+/// # Co się działo
+///
+/// Kopia non-git trzymana po grafie przez usługę okna trafia do `pending_finalization`, a jedynym
+/// nośnikiem jej domknięcia jest callback żyjący w pamięci `Processes`. Ubicie aplikacji zabiera
+/// ten callback razem z procesem — i klucz zostawał w pliku biegu NA ZAWSZE. Od tej chwili obie
+/// retencje, „Forget this run", „Keep result" i przywrócenie wyniku odmawiały zdaniem o wynikach,
+/// które „są jeszcze zapisywane po zejściu usług", chociaż po restarcie żadna usługa nie istniała
+/// i nic się nie zapisywało. Człowiekowi zostawał `rm -rf` z terminala. Droga gitowa tego nie
+/// miała: jej wynik niesie receipt w `.results/`, którego kopia non-git nie pisze wcale.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_non_git_copy_left_pending_by_a_dead_app_is_finalized_by_recovery()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new(false)?;
+    let processes = Arc::new(Processes::new());
+    let report = bench.run(&processes, true, 1, "window").await?;
+    let observed = put_back_what_a_dead_app_leaves(&bench, &processes, &report).await;
+    let proofs = processes.close().await;
+    assert_dead(&proofs, &[]);
+    let (waiting, finished) = observed?;
+    assert!(
+        finished,
+        "the deferred close never finished, so this is not the state a killed application leaves"
+    );
+
+    let key = the_only_folder_still_waiting(&waiting, &report.dir)?;
+    let kept = report.dir.join("work").join(&key);
+    let name = report
+        .dir
+        .file_name()
+        .and_then(|one| one.to_str())
+        .ok_or("run has no folder")?
+        .to_owned();
+    assert!(
+        forget_run_with_results_inner(
+            bench.project.path(),
+            &name,
+            Some(std::slice::from_ref(&kept))
+        )
+        .is_err(),
+        "the restored state is not blocked at all, so there is nothing here to unblock"
+    );
+
+    let _ = loadout_lib::commands::reconcile::reconcile_runs(bench.project.path());
+    let after: Value = serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
+    assert!(
+        !after["pending_finalization"]
+            .as_array()
+            .is_some_and(|keys| keys.iter().any(|one| one.as_str() == Some(key.as_str()))),
+        "the ordinary folder is still recorded as being saved by services that no longer exist: {after}"
+    );
+    assert_eq!(
+        after["copy_results"][&key]["kind"], "folder",
+        "the wait was cleared without ever writing down what the folder holds: {after}"
+    );
+    assert_eq!(
+        fs::read_to_string(kept.join("value.txt"))?,
+        PREPARED,
+        "recovery removed the only copy of the work it was meant to record"
+    );
+    forget_run_with_results_inner(
+        bench.project.path(),
+        &name,
+        Some(std::slice::from_ref(&kept)),
+    )?;
+    assert!(
+        !report.dir.exists(),
+        "the confirmed removal still refuses, so the only way out stays the terminal"
+    );
+    assert_eq!(
+        fs::read_to_string(bench.project.path().join("value.txt"))?,
+        INITIAL,
+        "removing the run reached into the project it was copied from"
+    );
+    Ok(())
+}
+
+/// Odtwarza na dysku stan sprzed śmierci aplikacji i oddaje bajty, które wtedy stały w pliku.
+///
+/// Plik kopiujemy, a nie piszemy: jego autorem ma być produkt. Ręcznie dopisany klucz dowodziłby
+/// wyłącznie tego, że wyrocznia umie napisać JSON. Na koniec callbacku czekamy po jego jedynym
+/// śladzie — wpisie wyniku — bo dopiero wtedy nikt już do tego pliku nie pisze i odtworzenie
+/// stanu nie ściga się z nim.
+async fn put_back_what_a_dead_app_leaves(
+    bench: &Bench,
+    processes: &Arc<Processes>,
+    report: &RunReport,
+) -> Result<(Value, bool), Box<dyn Error>> {
+    let pgid = process_group(report, "s_preview_a")?;
+    let record = report.dir.join("run.json");
+    let pending = bench.control.path().join("run-while-pending.json");
+    fs::copy(&record, &pending)?;
+    let waiting: Value = serde_json::from_slice(&fs::read(&pending)?)?;
+    let proofs = processes.close().await;
+    assert_dead(&proofs, &[pgid]);
+    let finished = wait_until(|| {
+        fs::read(&record)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|run| run["copy_results"].as_object().map(|one| !one.is_empty()))
+            .unwrap_or(false)
+    })
+    .await;
+    fs::rename(&pending, &record)?;
+    Ok((waiting, finished))
+}
+
+/// Klucz jedynej kopii, na której domknięcie ten bieg jeszcze czekał — plus dowód, że naprawdę
+/// czekał: bez wyniku i bez trwałego receiptu, czyli dokładnie tak, jak zostawia to kopia non-git.
+fn the_only_folder_still_waiting(
+    waiting: &Value,
+    run_dir: &Path,
+) -> Result<String, Box<dyn Error>> {
+    let keys: Vec<String> = waiting["pending_finalization"]
+        .as_array()
+        .map(|keys| {
+            keys.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        keys.len(),
+        1,
+        "the window service did not defer exactly one ordinary folder: {waiting}"
+    );
+    let key = keys.into_iter().next().ok_or("no deferred folder")?;
+    assert!(
+        waiting["copy_results"][&key].is_null(),
+        "the deferred folder already had a result, so nothing was ever waiting"
+    );
+    assert!(
+        !run_dir
+            .join(".results")
+            .join(format!("{key}.json"))
+            .exists(),
+        "an ordinary folder wrote a receipt after all, so the durable trail was never missing"
+    );
+    Ok(key)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -183,9 +183,25 @@ pub fn resolve(roots: &Roots, name: &str, selected: Option<&Path>) -> io::Result
             )
         }));
     };
+    // ODMOWA NAZYWA KATALOGI, BO WYBÓR, O KTÓRY PROSI, JEST WYBOREM MIĘDZY NIMI. Samo „wybierz
+    // kopię" zostawia człowieka z pytaniem, na które produkt trzyma odpowiedź w ręku: które
+    // foldery się rozjechały. Bez nich jedyny ruch, jaki zostaje, to obejść po kolei pięć półek
+    // (`place::shelves_of`) i porównać je ręcznie — a to jest praca, którą Loadout właśnie
+    // wykonał. To ta sama reguła, co przy [`super::Why::WouldWriteIntoYourFolder`]
+    // i [`super::place::Discovery::NotSeen::looked_in`] — człowiek szuka ścieżki, nie werdyktu —
+    // i dokładnie to, co ścieżka SUKCESU mówi już przez `Whence::also`.
+    //
+    // Kolejność jest kolejnością pytania, czyli najbliższa katalogowi pracy pierwsza: ta sama, po
+    // której człowiek pozna, którą kopię dostałby bez wyboru.
     if found.iter().any(|skill| skill.bundle != first.bundle) {
+        let places: Vec<String> = found
+            .iter()
+            .map(|skill| skill.source.display().to_string())
+            .collect();
         return Err(refusal(format!(
-            "Different copies of skill {name} were found. Choose which copy of this skill to use."
+            "Different copies of skill {name} were found in {}. Choose which copy of this skill \
+             to use.",
+            places.join(", ")
         )));
     }
     Ok(found.remove(0))

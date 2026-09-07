@@ -11,7 +11,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { addresseeOf } from './addressee';
+import { addresseeOf, sessionAddresseeOf } from './addressee';
+import type { StepSession } from '../../ipc/types';
 
 /** Zdanie, które człowiek pisze w środku biegu, kiedy chce wiedzieć, co się dzieje. */
 const ASKING = 'what is left before this is done';
@@ -62,5 +63,67 @@ describe('prose goes to the lead agent unless it starts with the name of a worki
         'Planner with its first word missing — the wrong reader AND a sentence that no longer ' +
         'says what it said.',
     ).toEqual({ to: 'lead', text: 'Plan the work before touching anything' });
+  });
+});
+
+/* Kanał, który bieg naprawdę otworzył — jedyny fakt, z którego wolno budować adres. */
+const RUN = '01980000-0000-7000-8000-000000000001';
+const channel = (agent: string, nodeKey: string, finished = false): StepSession => ({
+  runId: RUN,
+  nodeKey,
+  agent,
+  canReceive: true,
+  finished,
+});
+
+describe('an address is a whole name somebody really opened, not the first word of the line', () => {
+  it('leaves a tile that never opened a channel as an ordinary word', () => {
+    expect(
+      sessionAddresseeOf('Backend is still broken, what happened?', []),
+      'the plan is not a list of addresses. A tile that never opened a channel cannot hear ' +
+        'anything, so its name is an ordinary word and the question goes to the lead agent ' +
+        'WHOLE. Feeding the plan in here was worst after a run: the tiles of the last run stay ' +
+        'on screen while nothing is running, and every question that happened to start with one ' +
+        'of their names came back refused — while the row under the field promised the lead.',
+    ).toEqual({ to: 'lead', text: 'Backend is still broken, what happened?' });
+  });
+
+  it('reaches one copy of a step by the multi-word name the row prints', () => {
+    expect(
+      sessionAddresseeOf('Builder (2 of 3) use tabs instead of spaces', [
+        channel('Builder (1 of 3)', 'builder'),
+        channel('Builder (2 of 3)', 'builder~2'),
+      ]),
+      'a step with copies is registered as "Builder (2 of 3)" and that is exactly the name the ' +
+        'row under the field tells a person to start the line with. Reading only the first word ' +
+        'left "Builder", which nobody answers to, so the one address the screen advertises was ' +
+        'the one address that did not work.',
+    ).toEqual({
+      to: 'agent',
+      target: channel('Builder (2 of 3)', 'builder~2'),
+      text: 'use tabs instead of spaces',
+    });
+  });
+
+  it('keeps a recipient that already stopped addressable, so the run answers instead of silence', () => {
+    expect(
+      sessionAddresseeOf('Builder look at this again', [channel('Builder', 'builder', true)]),
+      'the name still belongs to somebody, so the sentence has to go there and come back with ' +
+        'the honest answer that the recipient has finished. Dropping it to the lead agent ' +
+        'instead would send it somewhere the person did not address, without saying so.',
+    ).toEqual({
+      to: 'agent',
+      target: channel('Builder', 'builder', true),
+      text: 'look at this again',
+    });
+  });
+
+  it('does not read a longer word as a name that is a piece of it', () => {
+    expect(
+      sessionAddresseeOf('Builders never agree on tabs', [channel('Builder', 'builder')]),
+      'the match ends on a word boundary. Without it the sentence would be delivered with a ' +
+        'piece of its first word cut off — the wrong reader AND a sentence that no longer says ' +
+        'what it said.',
+    ).toEqual({ to: 'lead', text: 'Builders never agree on tabs' });
   });
 });

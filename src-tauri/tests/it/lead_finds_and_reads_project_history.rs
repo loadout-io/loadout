@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex};
 use loadout_lib::bridge::host::Answers;
 use loadout_lib::bridge::library::Desk;
 use loadout_lib::bridge::{Answer, Call};
+use loadout_lib::commands::RunControl;
+use loadout_lib::commands::lead_history::LeadRunLookup;
 use loadout_lib::engine::line::Line;
-use loadout_lib::ipc::line_channel;
+use loadout_lib::ipc::{LineSource, line_channel};
 use serde_json::{Value, json};
 
 fn record(project: &Path, day: u8, number: u8, title: &str) -> Result<String, Box<dyn Error>> {
@@ -272,5 +274,124 @@ async fn links_and_cross_workspace_cursors_never_read_foreign_bodies() -> Result
         ask(&desk_a, "read_run_summary", json!({"run_id":id})).await,
         Answer::Refused(_)
     ));
+    Ok(())
+}
+
+/// Ustawia zapisany bieg na `paused` — z pytaniem stojącym pod kafelkiem kontrolnym albo bez.
+///
+/// Fikstura różni się dokładnie tym, czym różnią się prawdziwe biegi: rodzajem kafelka, na
+/// którym stoi krok w toku. Słowo na dysku jest w obu przypadkach to samo (`status: "paused"`),
+/// bo powodu pauzy `run.json` celowo nie niesie.
+fn paused(project: &Path, day: u8, id: &str, on_a_question: bool) -> Result<(), Box<dyn Error>> {
+    let directory = project
+        .join(".loadout/runs")
+        .join(format!("202609{day:02}-100000__{id}"));
+    let mut file: Value = serde_json::from_slice(&fs::read(directory.join("run.json"))?)?;
+    let kind = if on_a_question { "checkpoint" } else { "agent" };
+    file["status"] = json!("paused");
+    file["steps"] = json!([{"id": "step-1", "node_key": "decision", "name": "Decision",
+        "status": "running"}]);
+    file["workflow_snapshot"] =
+        json!({"steps": [{"id": "decision", "kind": kind, "question": "Ship it?"}]});
+    fs::write(directory.join("run.json"), file.to_string())?;
+    Ok(())
+}
+
+/// Wiersze „otwórz źródło biegu", które doszły do rozmowy od poprzedniego sprawdzenia.
+fn sources(source: &mut LineSource) -> Vec<String> {
+    let mut rows = Vec::new();
+    while let Some(line) = source.try_next() {
+        if let Line::RunSource { text, .. } = line {
+            rows.push(text);
+        }
+    }
+    rows
+}
+
+/// Zdanie o biegu, które most kładzie człowiekowi na ekran przy pytaniu o jego stan.
+async fn shown_for(root: &Path, live: Option<&str>, run: &str) -> Option<String> {
+    let (sink, mut source) = line_channel(32);
+    let mut desk =
+        Desk::at(Some(root.to_path_buf()), root.to_path_buf()).showing(Arc::new(Mutex::new(sink)));
+    if let Some(live) = live {
+        let control = RunControl::new();
+        control.begin();
+        control.set_run_address(live.to_owned(), root.join(".loadout/runs"));
+        desk = desk.reading_runs_with(LeadRunLookup::new(move |_| Some(control.clone())));
+    }
+    let _ = value(ask(&desk, "get_run_status", json!({"run_id": run})).await);
+    sources(&mut source).pop()
+}
+
+/// Bieg stoi z dwóch niezależnych powodów, a zdanie na ekranie zna tylko jeden z nich.
+///
+/// Bieg wstrzymany limitem dostawcy meldował człowiekowi „is waiting for an answer" — pytanie,
+/// którego nikt nie zadał i którego nie da się na ekranie znaleźć.
+#[tokio::test]
+async fn a_pause_with_no_question_standing_is_not_announced_as_one() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let asked = record(root.path(), 1, 1, "Run standing on a question")?;
+    let held = record(root.path(), 2, 2, "Run held by its agent app")?;
+    paused(root.path(), 1, &asked, true)?;
+    paused(root.path(), 2, &held, false)?;
+    for (live, run, question_stands) in [
+        (Some(held.as_str()), held.as_str(), false),
+        (None, held.as_str(), false),
+        (Some(asked.as_str()), asked.as_str(), true),
+        (None, asked.as_str(), true),
+    ] {
+        let said = shown_for(root.path(), live, run)
+            .await
+            .ok_or("no openable run source reached the conversation")?;
+        assert_eq!(
+            said.contains("waiting for an answer"),
+            question_stands,
+            "a paused run told the person the wrong thing about why it stands: {said}"
+        );
+    }
+    Ok(())
+}
+
+/// Wiersz o źródle biegu ma sens raz — z wyniku, który potrafi ten bieg nazwać.
+///
+/// Odczyt przekazania nie niesie ani tytułu, ani stanu, więc każdy taki odczyt dokładał do czatu
+/// kolejne, identyczne „Saved work has saved source material." — a bieg ma ich do 27.
+#[tokio::test]
+async fn reading_saved_work_does_not_repeat_a_row_that_cannot_name_the_run()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let id = record(root.path(), 1, 1, "The parser fix")?;
+    let (sink, mut source) = line_channel(32);
+    let desk = Desk::at(Some(root.path().to_path_buf()), root.path().to_path_buf())
+        .showing(Arc::new(Mutex::new(sink)));
+    let _ = value(ask(&desk, "get_run_status", json!({"run_id": id})).await);
+    assert_eq!(
+        sources(&mut source).len(),
+        1,
+        "the result that knows this run stopped offering its source to the person"
+    );
+    let listed = value(ask(&desk, "list_handoffs", json!({"run_id": id})).await);
+    assert_eq!(listed["handoffs"][0]["id"], "result-1");
+    for _ in 0..3 {
+        let read = value(
+            ask(
+                &desk,
+                "read_handoff",
+                json!({"run_id": id, "handoff_id": "result-1"}),
+            )
+            .await,
+        );
+        assert!(
+            read["text"]
+                .as_str()
+                .is_some_and(|body| body.contains("Marker-1")),
+            "the lead agent stopped receiving the saved text it asked for"
+        );
+    }
+    let repeated = sources(&mut source);
+    assert!(
+        repeated.is_empty(),
+        "reading saved work repeated a row that cannot even name the run: {repeated:?}"
+    );
     Ok(())
 }

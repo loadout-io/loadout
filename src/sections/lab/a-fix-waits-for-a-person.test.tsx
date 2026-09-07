@@ -130,6 +130,14 @@ describe('a fix', () => {
       'and the screen has to say where that change is written instead, or the person is left ' +
         'with a list of failures and nowhere to go',
     ).toContain('written over in Skills');
+    const forAWorkflow = screen({ kind: 'workflow', id: 'pipeline' }, null);
+    expect(forAWorkflow.includes('data-lab-ask-fix')).toBe(false);
+    expect(
+      forAWorkflow.includes('written over in Skills'),
+      'a comparison of workflows has no skill in it, and that sentence sends the person to a ' +
+        'section where a workflow cannot be changed — exactly when they are looking for what ' +
+        'to do with a failure',
+    ).toBe(false);
   });
 
   it('shows what it fixes above the text it would save', () => {

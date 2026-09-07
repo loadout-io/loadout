@@ -18,7 +18,7 @@
  */
 import type { FormEvent, ReactElement, ReactNode } from 'react';
 import { Fragment, useEffect, useState } from 'react';
-import { answerForKey, choiceOf, keyMayAnswer } from './choice';
+import { answerForKey, choiceOf, keyMayAnswer, ownWordsMayAnswer } from './choice';
 import { Answered, Message } from './message';
 import type { FeedView, Question } from './model';
 import { EVERYONE, onlyFrom, speakersIn } from './speakers';
@@ -94,12 +94,19 @@ export const ANSWER_PROMPT = 'Type your answer and press Enter';
  * przychodzą z linii, nigdy stąd: pytanie z opcjami dopisanymi w widoku odpowiada agentowi coś,
  * czego nie pytał.
  *
- * POLE TEKSTOWE JEST ZAWSZE, I TO JEST NAPRAWA, NIE OZDOBA. Zmierzone 2026-08-18: Rust wysyła
- * `options: Vec::new()` w KAŻDYM punkcie kontrolnym (`commands::run::ask`), a ten blok rysował
- * wyłącznie przyciski z tej listy — czyli kartę „Needs your answer" z ZEREM kontrolek. Każdy
- * workflow z kafelkiem punktu kontrolnego był przez to nieukończalny: pytanie stało na ekranie
- * i nie było czym na nie odpowiedzieć. Przyciski zostają tam, gdzie opcje naprawdę są: wybór
- * z trzech jest szybszy niż przepisywanie jednej z nich ręcznie.
+ * POLE TEKSTOWE JEST WSZĘDZIE TAM, GDZIE WŁASNE SŁOWA COŚ ZNACZĄ, I TO JEST NAPRAWA, NIE OZDOBA.
+ * Zmierzone 2026-08-18: Rust wysyła `options: Vec::new()` w KAŻDYM punkcie kontrolnym
+ * (`commands::run::ask`), a ten blok rysował wyłącznie przyciski z tej listy — czyli kartę
+ * „Needs your answer" z ZEREM kontrolek. Każdy workflow z kafelkiem punktu kontrolnego był przez
+ * to nieukończalny: pytanie stało na ekranie i nie było czym na nie odpowiedzieć. Przyciski
+ * zostają tam, gdzie opcje naprawdę są: wybór z trzech jest szybszy niż przepisywanie jednej
+ * z nich ręcznie.
+ *
+ * 2026-09-07 — ALE NIE POD KARTĄ POTWIERDZENIA, i to jest druga połowa tej samej reguły. Pytanie
+ * wiązane przez hosta (Stop biegu, powtórka, przywrócenie plików, aplikacje) mintuje zgodę
+ * WYŁĄCZNIE na dosłowny napis swojego przycisku, więc pole pod nim przyjmowało zdanie, które nie
+ * mogło niczego autoryzować — a odpowiedź własnymi słowami wracała na ekran jako „The person did
+ * not approve that operation". Warunek i cały powód stoją przy `ownWordsMayAnswer` w `./choice.ts`.
  *
  * GDZIE TA TREŚĆ JEDZIE, i to jest druga połowa naprawy. `answer()` stawia ją w `view.toCarry`,
  * czyli w kolejce wysyłkowej o pojemności jednego zdania, a zabiera ją stąd kontrolka „dalej":
@@ -240,25 +247,33 @@ export function Asked({ question, onAnswer }: AskedProps): ReactElement {
         </div>
       )}
 
-      <form onSubmit={send} className="mt-3 flex items-center gap-2">
-        <input
-          aria-label="Your answer"
-          placeholder={ANSWER_PROMPT}
-          spellCheck={false}
-          value={typed}
-          onChange={(event) => {
-            setTyped(event.target.value);
-          }}
-          className="field flex-1"
-        />
-        {/* WYPEŁNIONY AKCENTEM, bo to jest w tej karcie JEDYNA rzecz do naciśnięcia, kiedy
-            człowiek napisał własne zdanie — a makieta rysuje wysyłkę jako okrągły, wypełniony
-            przycisk po prawej krawędzi pola. Nazwa zostaje słowem, nie strzałką: czytnik ekranu
-            i oko dostają to samo zdanie. */}
-        <button type="submit" className="btn-primary rounded-pill px-4">
-          Send
-        </button>
-      </form>
+      {/* TYLKO WSKAZANY WYBÓR — tam, gdzie zgodę mintuje dosłowny napis przycisku, pola na własne
+          zdanie nie ma w ogóle. Powód w całości przy `ownWordsMayAnswer` w `./choice.ts`; tutaj
+          zostaje sam wybór między kontrolką a jej brakiem, bo to jest różnica w kształcie karty.
+
+          KARTA NIE ZOSTAJE PUSTA: ten warunek zdejmuje pole wyłącznie wtedy, gdy pytanie ma
+          przyciski, więc zawsze zostaje czym odpowiedzieć (niezmiennik 16). */}
+      {!ownWordsMayAnswer(question) ? null : (
+        <form onSubmit={send} className="mt-3 flex items-center gap-2">
+          <input
+            aria-label="Your answer"
+            placeholder={ANSWER_PROMPT}
+            spellCheck={false}
+            value={typed}
+            onChange={(event) => {
+              setTyped(event.target.value);
+            }}
+            className="field flex-1"
+          />
+          {/* WYPEŁNIONY AKCENTEM, bo to jest w tej karcie JEDYNA rzecz do naciśnięcia, kiedy
+              człowiek napisał własne zdanie — a makieta rysuje wysyłkę jako okrągły, wypełniony
+              przycisk po prawej krawędzi pola. Nazwa zostaje słowem, nie strzałką: czytnik ekranu
+              i oko dostają to samo zdanie. */}
+          <button type="submit" className="btn-primary rounded-pill px-4">
+            Send
+          </button>
+        </form>
+      )}
 
       {/* WIERSZ SKRÓTÓW — `.gest` z makiety, ale WYŁĄCZNIE te, które naprawdę coś robią.
           Makieta wymienia cztery; czwarty (`⌘⏎ answer and continue`) nie ma w tej aplikacji

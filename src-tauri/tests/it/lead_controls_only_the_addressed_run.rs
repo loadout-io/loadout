@@ -22,22 +22,42 @@ use loadout_lib::ipc::{AppState, line_channel};
 use loadout_lib::store::Store;
 use serde_json::json;
 
+/// Co człowiek zrobił z pytaniem o Stop. Jedna fikstura prawdziwego biegu, cztery drogi.
+#[derive(Clone, Copy)]
+enum Person {
+    /// Nikt jej nie pytał — zgodę ogłasza sam model.
+    NeverAsked,
+    /// Nikt jej nie pytał, a model podaje na dodatek adres innego biegu.
+    NeverAskedAboutThisRun,
+    /// Odpowiedziała dokładnie zatwierdzeniem.
+    Approved,
+    /// Odpowiedziała, ale własnymi słowami zamiast zatwierdzenia.
+    AnsweredInTheirOwnWords,
+}
+
 #[tokio::test]
 async fn confirmed_true_is_not_a_persons_permission_to_stop() -> Result<(), Box<dyn Error>> {
-    refused_stop(false, false).await
+    stop_path(Person::NeverAsked).await
 }
 
 #[tokio::test]
 async fn an_old_run_id_cannot_stop_the_run_now_waiting_here() -> Result<(), Box<dyn Error>> {
-    refused_stop(true, false).await
+    stop_path(Person::NeverAskedAboutThisRun).await
 }
 
 #[tokio::test]
 async fn only_an_exact_human_answer_grants_one_stop_for_this_run() -> Result<(), Box<dyn Error>> {
-    refused_stop(false, true).await
+    stop_path(Person::Approved).await
 }
 
-async fn refused_stop(old_address: bool, with_permission: bool) -> Result<(), Box<dyn Error>> {
+/// Człowiek odpowiedział własnymi słowami — jego zdanie ma dojść do lidera, a Stop ma nie ruszyć.
+#[tokio::test]
+async fn their_own_words_reach_the_lead_and_still_authorize_nothing() -> Result<(), Box<dyn Error>>
+{
+    stop_path(Person::AnsweredInTheirOwnWords).await
+}
+
+async fn stop_path(person: Person) -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");
     let project = root.path().join("project");
@@ -89,18 +109,32 @@ async fn refused_stop(old_address: bool, with_permission: bool) -> Result<(), Bo
                 .control
                 .run_address()
                 .ok_or("paused run has no identity")?;
-            if with_permission {
-                human_stop(
-                    &desk,
-                    &waiting,
-                    &mut conversation,
-                    &address.id,
-                    &deps.control,
-                )
-                .await?;
-                return Ok(());
+            match person {
+                Person::Approved => {
+                    human_stop(
+                        &desk,
+                        &waiting,
+                        &mut conversation,
+                        &address.id,
+                        &deps.control,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Person::AnsweredInTheirOwnWords => {
+                    human_declines(
+                        &desk,
+                        &waiting,
+                        &mut conversation,
+                        &address.id,
+                        &deps.control,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Person::NeverAsked | Person::NeverAskedAboutThisRun => {}
             }
-            let input_id = if old_address {
+            let input_id = if matches!(person, Person::NeverAskedAboutThisRun) {
                 "01980000-0000-7000-8000-000000000099"
             } else {
                 &address.id
@@ -240,5 +274,86 @@ async fn human_stop(
             .any(|line| matches!(line, Line::Suggested { auto: true, .. })),
         "the runtime delegated the stop back to a mutable UI scope"
     );
+    Ok(())
+}
+
+/// Odpowiedź własnymi słowami: dochodzi do lidera, nie rodzi zgody i nie zatrzymuje biegu.
+///
+/// Karta pytania rysuje pole „Your answer" ZAWSZE, także obok przycisków, więc to jest zwykła
+/// droga człowieka — a nie przypadek brzegowy. Przed naprawą treść tej odpowiedzi ginęła:
+/// lider dostawał samą odmowę i nie miał na co odpowiedzieć, choć okno pokazało człowiekowi
+/// jego zdanie jako doręczone.
+async fn human_declines(
+    desk: &Desk,
+    waiting: &Waiting,
+    conversation: &mut loadout_lib::ipc::LineSource,
+    run_id: &str,
+    control: &loadout_lib::commands::RunControl,
+) -> Result<(), Box<dyn Error>> {
+    const OWN_WORDS: &str = "No. First show me why the second step failed.";
+    let ask = Call {
+        id: json!(5),
+        call: "ask_the_person".to_owned(),
+        input: json!({"operation":"stop_run", "run_id":run_id}),
+    };
+    let (answer, ()) = tokio::join!(desk.answer(ask), async {
+        loop {
+            if let Some(Line::Asked {
+                question: Some(question),
+                ..
+            }) = conversation.try_next()
+            {
+                assert!(
+                    waiting.answer_exact("Lead", &question.question_id, OWN_WORDS.to_owned()),
+                    "the window could not deliver an answer in the person's own words"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let Answer::Ok(reply) = answer else {
+        panic!("the person answered and the lead agent was told nothing but a refusal: {answer:?}")
+    };
+    assert_eq!(
+        reply["answer"], OWN_WORDS,
+        "the person's own words never reached the lead agent: {reply}"
+    );
+    assert_eq!(
+        reply["approved"],
+        json!(false),
+        "an answer that was not the confirmation was reported as one: {reply}"
+    );
+    assert!(
+        reply["approvalToken"].is_null(),
+        "answering in their own words minted a one-use permission to stop: {reply}"
+    );
+    let guessed = desk
+        .answer(Call {
+            id: json!(6),
+            call: "stop_run".to_owned(),
+            input: json!({"run_id":run_id, "approval_token":reply["questionId"]}),
+        })
+        .await;
+    assert!(
+        matches!(&guessed, Answer::Refused(_)),
+        "an answer that was not the confirmation still authorized Stop: {guessed:?}"
+    );
+    assert!(
+        !control.cancel_token().is_cancelled(),
+        "an answer that was not the confirmation stopped the run"
+    );
+    let mut shown = Vec::new();
+    while let Some(line) = conversation.try_next() {
+        shown.push(line);
+    }
+    assert!(
+        shown.iter().any(|line| matches!(line,
+            Line::Note { text, .. } | Line::Problem { text, .. }
+        if text.contains("Nothing changed"))),
+        "the person answered and saw nothing about what it did: {shown:?}"
+    );
+    // Fikstura prowadzi prawdziwy bieg: bez tego stoi on na pytaniu do końca testu.
+    control.stop();
     Ok(())
 }

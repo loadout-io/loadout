@@ -526,17 +526,41 @@ impl Desk {
         ) else {
             return;
         };
-        let title = value
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("Saved work");
+        /* WIERSZ ISTNIEJE PO TO, ŻEBY POWIEDZIEĆ, CZYM TEN BIEG JEST — więc bez nazwy biegu nie
+         * ma go po co stawiać. Klucz `title` mają wyłącznie wyniki opisujące bieg
+         * (`get_run_status`, `read_run_summary`, wiersze `list_runs`); `read_handoff`
+         * i `list_handoffs` niosą samo `source`, więc KAŻDY odczyt przekazania dokładał
+         * człowiekowi kolejny identyczny wiersz „Saved work has saved source material." —
+         * przy biegu z 27 przekazaniami to 28 wierszy, z których żaden nie mówi nic ponad
+         * poprzedni. Źródło tego biegu jest już otwieralne z tego wyniku, który bieg nazwał. */
+        let Some(title) = value.get("title").and_then(Value::as_str) else {
+            return;
+        };
+        let title = if title.is_empty() {
+            "Saved work"
+        } else {
+            title
+        };
         let state = value.get("state").and_then(Value::as_str).unwrap_or("");
         let active = value.get("active").and_then(Value::as_bool) == Some(true);
+        /* POWODY PAUZY SĄ DWA I MIJAJĄ NIEZALEŻNIE (`run::run_stands_or_moves`): pytanie do
+         * człowieka i limit dostawcy. Na dysk idzie z nich jedno słowo `paused` i tak ma zostać
+         * (niezmiennik 13), więc samo `state` nie wystarcza — jedynym dowodem, że stoi PYTANIE,
+         * jest `waiting`, które `lead_history::summary` rozwiązuje z kafelka kontrolnego.
+         * Bez tego rozróżnienia bieg wstrzymany limitem dostawcy meldował „is waiting for an
+         * answer", a człowiek szukał na ekranie pytania, którego nikt nie zadał. Brak `waiting`
+         * znaczy „nie wiadomo, że ktoś pyta", a nie „stoi na dostawcy": drugiego powodu nikt tu
+         * nie widzi, więc zdanie o nim byłoby zgadywaniem w miejsce poprzedniego zgadywania. */
+        let asked = value
+            .get("waiting")
+            .is_some_and(|waiting| !waiting.is_null());
         let conclusion = match state {
             "running" if active => "is running",
-            "paused" if active => "is waiting for an answer",
+            "paused" if active && asked => "is waiting for an answer",
+            "paused" if active => "is paused",
             "running" => "was last recorded as running",
-            "paused" => "was last recorded as waiting for an answer",
+            "paused" if asked => "was last recorded as waiting for an answer",
+            "paused" => "was last recorded as paused",
             "succeeded" => "finished successfully",
             "failed" => "did not finish successfully",
             "cancelled" => "was stopped",

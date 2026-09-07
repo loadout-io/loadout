@@ -9639,11 +9639,18 @@ pub(super) fn recover_recorded_results(project: &Path, run_dir: &Path) -> io::Re
     ) {
         return Ok(0);
     }
+    let pending = copies_left_pending(&run);
     let entries = match held.list_directory(Path::new(".results")) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        // BRAK RECEIPTÓW NIE ZNACZY „NIE MA CZEGO DOMYKAĆ" (WF-06). Kopia zwykłego folderu nie
+        // pisze ich wcale, więc jej klucz stoi na liście czekających zupełnie sam — a wyjście
+        // z tego stanu jest w tej funkcji jedyne.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error),
     };
+    if entries.is_empty() && pending.is_empty() {
+        return Ok(0);
+    }
     let id = run
         .get("id")
         .and_then(Value::as_str)
@@ -9703,7 +9710,121 @@ pub(super) fn recover_recorded_results(project: &Path, run_dir: &Path) -> io::Re
         record_deferred_result(&context, &receipt.work_key, &receipt.saved, &[])?;
         recovered += 1;
     }
+    recovered += close_copies_left_pending(project, run_dir, &run, &pending, &context, &services)?;
     Ok(recovered)
+}
+
+/// Klucze kopii, których ten bieg nie zdążył domknąć — tak jak leżą w jego pliku.
+fn copies_left_pending(run: &Value) -> Vec<String> {
+    run.get("pending_finalization")
+        .and_then(Value::as_array)
+        .map(|pending| {
+            pending
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Krok, który pracował w tej kopii: jego miejsce w księdze i nazwa z kafelka.
+///
+/// Po kluczu pracy, bo to on nazywa katalog: kopia „same-copy" należy do kroku, który ją założył,
+/// a nie do tego, który wszedł do niej później. `None` znaczy, że plik biegu tego katalogu nie
+/// zna — a wtedy odzyskiwanie nie ma prawa nazwać go niczyim wynikiem.
+fn the_step_that_worked_in(run: &Value, work_key: &str) -> Option<(StepId, String)> {
+    run.get("steps")
+        .and_then(Value::as_array)?
+        .iter()
+        .enumerate()
+        .find(|(_, step)| {
+            step.get("node_key")
+                .and_then(Value::as_str)
+                .is_some_and(|node| work_key_of(node) == work_key)
+        })
+        .map(|(at, step)| {
+            (
+                at,
+                step.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+}
+
+/// WF-06: kopie spoza gita, po których odroczone domknięcie nie ma już komu przyjść.
+///
+/// # Co się działo
+///
+/// Kopię zwykłego folderu, którą po grafie trzyma jeszcze usługa okna, bieg wpisuje do
+/// `pending_finalization`, a JEDYNYM nośnikiem jej domknięcia jest callback żyjący w pamięci
+/// `Processes`. Ubicie aplikacji zabiera ten callback razem z procesem i klucz zostaje w pliku
+/// biegu **na zawsze**: od tej chwili [`copy_lifetime_blocker`] odmawia obu retencjom, ręcznemu
+/// „Forget this run", „Keep result" i przywróceniu wyniku — zdaniem „The result folders are still
+/// being saved after their services stop.", które po restarcie jest po prostu nieprawdziwe, bo
+/// żadna usługa nie żyje i nic się nie zapisuje. Człowiekowi zostawało `rm -rf` z terminala,
+/// czyli dokładnie to, czego ten produkt ma nie wymagać.
+///
+/// Droga gitowa tego nie miała: jej wynik niesie receipt w `.results/`, a samo drzewo domyka
+/// pętla po [`trees_left_in`] w `reconcile`. `IsolationMarker::FileCopy` nie oddaje ani gałęzi,
+/// ani `head`, więc tamta pętla nie odwiedza kopii non-git ANI RAZU — i nikt inny też nie.
+///
+/// # Czego pilnuje
+///
+/// Wynik liczy TĄ SAMĄ [`close_finalized_copy`], co zwykłe domknięcie: odzyskiwanie nie ma prawa
+/// mieć własnego zdania o tym, co jest zmianą, a co niezmienioną kopią do zdjęcia. Kopii, którą
+/// wciąż trzyma żywa usługa, nie dotyka — dla niej tamto zdanie jest prawdziwe. Katalogu, którego
+/// już nie ma, też nie: nie ma czego obejrzeć, a zgadnięty wynik byłby gorszy niż jego brak.
+fn close_copies_left_pending(
+    project: &Path,
+    run_dir: &Path,
+    run: &Value,
+    pending: &[String],
+    context: &ClosingRun,
+    services: &[super::processes::ServiceRecord],
+) -> io::Result<usize> {
+    let mut closed = 0;
+    for key in pending {
+        let Ok(Some(marker)) =
+            read_isolation_marker(&run_dir.join(ISOLATION_MARKERS_DIR).join(key))
+        else {
+            continue;
+        };
+        // Drzewo gita ma swoją drogę; niepełne wejście nie jest pracą kroku i nie wolno go
+        // nazwać wynikiem (WF-03).
+        if marker.branch().is_some() || marker.has_incomplete_input() {
+            continue;
+        }
+        let cwd = own_copy_at(run_dir, key);
+        if !fs::symlink_metadata(&cwd).is_ok_and(|one| one.file_type().is_dir()) {
+            continue;
+        }
+        require_one_normal_child(&run_dir.join(WORK_DIR), &cwd)
+            .map_err(|why| io::Error::other(why.to_string()))?;
+        if a_running_service_keeps(&cwd, services)? {
+            continue;
+        }
+        let Some((at, step)) = the_step_that_worked_in(run, key) else {
+            continue;
+        };
+        let one = Isolated {
+            copy_identity: supervisor::PublicationRoot::open(&cwd)?.identity(),
+            step,
+            at,
+            cwd,
+            // Bez gałęzi, bo tej kopii nikt nie zakładał w gicie — to jest właśnie ten wariant,
+            // którego odzyskiwanie nie widziało. Pliki pominięte przez gita niesie wyłącznie
+            // droga drzewa i tu nikt ich nie czyta.
+            branch: None,
+            left_behind: Vec::new(),
+        };
+        let (saved, says) = close_finalized_copy(project, &one, context);
+        record_deferred_result(context, key, &saved, &says)?;
+        closed += 1;
+    }
+    Ok(closed)
 }
 
 /// Recovery nie kopiuje formatu receiptu ani polityki ownershipu z normalnego zamknięcia.
@@ -11937,6 +12058,25 @@ impl Live {
             .find(|(_, one)| step.tile_key == one.judge)
     }
 
+    /// Węzły TEJ rundy pętli, bez samego sędziego — czyli praca, o którą pyta „czy było co robić".
+    ///
+    /// Całe ciało, nie kafelek wejściowy: wejście jest tym, którego DRZEWO sędzia ocenia, a to
+    /// jest inne pytanie. Runda, w której wejście odmówiło startu (sufit wydatku, brak wyceny,
+    /// odmowa fan-in — wszystkie wracają przed `execution.executed`), a późniejszy krok ciała
+    /// pobiegł i zostawił pracę, ma sędziego DOSTAĆ.
+    ///
+    /// Sędzia wypada z listy, żeby „ciało jest puste" znaczyło to samo także w pętli
+    /// dwukafelkowej: jego własne wykonanie jest tym, co ta odpowiedź dopiero rozstrzyga.
+    fn round_body_without_the_judge(&self, the_loop: &Loop, turn: u8) -> Vec<StepId> {
+        let mut body: Vec<StepId> = Vec::new();
+        for tile in &the_loop.body {
+            if *tile != the_loop.judge {
+                body.extend(self.nodes_of(tile, turn));
+            }
+        }
+        body
+    }
+
     /// P-03a: czy da się tu wykonać scenariusz na pełnej aplikacji — pytane raz na bieg
     /// i **wyłącznie** dla kroku, który tego naprawdę wymaga.
     ///
@@ -12671,6 +12811,19 @@ impl Live {
          * PYTAMY O FAKT WYKONANIA, NIE O PLIKI, więc warunek jest ŚCIŚLE WĘŻSZY niż dawne
          * `nothing_to_judge`: żaden krok, który naprawdę ruszył, nie traci przez to sędziego.
          *
+         * PYTAMY O CAŁE CIAŁO PĘTLI, NIE O JEJ KAFELEK WEJŚCIOWY (2026-09-06). Wejście jest tym
+         * kafelkiem, którego DRZEWO ocenia sędzia — i to jest jedyna rzecz, do której ono się tu
+         * nadaje. Na pytanie „czy ta runda coś zrobiła" odpowiada całe ciało: sufit wydatku,
+         * brak wyceny i odmowa fan-in wracają PRZED `execution.executed = true`, a stożek za
+         * budżetową odmową ma bramkę sufitu jawnie wyłączoną (T-101, `carries_on_past_the_budget`)
+         * — więc późniejszy krok ciała ma ZAPROJEKTOWANĄ zgodę na bieg i naprawdę zostawia pracę.
+         * Pytanie o samo wejście pomijało wtedy sędziego, domykało pętlę na `settle()` i puszczało
+         * cały stożek za nią na pracy, której nikt nie ocenił, ze zdaniem „the step before this one
+         * never ran." na karcie sędziego stojącego na strzałce za krokiem, który właśnie pobiegł.
+         *
+         * Sędzia jest wyłączony z listy, żeby `!body.is_empty()` znaczyło „to ciało poza sędzią"
+         * także w pętli dwukafelkowej — czytamy to jako jedno zdanie, nie jako sumę dwóch ról.
+         *
          * STOI POD `not_run_because`, NIE NAD NIM, i to jest cała różnica: rundy pętli, która
          * domknęła się po prawdziwym `pass`, mają zachować dzisiejsze „loop settled at try N",
          * a nie to zdanie. Nad blokiem ta gałąź przewracała pięć zielonych kryteriów
@@ -12679,7 +12832,7 @@ impl Live {
             .judging(&self.plan.steps[id])
             .and_then(|(which, the_loop)| {
                 let turn = self.plan.steps[id].turn;
-                let body: Vec<StepId> = self.nodes_of(&the_loop.entry, turn).collect();
+                let body = self.round_body_without_the_judge(the_loop, turn);
                 // Zamek księgi powstaje i ginie tutaj, bez ani jednego `await` (niezmiennik 8).
                 let book = self.book();
                 let nothing_ran =
