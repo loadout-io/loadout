@@ -297,6 +297,23 @@ export interface ServeStep {
         format?: 'command' | 'launch-description' | undefined;
       }
     | undefined;
+  /**
+   * Czym jest to, co ten kafelek uruchamia. Lustro `workflow::ServeStep::target_kind` (na drucie `targetKind`).
+   *
+   * Brak klucza znaczy `web` i tak zostaje: gotowy port jest KOMPLETNYM dowodem dla serwera
+   * i POŁOWĄ prawdy o aplikacji z własnym oknem. Dla `native` Loadout czeka jeszcze na okno,
+   * zanim ogłosi gotowość — scenariusz, który ma się odbyć w oknie, potrzebuje okna.
+   */
+  targetKind?: 'web' | 'native' | 'cli' | undefined;
+  /**
+   * Ustawienie, którym TA aplikacja przyjmuje podmianę katalogu danych na czas testu.
+   * Lustro `workflow::ServeStep::test_data_env` (na drucie `testDataEnv`).
+   *
+   * Brak znaczy „ta aplikacja nie ma czym oddzielić danych testowych od twoich", i dla celu
+   * natywnego jest ODMOWĄ startu — instancja testowa pisząca do prawdziwego katalogu jest
+   * gorsza od jej braku.
+   */
+  testDataEnv?: string | undefined;
   lifetime?: 'window' | 'run' | undefined;
   startWhen?: 'reached' | 'asked' | undefined;
   readiness?: ReadinessSpec | undefined;

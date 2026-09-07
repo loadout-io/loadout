@@ -3888,6 +3888,10 @@ struct ServeJob {
     command_from: Option<crate::workflow::CommandFrom>,
     lifetime: crate::workflow::ServiceLifetime,
     start_when: crate::workflow::ServiceStartWhen,
+    /// P-02: czym jest ten cel — dla `native` gotowy port jest połową prawdy.
+    kind: crate::workflow::TargetKind,
+    /// P-02: ustawienie, którym ta aplikacja przyjmuje testowy katalog danych.
+    test_data_env: Option<String>,
     endpoints: Vec<crate::workflow::ServiceEndpointSpec>,
     readiness: Option<crate::workflow::ReadinessSpec>,
     /// Katalog, w ktorym to wstaje. Dla serwera dev jest trescia, nie szczegolem: podaje kod
@@ -5891,6 +5895,8 @@ fn plan_step(
                     command_from: serve.command_from.clone(),
                     lifetime: serve.lifetime,
                     start_when: serve.start_when,
+                    kind: serve.target_kind,
+                    test_data_env: serve.test_data_env.clone(),
                     endpoints: serve.endpoints.clone(),
                     readiness: serve.readiness.clone(),
                     cwd: spot.cwd,
@@ -12014,8 +12020,10 @@ impl Live {
             }
             crate::workflow::CommandFormat::Command => crate::workflow::LaunchDescription {
                 command: said,
-                kind: crate::workflow::TargetKind::default(),
-                test_data_env: None,
+                // Kafelek mówi, czym jest to, co uruchamia; opis od agenta mówi to samo polem
+                // o tej samej nazwie (niezmiennik 13 — jedno pytanie, jedna odpowiedź).
+                kind: job.kind,
+                test_data_env: job.test_data_env.clone(),
                 subdirectory: String::new(),
                 environment: BTreeMap::new(),
                 required_env: Vec::new(),

@@ -801,7 +801,9 @@ fn isolated_data(
     else {
         if description.kind == crate::workflow::TargetKind::Native {
             return Err(io::Error::other(
-                "This app has no way to keep test data apart from yours, so Loadout did not                  start it. That is a missing setting in the app, not a result about it: give it                  the name of the setting it reads for a test data folder.",
+                "This app has no way to keep test data apart from yours, so Loadout did not \
+                 start it. That is a missing setting in the app, not a result about it: give it \
+                 the name of the setting it reads for a test data folder.",
             ));
         }
         return Ok(Vec::new());

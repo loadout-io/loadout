@@ -84,6 +84,8 @@ fn waiting_for_the_field() -> ServeStep {
         id: "s_app".to_owned(),
         name: "Run preview app".to_owned(),
         command: String::new(),
+        target_kind: loadout_lib::workflow::TargetKind::Web,
+        test_data_env: None,
         command_from: Some(CommandFrom {
             field: "command".to_owned(),
             producer: None,

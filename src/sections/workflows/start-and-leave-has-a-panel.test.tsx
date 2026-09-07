@@ -83,6 +83,18 @@ const SERVE = freshStep('serve', freshId(START), { x: 24, y: 24 });
 
 const DOC: WorkflowFile = { ...START, steps: [SERVE] };
 
+/** Ten sam kafelek z przycisku, dopełniony o pola, które ma tylko „uruchom i zostaw".
+ *
+ * Zawężenie, nie rzutowanie: `freshStep` oddaje `Step`, a `Step` to unia. Rzutowanie milczałoby
+ * w dniu, w którym przycisk zacznie stawiać coś innego — a wtedy cały ten plik sądziłby panel,
+ * którego ekran już nie montuje. */
+function serveTile(extra: Partial<ServeStep>): WorkflowFile {
+  if (SERVE.kind !== 'serve') {
+    throw new Error('the canvas button no longer makes a tile that starts something');
+  }
+  return { ...DOC, steps: [{ ...SERVE, ...extra }] };
+}
+
 function editorWith(openStep?: string, document: WorkflowFile = DOC): string {
   return renderToStaticMarkup(
     <WorkflowEditor
@@ -321,6 +333,76 @@ describe('a tile that starts something and walks on can be filled in', () => {
         last === undefined ? undefined : commandIn(last.file, SERVE.id),
         'something was written, but not this tile’s command.',
       ).toBe(COMMAND);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  /* CO TEN KAFELEK URUCHAMIA — pole, którego brak przez cały sierpień znaczył „serwer".
+   *
+   * Aplikacja z własnym oknem ma otwarty port, zanim narysuje pierwszy piksel, więc gotowość
+   * mierzona portem melduje ją gotową do scenariusza, którego nie ma jak wykonać. Wybór musi
+   * dojechać do PLIKU, bo to plik czyta bieg — pole zapisane wyłącznie w drzewie wygląda na
+   * ekranie identycznie i zawodzi dopiero w biegu. */
+  it('what this tile starts travels to the file, so a window is not judged ready by its port', async () => {
+    vi.useFakeTimers();
+    try {
+      editorWith(SERVE.id);
+      const choose = onChangeOf(spy.shown.at(0), 'serve-target-kind');
+      expect(
+        choose,
+        'the panel never asks what this tile starts, so every tile is filled in as a server ' +
+          'and an app with its own window is called ready the moment it holds a port.',
+      ).not.toBeNull();
+      choose?.({ target: { value: 'native' } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(spy.written.at(-1)?.file.steps.find((one) => one.id === SERVE.id)).toMatchObject({
+        targetKind: 'native',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /* ODMOWA CZYTA SIĘ PRZY WYPEŁNIANIU, NIE W CZWARTEJ MINUCIE BIEGU (niezmiennik 29).
+   *
+   * Instancja testowa bez własnego katalogu danych pisze do prawdziwego — czyli do nagrań
+   * człowieka — więc Loadout jej nie uruchamia. Kafelek, który o tym milczy, każe się tego
+   * dowiedzieć z biegu, który zapłacił już za kroki przed tym. */
+  it('an app with its own window says it will not start before its data is moved', () => {
+    const shown = editorWith(SERVE.id, serveTile({ targetKind: 'native' }));
+    expect(
+      shown,
+      'the panel takes no name for the setting that moves this app’s data, so the only place ' +
+        'anybody learns it is missing is the run that refused to start it.',
+    ).toContain('serve-test-data-env');
+    expect(
+      shown,
+      'nothing on the panel says an app with its own window and no test data folder will not ' +
+        'be started at all.',
+    ).toContain('worse than no test at all');
+  });
+
+  it('once the setting is named, the panel says what it will do with it', async () => {
+    vi.useFakeTimers();
+    try {
+      const shown = editorWith(
+        SERVE.id,
+        serveTile({ targetKind: 'native', testDataEnv: 'MURMUR_DATA_DIR' }),
+      );
+      expect(shown).toContain('MURMUR_DATA_DIR');
+      expect(
+        shown,
+        'the panel repeats the refusal even though the setting is filled in, so the sentence ' +
+          'says nothing about this tile.',
+      ).not.toContain('worse than no test at all');
+
+      const typeInto = onChangeOf(spy.shown.at(0), 'serve-test-data-env');
+      expect(typeInto, 'the named setting cannot be changed once it is there.').not.toBeNull();
+      typeInto?.({ target: { value: 'MURMUR_HOME' } });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(spy.written.at(-1)?.file.steps.find((one) => one.id === SERVE.id)).toMatchObject({
+        testDataEnv: 'MURMUR_HOME',
+      });
     } finally {
       vi.useRealTimers();
     }

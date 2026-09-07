@@ -306,3 +306,55 @@ impl Bench {
         Ok(reference)
     }
 }
+
+/// Kafelek „uruchom i zostaw" umie POWIEDZIEĆ, że startuje aplikację natywną — i przenieść to
+/// przez plik bez utraty ani jednego pola.
+///
+/// `targetKind`, nie `kind`: `Step` jest enumem tagowanym kluczem `kind`, więc pole o tej nazwie
+/// w środku wariantu zderzyłoby się ze znacznikiem rodzaju kafelka. Kryterium sądzi ZAPIS
+/// I ODCZYT, bo kolizja tagu nie jest widoczna w typie — dopiero w tym, co wyjdzie na dysk.
+#[test]
+fn a_serve_tile_says_what_it_starts_and_survives_the_file() -> Result<(), Box<dyn Error>> {
+    let written = serde_json::json!({
+        "kind": "serve", "id": "s_app", "name": "The app",
+        "command": "npm run app",
+        "targetKind": "native",
+        "testDataEnv": "MURMUR_TEST_DATA",
+        "folder": {"use": "same-copy"}, "at": {"x": 0, "y": 0}
+    });
+    let step: loadout_lib::workflow::Step = serde_json::from_value(written.clone())?;
+    let loadout_lib::workflow::Step::Serve(serve) = &step else {
+        return Err("the tile stopped being a serve step".into());
+    };
+    assert_eq!(serve.target_kind, TargetKind::Native);
+    assert_eq!(serve.test_data_env.as_deref(), Some("MURMUR_TEST_DATA"));
+
+    let again = serde_json::to_value(&step)?;
+    assert_eq!(
+        again.get("kind").and_then(serde_json::Value::as_str),
+        Some("serve"),
+        "the tile's own kind was overwritten by what it starts"
+    );
+    assert_eq!(
+        again.get("targetKind").and_then(serde_json::Value::as_str),
+        Some("native"),
+        "saving the workflow dropped what this tile starts"
+    );
+    assert_eq!(
+        again.get("testDataEnv").and_then(serde_json::Value::as_str),
+        Some("MURMUR_TEST_DATA")
+    );
+
+    // Plik BEZ tych pól ma wyglądać dokładnie tak, jak wyglądał przed ich dołożeniem.
+    let plain = serde_json::json!({
+        "kind": "serve", "id": "s_web", "name": "Dev server", "command": "npm run dev",
+        "folder": {"use": "project"}, "at": {"x": 0, "y": 0}
+    });
+    let web: loadout_lib::workflow::Step = serde_json::from_value(plain)?;
+    let round = serde_json::to_value(&web)?;
+    assert!(
+        round.get("targetKind").is_none() && round.get("testDataEnv").is_none(),
+        "a workflow that never mentioned these fields grew them on save: {round}"
+    );
+    Ok(())
+}

@@ -32,6 +32,8 @@ export interface ServePanelProps {
         | 'endpoints'
         | 'lifetime'
         | 'startWhen'
+        | 'targetKind'
+        | 'testDataEnv'
       >
     >,
   ) => void;
@@ -117,6 +119,61 @@ export function ServePanel({
             This step prepares the app description but does not start the app. Only an agent
             explicitly allowed to use this app can start it.
           </span>
+        ) : null}
+      </div>
+
+      {/* CO TO WŁAŚCIWIE WSTAJE — jedno pytanie, od którego zależą DWIE rzeczy naraz.
+          Do 2026-09-07 nie było go wcale i każdy kafelek był traktowany jak serwer: gotowy port
+          uchodził za dowód gotowości, a katalog danych zostawał ten sam, co twój. Dla aplikacji
+          z własnym oknem oba te domyślne są złe — otwarty port ma ona, zanim cokolwiek narysuje,
+          a scenariusz QA klika w PRAWDZIWE dane, jeśli nikt jej ich nie podmienił.
+
+          Wiersz z ustawieniem pokazuje się tylko dla okna, bo tylko tam jego brak jest ODMOWĄ
+          startu. Zdanie pod spodem mówi to zawczasu i tym samym słowem, którym odmówi bieg
+          (niezmiennik 29): odmowę czyta się przy wypełnianiu kafelka, a nie w czwartej minucie
+          biegu, który już zapłacił za trzy kroki przed tym. */}
+      <div className="stack">
+        <label className="label" htmlFor="serve-target-kind">
+          What this starts
+        </label>
+        <select
+          id="serve-target-kind"
+          className={FIELD}
+          value={step.targetKind ?? 'web'}
+          onChange={(event) => {
+            const chosen = event.target.value;
+            if (chosen !== 'web' && chosen !== 'native' && chosen !== 'cli') return;
+            onEditStep({ targetKind: chosen });
+          }}
+        >
+          <option value="web">A web app or a server</option>
+          <option value="native">An app with its own window</option>
+          <option value="cli">A command-line program</option>
+        </select>
+        {step.targetKind === 'native' ? (
+          <>
+            <label className="label" htmlFor="serve-test-data-env">
+              Setting it reads for a test data folder
+            </label>
+            <input
+              id="serve-test-data-env"
+              className={FIELD}
+              placeholder="MURMUR_DATA_DIR"
+              value={step.testDataEnv ?? ''}
+              onChange={(event) => {
+                onEditStep({ testDataEnv: event.target.value || undefined });
+              }}
+            />
+            <span className="lead" data-field="testDataEnvState">
+              {(step.testDataEnv ?? '').trim() === ''
+                ? 'Without this, Loadout does not start the app: a test instance writing into ' +
+                  'your real data folder is worse than no test at all. That is a missing setting ' +
+                  'in the app, not a result about it.'
+                : `Loadout starts this app with ${(step.testDataEnv ?? '').trim()} pointing at a ` +
+                  'folder of its own inside this run, and waits for its window — not just an ' +
+                  'open port — before the steps after it begin.'}
+            </span>
+          </>
         ) : null}
       </div>
 

@@ -509,6 +509,16 @@ pub struct ServeStep {
     pub lifetime: ServiceLifetime,
     #[serde(default, skip_serializing_if = "ServiceStartWhen::is_reached")]
     pub start_when: ServiceStartWhen,
+    /// P-02: czym jest to, co ten kafelek uruchamia. Powód stoi przy [`TargetKind`].
+    ///
+    /// `target_kind`, nie `kind`: `Step` jest enumem tagowanym kluczem `kind`, więc pole o tej
+    /// nazwie w środku wariantu zderzyłoby się ze znacznikiem rodzaju kafelka.
+    #[serde(default, skip_serializing_if = "TargetKind::is_web")]
+    pub target_kind: TargetKind,
+    /// P-02: ustawienie, którym TA aplikacja przyjmuje podmianę katalogu danych na czas testu.
+    /// Powód stoi przy [`LaunchDescription::test_data_env`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_data_env: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<ServiceEndpointSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -679,6 +689,15 @@ pub enum TargetKind {
     Cli,
     #[serde(other)]
     Unknown,
+}
+
+impl TargetKind {
+    /// Czy to jest domyślny cel webowy — plik bez tego pola ma wyglądać dokładnie tak,
+    /// jak wyglądał (ten sam idiom, co przy `WhenItFails::is_the_default`).
+    #[must_use]
+    pub fn is_web(&self) -> bool {
+        matches!(self, Self::Web)
+    }
 }
 
 /// Gdzie krok pracuje.
