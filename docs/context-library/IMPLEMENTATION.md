@@ -193,7 +193,22 @@ i `e2e/tests/two-buttons-ask-two-different-vendors.spec.ts`. Zgłosił też jako
 
 ## 3. Otwarte problemy i blokery
 
-*(pusto — start pracy)*
+**D-1. Szew „prawdziwe IPC → dysk" nie jest dowiedziony żadnym testem automatycznym.**
+Test rustowy CT-01 importuje `loadout_lib::context::files::*`, czyli warstwę biblioteki;
+`e2e/tests/context-library.spec.ts` biegnie na **atrapie** IPC. Między nimi zostaje skorupa
+`#[tauri::command]` w `ipc.rs`: nazwy argumentów, `spawn_blocking` i sięgnięcie po `AppState`.
+
+Ryzyko jest **małe, ale niezerowe**: `commands/context.rs` to cztery jednolinijkowce
+(odwzorowanie `home → contexts/` plus zegar), a nazwy argumentów pilnuje
+`checks/invoke-args.sh`. Zamyka to dopiero **natywna próba z CT-09** — i dopóki jej nie ma,
+kryterium „Trwały paste" stoi na `not-tested`, a nie na `passed`.
+
+**D-2. Kolejność paska jest przypięta w trzech wyroczniach naraz** (makieta
+`docs/mockup/index.html`, egzekutor `src/sections/triggers/mounted.test.tsx`, plus
+`src/ui/shell/nav-groups-locks-and-keys.test.tsx`) — wbrew niezmiennikowi 13 („jeden fakt,
+jedno miejsce"). Zgłoszone przez bieg CT-01 jako `POZA ZAKRESEM` i **słusznie nienaprawione**:
+to nie jest praca tej dostawy. Koszt: każda przyszła zmiana paska rusza trzy pliki zamiast
+jednego.
 
 ---
 
