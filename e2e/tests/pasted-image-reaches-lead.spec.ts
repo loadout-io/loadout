@@ -77,15 +77,38 @@ function copies<T>(value: T, count = 24): readonly { readonly value: T }[] {
   return Array.from({ length: count }, () => ({ value }));
 }
 
+/**
+ * Sesja kroku, do ktorej NAPRAWDE mozna sie odezwac — WF-08.
+ *
+ * Od `f81d4b11` pole wpisu nie wnioskuje adresatow ze stanu krokow: bierze wylacznie kanaly
+ * odebrane z runtime przez `step_message_recipients` (`src/sections/run/index.tsx`). Krok
+ * ustawiony na `running` recznie nie jest wiec dowodem na istnienie kanalu, i to jest decyzja
+ * produktu, nie przeoczenie — `running` nie znaczy, ze uchwyt ma glos.
+ *
+ * Scena, ktora chce sprawdzic odmowe adresowana do zywego kroku, musi ten kanal dostarczyc.
+ * Atrapa (`e2e/harness.ts`) oddaje na te komende pusta liste i tak ma zostac: zmyslony adresat
+ * w atrapie wstawilby osiagalnego agenta do KAZDEJ specyfikacji przegladarkowej.
+ */
+const WORKER_CHANNEL = {
+  runId: 'fixture',
+  nodeKey: 'worker',
+  agent: 'Worker',
+  canReceive: true,
+  finished: false,
+};
+
 function withReplies(
   replies: readonly TauriReply[],
   workspaces: readonly (typeof WORKSPACE)[],
+  channels: readonly (typeof WORKER_CHANNEL)[],
 ): OpenAppOptions {
   return {
     replies: {
       list_workspaces: copies(workspaces),
       list_agents: copies([AGENT]),
       say_to_orchestrator: replies,
+      /* Kolejka, nie jedna odpowiedz: okno pyta o adresatow przy kazdej zmianie krokow biegu. */
+      step_message_recipients: copies(channels),
     },
   };
 }
@@ -93,8 +116,9 @@ function withReplies(
 async function openConversation(
   replies: readonly TauriReply[] = [],
   workspaces: readonly (typeof WORKSPACE)[] = [WORKSPACE],
+  channels: readonly (typeof WORKER_CHANNEL)[] = [],
 ): Promise<RunningApp> {
-  const app = await openApp(withReplies(replies, workspaces));
+  const app = await openApp(withReplies(replies, workspaces, channels));
   await app.page.locator(WORK).waitFor({ state: 'attached', timeout: APPEARS });
   await app.page.locator(FIELD).waitFor({ state: 'attached', timeout: APPEARS });
   const lead = app.page.getByLabel('Lead agent');
@@ -625,7 +649,9 @@ describe('pasted images on the real Lead composer', () => {
   }, 90_000);
 
   it('refuses an image addressed to a live step and preserves the draft without IPC', async () => {
-    const app = await openConversation();
+    /* Kanal dostaje WYLACZNIE ten przypadek. Podany wszystkim, postawilby pod polem wpisu
+       zdanie „Start the line with Worker to reach it." takze w scenach, w ktorych nic nie biegnie. */
+    const app = await openConversation([], [WORKSPACE], [WORKER_CHANNEL]);
     try {
       await oneStepIsRunning(app);
       await app.page.fill(FIELD, 'Worker inspect this screenshot');
