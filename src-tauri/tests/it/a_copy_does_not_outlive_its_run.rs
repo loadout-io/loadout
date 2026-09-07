@@ -325,7 +325,8 @@ enum Habit {
     Fails,
     /// Pisze i nie wraca. Tak wygląda agent, którego zdejmuje Stop albo limit czasu.
     Hangs,
-    /// Pisze, kończy i **zamyka swój katalog na zapis**, przez co zdjęcie kopii musi odmówić.
+    /// **Nic nie pisze**, kończy i zamyka swój katalog na zapis, przez co zdjęcie kopii —
+    /// której zawartość jest wtedy równa wejściu, więc rusza naprawdę — musi odmówić.
     SealTheFolder,
     /// Pisze, kończy i melduje wydatek ponad sufit biegu.
     Spends,
@@ -336,8 +337,8 @@ enum Habit {
 /// # 2026-09 (Z-9) — jedyny DETERMINISTYCZNY sposób, jaki znamy
 ///
 /// Skasowanie pliku wymaga prawa zapisu do katalogu, w którym on leży — nie do samego pliku.
-/// Katalog bez tego prawa, ale z zawartością (krok właśnie napisał [`MADE`], a kopia niesie pliki
-/// człowieka), odmawia więc na pierwszym wpisie i nie zdąży zniknąć. To jest odpowiednik zamka
+/// Katalog bez tego prawa, ale z zawartością (kopia niesie `notes.txt` człowieka), odmawia więc
+/// na pierwszym wpisie i nie zdąży zniknąć. To jest odpowiednik zamka
 /// gita z `a_step_that_commits_its_own_work`: kopia w rejestrze drzew nie stoi, więc zamka nie ma
 /// czym założyć.
 fn seal_the_folder(cwd: &Path) -> anyhow::Result<()> {
@@ -385,11 +386,21 @@ impl AgentDriver for Fake {
     ) -> anyhow::Result<Box<dyn AgentHandle>> {
         // Praca w katalogu kroku, bo katalog, w którym nic nie powstało, schodzi także po
         // implementacji, która o pracę nie dba.
-        fs::write(spec.cwd.join(MADE), "this is what the step produced")?;
-        // PO zapisie pracy: zamek na pustym katalogu nie zatrzymałby `remove_dir_all`, bo samo
-        // `rmdir` pyta o prawo zapisu do katalogu WYŻEJ, a ten jest nietknięty.
         if self.habit == Habit::SealTheFolder && spec.cwd.ends_with(FIRST) {
+            /* KROK, KTÓREMU ZAMYKAMY KOPIĘ, NIE ZMIENIA JEJ ZAWARTOŚCI — I TO JEST CAŁY SENS.
+             *
+             * Kopia ze zmianą jest zatrzymywana z założenia i `close_one_copy` nie próbuje jej
+             * zdjąć, więc zamek nie miałby tam czego zatrzymać. Aż do 2026-09-07 ten dubler pisał
+             * `MADE` także tutaj i przypadek przechodził nad ścieżką, której nie dotykał: bez
+             * `seal_the_folder` był tak samo zielony. Bez tego zapisu `entries == input.entries()`,
+             * więc zdjęcie kopii rusza naprawdę i odmawia.
+             *
+             * Zamek trzyma, bo kopia niesie `notes.txt` człowieka: skasowanie pliku pyta o prawo
+             * zapisu do katalogu, w którym on leży, a nie do samego pliku. Na PUSTYM katalogu
+             * `remove_dir_all` by przeszedł, bo `rmdir` pyta już katalog WYŻEJ, nietknięty. */
             seal_the_folder(&spec.cwd)?;
+        } else {
+            fs::write(spec.cwd.join(MADE), "this is what the step produced")?;
         }
         let session = SessionRef {
             vendor: VENDOR,

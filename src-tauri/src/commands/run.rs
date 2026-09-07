@@ -9601,16 +9601,26 @@ fn close_one_copy(one: &Isolated, context: &ClosingRun) -> (SavedCopy, Vec<Strin
         Ok((input, entries, _owned)) => match sync_kept_copy(&one.cwd, one.copy_identity, &entries)
             .and_then(|()| folder_digest(&entries))
         {
+            /* ZATRZYMANA KOPIA TO NORMALNY WYNIK KROKU, A NIE JEGO BŁĘDNE ZAKOŃCZENIE.
+             *
+             * Krok, który pracował we własnej kopii i coś w niej zmienił, ZAWSZE ją zostawia:
+             * zdejmowania nikt tu nawet nie próbuje. Zdanie o tym szło dotąd do `StepRun::error`,
+             * czyli do pola, którym okno maluje kafelek na czerwono i które czyta wyrocznia całego
+             * przepływu — więc zielony bieg sześciu agentów kończył się skargą trzech z nich na
+             * to, że wykonali swoją pracę.
+             *
+             * Ścieżka nie ginie i nie potrzebuje tu kopii (niezmiennik 13): niesie ją
+             * `copy_results`, a pokazuje `ResultFolder` w panelu biegu minionego — razem z nazwą
+             * kroku, zdaniem „Changes kept in this folder." i przyciskiem, który ten folder
+             * otwiera. Do pola błędu wraca wyłącznie kopia, której zdjęcie NAPRAWDĘ odmówiło
+             * (`kept_uncertain_copy` niżej). */
             Ok(digest) => (
                 SavedCopy::Folder {
                     path,
                     origin: Some(input.id().to_owned()),
                     digest: Some(digest),
                 },
-                vec![format!(
-                    "The changes were kept in this folder, without changing your project: {}",
-                    one.cwd.display()
-                )],
+                Vec::new(),
             ),
             Err(why) => kept_uncertain_copy(path, origin, &one.cwd, &why.to_string()),
         },
