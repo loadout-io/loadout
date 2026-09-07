@@ -49,6 +49,9 @@ fn value(answer: Answer) -> Value {
     match answer {
         Answer::Ok(value) => value,
         Answer::Refused(said) => panic!("status refused: {said}"),
+        /* 2026-09-08 (CT-03a) — `Answer` niesie od tego dnia także obraz. Ramię jest JAWNE,
+         * a nie `_`, bo czwarty wariant ma przewrócić ten plik, a nie wpaść tu w ciszy. */
+        Answer::Image { mime, .. } => panic!("a run's state reads as facts, never as a {mime}"),
     }
 }
 

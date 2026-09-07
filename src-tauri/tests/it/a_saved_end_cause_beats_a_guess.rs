@@ -99,6 +99,10 @@ async fn the_lead_sees_the_saved_cause_in_its_history_lookup() -> Result<(), Box
     let summary = match answer {
         Answer::Ok(value) => value,
         Answer::Refused(said) => panic!("the Lead could not read the run: {said}"),
+        /* 2026-09-08 (CT-03a) — `Answer` niesie od tego dnia także obraz. Ramię jest JAWNE,
+         * a nie `_`, bo czwarty wariant ma przewrócić ten plik, a nie wpaść tu w ciszy.
+         * Zapisany bieg czyta się jako fakty, nie jako obraz. */
+        Answer::Image { mime, .. } => panic!("a saved run reads as facts, never as a {mime}"),
     };
     assert_eq!(
         summary["steps"][0]["cause"].as_str(),
@@ -142,6 +146,7 @@ async fn a_step_that_never_ran_has_no_invented_cause() -> Result<(), Box<dyn Err
     let summary = match answer {
         Answer::Ok(value) => value,
         Answer::Refused(said) => panic!("the Lead could not read the run: {said}"),
+        Answer::Image { mime, .. } => panic!("a saved run reads as facts, never as a {mime}"),
     };
     assert!(
         summary["steps"][0]["cause"].is_null(),

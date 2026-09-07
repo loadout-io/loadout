@@ -253,6 +253,10 @@ async fn stop_run_refuses_until_the_person_confirmed() -> Result<(), Box<dyn Err
             assert!(matches!(stream.try_next(), Some(Line::Problem { text, .. }) if text == said));
         }
         Answer::Ok(value) => panic!("a run must never go down unasked: {value}"),
+        /* 2026-09-08 (CT-03a) — `Answer` niesie od tego dnia także obraz. Ramię jest JAWNE,
+         * a nie `_`, bo czwarty wariant ma przewrócić ten plik, a nie wpaść tu w ciszy.
+         * Zatrzymanie biegu nie oddaje obrazu nigdy. */
+        Answer::Image { mime, .. } => panic!("stopping a run answers in words, never a {mime}"),
     }
 
     assert!(
@@ -265,6 +269,7 @@ async fn stop_run_refuses_until_the_person_confirmed() -> Result<(), Box<dyn Err
     match stop_run(&desk, serde_json::json!({ "confirmed": false })).await {
         Answer::Refused(said) => assert!(!said.is_empty()),
         Answer::Ok(value) => panic!("confirmed: false is not a yes: {value}"),
+        Answer::Image { mime, .. } => panic!("stopping a run answers in words, never a {mime}"),
     }
     Ok(())
 }
@@ -401,6 +406,7 @@ async fn the_lead_stops_it_and_the_kernel_agrees(
             "the refusal has to name the move that unblocks it: {said}"
         ),
         Answer::Ok(value) => panic!("a run must never go down unasked: {value}"),
+        Answer::Image { mime, .. } => panic!("stopping a run answers in words, never a {mime}"),
     }
     assert!(
         group_probe(group.pgid).is_ok(),
@@ -425,6 +431,7 @@ async fn the_lead_stops_it_and_the_kernel_agrees(
         Answer::Refused(sentence) => {
             panic!("the person said yes and the run still did not go down: {sentence}")
         }
+        Answer::Image { mime, .. } => panic!("stopping a run answers in words, never a {mime}"),
     };
     let note = value
         .get("said")
@@ -505,6 +512,7 @@ async fn a_folder_with_nothing_going_says_so_instead_of_asking() -> Result<(), B
              It said: {said}"
         ),
         Answer::Ok(value) => panic!("nothing was running, so nothing could be stopped: {value}"),
+        Answer::Image { mime, .. } => panic!("stopping a run answers in words, never a {mime}"),
     }
     assert!(
         matches!(stream.try_next(), Some(Line::Problem { .. })),
@@ -583,6 +591,9 @@ async fn actual_human_confirmation(
             .map(str::to_owned)
             .ok_or_else(|| "human answer produced no token".into()),
         Answer::Refused(said) => Err(said.into()),
+        Answer::Image { mime, .. } => {
+            Err(format!("a human answer is words, never a {mime}").into())
+        }
     }
 }
 
