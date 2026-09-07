@@ -120,7 +120,7 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | Etap | Bieg | Commit | RED | GREEN | CI przy lądowaniu | Koszt | Stan |
 |---|---|---|---|---|---|---|---|
 | CT-01 | `h-ct-01` | `a6113319` | mutacja, patrz §1a | 4 Rust + pełna suita frontu | **zielone, 523 s** | 55,17 USD | **WYLĄDOWANY** |
-| CT-02 | `h-ct-02` | — | — | — | — | — | **w toku** |
+| CT-02 | `h-ct-02` | — | mutacja CT-01 + 3 rundy weryfikatora | 13 Rust + 3 przeglądarkowe | — | 121,09 USD | **DZIALA**, 3 rundy, 1 h 49 min |
 | CT-03 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-04 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-05 | — | — | — | — | — | — | nie rozpoczęty |
@@ -141,6 +141,29 @@ Zależności dołożone przeze mnie poza pętlą zadaniową (bieg nie ma prawa p
 `pdfjs-dist 6.3.289` (`31ac51ca`) i `image 0.25` z cechami `png,jpeg,webp` (`9820db7c`) —
 ta druga dołożyła do drzewa **dokładnie jedną** nową skrzynię, `image-webp`, bo `image`
 stał już w `Cargo.lock` przechodnio przez Tauri. `cargo deny check`: wszystko ok.
+
+### 1b. CT-02 — trzy rundy naprawcze i co je wywołało
+
+Bieg: 6506 s, **trzy rundy**, 121,09 USD, 30 zmienionych plików, werdykt `DZIALA`.
+Testy policzone niezależnie: **13 Rust** (`context_source_import::` +
+`context_library_survives_restart::`) i **3 przeglądarkowe**.
+
+**Wszystkie 13 checków było zielone po KAŻDEJ rundzie.** Odrzucał weryfikator (Codex),
+i za każdym razem miał rację. To jest najlepszy dowód na D3, jaki dała ta sesja.
+
+| Runda | Co znalazł weryfikator na ZIELONEJ bramce |
+|---|---|
+| 1 | `companionOf` zapisany, ale **niewyświetlany** — powiązanie nie dociera na ekran (niezmiennik 29). Uszkodzony PDF nigdy nie dostaje trwałego `Failed`. Test PDF **nie uruchamia pdf.js** — podaje gotowe strony. Limit 512 MiB pochodnych nieegzekwowany. |
+| 2 | Dwa wklejenia tego samego obrazu z **różnymi podpisami** dają jedno powiązanie — deduplikacja patrzy tylko na nazwę i odcisk bajtów, wbrew PLAN §5. `Failed` powstaje **tylko** gdy dokument się nie otworzy; błąd `getPage`, ekstrakcji i renderowania zostawia `Needs preparation`. |
+| 3 | — (`DZIALA`) |
+
+**Jedna klasa, dwa razy:** stan błędu obsłużony na **pierwszym** etapie i nigdzie dalej,
+oraz tożsamość sprawdzana **zbyt płytko**. Regułę wyciągniętą z tego dopisałem do wszystkich
+oczekujących promptów: dla każdego stanu porażki wypisz, na jakich etapach może powstać,
+i pokryj każdy osobno; a gdy specyfikacja mówi „dwa różne X pozostają oddzielne", napisz
+test z dwoma X różniącymi się **wyłącznie tym jednym polem**.
+
+Ślad w kodzie: `the_same_picture_pasted_twice_keeps_a_link_for_each_caption`.
 
 ### 1a. CT-01 — co dokładnie dowiedzione
 
