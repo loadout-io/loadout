@@ -3013,34 +3013,25 @@ pub fn install_reviewed_skill(
 /// 2026-08-19 — FOLDER, BO LISTA ODPOWIADA NA PYTANIE „CO WIDZI AGENT PRACUJĄCY TUTAJ". Bez niego
 /// umiejętność zapisana „w tym projekcie" nie pojawiłaby się na ekranie, więc człowiek nie miałby
 /// jak jej zabrać — droga zapisu bez drogi odczytu jest gorsza niż brak funkcji.
-#[tauri::command]
-pub async fn list_skill_sources(
-    folder: Option<&str>,
-    names: Vec<String>,
-) -> Result<Vec<crate::skills::bundle::SkillSources>, String> {
-    let project = project_folder(folder)?;
-    tokio::task::spawn_blocking(move || {
-        commands::skills::list_skill_sources_inner(
-            &crate::loadout_dir(),
-            project.as_deref(),
-            &names,
-        )
-    })
-    .await
-    .map_err(|error| did_not_finish("reading the selected skill sources", &error))?
-    .map_err(|error| error.to_string())
-}
-
+///
+/// 2026-09-07 — JEDNA DROGA ODCZYTU, i to jest cała treść argumentu `names`. Do dziś obok stała
+/// druga komenda, `list_skill_sources`, odpowiadająca na to samo pytanie o tę samą rzecz —
+/// a sekcja ma mieć jedną drogę odczytu (`src/sections/read-paths-populate.test.ts`), tak samo
+/// jak jeden fakt ma mieć jedno miejsce (niezmiennik 13). Kopie są wypełniane WYŁĄCZNIE dla
+/// nazw, o które wołający zapytał: ich odczyt haszuje pakiet, więc liczenie ich zawsze
+/// znaczyłoby haszowanie całej półki przy każdym wejściu do sekcji.
 #[tauri::command]
 pub async fn list_skills(
     folder: Option<&str>,
+    names: Option<Vec<String>>,
 ) -> Result<Vec<commands::skills::InstalledWire>, String> {
     // Ten sam sąd nad folderem, co przy zapisie i przy Starcie biegu (`project_folder`).
     // Lista czytana z folderu, którego nie ma, jest pustą listą — czyli zdaniem „nic tam nie
     // leży" o katalogu, o który nikt nie umiał zapytać.
     let project = project_folder(folder)?;
+    let names = names.unwrap_or_default();
     tokio::task::spawn_blocking(move || {
-        commands::skills::list_skills_in(&crate::loadout_dir(), project.as_deref())
+        commands::skills::list_skills_and_sources(&crate::loadout_dir(), project.as_deref(), &names)
     })
     .await
     .map_err(|error| did_not_finish("reading the skills you have added", &error))?
@@ -5094,7 +5085,6 @@ macro_rules! every_command_the_window_can_call {
             list_processes,
             list_runs,
             list_skills,
-            list_skill_sources,
             list_triggers,
             list_workflows,
             fold_run_into_branch,

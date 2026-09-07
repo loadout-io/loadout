@@ -386,15 +386,8 @@ const WIRES: readonly Wire[] = [
     where: 'skills',
     what: 'listSkills',
     command: 'list_skills',
-    given: [FOLDER],
-    call: () => skills.listSkills(FOLDER),
-  },
-  {
-    where: 'skills',
-    what: 'listSkillSources',
-    command: 'list_skill_sources',
     given: [FOLDER, ['bundle-reader']],
-    call: () => skills.listSkillSources(FOLDER, ['bundle-reader']),
+    call: () => skills.listSkills(FOLDER, ['bundle-reader']),
   },
   /* 2026-08-18 (fala pieciu sekcji) — DWIE KOLEJNE KRAWEDZIE, znowu dopisane, znowu nic
    * nie usuniete. Ten plik zlapal je w tej samej godzinie, w ktorej powstaly, i to jest jego

@@ -185,6 +185,27 @@ export interface InstalledSkill {
    * wczytywania, a nie jak umiejętność bez opisu.
    */
   summary: string;
+  /**
+   * Kopie tej umiejętności, z których agent może ją wziąć.
+   *
+   * OPCJONALNE, bo wypełniane wyłącznie dla nazw, o które okno zapytało: odczyt kopii haszuje
+   * pakiet, więc liczenie ich zawsze znaczyłoby haszowanie całej półki przy każdym wejściu do
+   * sekcji. Po stronie Rusta pole jest ZAWSZE na drucie (pusty wektor), bo lustro porównuje
+   * zbiory kluczy i pole zdjęte z odpowiedzi rozjechałoby je.
+   */
+  sources?: SkillSource[];
+  /** Czy kopie różnią się treścią, więc człowiek musi wybrać jedną z nich. */
+  requiresChoice?: boolean;
+}
+
+/** Jedna kopia umiejętności — lustro `skills::bundle::SkillSource`. */
+export interface SkillSource {
+  path: string;
+  digest: string | null;
+  bytes: number | null;
+  files: number | null;
+  available: boolean;
+  reason: string | null;
 }
 
 export interface SkillsState {

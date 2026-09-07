@@ -55,12 +55,41 @@ const INCOMING_DIR: &str = "incoming";
 /// Nazwa pliku umiejętności. Ta sama po obu stronach pobrania.
 const SKILL_FILE: &str = "SKILL.md";
 
-pub fn list_skill_sources_inner(
+/// Ta sama lista, plus kopie dla nazw, o które zapytał wołający.
+///
+/// DWIE ODPOWIEDZI W JEDNEJ, bo to jedno pytanie: „co widzi agent pracujący tutaj, i skąd
+/// weźmie te umiejętności, które ma zaznaczone". Nazwa spoza listy zainstalowanych dostaje
+/// WŁASNY wiersz — kopia kanoniczna w bibliotece jest źródłem, choć nie leży w katalogu
+/// żadnego vendora, i pominięcie jej byłoby cichym zniknięciem wyboru, który człowiek miał
+/// wczoraj.
+pub fn list_skills_and_sources(
     library: &Path,
     project: Option<&Path>,
     names: &[String],
-) -> std::io::Result<Vec<crate::skills::bundle::SkillSources>> {
-    crate::skills::bundle::sources(&roots_for(library, project), names)
+) -> Result<Vec<InstalledWire>, Error> {
+    let mut listed = list_skills_in(library, project)?;
+    if names.is_empty() {
+        return Ok(listed);
+    }
+    let shelves =
+        crate::skills::bundle::sources(&roots_for(library, project), names).map_err(Error::Io)?;
+    for shelf in shelves {
+        let found = listed.iter_mut().find(|one| one.name == shelf.name);
+        match found {
+            Some(one) => {
+                one.sources = shelf.sources;
+                one.requires_choice = shelf.requires_choice;
+            }
+            None => listed.push(InstalledWire {
+                name: shelf.name,
+                from_the_internet: false,
+                summary: String::new(),
+                sources: shelf.sources,
+                requires_choice: shelf.requires_choice,
+            }),
+        }
+    }
+    Ok(listed)
 }
 
 /// Plik, w którym Loadout notuje, skąd wzięła się umiejętność o danej nazwie.
@@ -288,6 +317,20 @@ pub struct InstalledWire {
     /// PUSTY NAPIS, NIE `Option`: „ta umiejętność nie mówi, po co jest" jest faktem o pliku,
     /// a nie brakiem odpowiedzi — i kafelek ma go pokazać tak samo uczciwie jak każdy inny.
     pub summary: String,
+    /// Kopie tej umiejętności, z których agent może ją wziąć — wypełniane WYŁĄCZNIE dla nazw,
+    /// o które wołający zapytał.
+    ///
+    /// 2026-09-07 — do dziś odpowiadała na to osobna komenda `list_skill_sources`. Sekcja ma
+    /// mieć JEDNĄ drogę odczytu (`src/sections/read-paths-populate.test.ts`), a dwie komendy
+    /// `list_*` o tej samej rzeczy są dwiema odpowiedziami na jedno pytanie (niezmiennik 13).
+    ///
+    /// PUSTY WEKTOR, KIEDY NIKT NIE PYTAŁ, i to jest cała cena tego scalenia: czytanie kopii
+    /// haszuje każdy pakiet, więc wypełnianie ich zawsze znaczyłoby haszowanie całej półki przy
+    /// każdym wejściu do sekcji i przy każdym montowaniu edytora workflow. Pole jest ZAWSZE
+    /// na drucie — `skip_serializing_if` zdjęłoby klucz i rozjechało lustro (`ipc_read_paths`).
+    pub sources: Vec<crate::skills::bundle::SkillSource>,
+    /// Czy kopie różnią się treścią, więc człowiek musi wybrać jedną z nich.
+    pub requires_choice: bool,
 }
 
 /// Co leży w katalogach agentów — odczytane z DYSKU, bez ani jednego bajtu pamięci procesu.
@@ -444,6 +487,9 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
             }),
             summary: summary_of(where_found.get(&name)),
             name,
+            /* Puste, dopóki nikt nie zapytał o kopie — patrz [`list_skills_and_sources`]. */
+            sources: Vec::new(),
+            requires_choice: false,
         })
         .collect())
 }

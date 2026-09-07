@@ -38,9 +38,12 @@ it('shows the two complete sources and persists the exact explicit source', asyn
         { kind: 'healthy', value: AGENT, path: 'reader.md', revision: 'initial' },
       ]),
       save_agent: replies('saved'),
-      list_skill_sources: replies([
+      /* 2026-09-07 — kopie przyjeżdżają wierszem listy umiejętności, nie drugą komendą. */
+      list_skills: replies([
         {
           name: SKILL,
+          fromTheInternet: false,
+          summary: '',
           requiresChoice: true,
           sources: [
             { path: PROJECT_SOURCE, digest: 'a'.repeat(64), bytes: 170, files: 3, available: true },

@@ -13,25 +13,6 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-export interface SkillSource {
-  path: string;
-  digest: string | null;
-  bytes: number | null;
-  files: number | null;
-  available: boolean;
-  reason: string | null;
-}
-
-export interface SkillSources {
-  name: string;
-  requiresChoice: boolean;
-  sources: SkillSource[];
-}
-
-export function listSkillSources(folder: string | null, names: string[]): Promise<SkillSources[]> {
-  return invoke<SkillSources[]>('list_skill_sources', { folder, names });
-}
-
 import type { Authored, Import, InstalledSkill, Landing } from '../../state/skills';
 
 /**
@@ -73,8 +54,23 @@ import type { Authored, Import, InstalledSkill, Landing } from '../../state/skil
  * jedynym miejscem, w którym to widać — a pytanie „czy panel kroku ma widzieć umiejętności
  * projektowe" jest otwarte i należy do T-13, nie do tego pliku.
  */
-export function listSkills(folder: string | null = null): Promise<InstalledSkill[]> {
-  return invoke<InstalledSkill[]>('list_skills', { folder });
+/*
+ * `names` — 2026-09-07, SCALENIE DWÓCH DRÓG ODCZYTU W JEDNĄ.
+ *
+ * Do dziś obok stała druga komenda, `list_skill_sources`, odpowiadająca na to samo pytanie
+ * o tę samą rzecz: skąd wziąć umiejętność. Sekcja ma mieć JEDNĄ drogę odczytu
+ * (`src/sections/read-paths-populate.test.ts`), tak samo jak jeden fakt ma mieć jedno miejsce
+ * (niezmiennik 13) — dwie komendy `list_*` o umiejętnościach to dwie odpowiedzi, które prędzej
+ * czy później się rozjadą.
+ *
+ * Pusta lista znaczy „nie pytam o kopie" i jest wartością, nie brakiem argumentu: Rust
+ * wypełnia kopie WYŁĄCZNIE dla nazwanych, bo ich odczyt haszuje pakiet.
+ */
+export function listSkills(
+  folder: string | null = null,
+  names: string[] = [],
+): Promise<InstalledSkill[]> {
+  return invoke<InstalledSkill[]>('list_skills', { folder, names });
 }
 
 /**

@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 import type { Agent } from '../../state/agents';
 import { useWorkspaces } from '../../state/workspaces';
 import { why } from '../../ipc/why';
-import { listSkillSources } from './io';
-import type { SkillSources } from './io';
+import { listSkills } from './io';
+import type { InstalledSkill } from '../../state/skills';
 
 export function SkillSourcePicker({
   value,
@@ -17,7 +17,7 @@ export function SkillSourcePicker({
   const folder = useWorkspaces(
     (state) => state.all.find((one) => one.id === state.activeId)?.folder ?? null,
   );
-  const [listed, setListed] = useState<SkillSources[]>([]);
+  const [listed, setListed] = useState<InstalledSkill[]>([]);
   const [said, setSaid] = useState<string | null>(null);
   const names = JSON.stringify(value.skills);
   useEffect(() => {
@@ -26,9 +26,13 @@ export function SkillSourcePicker({
     setSaid(null);
     const selected: string[] = JSON.parse(names) as string[];
     if (selected.length > 0) {
-      void listSkillSources(folder, selected)
-        .then((sources) => {
-          if (current) setListed(sources);
+      /* Jedna droga odczytu na sekcję (2026-09-07): kopie przyjeżdżają wierszem tej samej listy,
+         a nie drugą komendą. Zawężamy do zaznaczonych, bo odpowiedź niesie także wiersze, o które
+         ten panel nie pytał — sekcja Umiejętności czyta tę samą listę bez nazw. */
+      const wanted = new Set(selected);
+      void listSkills(folder, selected)
+        .then((skills) => {
+          if (current) setListed(skills.filter((one) => wanted.has(one.name)));
         })
         .catch((error: unknown) => {
           if (current) setSaid(why(error, 'The selected skill sources could not be read.'));
@@ -48,6 +52,10 @@ export function SkillSourcePicker({
       )}
       {listed.map((skill) => {
         const selected = value.skillSources?.[skill.name] ?? '';
+        /* Pola opcjonalne, bo Rust wypełnia kopie wyłącznie dla nazw, o które okno zapytało.
+           Ten panel zawsze pyta, więc pusta lista tutaj znaczy „nie ma z czego brać". */
+        const sources = skill.sources ?? [];
+        const requiresChoice = skill.requiresChoice ?? false;
         return (
           <div key={skill.name} className="stack" data-gap="1">
             <label className="label" htmlFor={`skill-source-${skill.name}`}>
@@ -65,25 +73,25 @@ export function SkillSourcePicker({
               }}
             >
               <option value="">
-                {skill.requiresChoice ? 'Choose a source' : 'Use the first matching source'}
+                {requiresChoice ? 'Choose a source' : 'Use the first matching source'}
               </option>
-              {skill.sources.map((source) => (
+              {sources.map((source) => (
                 <option key={source.path} value={source.path} disabled={!source.available}>
                   {source.path}
                 </option>
               ))}
             </select>
-            {skill.requiresChoice && selected === '' ? (
+            {requiresChoice && selected === '' ? (
               <p className="lead">Choose which copy of this skill to use.</p>
             ) : null}
             {selected !== '' &&
-            !skill.sources.some((source) => source.path === selected && source.available) ? (
+            !sources.some((source) => source.path === selected && source.available) ? (
               <p className="lead">
                 The saved source is unavailable in this project. Choose an available source before
                 running.
               </p>
             ) : null}
-            {skill.sources.length === 0 ? (
+            {sources.length === 0 ? (
               <p className="lead">No source for this skill was found.</p>
             ) : null}
             <details>
@@ -96,7 +104,7 @@ export function SkillSourcePicker({
                 Up to 10,000 entries, 1 MiB per file, and 5 MiB per skill. Missing resources and
                 links outside the skill folder are refused.
               </p>
-              {skill.sources.map((source) => (
+              {sources.map((source) => (
                 <p key={source.path} className="caption break-all">
                   {source.path} —{' '}
                   {source.available

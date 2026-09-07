@@ -60,7 +60,6 @@ list_host_material
 list_notes
 list_processes
 list_runs
-list_skill_sources
 list_skills
 list_triggers
 list_workflows

@@ -127,7 +127,9 @@ pub fn write_delivered(plugin: &Path, skills: &[ResolvedSkill]) -> io::Result<()
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/* `Deserialize` dołożone 2026-09-07: `SkillSource` jedzie od tego dnia w polu `InstalledWire`,
+ * a tamta struktura deserializuje się w testach granicy. */
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillSource {
     pub path: PathBuf,
