@@ -629,10 +629,19 @@ async fn two_lead_conversations_do_not_replace_each_others_frozen_resources()
             }
         }
     }
+    /* PO MIEJSCU, nie po pisowni: wskaźnik w historii rozmowy jest WZGLĘDNY, a fikstura skleja
+    go z surową ścieżką katalogu tymczasowego. Okno rozwiązuje korzeń projektu na wejściu
+    (`ipc::project_folder`), żeby cała aplikacja miała jedną pisownię, a `/var` na macOS jest
+    skrótem do `/private/var`. Pytanie tej asercji zostaje to samo: czy każdy dostarczony
+    pakiet ma trwały wskaźnik w historii swojej rozmowy. */
+    let same_place = |one: &std::path::Path| -> PathBuf {
+        std::fs::canonicalize(one).unwrap_or_else(|_error| one.to_path_buf())
+    };
+    let recorded: Vec<PathBuf> = recorded.iter().map(|one| same_place(one)).collect();
     assert!(
         paths
             .iter()
-            .all(|path| recorded.contains(&path.join("SKILL.md"))),
+            .all(|path| recorded.contains(&same_place(&path.join("SKILL.md")))),
         "a delivered bundle has no durable link to its conversation history"
     );
     Ok(())

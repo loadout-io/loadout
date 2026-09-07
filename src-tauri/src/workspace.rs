@@ -93,6 +93,23 @@ struct OpenTab {
     store: Arc<Store>,
 }
 
+/// Pisownia folderu, po której cała aplikacja poznaje, że to TEN katalog.
+///
+/// JEDEN RACHUNEK NA CAŁE REPO (niezmiennik 13). Liczą nim tożsamość karty
+/// ([`WorkspaceId::for_folder`]), brama folderu z okna (`ipc::project_folder`) i zapadka
+/// sprzątania po zamkniętym oknie. Do 2026-09-07 liczyła nim tylko pierwsza z tych trzech,
+/// przez co aplikacja miała DWIE pisownie tego samego projektu i nigdzie nie było zapisane,
+/// która jest prawdziwa: bieg budował ścieżki z pisowni podanej, a warstwa publikacji chodzi
+/// po komponentach z `O_NOFOLLOW` i odmawiała zapisu zdaniem „Not a directory".
+///
+/// **TOTALNA Z ROZMYSŁU** — powód w całości stoi przy [`WorkspaceId::for_folder`]: folder
+/// skasowany albo odmontowany w trakcie biegu przestaje się kanonikalizować, a klucz gorszy
+/// jest lepszy niż brak klucza.
+#[must_use]
+pub fn the_real_folder(folder: PathBuf) -> PathBuf {
+    folder.canonicalize().unwrap_or(folder)
+}
+
 /// Identyfikator workspace'a: **kanoniczna ścieżka folderu**, i nic więcej.
 ///
 /// Wyliczany, nie nadawany, i to jest cała jego treść: `~/Projects/meetnotes`,
@@ -124,11 +141,7 @@ impl WorkspaceId {
     /// Odmowa nad nieczytelnym folderem należy do otwierania karty, nie do tożsamości.
     #[must_use]
     pub fn for_folder(folder: &Path) -> Self {
-        Self(
-            folder
-                .canonicalize()
-                .unwrap_or_else(|_error| folder.to_path_buf()),
-        )
+        Self(the_real_folder(folder.to_path_buf()))
     }
 
     /// Kanoniczny folder tej karty.

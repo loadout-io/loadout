@@ -298,7 +298,12 @@ async fn two_terminals_of_one_folder_open_two_threads_through_the_live_road()
         opened.len()
     );
     assert!(
-        opened.iter().all(|spec| spec.cwd == bench.project.path()),
+        /* Katalog rozwiązany, nie surowa ścieżka fikstury: okno rozwiązuje korzeń projektu
+        na wejściu, żeby aplikacja miała jedną pisownię, a `/var` na macOS jest skrótem do
+        `/private/var`. Pytanie tej asercji nie zmienia się o jotę — czy rozmowa stanęła
+        w folderze, który podało okno. */
+        opened.iter().all(|spec| Some(spec.cwd.as_path())
+            == std::fs::canonicalize(bench.project.path()).ok().as_deref()),
         "a conversation stood somewhere other than the folder the window named. The folder \
          travels with the sentence; it is not a value picked on the other side. It opened: {:?}",
         opened

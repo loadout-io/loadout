@@ -261,7 +261,16 @@ async fn opening_a_folder_settles_what_the_last_window_left() -> Result<(), Box<
         .project_for(None)
         .await
         .map_err(|said| format!("the window could not even name its own folder: {said}"))?;
-    assert_eq!(asked, project, "project_for handed back the wrong folder");
+    /* TO SAMO MIEJSCE, nie ta sama pisownia. Katalog tymczasowy na macOS leży pod `/var`,
+    które jest skrótem do `/private/var`, a okno rozwiązuje korzeń projektu na wejściu
+    (`ipc::project_folder`), żeby cała aplikacja miała JEDNĄ pisownię. Porównanie z surową
+    ścieżką fikstury sądziłoby ten skrót, a nie to, o co pyta ta linia: czy okno stoi
+    w folderze, który mu podano. */
+    assert_eq!(
+        asked,
+        std::fs::canonicalize(project)?,
+        "project_for handed back the wrong folder"
+    );
 
     let settled = read(project, LEFT_OVER)?;
     assert_eq!(

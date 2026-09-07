@@ -1546,11 +1546,37 @@ async fn a_project_opened_through_a_link_still_uses_its_real_generated_children(
     let delivery = bench.one_delivery()?;
     let project_link = bench.home.path().join("project-link");
     std::os::unix::fs::symlink(bench.project.path(), &project_link)?;
+
+    /* PRZEZ TĘ SAMĄ BRAMĘ, CO OKNO, i to jest cała treść tego kryterium.
+    `ipc::project_folder` jest jedynym miejscem, którym folder wybrany przez człowieka wchodzi
+    do aplikacji, i jedynym, które wolno rozwiązać: pisownia projektu jest TOŻSAMOŚCIĄ —
+    zapadka sprzątania kluczuje nią folder, zapisane źródło umiejętności ją niesie, a katalog
+    biegu jest jego adresem. Rozwiązanie w połowie drogi daje dwie pisownie tego samego
+    projektu (zmierzone: osiem czerwieni w `RunDeps`, czternaście w budowniczym katalogu biegu).
+    Warstwa publikacji chodzi po komponentach z `O_NOFOLLOW`, więc bieg z pisownią zawierającą
+    skrót odmawiał zapisu zdaniem „Not a directory" jeszcze przed pierwszym procesem. */
+    let opened = loadout_lib::ipc::project_folder(Some(
+        project_link
+            .to_str()
+            .ok_or("the link path is not valid text")?,
+    ))?
+    .ok_or("a folder that was named came back as no choice at all")?;
+    assert_eq!(
+        opened,
+        std::fs::canonicalize(&project_link)?,
+        "the folder a person opened through a link did not resolve to the real one, so every \
+         path the run builds carries a spelling the publication layer refuses"
+    );
+    assert_ne!(
+        opened, project_link,
+        "the link was handed on untouched, so this case proves nothing about resolving it"
+    );
+
     let store = Store::open(&bench.db())?;
     let starts = Arc::new(AtomicUsize::new(0));
     let deps = RunDeps {
         home: bench.home.path(),
-        project: &project_link,
+        project: &opened,
         store: &store,
         drivers: counting_drivers(Arc::clone(&starts)),
         processes: std::sync::Arc::new(loadout_lib::commands::processes::Processes::new()),
@@ -1563,7 +1589,12 @@ async fn a_project_opened_through_a_link_still_uses_its_real_generated_children(
         return Err("a safe project-root link was mistaken for a replay".into());
     };
     assert_eq!(starts.load(Ordering::Acquire), 1);
-    assert!(report.dir.starts_with(&project_link));
+    assert!(
+        report.dir.starts_with(&opened),
+        "run directory {} does not sit under the project that was opened {}",
+        report.dir.display(),
+        opened.display()
+    );
     assert!(report.dir.join("run.json").is_file());
     Ok(())
 }
@@ -2087,15 +2118,39 @@ fn snapshot_tree(root: &Path) -> Result<TreeSnapshot, Box<dyn Error>> {
 }
 
 #[derive(Debug)]
+/// Katalog tymczasowy, którego `path()` oddaje pisownię ROZWIĄZANĄ.
+///
+/// Po co: katalog tymczasowy na macOS leży pod `/var`, które jest skrótem do `/private/var`,
+/// a lista kart i brama folderu nazywają MIEJSCE (`workspace::the_real_folder`). Ławka trzymająca
+/// pisownię surową modelowałaby więc aplikację, której nie ma: bieg wyzwalacza dostaje projekt
+/// z wiersza listy, czyli rozwiązany. Katalog żyje tak długo, jak ławka — `TempDir` jest tu
+/// wyłącznie po to, żeby posprzątać po teście.
+struct RealDir {
+    _keep: TempDir,
+    path: PathBuf,
+}
+
+impl RealDir {
+    fn new() -> Result<Self, Box<dyn Error>> {
+        let keep = TempDir::new()?;
+        let path = fs::canonicalize(keep.path())?;
+        Ok(Self { _keep: keep, path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 struct Bench {
     home: TempDir,
-    project: TempDir,
+    project: RealDir,
 }
 
 impl Bench {
     fn new() -> Result<Self, Box<dyn Error>> {
         let home = TempDir::new()?;
-        let project = TempDir::new()?;
+        let project = RealDir::new()?;
         fs::create_dir_all(home.path().join("triggers"))?;
         fs::create_dir_all(home.path().join("agents"))?;
         fs::create_dir_all(home.path().join("workflows"))?;

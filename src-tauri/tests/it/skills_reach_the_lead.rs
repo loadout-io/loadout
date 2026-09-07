@@ -123,7 +123,12 @@ async fn a_skill_in_this_repository_reaches_the_lead_as_a_plugin_dir() -> Result
         )
     })?;
     let plugin = Path::new(carried);
-    assert_eq!(plugin.parent(), Some(bench.plugins_root().as_path()));
+    /* Rozwiązany korzeń: okno liczy półki z pisowni rzeczywistej projektu, a katalog
+    tymczasowy na macOS leży pod skrótem `/var`. */
+    assert_eq!(
+        plugin.parent().map(std::path::Path::to_path_buf),
+        Some(std::fs::canonicalize(bench.plugins_root())?)
+    );
     let package = plugin.file_name().and_then(|name| name.to_str()).unwrap();
     assert!(
         Uuid::parse_str(package).is_ok(),

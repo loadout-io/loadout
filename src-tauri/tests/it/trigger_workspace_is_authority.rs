@@ -55,6 +55,11 @@ impl Bench {
         let workspace_b = home.path().join("workspace-b");
         fs::create_dir_all(workspace_a.join(".loadout"))?;
         fs::create_dir_all(&workspace_b)?;
+        /* PISOWNIA, KTÓRĄ ZNA CAŁA APLIKACJA. Lista kart nazywa MIEJSCE (`the_real_folder`),
+        a katalog tymczasowy na macOS leży pod `/var`, które jest skrótem do `/private/var`.
+        Ławka trzymająca surową ścieżkę sądziłaby ten skrót, a nie wyzwalacz. */
+        let workspace_a = fs::canonicalize(&workspace_a)?;
+        let workspace_b = fs::canonicalize(&workspace_b)?;
         fs::create_dir_all(home.path().join("workflows"))?;
         fs::write(home.path().join("workflows/ship.json"), WORKFLOW)?;
         workspaces::save_workspace_inner(home.path(), "Workspace A", path_text(&workspace_a)?)?;

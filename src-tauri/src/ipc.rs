@@ -773,7 +773,14 @@ impl AppState {
         }));
         Self {
             home,
-            project,
+            /* JEDNA PISOWNIA OD PIERWSZEJ CHWILI (2026-09-07). `project_for` bez folderu oddaje
+            to pole, a z folderem — wynik [`project_folder`], który skrót rozwiązuje. Dwie
+            gałęzie jednej funkcji dawały więc dwie pisownie tego samego projektu, a zapadka
+            sprzątania jest kluczowana ścieżką: pierwsze dotknięcie bez folderu i drugie
+            z folderem sprzątały ten sam katalog DWA razy, przez co bieg uruchomiony w międzyczasie
+            był spisywany na straty jako cudzy. Rachunek tożsamości jest jeden i stoi
+            w [`crate::workspace::WorkspaceId::for_folder`] (niezmiennik 13). */
+            project: crate::workspace::the_real_folder(project),
             store,
             drivers,
             generating: Mutex::new(std::collections::BTreeMap::new()),
@@ -1825,17 +1832,23 @@ impl AppState {
     /// ten folder już był" jest jedną instrukcją nad `BTreeSet`, a trzymanie go przez całe
     /// uzgodnienie zatrzymywałoby każdą inną komendę dotykającą projektu.
     async fn settle_what_the_last_window_left(&self, project: &std::path::Path) {
+        /* ZAPADKA SĄDZI MIEJSCE, NIE PISOWNIĘ (2026-09-07). Folder wchodzi tu dwiema drogami:
+        z pola tej struktury i z pliku listy kart, gdzie stoi tak, jak człowiek go kiedyś
+        wpisał. Dwie pisownie tego samego katalogu dawały dwa wpisy w zapadce, więc sprzątanie
+        biegło DWA razy — a drugi przebieg zastawał już bieg tej sesji i spisywał go na straty
+        jako porzucony przez kogoś innego. Ten sam rachunek, co w tożsamości karty. */
+        let project = crate::workspace::the_real_folder(project.to_owned());
         {
             let mut seen = self
                 .reconciled
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !seen.insert(project.to_path_buf()) {
+            if !seen.insert(project.clone()) {
                 return;
             }
         }
         let home = self.home.clone();
-        let at = project.to_path_buf();
+        let at = project.clone();
         let done = tokio::task::spawn_blocking(move || {
             /* ILE BIEGÓW ZOSTAJE, CZYTAMY Z PLIKU, NIE ZE STANU OKNA (2026-09, Z-9).
              *
@@ -2032,7 +2045,31 @@ pub fn project_folder(folder: Option<&str>) -> Result<Option<PathBuf>, String> {
         ));
     }
     match fs::metadata(&path) {
-        Ok(what) if what.is_dir() => Ok(Some(path)),
+        /* ROZWIĄZANY SKRÓT, JEDNA PISOWNIA NA CAŁĄ APLIKACJĘ (2026-09-07).
+         *
+         * `~/work` wskazujące na `~/Projects` jest najczęstszym wejściem, a tożsamość karty
+         * ([`crate::workspace::WorkspaceId::for_folder`]) rozwiązuje je od dawna. Bieg dostawał
+         * jednak pisownię PODANĄ — czyli aplikacja miała DWIE pisownie tego samego projektu
+         * i nigdzie nie było zapisane, która jest prawdziwa. Warstwa publikacji chodzi po
+         * komponentach z `O_NOFOLLOW`, więc projekt otwarty przez skrót odmawiał zapisu zdaniem
+         * „Not a directory" jeszcze przed pierwszym procesem.
+         *
+         * TO JEST TA BRAMA, i dlatego rozstrzygnięcie stoi tutaj. Folder z okna nie wchodzi do
+         * aplikacji żadną inną drogą (doc tej funkcji), więc jedno rozwiązanie karmi wszystko,
+         * co z projektu pochodzi: katalog biegu, katalog roboczy kroku, półki umiejętności
+         * i zapadkę sprzątania. Rozwiązanie w połowie drogi dałoby dwie pisownie i to jest
+         * zmierzone: osiem czerwieni przy rozwiązywaniu w `RunDeps`, czternaście przy
+         * rozwiązywaniu w budowniczym katalogu biegu.
+         *
+         * CZEGO TO NIE OSŁABIA: rozwiązujemy WYŁĄCZNIE korzeń, czyli wybór człowieka. Wszystko,
+         * co Loadout tworzy pod nim, dalej sądzi `prove_*` i `PublicationRoot::open`, które nie
+         * wchodzą w żadne dowiązanie — `t202_handoff_publication_is_durable`
+         * i `t202_atomic_definition_publication` zostają zielone.
+         *
+         * Funkcja totalna, ta sama reguła co w tożsamości karty: folder nieczytalny oddaje
+         * ścieżkę podaną. Odmowa nad nieczytelnym folderem należy do [`folder_access_refusal`],
+         * a nie do rozstrzygania ścieżki. */
+        Ok(what) if what.is_dir() => Ok(Some(crate::workspace::the_real_folder(path))),
         Ok(_) => Err(format!(
             "\"{folder}\" is a file, not a folder. Pick the folder your project lives in."
         )),

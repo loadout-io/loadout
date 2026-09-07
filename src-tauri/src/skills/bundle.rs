@@ -148,6 +148,22 @@ pub struct SkillSources {
     pub sources: Vec<SkillSource>,
 }
 
+/// Czy dwie ścieżki nazywają ten sam katalog na dysku.
+///
+/// Najpierw równość napisów, bo to jest odpowiedź na 99 wywołań ze 100 i nie dotyka dysku.
+/// Rozwiązanie obu stron dopiero potem, i wyłącznie po to, żeby dwie pisownie tego samego
+/// miejsca przestały być dwoma miejscami. Ścieżka, której nie da się rozwiązać, nie jest
+/// niczyim odpowiednikiem: brak katalogu ma odmówić tam, gdzie odmawiał do dziś.
+fn the_same_place(one: &Path, other: &Path) -> bool {
+    if one == other {
+        return true;
+    }
+    match (std::fs::canonicalize(one), std::fs::canonicalize(other)) {
+        (Ok(one), Ok(other)) => one == other,
+        _ => false,
+    }
+}
+
 /// Jawne źródło musi być jedną ze znanych półek TEGO projektu/użytkownika.
 pub fn resolve(roots: &Roots, name: &str, selected: Option<&Path>) -> io::Result<ResolvedSkill> {
     if !place::is_slug(name) {
@@ -155,12 +171,26 @@ pub fn resolve(roots: &Roots, name: &str, selected: Option<&Path>) -> io::Result
     }
     let candidates = place::shelves_of(roots, name);
     if let Some(selected) = selected {
-        if !candidates.iter().any(|candidate| candidate == selected) {
+        /* PORÓWNANIE PO MIEJSCU, ODCZYT PO PÓŁCE — i te dwie połowy są nierozdzielne.
+         *
+         * Zapis w pliku agenta jest ścieżką BEZWZGLĘDNĄ, więc równość napisów wiąże wybór
+         * z jedną pisownią projektu. Wystarczy, że korzeń zostanie rozwiązany na wejściu albo
+         * że człowiek przemianuje katalog, i zapisany wybór przestaje pasować do półki, która
+         * stoi dokładnie tam, gdzie stała.
+         *
+         * ZAPORA ZOSTAJE TAKA SAMA MOCNA: zbiór dopuszczonych wejść rośnie wyłącznie o ścieżki,
+         * które NAZYWAJĄ jedną ze znanych półek. Katalog spoza półek jest dalej odmawiany.
+         * Bajty czytamy z półki, którą rozpoznaliśmy, a nie ze ścieżki, którą podano — dzięki
+         * temu dowiązanie podmienione PO sprawdzeniu nie ma czego rozstrzygać. */
+        let Some(shelf) = candidates
+            .iter()
+            .find(|candidate| the_same_place(candidate, selected))
+        else {
             return Err(refusal(format!(
                 "The selected source for {name} is not a known skill folder in this project or library."
             )));
-        }
-        return from_source(name, selected);
+        };
+        return from_source(name, shelf);
     }
     let mut found = Vec::new();
     let mut first_error = None;

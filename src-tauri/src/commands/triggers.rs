@@ -1804,8 +1804,16 @@ pub fn claimed_workspace(home: &Path, claim: &TriggerClaim) -> Result<PathBuf, T
 }
 
 /// Sprawdza, że workspace został jawnie wybrany, nadal jest zarejestrowany i istnieje.
-/// Zwrócona ścieżka zachowuje dokładny zapis rejestru; nie kanonizujemy jej do innego aliasu,
-/// bo ten sam tekst jest trwałym identyfikatorem [`super::workspaces::WorkspaceWire`].
+///
+/// Zwrócona ścieżka zachowuje **dokładny zapis rejestru** i to się nie zmienia: ten sam tekst
+/// jest trwałym identyfikatorem [`super::workspaces::WorkspaceWire`], więc bierzemy go z wiersza
+/// listy, a nie z pola zapisanego w wyzwalaczu.
+///
+/// SZUKAMY PO MIEJSCU, NIE PO NAPISIE (2026-09-07). Plik wyzwalacza niesie pisownię z chwili,
+/// w której człowiek go zapisał, a lista kart od tego dnia nazywa miejsce (`the_real_folder`).
+/// Równość napisów odmawiałaby więc `WorkspaceNotRegistered` nad projektem, który stoi dokładnie
+/// tam, gdzie stał — czyli każdy wyzwalacz zapisany wcześniej przestałby się odpalać. Zapora nie
+/// słabnie: folder spoza listy dalej nie ma tu czego znaleźć.
 fn require_registered_workspace(
     home: &Path,
     workspace: Option<&str>,
@@ -1813,17 +1821,19 @@ fn require_registered_workspace(
     let workspace = workspace
         .filter(|value| !value.is_empty())
         .ok_or(TriggerError::MissingWorkspace)?;
-    let path = PathBuf::from(workspace);
-    if !path.is_absolute() {
+    let asked = PathBuf::from(workspace);
+    if !asked.is_absolute() {
         return Err(TriggerError::WorkspaceNotRegistered);
     }
+    let wanted = crate::workspace::the_real_folder(asked);
     let registered = super::workspaces::list_workspaces_inner(home)
         .map_err(|error| TriggerError::ReadWorkspaces(error.to_string()))?
         .into_iter()
-        .any(|entry| entry.id == workspace && entry.folder == workspace);
-    if !registered {
+        .find(|entry| entry.id == entry.folder && Path::new(&entry.folder) == wanted);
+    let Some(entry) = registered else {
         return Err(TriggerError::WorkspaceNotRegistered);
-    }
+    };
+    let path = PathBuf::from(entry.folder);
     if !path.is_dir() {
         return Err(TriggerError::WorkspaceFolderMissing);
     }

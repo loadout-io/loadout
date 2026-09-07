@@ -133,7 +133,31 @@ pub fn list_workspaces_inner(home: &Path) -> Result<Vec<WorkspaceWire>, Workspac
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(&text).map_err(WorkspaceError::Malformed)
+    let all: Vec<WorkspaceWire> = serde_json::from_str(&text).map_err(WorkspaceError::Malformed)?;
+    /* KLUCZEM JEST MIEJSCE, NIE PISOWNIA (2026-09-07), i to jest zarazem migracja odczytu.
+     *
+     * Wiersz zapisany przez wcześniejszą wersję niesie napis wpisany w oknie. Reszta aplikacji
+     * zna projekt wyłącznie po pisowni rozwiązanej (`ipc::project_folder`, `WorkspaceId`), więc
+     * bez tego przeliczenia karta dodana przez skrót jest dla wyzwalacza i dla zapadki biegu
+     * INNYM projektem: wyzwalacz odmawia `WorkspaceMismatch`, a drugi wiersz nad tym samym
+     * folderem czyta się jako karta wiecznie zajęta przez pierwszą.
+     *
+     * Rachunek jest ten sam, co w tożsamości karty, i jest TOTALNY: wpis wskazujący na folder,
+     * którego teraz nie ma — dysk zewnętrzny bez kabla — wraca dokładnie taki, jaki był.
+     * Powód stoi w doc tej funkcji: zniknięcie karty z przełącznika wygląda jak utrata pracy. */
+    Ok(all
+        .into_iter()
+        .map(|one| {
+            let folder = crate::workspace::the_real_folder(PathBuf::from(&one.folder))
+                .to_string_lossy()
+                .into_owned();
+            WorkspaceWire {
+                id: folder.clone(),
+                name: one.name,
+                folder,
+            }
+        })
+        .collect())
 }
 
 /// Dokłada workspace albo zmienia nazwę istniejącego, i oddaje listę po zapisie.
@@ -170,7 +194,11 @@ pub fn save_workspace_inner(
         });
     }
 
-    let key = folder.to_owned();
+    /* Ten sam rachunek, co przy odczycie: klucz nazywa MIEJSCE. Bez tego dwie pisownie jednego
+    folderu zakładają dwa wiersze, a każda inna część aplikacji widzi tylko jeden projekt. */
+    let key = crate::workspace::the_real_folder(path.clone())
+        .to_string_lossy()
+        .into_owned();
     let mut all = list_workspaces_inner(home)?;
     if let Some(had) = all.iter_mut().find(|one| one.folder == key) {
         name.clone_into(&mut had.name);
