@@ -3978,10 +3978,15 @@ pub async fn open_restored_folder(
 ) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let project = state.project_for(Some(folder)).await?;
-    let path = commands::result_restore::restored_folder(&project, Path::new(restored_folder))?;
-    app.opener()
-        .reveal_item_in_dir(path)
-        .map_err(|error| error.to_string())
+    let restored = PathBuf::from(restored_folder);
+    tokio::task::spawn_blocking(move || {
+        let path = commands::result_restore::restored_folder(&project, &restored)?;
+        app.opener()
+            .reveal_item_in_dir(path)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| did_not_finish("opening that restored folder", &error))?
 }
 
 /// Jedna produkcyjna krawędź przed wyborem projektu: komenda Tauri i sędzia podają tu te same

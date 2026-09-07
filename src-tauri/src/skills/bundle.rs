@@ -247,16 +247,27 @@ pub fn choices(
     }
 }
 
-pub fn from_source(name: &str, source: &Path) -> io::Result<ResolvedSkill> {
-    let bundle = Bundle::read(source)?;
-    let text = bundle.skill_text()?;
-    place::validate_usable(name, &place::read_doc(text))
-        .map_err(|problems| io::Error::new(io::ErrorKind::InvalidData, problems.join("; ")))?;
+/// Cudzy katalog przeczytany w całości i **nie** oceniony naszymi regułami autorskimi.
+///
+/// Borrow CYTUJE umiejętność gospodarza. Ekran wyboru pokazuje każdy katalog z `SKILL.md`
+/// (`inherit::scan::skills`), więc plik bez front-mattera jest tam normalnym wpisem, a nie
+/// awarią — a odmowa za brakujące `name:`/`description:` w CUDZYM repozytorium zabiera cały
+/// bieg za pole, którego tam nigdy nie było (niezmiennik 5). Kompletność rozstrzyga dalej
+/// `Bundle::read`: bez czytelnego `SKILL.md` nadal jest odmowa.
+pub fn borrowed_from_source(name: &str, source: &Path) -> io::Result<ResolvedSkill> {
     Ok(ResolvedSkill {
         name: name.to_owned(),
         source: source.to_path_buf(),
-        bundle,
+        bundle: Bundle::read(source)?,
     })
+}
+
+/// Ta sama lektura plus reguły autorskie — dla umiejętności, które Loadout POSIADA.
+pub fn from_source(name: &str, source: &Path) -> io::Result<ResolvedSkill> {
+    let skill = borrowed_from_source(name, source)?;
+    place::validate_usable(name, &place::read_doc(skill.bundle.skill_text()?))
+        .map_err(|problems| io::Error::new(io::ErrorKind::InvalidData, problems.join("; ")))?;
+    Ok(skill)
 }
 
 impl Bundle {

@@ -26,6 +26,7 @@
 //! tworzy katalogu" są **jedną** wiedzą o tym vendorze — a druga jej kopia byłaby pierwszą
 //! rzeczą, która zostanie stara (niezmiennik 23).
 
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -98,12 +99,30 @@ pub(crate) const LIBRARY_PLUGIN: &str = "loadout-skills";
 pub fn plugin_dir(project: &Path, selected: &[String], into: &Path) -> Result<Rewritten> {
     // WF-13: Borrow przenosi ten sam pełny katalog co biblioteka. Kopiowanie helpera
     // nie jest jego wykonaniem. Wszystkie źródła walidujemy przed pierwszym zapisem.
+    /// Nazwa spoza JEDNEGO katalogu nie wyznacza ani ścieżki czytanej u gospodarza, ani
+    /// pisanej u nas — i tego WF-13 słusznie odmawia.
+    const NOT_A_SINGLE_FOLDER: &str = "The selected skill name is not valid.";
+
     let mut carried = Vec::new();
     for name in selected {
-        let source = super::scan::skill_file(project, name)
-            .and_then(|file| file.parent().map(Path::to_path_buf))
-            .ok_or_else(|| io::Error::other("The selected skill name is not valid."))?;
-        carried.push(crate::skills::bundle::from_source(name, &source)?);
+        let file = super::scan::skill_file(project, name)
+            .ok_or_else(|| io::Error::other(NOT_A_SINGLE_FOLDER))?;
+        /* WYBRANA UMIEJĘTNOŚĆ, KTÓREJ U GOSPODARZA NIE MA, TO NORMALNY STAN CUDZEGO
+         * REPOZYTORIUM (niezmiennik 5), a nie awaria: człowiek mógł ją przed chwilą odznaczyć
+         * w innym narzędziu. Wypada z `carried`, więc i z `Rewritten::names` — a ODMOWĘ
+         * wystawia `wire::every_name_is_really_there`, bo tylko ona wie, co człowiek widział
+         * na ekranie wyboru.
+         *
+         * `scan::skill_file` SKŁADA ścieżkę i nie pyta o istnienie, więc bez tego pytania
+         * gospodarz bez `.claude/skills` wywracał cały zapis. Awaria dysku to co innego —
+         * o niej człowiek ma się dowiedzieć. */
+        match fs::symlink_metadata(&file) {
+            Ok(_) => (),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+        let source = file.parent().ok_or_else(|| io::Error::other(NOT_A_SINGLE_FOLDER))?;
+        carried.push(crate::skills::bundle::borrowed_from_source(name, source)?);
     }
 
     let rewritten = Rewritten {

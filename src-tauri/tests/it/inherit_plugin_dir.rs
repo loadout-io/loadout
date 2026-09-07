@@ -40,8 +40,8 @@ const ALPHA_MD: &str = "---\nname: alpha\ndescription: Reads a log and says what
 const BETA_MD: &str = "---\nname: beta\ndescription: Turns a failing gate into one sentence.\n---\n\nQuote the first failing assertion, not the summary line.\n";
 const GAMMA_MD: &str = "---\nname: gamma\ndescription: The one nobody picked.\n---\n\nThis file must not leave the host repository.\n";
 
-/// Plik dołączony **wewnątrz** wybranej umiejętności. Do katalogu pluginu jedzie sam
-/// `SKILL.md`, więc ten plik ma zostać u gospodarza — to jest nazwany koszt, nie przeoczenie.
+/// Plik dołączony **wewnątrz** wybranej umiejętności. Od WF-13 jedzie razem z `SKILL.md`:
+/// prompt odsyłający do pliku, którego przy nim nie ma, jest umiejętnością zepsutą po cichu.
 const ANTI_PATTERNS_MD: &str = "# Anti-patterns\n\nOne per line.\n";
 
 /// Hak gospodarza, w kształcie, który tam naprawdę jest: `0755` i dziesięciu takich w katalogu.
@@ -197,7 +197,12 @@ fn the_plugin_directory_holds_the_two_chosen_skills_byte_for_byte_and_nothing_el
     // (niezmiennik 21).
     let expected: BTreeSet<PathBuf> = [
         PathBuf::from(".claude-plugin").join("plugin.json"),
+        PathBuf::from("delivered-skills.json"),
         PathBuf::from("skills").join("alpha").join("SKILL.md"),
+        PathBuf::from("skills")
+            .join("alpha")
+            .join("references")
+            .join("anti-patterns.md"),
         PathBuf::from("skills").join("beta").join("SKILL.md"),
     ]
     .into_iter()
@@ -205,15 +210,33 @@ fn the_plugin_directory_holds_the_two_chosen_skills_byte_for_byte_and_nothing_el
     assert_eq!(
         files(&world.plugin),
         expected,
-        "the plugin directory does not hold exactly the manifest and the two chosen SKILL.md \
-         files. Every extra path here is a piece of someone else's harness inside our run"
+        "the plugin directory does not hold exactly the manifest, the frozen delivery record \
+         and the two chosen skills with what they carry. Every extra path here is a piece of \
+         someone else's harness inside our run"
     );
 
-    // (e) Trzy rzeczy wymienione z nazwy, bo komunikat porażki ma powiedzieć, KTÓRA weszła.
-    // Skrypt jest maszynerią z definicji; trzecia umiejętność nie została wybrana; dołączone
-    // pliki są nazwanym kosztem („Świadomie poza zakresem"), nie przeoczeniem.
+    /* Zasób dołączony wewnątrz wybranej umiejętności ma przyjechać CO DO BAJTA. Sama obecność
+     * ścieżki nie odróżnia skopiowanego pliku od pustego, a to jest różnica między działającą
+     * umiejętnością a promptem, który odsyła w nicość. */
+    let carried = world
+        .plugin
+        .join("skills")
+        .join("alpha")
+        .join("references")
+        .join("anti-patterns.md");
+    assert_eq!(
+        fs::read(&carried).expect("the carried resource is not on disk"),
+        ANTI_PATTERNS_MD.as_bytes().to_vec(),
+        "{} is not the bytes that lie in the host repository",
+        carried.display()
+    );
+
+    // (e) Dwie rzeczy wymienione z nazwy, bo komunikat porażki ma powiedzieć, KTÓRA weszła.
+    // Skrypt gospodarza jest maszynerią z definicji; trzecia umiejętność nie została wybrana.
+    // Pliki dołączone WEWNĄTRZ wybranej umiejętności jadą z nią (WF-13) — granicą jest katalog
+    // umiejętności, nie `.claude/`.
     let everything = tree(&world.plugin);
-    for forbidden in ["format.sh", "gamma", "references", "anti-patterns.md"] {
+    for forbidden in ["format.sh", "gamma"] {
         assert!(
             everything
                 .keys()
