@@ -270,6 +270,15 @@ const SUMMARY_LIMIT: usize = 120;
 /// Tura jest jedna naraz, więc jeden slot wystarczyłby — ale wynik, który nie ma gdzie wejść,
 /// zatrzymuje pętlę czytającą, a zatrzymana pętla wygląda dokładnie jak zawieszony agent.
 /// Zapas jest tańszy niż to rozróżnienie w zgłoszeniu błędu.
+///
+/// # Ta liczba NIE JEST limitem długości rozmowy (2026-09-07)
+///
+/// Do tego dnia była nim po cichu. Kolejka ma odbiorcę tylko wtedy, gdy ktoś woła `wait()`;
+/// rozmowa prowadzona [`Voice`] nie woła go ani razu, więc ósma tura zapełniała kolejkę,
+/// a dziewiąta zatrzymywała odczyt stdoutu w pół drogi — powód i cały incydent stoją przy
+/// [`AgentHandle::turn_endings_are_read_from_the_stream`]. Podniesienie tej liczby nie jest
+/// naprawą tamtego, tylko przesunięciem progu: bez odbiorcy każda skończona wartość jest
+/// za mała. Naprawą jest właściciel sesji, który mówi, że odbiornika tu nie ma.
 const TURNS_IN_FLIGHT: usize = 8;
 
 /// Cała tabela tłumaczenia polityki na flagi vendora — **jedna, w adapterze** (niezmiennik 23).
@@ -3009,6 +3018,13 @@ fn private_turns(prompt: &str, images: &ValidatedImages) -> Arc<Mutex<PrivateTur
 /// zatrzymuje wysyłkę, a wynik tury, który utknął za nim, wygląda jak zawieszony agent.
 /// Odwrotna kolejność kosztowałaby dokładnie to [T1 „Worth adding": wolny konsument opóźnia
 /// wyjście do 30 s].
+///
+/// 2026-09-07 — BŁĄD WYSYŁKI JEST TU NORMALNYM KOŃCEM, NIE PRZEOCZENIEM. `let _` stoi przy obu
+/// ujściach od pierwszego dnia i dopiero teraz ma pełną treść: właściciel sesji, który wyniki
+/// czyta ze zdarzeń, porzuca odbiornik kolejki
+/// ([`AgentHandle::turn_endings_are_read_from_the_stream`]), a wtedy TA wysyłka kończy się
+/// natychmiast błędem zamiast czekać na miejsce, którego nikt nigdy nie zwolni. Zdarzenie jedzie
+/// dalej niezmienione — bo to ono jest w tej sesji jedynym nośnikiem zakończenia tury.
 async fn emit(
     decoded: DecodedEvent,
     events: &mpsc::Sender<DecodedEvent>,
@@ -3067,7 +3083,14 @@ pub struct ClaudeHandle {
     capabilities: Arc<OnceLock<Vec<String>>>,
     /// Wyniki tur, w kolejności, w jakiej padły. Osobno od kanału zdarzeń, bo `wait()` musi je
     /// dostać także wtedy, gdy nikt nie czyta ekranu.
-    outcomes: mpsc::Receiver<Outcome>,
+    ///
+    /// `None` znaczy „w tej sesji nikt nie woła `wait()`" i jest jedyną obroną przed incydentem
+    /// z 2026-09-07: dopóki ten odbiornik żyje, pełna kolejka zatrzymuje pętlę czytającą stdout.
+    /// Stawia go tak **wyłącznie** właściciel sesji, przy jej starcie i raz
+    /// ([`AgentHandle::turn_endings_are_read_from_the_stream`]). Nigdzie indziej, a już na pewno
+    /// nie przy zamykaniu: anulowanie jest wartością, nie błędem (niezmiennik 7), i przychodzi
+    /// tędy PO `cancel()`.
+    outcomes: Option<mpsc::Receiver<Outcome>>,
     /// Czytniki sa polami uchwytu, nie odczepionymi zadaniami: `Dead` nie znaczy jeszcze EOF,
     /// flush ani `sync_all`, dopoki obu nie zbierzemy.
     reader: Option<tokio::task::JoinHandle<()>>,
@@ -3106,6 +3129,20 @@ impl ClaudeHandle {
         }
     }
 
+    /// Zbiera czytniki dowodów po dowiedzionym zejściu procesu.
+    ///
+    /// # Dlaczego to czekanie nie ma już jak zawisnąć (2026-09-07)
+    ///
+    /// Bo pętla czytająca stdout mogła stanąć tylko w jednym miejscu: na wysyłce wyniku tury do
+    /// kolejki [`AgentHandle::wait`]. Zdarza się to wyłącznie wtedy, gdy odbiornik tej kolejki
+    /// żyje i nikt z niego nie wyjmuje — czyli w rozmowie prowadzonej głosem, a ta odbiornik
+    /// porzuca przy starcie ([`AgentHandle::turn_endings_are_read_from_the_stream`]). Właściciel,
+    /// który `wait()` woła, ma naraz jedną turę, więc nie ma jak zapełnić ośmiu miejsc.
+    ///
+    /// **Odbiornika NIE porzucamy tutaj** i to jest treść, nie przeoczenie: anulowanie jest
+    /// wartością, nie błędem (niezmiennik 7), a `commands::run` odbiera je właśnie przez `wait()`
+    /// PO `cancel()`. Porzucony tutaj odbiornik zamieniałby „człowiek nacisnął Stop" w „sesja
+    /// nie ma komu odpowiedzieć".
     async fn finish_evidence(&mut self) {
         for task in [&mut self.reader, &mut self.complaints] {
             if let Some(task) = task.take()
@@ -3207,12 +3244,29 @@ impl AgentHandle for ClaudeHandle {
     }
 
     async fn wait(&mut self) -> anyhow::Result<Outcome> {
-        self.outcomes.recv().await.ok_or_else(|| {
+        let outcomes = self.outcomes.as_mut().ok_or_else(|| {
+            anyhow!(
+                "nothing is waiting for turns of session {}: this conversation reads what its \
+                 agent finished from the same events it shows on the screen",
+                self.session.id
+            )
+        })?;
+        outcomes.recv().await.ok_or_else(|| {
             anyhow!(
                 "session {} ended without ever saying how the turn went",
                 self.session.id
             )
         })
+    }
+
+    /// Ten uchwyt drugą kopię wyniku odkłada, więc ma ją tutaj przestać odkładać.
+    ///
+    /// Jedna linia, i jest nią porzucenie odbiornika: `mpsc` kończy każdą wysyłkę błędem, gdy
+    /// zniknie ostatni odbiornik — także tę, która już czeka na miejsce. Pętla czytająca ignoruje
+    /// ten błąd od pierwszego dnia (`emit`), więc od tej chwili nie ma jak stanąć na wyniku,
+    /// którego nikt nie odbiera. Cały powód stoi na traicie.
+    fn turn_endings_are_read_from_the_stream(&mut self) {
+        drop(self.outcomes.take());
     }
 
     /// Trzy stopnie, w tej kolejności i nigdy krócej [T1 §8.5].
@@ -3685,7 +3739,7 @@ impl ClaudeDriver {
             writer: Some(writer),
             hush: Some(hush),
             capabilities,
-            outcomes,
+            outcomes: Some(outcomes),
             reader: Some(reader),
             complaints,
             evidence: self.evidence.clone(),

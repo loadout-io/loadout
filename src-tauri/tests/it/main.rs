@@ -249,6 +249,7 @@ mod lead_controls_only_the_addressed_run;
 mod lead_evidence_is_durable;
 mod lead_finds_and_reads_project_history;
 mod lead_image_reaches_both_vendors;
+mod lead_keeps_answering_past_the_eighth_turn;
 mod lead_powers_match_the_argv;
 mod lead_reaches_loadouts_own_verbs;
 mod lead_reaches_the_library;
