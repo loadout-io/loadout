@@ -565,6 +565,13 @@ impl ServiceAccess {
                 .any(|grant| grant.operations.contains(&operation))
             {
                 let mut tool = json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":{"service":{"type":"object"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":4096},"window":{"type":"string"}},"additionalProperties":false}});
+                /* ADNOTACJA TYLKO DLA ODCZYTU (2026-09-08, CT-03a). Kształt bije
+                 * `bridge::verbs`, wspólnie z pozostałymi dwiema tabelami. Start, restart
+                 * i zatrzymanie zmieniają cudzy proces, więc nie dostaną jej nigdy: to jest
+                 * opis prawdy o czasowniku, a nie sposób na przejście przez zatwierdzanie. */
+                if operation == ServiceOperation::Read {
+                    tool["annotations"] = crate::bridge::verbs::read_only_hint();
+                }
                 if self.run_id.is_none() && operation != ServiceOperation::Read {
                     tool["description"] = json!(format!(
                         "{description} First use ask_the_person with this operation and exact service reference. Only its one-use approvalToken authorizes the change."

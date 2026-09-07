@@ -409,9 +409,15 @@ impl StepDesk {
             .and_then(|one| one.tools().as_array().cloned())
             .unwrap_or_default();
         if self.messages.is_some() {
-            tools.extend(super::verbs::message_tools().into_iter().map(
-                |one| json!({"name":one.name,"description":one.describe,"inputSchema":one.schema}),
-            ));
+            /* PRZEZ `Verb::listed`, a nie własnym `json!` (2026-09-08, CT-03a): definicja
+             * narzędzia powstaje w jednym miejscu, więc adnotacja o czasowniku tylko czytającym
+             * dojeżdża i tutaj. Bez niej `codex exec` odbija KAŻDE wywołanie kroku zdaniem
+             * o zatwierdzaniu — a to krok, nie lider, jest agentem biegu. */
+            tools.extend(
+                super::verbs::message_tools()
+                    .iter()
+                    .map(super::verbs::Verb::listed),
+            );
         }
         json!(tools)
     }
