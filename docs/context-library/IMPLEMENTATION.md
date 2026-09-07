@@ -120,9 +120,10 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | Etap | Bieg | Commit | RED | GREEN | CI przy lądowaniu | Koszt | Stan |
 |---|---|---|---|---|---|---|---|
 | CT-01 | `h-ct-01` | `a6113319` | mutacja, patrz §1a | 4 Rust + pełna suita frontu | **zielone, 523 s** | 55,17 USD | **WYLĄDOWANY** |
-| CT-02 | `h-ct-02` | — | mutacja CT-01 + 3 rundy weryfikatora | 13 Rust + 3 przeglądarkowe | — | 121,09 USD | **DZIALA**, 3 rundy, 1 h 49 min |
-| CT-03 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-04 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-02 | `h-ct-02` | `f65ed67c` | 3 rundy weryfikatora | 13 Rust + 3 przeglądarkowe | **zielone, 495 s** | 121,09 USD | **WYLĄDOWANY** |
+| CT-03a | `h-ct-03a` | `9b9439e0` | kontrola negatywna w suicie | **7 Rust** | **zielone, 697 s** | ~28 USD | **WYLĄDOWANY** |
+| CT-03b | `h-ct-03b` | — | — | — | — | — | **w toku** |
+| CT-04 | `h-ct-04` | — | — | — | — | — | **w toku** (plan przekroczył sufit 15 USD, wznowiony przy 45) |
 | CT-05 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-06 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-07 | — | — | — | — | — | — | nie rozpoczęty |
