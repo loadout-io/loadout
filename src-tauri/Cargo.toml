@@ -66,6 +66,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 tempfile = "3"
 
+# CT-02: dekodowanie obrazu biblioteki Context. Magiczne bajty mowia, ze plik UDAJE PNG-a;
+# dopiero prawdziwe dekodowanie mowi, ze da sie go odczytac i ile ma pikseli (sufit 16 Mpx).
+# `default-features = false` jest tu istotne: domyslnie skrzynia wciaga kilkanascie
+# dekoderow, z ktorych ten produkt nie obsluguje ani jednego poza tymi trzema (PLAN §2 —
+# GIF, HEIC i dokumenty Office sa poza zakresem dostawy).
+# 2026-09-07: `image` 0.25 STAL JUZ w Cargo.lock jako zaleznosc przechodnia Tauri, wiec ten
+# wpis nie dokłada nowej skrzyni do drzewa — dokłada tylko cechy `jpeg` i `webp`.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # tylko po stałe sygnałów
 # Bezpieczne `statvfs` dla progu dysku (T-208). Bez tego jedyną drogą jest `unsafe`,
