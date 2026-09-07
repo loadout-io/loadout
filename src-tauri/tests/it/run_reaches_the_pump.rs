@@ -152,10 +152,18 @@ async fn every_line_of_the_run_reaches_the_pump_in_order() -> Result<(), Box<dyn
     let glued = u64::try_from(delivered.len())?;
     let from_driver_wanted = usize::try_from(LINES)?;
 
+    /* BIEG MÓWI OD SIEBIE WIĘCEJ NIŻ JEDEN RODZAJ WIERSZA.
+     *
+     * WF-08 dokłada dwie krawędzie zdolności kroku do słuchania (`kind: "stepSession"`), więc
+     * „wszystko, co nie jest stanem kroku, przyszło od sterownika" przestało być prawdą. To ta
+     * sama decyzja, co przy poprzedniej zmianie tego pliku: poprawiamy PODZIAŁ, a nie stałą
+     * przepisaną z palca. Kurator zamienia `Said` jeden do jednego w `Line::Note`, więc to
+     * `note` jest rodzajem sterownika — a `note` wysłany przez sam bieg dalej pada na równości
+     * treści niżej. */
     let (mine, from_driver): (Vec<Json>, Vec<Json>) = delivered
         .iter()
         .cloned()
-        .partition(|row| row.get("kind").and_then(Json::as_str) == Some("stepState"));
+        .partition(|row| row.get("kind").and_then(Json::as_str) != Some("note"));
 
     // (a) Pompa oddała DOKŁADNIE tyle linii, ile bieg jej podał — ani jednej mniej.
     assert_eq!(
@@ -185,8 +193,14 @@ async fn every_line_of_the_run_reaches_the_pump_in_order() -> Result<(), Box<dyn
         stats.delivered,
         stats.dropped
     );
+    // „Dokładnie dwie zmiany stanu" liczymy dalej po `stepState`: kubełek `mine` niesie teraz
+    // także krawędzie zdolności słuchania.
+    let changes = mine
+        .iter()
+        .filter(|row| row.get("kind").and_then(Json::as_str) == Some("stepState"))
+        .count();
     assert_eq!(
-        mine.len(),
+        changes,
         2,
         "one step means exactly two state changes on the wire — running, then succeeded. \
          Anything else means the strip either never moves or moves on facts nobody produced. \

@@ -70,9 +70,6 @@ const A_CENT: f64 = 0.01;
 /// Ile pierwszy krok melduje, że wydał. Ponad sufit, żeby drugi krok został pominięty.
 const SPENT: f64 = 5.0;
 
-/// Ile czeka Stop, żeby paść w środku pracy pierwszego kroku, a nie przed nią.
-const BEFORE_THE_STOP: Duration = Duration::from_millis(80);
-
 const WORKFLOW: &str = r#"{
   "format": 1,
   "id": "wf_copy_does_not_outlive",
@@ -138,7 +135,7 @@ async fn a_copy_is_gone_after_a_run_that_worked() -> Result<(), Box<dyn Error>> 
         vec![StepState::Succeeded, StepState::Succeeded],
         "both steps have to finish, or nothing below is talking about a run that happened"
     );
-    nothing_is_left(&bench, &report);
+    nothing_is_left(&bench, &report)?;
     Ok(())
 }
 
@@ -155,7 +152,7 @@ async fn a_copy_is_gone_after_a_step_that_failed() -> Result<(), Box<dyn Error>>
          above it. It ended as {:?}",
         report.steps[0]
     );
-    nothing_is_left(&bench, &report);
+    nothing_is_left(&bench, &report)?;
     Ok(())
 }
 
@@ -174,7 +171,7 @@ async fn a_copy_is_gone_after_the_spend_limit_stopped_the_run() -> Result<(), Bo
          path it exists for. It ended as {:?}",
         report.steps[1]
     );
-    nothing_is_left(&bench, &report);
+    nothing_is_left(&bench, &report)?;
     Ok(())
 }
 
@@ -194,7 +191,7 @@ async fn a_copy_is_gone_after_a_person_pressed_stop() -> Result<(), Box<dyn Erro
          an ordinary run. It came back {:?}",
         report.outcome
     );
-    nothing_is_left(&bench, &report);
+    nothing_is_left(&bench, &report)?;
     Ok(())
 }
 
@@ -216,7 +213,7 @@ async fn a_copy_is_gone_after_a_step_ran_out_of_time() -> Result<(), Box<dyn Err
          It ended as {:?}",
         report.steps[0]
     );
-    nothing_is_left(&bench, &report);
+    nothing_is_left(&bench, &report)?;
     Ok(())
 }
 
@@ -291,27 +288,63 @@ fn run_folder(report: &RunReport) -> Result<&str, Box<dyn Error>> {
 /// Drugie zdanie jest tu równie ważne, co pierwsze: bieg wyczyszczony w całości zabiera
 /// strumienie agentów, przekazania i cały opis, czyli historię, którą człowiek otwiera w oknie.
 /// Sprzątamy kopie robocze, a nie bieg.
-fn nothing_is_left(bench: &Bench, report: &RunReport) {
-    for key in [FIRST, SECOND] {
-        let copy = report.dir.join(WORK).join(key);
-        assert!(
-            !copy.exists(),
-            "the folder the step worked in is still on disk at {}. It holds a copy of the whole \
-             project, it is left behind by every single run, and until this change nothing in the \
-             app could take it away: not the end of the run, not opening the folder, not a button",
-            copy.display()
-        );
-    }
+fn nothing_is_left(bench: &Bench, report: &RunReport) -> Result<(), Box<dyn Error>> {
+    let past = read_run_inner(bench.project.path(), run_folder(report)?)?;
+
+    /* KOPIA ZE ZMIANĄ ZOSTAJE — I MUSI BYĆ NAZWANA TAM, GDZIE OKNO CZYTA.
+     *
+     * Krok pracujący w kopii folderu bez repozytorium nie ma innego nośnika swojej pracy: nie ma
+     * gałęzi, nie ma commita. Kasowanie tej kopii niszczyło więc wynik, a nie śmieć. Sierotą jest
+     * katalog, który został i o którym nikt nic nie powiedział. */
+    let kept = report.dir.join(WORK).join(FIRST);
+    assert!(
+        kept.exists(),
+        "the only copy of this step's work was removed with the run: {}",
+        kept.display()
+    );
+    let named = past
+        .result_folders
+        .iter()
+        .find(|one| one.work_key == FIRST)
+        .ok_or_else(|| {
+            format!(
+                "the copy at {} outlived its run and the run record says nothing about it.                  Nobody looks for what nothing mentioned",
+                kept.display()
+            )
+        })?;
+    assert_eq!(
+        named.path,
+        kept,
+        "the run names a folder other than the one on disk, so the button in the window opens          somewhere else"
+    );
+    assert_eq!(
+        named.state, "changed",
+        "the copy outlived its run without being a checked result of the step ({} said {}).          Only work Loadout could verify may stay",
+        kept.display(),
+        named.state
+    );
+
+    /* KOPIA BEZ ZMIAN SCHODZI — to jest zdanie, dla którego ten plik powstał. */
+    let gone = report.dir.join(WORK).join(SECOND);
+    assert!(
+        !gone.exists(),
+        "an unchanged copy of the whole project is still on disk at {}. It is left behind by          every single run, and nothing in the app takes it away: not the end of the run, not          opening the folder, not a button",
+        gone.display()
+    );
+    assert!(
+        !past.result_folders.iter().any(|one| one.work_key == SECOND),
+        "an unchanged copy was announced as a result of the run"
+    );
+
     assert!(
         report.dir.join("run.json").exists(),
-        "the record of the run went away with the copies. The copies are ours; the record is the \
-         history a person opens in the window"
+        "the record of the run went away with the copies. The copies are ours; the record is the          history a person opens in the window"
     );
     assert!(
         bench.project.path().join("notes.txt").exists(),
-        "the person's own file in the project folder is gone. Clearing away our copies must never \
-         reach outside our own folder"
+        "the person's own file in the project folder is gone. Clearing away our copies must never          reach outside our own folder"
     );
+    Ok(())
 }
 
 // ── dubler ────────────────────────────────────────────────────────────────────────────────
@@ -356,14 +389,20 @@ fn unseal_the_folder(cwd: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn fake_drivers(habit: Habit) -> Drivers {
-    let driver: Arc<dyn AgentDriver> = Arc::new(Fake { habit });
+fn fake_drivers(habit: Habit, wrote: Arc<tokio::sync::Notify>) -> Drivers {
+    let driver: Arc<dyn AgentDriver> = Arc::new(Fake { habit, wrote });
     Arc::new(move |_vendor| Arc::clone(&driver))
 }
 
 #[derive(Debug)]
 struct Fake {
     habit: Habit,
+    /// Dzwoni, gdy pierwszy krok NAPRAWDĘ zapisał swoją pracę.
+    ///
+    /// Stop czekający na zegarze mierzył raz jedną stronę polityki, raz drugą — zależnie od
+    /// obciążenia maszyny. Kryterium, które po cichu dryfuje między dwoma pytaniami, nie
+    /// odpowiada na żadne.
+    wrote: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait]
@@ -399,8 +438,15 @@ impl AgentDriver for Fake {
              * zapisu do katalogu, w którym on leży, a nie do samego pliku. Na PUSTYM katalogu
              * `remove_dir_all` by przeszedł, bo `rmdir` pyta już katalog WYŻEJ, nietknięty. */
             seal_the_folder(&spec.cwd)?;
-        } else {
+        } else if spec.cwd.ends_with(FIRST) {
+            /* PISZE WYŁĄCZNIE PIERWSZY KROK — i to jest cały sens tej ławki.
+             *
+             * Polityka ma dwie strony i obie muszą być zmierzone na KAŻDEJ drodze zejścia:
+             * kopia, w której krok coś zmienił, ZOSTAJE (bo bez repozytorium jest jedynym
+             * nośnikiem jego pracy), a kopia, w której nie zmienił nic, SCHODZI. Gdyby oba
+             * kroki pisały, druga strona nie byłaby sądzona nigdzie. */
             fs::write(spec.cwd.join(MADE), "this is what the step produced")?;
+            self.wrote.notify_one();
         }
         let session = SessionRef {
             vendor: VENDOR,
@@ -518,11 +564,12 @@ impl Bench {
         stop: Option<RunControl>,
     ) -> Result<RunReport, Box<dyn Error>> {
         let control = stop.clone().unwrap_or_default();
+        let wrote = Arc::new(tokio::sync::Notify::new());
         let deps = RunDeps {
             home: self.home.path(),
             project: self.project.path(),
             store,
-            drivers: fake_drivers(habit),
+            drivers: fake_drivers(habit, Arc::clone(&wrote)),
             processes: Arc::new(loadout_lib::commands::processes::Processes::new()),
             control,
         };
@@ -554,9 +601,10 @@ impl Bench {
                 },
                 async {
                     let Some(control) = stop else { return };
-                    // W ŚRODKU PRACY, nie przed nią: Stop, który pada przed pierwszym krokiem,
-                    // mierzy bieg, który nigdy nie założył ani jednego katalogu.
-                    tokio::time::sleep(BEFORE_THE_STOP).await;
+                    // W ŚRODKU PRACY, nie przed nią, i to sądzone SKUTKIEM, a nie zegarem:
+                    // czekamy, aż pierwszy krok naprawdę zapisze swoją pracę. Stop, który pada
+                    // wcześniej, mierzy bieg, który nie zdążył założyć ani jednego katalogu.
+                    wrote.notified().await;
                     control.stop();
                 }
             );

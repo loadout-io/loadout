@@ -353,6 +353,13 @@ const LOGS_DIR: &str = "logs";
 /// twierdziłaby, że agent pracował i nic nie powiedział.
 const NOT_NEEDED: &str = "Not needed: the work already passed in an earlier try.";
 
+/// Podsumowanie rundy pętli, której ciało w tej rundzie NIE WYKONAŁO SIĘ ANI RAZU.
+///
+/// Inne zdanie niż [`NOT_NEEDED`], bo inny fakt: tamto mówi „praca już przeszła", to mówi
+/// „nie było czego sądzić". Człowiek czytający `run.json` musi je odróżnić, bo drugie znaczy,
+/// że sufit wydatku albo cudza porażka zatrzymały implementera przed pierwszym słowem.
+const NOTHING_RAN: &str = "Nothing to check: the step before this one never ran.";
+
 /// Katalog, pod którym powstają własne kopie plików dla kroków `fresh-copy`.
 const WORK_DIR: &str = "work";
 
@@ -12331,6 +12338,45 @@ impl Live {
                 step.not_run_because = Some(why);
                 step.end_cause = Some(super::run_inputs::EndCause::LoopSettled);
                 step.summary = Some(NOT_NEEDED.to_owned());
+            });
+            return self.finish_this_step(id, StepReport::Succeeded).await;
+        }
+
+        /* RUNDA, KTÓREJ CIAŁO NIE RUSZYŁO ANI RAZU, NIE MA CZEGO SĄDZIĆ.
+         *
+         * WF-04 słusznie zdjęło pytanie o diff Gita: wynikiem pętli bywa sam tekst, więc krok,
+         * który odpowiedział i nie tknął plików, dalej idzie pod sędziego. Ale krok, który
+         * W TEJ RUNDZIE NIE WYKONAŁ SIĘ WCALE — bo zatrzymał go sufit wydatku albo cudza
+         * porażka — nie zostawił ani tekstu, ani plików. Sędzia postawiony nad taką rundą pyta
+         * o pustkę, odpowiada `fail` i otwiera rundę następną; a pod przekroczonym sufitem
+         * kolejne rundy jadą stożkiem `carry-on` i płacą JUŻ PO tym, jak skończyły się
+         * pieniądze. Zmierzone na wyroczni T-149: 46,25 USD przy sufcie 8,00 USD.
+         *
+         * PYTAMY O FAKT WYKONANIA, NIE O PLIKI, więc warunek jest ŚCIŚLE WĘŻSZY niż dawne
+         * `nothing_to_judge`: żaden krok, który naprawdę ruszył, nie traci przez to sędziego.
+         *
+         * STOI POD `not_run_because`, NIE NAD NIM, i to jest cała różnica: rundy pętli, która
+         * domknęła się po prawdziwym `pass`, mają zachować dzisiejsze „loop settled at try N",
+         * a nie to zdanie. Nad blokiem ta gałąź przewracała pięć zielonych kryteriów
+         * (`runcmd_loop`, `loop_judges_results_without_file_changes`). */
+        let empty_round = self
+            .judging(&self.plan.steps[id])
+            .and_then(|(which, the_loop)| {
+                let turn = self.plan.steps[id].turn;
+                let body: Vec<StepId> = self.nodes_of(&the_loop.entry, turn).collect();
+                // Zamek księgi powstaje i ginie tutaj, bez ani jednego `await` (niezmiennik 8).
+                let book = self.book();
+                let nothing_ran =
+                    !body.is_empty() && body.iter().all(|&at| !book.steps[at].execution.executed);
+                nothing_ran.then_some((which, turn))
+            });
+        if let Some((which, turn)) = empty_round {
+            // Pętla domyka się na TEJ rundzie: dalsze próby pytałyby o tę samą pustkę.
+            self.settle(which, turn);
+            self.update(|book| {
+                let step = &mut book.steps[id];
+                step.end_cause = Some(super::run_inputs::EndCause::LoopSettled);
+                step.summary = Some(NOTHING_RAN.to_owned());
             });
             return self.finish_this_step(id, StepReport::Succeeded).await;
         }
