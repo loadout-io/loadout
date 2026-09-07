@@ -359,3 +359,68 @@ fn git(project: &Path, args: &[&str]) -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+/// Plik, który człowiek sam ZACOMMITOWAŁ, nie jest jego sekretem — a filtr prywatności
+/// kasował go z każdej świeżej kopii.
+///
+/// # Co się działo
+///
+/// `.env.example` jest jednym z najpospolitszych plików w repozytoriach: szablon konfiguracji,
+/// celowo opublikowany przez autora. Filtr, który ma nie wynosić `.env` z sekretami, wycinał go
+/// razem z resztą. Kopia kroku jest drzewem roboczym odbitym od `HEAD`, więc brak śledzonego
+/// pliku czytał się w niej jako USUNIĘCIE — i bieg commitował to usunięcie na swoją gałąź.
+/// Filtr prywatności kasował więc człowiekowi śledzony plik, po cichu i w każdym biegu.
+///
+/// # Czego to kryterium NIE osłabia
+///
+/// Prawdziwy `.env` z sekretami nie jest w gicie śledzony — po to stoi w `.gitignore` — więc
+/// dalej nie wchodzi do kopii. Sądzimy tu obie strony naraz: śledzony szablon WCHODZI,
+/// nieśledzony sekret NIE WCHODZI.
+#[test]
+fn a_committed_env_template_survives_the_copy_and_a_real_secret_does_not()
+-> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let project = home.path().join("project");
+    let run_dir = home.path().join("run");
+    fs::create_dir_all(&project)?;
+    fs::create_dir_all(&run_dir)?;
+
+    let git = |args: &[&str]| -> Result<(), Box<dyn Error>> {
+        let done = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&project)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()?;
+        assert!(done.status.success(), "git {args:?}: {done:?}");
+        Ok(())
+    };
+    git(&["init", "--quiet"])?;
+    fs::write(project.join(".env.example"), "API_KEY=put-yours-here\n")?;
+    fs::write(project.join("main.rs"), "fn main() {}\n")?;
+    fs::write(project.join(".gitignore"), ".env\n")?;
+    git(&["add", "."])?;
+    git(&["commit", "--quiet", "-m", "first"])?;
+    // Prawdziwy sekret: NIEŚLEDZONY, bo tak trzyma go każdy.
+    fs::write(project.join(".env"), "API_KEY=this-is-real\n")?;
+
+    let captured = loadout_lib::commands::input_snapshot::capture_selected(&project, &run_dir, &[])?;
+    let inside: Vec<&Path> = captured.entries().keys().map(PathBuf::as_path).collect();
+
+    assert!(
+        inside.contains(&Path::new(".env.example")),
+        "a committed .env.example was cut out of the run's input. The copy is a work tree taken \
+         from HEAD, so a tracked file missing from it reads as a DELETION — and the run commits \
+         that deletion to its own branch. The privacy filter would be deleting the person's own \
+         file. Files in the snapshot: {inside:?}"
+    );
+    assert!(
+        !inside.contains(&Path::new(".env")),
+        "an untracked .env reached the run's input. That is the file this filter exists for: it \
+         holds the person's real secrets and must never travel into a step's copy. \
+         Files in the snapshot: {inside:?}"
+    );
+    Ok(())
+}

@@ -290,7 +290,21 @@ fn selected_paths(
     } else {
         available_paths(project)?.into_keys().collect()
     };
-    paths.retain(|path| !private_input(path));
+    /* PLIK, KTORY CZLOWIEK SAM ZACOMMITOWAL, NIE JEST JEGO SEKRETEM.
+     *
+     * Filtr prywatnosci ma nie wynosic `.env` z sekretami do kopii kroku i to zostaje. Ale
+     * `tracked_paths` oddaje pliki SLEDZONE PRZEZ GITA, a wsrod nich stoi bardzo pospolity
+     * `.env.example` — szablon, ktory autor repozytorium celowo opublikowal. Wycinany razem
+     * z reszta znikal z kazdej swiezej kopii, a poniewaz kopia jest drzewem roboczym odbitym
+     * od HEAD, jego brak czytal sie jako USUNIECIE — i bieg commitowal to usuniecie na swoja
+     * galaz. Czyli filtr prywatnosci kasowal czlowiekowi sledzony plik.
+     *
+     * W repozytorium git prywatny jest wiec wylacznie plik NIESLEDZONY. Folder bez repozytorium
+     * nie ma czym tego rozstrzygnac, wiec tam filtr zostaje bez zmian: `.env` wymaga jawnego
+     * wyboru przez `additional`. */
+    if !is_git {
+        paths.retain(|path| !private_input(path));
+    }
     for one in preview_additional_inputs(project, additional)?.files {
         paths.insert(one.path);
     }

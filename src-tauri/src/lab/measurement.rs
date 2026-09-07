@@ -52,7 +52,13 @@ impl MeasurementDefinition {
     pub fn valid_for(&self, workflow_id: &str) -> bool {
         self.schema == 1
             && format!("eval:{}", self.set.id) == workflow_id
-            && self.set.format == super::CURRENT
+            // ZAKRES, NIE ROWNOSC — tak, jak sadzi to `file::why_it_would_not_hold` (file.rs:217)
+            // i odczyt pliku (file.rs:129, odrzuca wylacznie format WIEKSZY niz biezacy).
+            // Rownosc znaczyla, ze kazdy zestaw zapisany przed podniesieniem `CURRENT` z 1 na 2
+            // przestaje byc oceniany: swiezo zakonczony pomiar melduje na ekranie „Criteria
+            // snapshot unavailable" i ZERO zaliczonych, mimo ze bieg przeszedl. Format 2 dolozyl
+            // wylacznie pole z `#[serde(default)]`, wiec zestaw w formacie 1 jest kompletny.
+            && (1..=super::CURRENT).contains(&self.set.format)
             && self.set.why_it_cannot_run().is_none()
             && file::why_it_would_not_hold(&self.set).is_none()
             && !self.graph_digest.is_empty()

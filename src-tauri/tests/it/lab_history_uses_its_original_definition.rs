@@ -105,6 +105,24 @@ async fn measure_then_change(change: &str) -> Result<(), Box<dyn Error>> {
     }))?;
     let path = file::path_for(&project, &set.id);
     file::save(&set, &path, None)?;
+    /* FIKSTURA MA MOWIC PRAWDE O TYM, CO LEZY NA DYSKU.
+     *
+     * Powyzej deklarujemy `"format":1`, ale `file::save` podnosi format do biezacego przy
+     * zapisie — wiec bez tej linii ten przypadek NIGDY nie sadzil zestawu zapisanego wczesniej,
+     * tylko swiezy. A to jest dokladnie stan, ktory ma kazdy czlowiek na dysku: zestaw zapisany
+     * zanim `CURRENT` poszlo w gore, czytany (odczyt odrzuca wylacznie format WIEKSZY niz
+     * biezacy) i nigdy od tamtej pory nieprzepisany. Przy rownosci w `valid_for` taki zestaw
+     * przestawal byc oceniany: pomiar melduje „Criteria snapshot unavailable" i ZERO zaliczonych,
+     * mimo ze bieg przeszedl — a asercja `(passed, judged) == (1, 1)` nizej to lapie. */
+    let raw = fs::read_to_string(&path)?;
+    fs::write(
+        &path,
+        raw.replacen(
+            &format!("\"format\": {}", loadout_lib::lab::CURRENT),
+            "\"format\": 1",
+            1,
+        ),
+    )?;
     let planned = plan_a_run_inner(&project, &set.id, 2)?;
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let drivers: Drivers = Arc::new(|_| Arc::new(Fixture));
