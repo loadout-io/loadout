@@ -373,10 +373,30 @@ beforeAll(async () => {
    * uruchomieniem i przepisuje `import()` na `__vite_ssr_dynamic_import__`, którego w
    * przeglądarce nie ma. Zmierzone: taki rozgrzew wywalał się w karcie i — obsłużony po cichu —
    * wyglądał na wykonany. Znacznik z adresem jedzie do strony jako napis i tej podmiany nie ma. */
-  await warm.page.addScriptTag({
-    type: 'module',
-    url: '/src/sections/context/pdf-preparation.ts',
-  });
+  /* 2026-09-08 — TEN ROZGRZEW WYWRACAŁ SIĘ O WŁASNY SKUTEK, i to jest cała treść tej pętli.
+   * Ściągnięcie sterownika każe vite'owi zoptymalizować `pdfjs-dist`, a odkrycie nowej
+   * zależności wymusza PRZEŁADOWANIE strony — czyli `Execution context was destroyed`
+   * dokładnie w wywołaniu, które to przeładowanie wywołało. Pod małym obciążeniem reload
+   * trafiał już po powrocie z `addScriptTag` i nikt tego nie widział; w pełnej suicie, gdzie
+   * ośmiu workerów trzyma po chromium, trafiał w środku i przewracał CAŁY plik — 2100 testów
+   * zielonych, jeden plik czerwony (zmierzone przy lądowaniu CT-02).
+   *
+   * Druga próba jest tania i wystarcza: po pierwszej zależność jest już zoptymalizowana, więc
+   * drugiego przeładowania nie ma. Milczącego `catch` tu nie ma z rozmysłu — gdy obie próby
+   * padną, plik ma się przewrócić z prawdziwym powodem, bo wtedy nie chodzi już o reload. */
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await warm.page.addScriptTag({
+        type: 'module',
+        url: '/src/sections/context/pdf-preparation.ts',
+      });
+      break;
+    } catch (error) {
+      const destroyed = String(error).includes('Execution context was destroyed');
+      if (attempt >= 1 || !destroyed) throw error;
+      await warm.page.waitForLoadState('domcontentloaded');
+    }
+  }
   await warm.close();
 }, 180_000);
 
