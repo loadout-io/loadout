@@ -240,9 +240,41 @@ nie zero. Luka bez pokrycia zostaje `not-tested` i **blokuje** deklarację gotow
 | §0 pomiar App Servera | `not-tested` — pierwsza rzecz w WP-03 |
 | **WP-01** | **WYLĄDOWANY** (`3a83d1ce`), CI zielone 759 s. Codex, 2 rundy, 35 min, **10 testów**. Mutacja: propozycja modelu wpuszczona jako zatwierdzone wymaganie → właściwy test padł. |
 | **WP-04a** | **WYLĄDOWANY**, CI zielone 596 s. Codex, **1 runda, 17 min**, 6 testów, mutacja zabiła dokładnie 2 właściwe. Poprawka `cap()` z §8 zlecenia. |
-| WP-02 | czeka na CT-05 (format pliku workflow ustala się **raz**) |
-| WP-03 | czeka na CT-03b |
+| **WP-02** | **WYLĄDOWANY**, CI zielone 505 s. Codex, 3 rundy + naprawa ręczna, **9 testów Rusta + 7 frontu**. |
+| **WP-03** | **WYLĄDOWANY**, CI zielone. Codex, 3 rundy + naprawa ręczna, **8 testów** (w tym dowód mutacyjny na identyfikatorach z panelu). |
 | WP-05…WP-07 | czekają na CT-06…CT-09 |
+
+### Format pliku workflow — liczba wyprowadzona, nie wybrana
+
+WP-02 rozstrzygnął to, przed czym ostrzegało §10 zlecenia („nie zakładaj, że format 2
+automatycznie chroni dwie niezależnie dodane funkcje"). W `workflow/file.rs` stoją dziś:
+
+```rust
+pub const CURRENT: u32 = 1;              // co zachowuje ZWYKŁY dokument
+pub const CONTEXT_FORMAT: u32 = 2;       // czego wymaga dokument z Context
+pub const PLAN_FORMAT: u32 = 3;          // czego wymaga dokument z Planem
+pub const HIGHEST_SUPPORTED: u32 = PLAN_FORMAT;
+```
+
+Dokument dostaje **najwyższy format, którego naprawdę potrzebuje**. Gdyby Plan wymagał
+dwójki, build znający Context, ale nie Plan, przyjąłby taki dokument i wykonał go
+**ignorując Plan** — po cichu inaczej, niż chciał człowiek.
+
+**Skutek uboczny, złapany dopiero pełnym CI:** `workflow_load_forward` zaszywał `"format": 3`
+jako „plik z przyszłości", więc podniesienie sufitu odebrało mu przesłankę. Liczba jest tam
+teraz liczona jako `HIGHEST_SUPPORTED + 1` i podniesie się sama przy każdym kolejnym formacie.
+
+### Trzy zatrzymania biegu, wszystkie z tej samej przyczyny
+
+CT-04, CT-05 i WP-02 zatrzymały się po trzech rundach, a **za każdym razem kod był poprawny**.
+Czerwony był lint albo formatter, który **zabija kompilację całego celu `it`** — wtedy
+`rust-test` melduje „POMINIETY" i **ani jeden napisany test nie biegnie**, więc weryfikator
+słusznie mówi „żaden punkt akceptacji nie ma dowodu wykonania". Naprawa zajmowała minuty,
+bieg tracił na tym trzy rundy.
+
+Najczęstsze: brak `#![allow(clippy::expect_used)]` w nowym module testowym (mają go wszyscy
+sąsiedzi), asercja nad samymi stałymi, blok wokół literału struktury w domknięciu.
+Dopisane do promptów CT-07 i CT-08 razem z komendą do uruchomienia przed zgłoszeniem.
 
 ### Jak WP-01 rozwiązał najtrudniejsze wymaganie zlecenia
 
