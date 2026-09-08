@@ -392,12 +392,16 @@ impl Messages {
 pub(crate) struct StepDesk {
     pub services: Option<Arc<ServiceAccess>>,
     pub messages: Option<Messages>,
+    pub context: Option<super::context::ContextDesk>,
+    pub plan: Option<super::work_plan::PlanDesk>,
 }
 impl fmt::Debug for StepDesk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StepDesk")
             .field("messages", &self.messages.is_some())
             .field("services", &self.services.is_some())
+            .field("context", &self.context.is_some())
+            .field("plan", &self.plan.is_some())
             .finish()
     }
 }
@@ -409,9 +413,21 @@ impl StepDesk {
             .and_then(|one| one.tools().as_array().cloned())
             .unwrap_or_default();
         if self.messages.is_some() {
-            tools.extend(super::verbs::message_tools().into_iter().map(
-                |one| json!({"name":one.name,"description":one.describe,"inputSchema":one.schema}),
-            ));
+            /* PRZEZ `Verb::listed`, a nie własnym `json!` (2026-09-08, CT-03a): definicja
+             * narzędzia powstaje w jednym miejscu, więc adnotacja o czasowniku tylko czytającym
+             * dojeżdża i tutaj. Bez niej `codex exec` odbija KAŻDE wywołanie kroku zdaniem
+             * o zatwierdzaniu — a to krok, nie lider, jest agentem biegu. */
+            tools.extend(
+                super::verbs::message_tools()
+                    .iter()
+                    .map(super::verbs::Verb::listed),
+            );
+        }
+        if let Some(context) = &self.context {
+            tools.extend(context.tools().as_array().into_iter().flatten().cloned());
+        }
+        if let Some(plan) = &self.plan {
+            tools.extend(plan.tools().as_array().into_iter().flatten().cloned());
         }
         json!(tools)
     }
@@ -427,6 +443,23 @@ impl Answers for StepDesk {
                 || Answer::Refused("Messages are not enabled for this step.".to_owned()),
                 |one| one.answer(&call),
             );
+        }
+        if super::context::is_context_tool(&call.call) {
+            return match &self.context {
+                Some(context) => context.answer(call).await,
+                None => Answer::Refused(
+                    "Context is not available to this step. Nothing from another step was read."
+                        .to_owned(),
+                ),
+            };
+        }
+        if call.call == "read_plan" {
+            return match &self.plan {
+                Some(plan) => plan.answer(call).await,
+                None => Answer::Refused(
+                    "A plan version is not available to this step. Nothing was read.".to_owned(),
+                ),
+            };
         }
         match &self.services {
             Some(services) => services.answer(call).await,

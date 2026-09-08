@@ -441,6 +441,16 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     if let Err(message) = workflow.additional_inputs() {
         notes.push(problem(None, message));
     }
+    if let Err(message) = super::context::validate(workflow) {
+        notes.push(problem(None, message));
+    }
+    notes.extend(super::work_plan::notes(
+        workflow,
+        match when {
+            When::Saving => super::work_plan::When::Saving,
+            When::Running => super::work_plan::When::Running,
+        },
+    ));
     for step in &workflow.steps {
         if let Step::Agent(agent) = step
             && let Err(error) =

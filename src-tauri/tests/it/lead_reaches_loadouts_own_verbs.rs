@@ -75,6 +75,10 @@ fn value_of(answer: Answer) -> Value {
         Answer::Refused(said) => {
             panic!("the verb refused, and this criterion needs it to work: {said}")
         }
+        /* 2026-09-08 (CT-03a) — `Answer` niesie od tego dnia także obraz. Ramię jest JAWNE,
+         * a nie `_`, bo czwarty wariant ma przewrócić ten plik, a nie wpaść tu w ciszy. Żaden
+         * czasownik lidera obrazu nie oddaje. */
+        Answer::Image { mime, .. } => panic!("this verb answers with facts, never a {mime}"),
     }
 }
 
@@ -230,6 +234,7 @@ async fn starting_a_workflow_nobody_has_names_the_ones_they_do() -> Result<(), B
             );
         }
         Answer::Ok(value) => panic!("a workflow nobody has must never start: {value}"),
+        Answer::Image { mime, .. } => panic!("this verb answers with facts, never a {mime}"),
     }
     Ok(())
 }
@@ -350,6 +355,7 @@ async fn a_verb_nobody_has_is_refused_by_name() -> Result<(), Box<dyn Error>> {
              from a verb Loadout does not have, so it repeats the same call. It said: {said}"
         ),
         Answer::Ok(value) => panic!("a verb nobody has must never answer: {value}"),
+        Answer::Image { mime, .. } => panic!("this verb answers with facts, never a {mime}"),
     }
     Ok(())
 }
@@ -513,6 +519,7 @@ async fn a_question_that_loses_its_channel_gets_a_sentence_and_never_silence()
              long as the app lives, and no line anywhere says why"
         ),
         Answer::Ok(value) => panic!("nobody answered, so this must not read as an answer: {value}"),
+        Answer::Image { mime, .. } => panic!("this verb answers with facts, never a {mime}"),
     }
     Ok(())
 }

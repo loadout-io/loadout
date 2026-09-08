@@ -215,17 +215,21 @@ fn judge_refusal(
     );
 
     let mut visible = false;
+    // 2026-09-08 — komunikat POKAZUJE, co naprawde stanelo pod Readerem. Gole „nie bylo takiej
+    // linii" kazalo zgadywac, czy zdanie sie zmienilo, czy linia w ogole nie powstala.
+    let mut problems = Vec::new();
     while let Some(line) = lines.try_next() {
-        if line.kind() == LineKind::Problem
-            && line.agent() == READER_NAME
-            && line.text() == sentence
-        {
-            visible = true;
+        if line.kind() == LineKind::Problem && line.agent() == READER_NAME {
+            problems.push(line.text().to_owned());
+            if line.text() == sentence {
+                visible = true;
+            }
         }
     }
     assert!(
         visible,
-        "the tampered handoff was not a Problem line under Reader with the sentence {sentence:?}"
+        "the tampered handoff was not a Problem line under Reader with the sentence {sentence:?}; \
+         the Problem lines under Reader were: {problems:?}"
     );
 
     let folder = report

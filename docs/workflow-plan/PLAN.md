@@ -1,6 +1,6 @@
 # Wspólny plan między krokami — plan wykonawczy
 
-Zlecenie: wspólny plan workflow, etapy WP-01…WP-07.
+Zlecenie: [`CLAUDE-HANDOFF.md`](CLAUDE-HANDOFF.md) — wspólny plan workflow, etapy WP-01…WP-07.
 Ten plik jest **planem wykonania**, wymaganym przez §13 zlecenia: rzeczywiste ścieżki,
 zależności od etapów Context (CT) i test dla każdego etapu.
 
@@ -238,5 +238,16 @@ nie zero. Luka bez pokrycia zostaje `not-tested` i **blokuje** deklarację gotow
 |---|---|
 | §0 pomiar Codeksa | **zrobiony** — droga MCP dla mutacji zamknięta, wybrana droga kandydata w pliku |
 | §0 pomiar App Servera | `not-tested` — pierwsza rzecz w WP-03 |
-| WP-01 | gotowy do odpalenia, nie zależy od Contextu |
-| WP-02…WP-07 | czekają na etapy CT z tabeli w §1 |
+| **WP-01** | **WYLĄDOWANY** (`3a83d1ce`), CI zielone 759 s. Codex, 2 rundy, 35 min, **10 testów**. Mutacja: propozycja modelu wpuszczona jako zatwierdzone wymaganie → właściwy test padł. |
+| **WP-04a** | **WYLĄDOWANY**, CI zielone 596 s. Codex, **1 runda, 17 min**, 6 testów, mutacja zabiła dokładnie 2 właściwe. Poprawka `cap()` z §8 zlecenia. |
+| WP-02 | czeka na CT-05 (format pliku workflow ustala się **raz**) |
+| WP-03 | czeka na CT-03b |
+| WP-05…WP-07 | czekają na CT-06…CT-09 |
+
+### Jak WP-01 rozwiązał najtrudniejsze wymaganie zlecenia
+
+„Model może zaproponować wymaganie, ale nie może oznaczyć go jako zatwierdzone przez
+człowieka" (§4) nie zostało zrobione **sprawdzeniem**, tylko **strukturą**:
+`ProposedRequirement` nie ma pól `origin` ani `status` **w ogóle**, a `deny_unknown_fields`
+zamyka drogę na skróty. Model nie może nadać sobie autorytetu, bo nie ma go gdzie wpisać —
+to jest mocniejsze niż walidator, który trzeba pamiętać wywołać.

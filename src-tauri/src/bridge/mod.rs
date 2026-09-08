@@ -25,11 +25,13 @@
 //! ktokolwiek zadawał 2-3 pytania, wszystko zależy od analiz i potrzeb" — i ta sama reguła, co
 //! D7 („domyślnie: nic").
 
+pub mod context;
 pub mod host;
 pub mod library;
 pub(crate) mod messages;
 pub mod serve;
 pub mod verbs;
+pub mod work_plan;
 
 use std::io::{self, Write as _};
 use std::path::Path;
@@ -137,6 +139,26 @@ pub enum Answer {
     /// sam. Enum z drutu ani kod błędu nigdy nie trafia na ekran (niezmiennik 14).
     #[serde(rename = "error")]
     Refused(String),
+    /// Obraz, który model ma ZOBACZYĆ.
+    ///
+    /// # 2026-09-08 (CT-03a) — dlaczego osobny wariant, a nie obiekt w [`Answer::Ok`]
+    ///
+    /// Bo `Ok` jedzie do modelu przez `serve::text_of`, czyli jako ładnie sformatowany JSON.
+    /// Obraz podany tamtędy dociera jako TEKST z base64 w środku — nigdy jako obraz — i nie
+    /// wolno tego nazwać obsługą obrazu. Rodzaj obrazu jedzie razem z bajtami, bo vendor bez
+    /// niego porzuca blok **w ciszy**, a z zewnątrz wygląda to jak model, który nie chciał
+    /// popatrzeć.
+    ///
+    /// Wariant stoi NA KOŃCU i jest dołożony addytywnie (niezmiennik 25): enum ma zewnętrzny tag
+    /// i jedzie pod `#[serde(flatten)]` w [`Reply`], więc każda zmiana kolejności albo nazwy
+    /// istniejącego wariantu byłaby zmianą linii, którą obie strony mostu już wysyłają.
+    #[serde(rename = "image")]
+    Image {
+        /// Bajty obrazu w base64, znak w znak takie, jakie podała aplikacja.
+        data: String,
+        /// Rodzaj obrazu, w kluczu `mimeType` po stronie protokołu.
+        mime: String,
+    },
 }
 
 /// Odpowiedź razem z identyfikatorem pytania, którego dotyczy — **jedna linia na gnieździe**.

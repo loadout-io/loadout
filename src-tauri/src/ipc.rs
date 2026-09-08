@@ -479,6 +479,14 @@ pub struct AppState {
     /// workflow, a Stop workflow nie ma prawa zabić generowania. Token per operacja, nigdy
     /// globalny bool — bool przecieka między operacjami (niezmiennik 7).
     generating: Mutex<std::collections::BTreeMap<String, tokio_util::sync::CancellationToken>>,
+    /// Budowania Context kluczowane operacją. Generacja rozstrzyga spóźnioną odpowiedź,
+    /// a token zatrzymuje wyłącznie to jedno budowanie (niezmiennik 7).
+    ///
+    /// `std::sync::Mutex` jest brany tylko do jednego lookup/insert/remove i nigdy przez
+    /// `await` (niezmiennik 8). Brak dowodu śmierci zostawia wpis, bo wolnego miejsca nad
+    /// żywym agentem nie wolno ogłosić (niezmienniki 6, 11).
+    building: Mutex<std::collections::BTreeMap<String, (tokio_util::sync::CancellationToken, u64)>>,
+    build_generation: AtomicU64,
     /// Foldery, ktorych biegi ta sesja juz uzgodnila z tym, co naprawde zyje na maszynie.
     ///
     /// 2026-08-23 — RAZ NA FOLDER NA SESJE, i oba slowa sa tu wazne. „Raz", bo uzgodnienie
@@ -784,6 +792,8 @@ impl AppState {
             store,
             drivers,
             generating: Mutex::new(std::collections::BTreeMap::new()),
+            building: Mutex::new(std::collections::BTreeMap::new()),
+            build_generation: AtomicU64::new(0),
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
             slots,
             live,
@@ -814,6 +824,10 @@ impl AppState {
     /// zatrzymanie któregoś biegu się nie udało — czyli dokładnie wtedy, kiedy sprzątanie po nim
     /// jest do czegoś potrzebne.
     pub async fn close_everything_down(&self) {
+        /* 2026-09-08 (CT-04) — budowanie Context nie jest biegiem workflow, więc jego uchwyty
+         * nie stoją w `live`. Bez osobnego wezwania zamknięcie okna zostawiałoby czytającego
+         * agenta pod PID 1 mimo poprawnego sprzątania wszystkich biegów. */
+        self.stop_context_builds_before_closing().await;
         /* KAŻDY ŻYWY FOLDER, nie jeden uchwyt: od 2026-08-28 zapadka biegu jest kluczowana
          * workspace'em, więc dwa foldery mogą mieć swoje biegi w tej samej chwili. Wyjście
          * sięgające do jednego z nich zostawiłoby drugi żywy pod PID 1 — dokładnie tę sierotę,
@@ -1449,6 +1463,137 @@ impl AppState {
             .remove(operation)
         {
             cancel.cancel();
+        }
+    }
+
+    fn begin_context_build_in(
+        &self,
+        set_id: &str,
+        operation: &str,
+        app: Option<crate::library::agents::Vendor>,
+        model: Option<&str>,
+    ) -> Result<(tokio_util::sync::CancellationToken, u64), String> {
+        let library = crate::context::files::library_root(&self.home);
+        let mut building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
+        let already_building = building.keys().any(|owned| {
+            crate::context::build::read_build(&library, set_id, Some(owned))
+                .ok()
+                .flatten()
+                .is_some_and(|state| {
+                    matches!(
+                        state.end,
+                        crate::context::BuildEnd::Running | crate::context::BuildEnd::StillRunning
+                    )
+                })
+        });
+        if already_building {
+            return Err(
+                "This context is already being built. Stop it before starting another build."
+                    .to_owned(),
+            );
+        }
+        if building.contains_key(operation) {
+            return Err("That build is already in use. Try again with a new action.".to_owned());
+        }
+        let generation = self.build_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let read =
+            crate::context::files::read_set(&library, set_id).map_err(|error| error.to_string())?;
+        let request = commands::context_build::BuildContextRequest {
+            set_id: set_id.to_owned(),
+            operation_id: operation.to_owned(),
+            app,
+            model: model.map(str::to_owned),
+            generation,
+            deadline: Duration::from_mins(crate::context::limits::BUILD_MINUTES),
+            budget_usd: None,
+        };
+        let shown_app = match app {
+            Some(crate::library::agents::Vendor::Codex) => "codex",
+            Some(crate::library::agents::Vendor::ClaudeCode) | None => "claude-code",
+        };
+        let state = crate::context::build::initial_state(
+            &request,
+            shown_app,
+            read.set.draft_revision,
+            String::new(),
+            Vec::new(),
+            &commands::now_utc(),
+        );
+        // 2026-09-08 (CT-04) — zapis stoi POD tym samym krótkim zamkiem co insert. Dzięki temu
+        // następny Start tego zestawu widzi albo oba fakty (plik i właściciela), albo żaden;
+        // samo późniejsze `build_context_inner` zostawiało okno dwóch równoległych budowań.
+        crate::context::build::write_state(&library, &state).map_err(|error| error.to_string())?;
+        building.insert(operation.to_owned(), (cancel.clone(), generation));
+        Ok((cancel, generation))
+    }
+
+    fn context_build_owner_in(&self, set_id: &str) -> Option<(String, u64)> {
+        let library = crate::context::files::library_root(&self.home);
+        let operation = crate::context::build::read_build(&library, set_id, None)
+            .ok()
+            .flatten()?
+            .operation_id;
+        self.building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&operation)
+            .map(|(_, generation)| (operation, *generation))
+    }
+
+    fn context_build_cancel_in(
+        &self,
+        operation: &str,
+    ) -> Option<(tokio_util::sync::CancellationToken, u64)> {
+        self.building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(operation)
+            .cloned()
+    }
+
+    fn finish_context_build_in(&self, operation: &str, generation: u64, release: bool) {
+        if release {
+            let mut building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
+            if building
+                .get(operation)
+                .is_some_and(|(_, current)| *current == generation)
+            {
+                building.remove(operation);
+            }
+        }
+    }
+
+    async fn stop_context_builds_before_closing(&self) {
+        let cancels = self
+            .building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|(cancel, _)| cancel.clone())
+            .collect::<Vec<_>>();
+        for cancel in cancels {
+            cancel.cancel();
+        }
+        let until = Instant::now() + Duration::from_secs(15);
+        while !self
+            .building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+            && Instant::now() < until
+        {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if !self
+            .building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+        {
+            tracing::error!(
+                "closing anyway: a context build may still be running after its stop request"
+            );
         }
     }
 
@@ -2941,7 +3086,23 @@ pub async fn delete_workflow(
 #[tauri::command]
 pub async fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
     match tokio::task::spawn_blocking(move || {
-        commands::workflows::check_workflow_inner(&crate::loadout_dir(), workflow)
+        let mut notes = commands::workflows::check_workflow_inner(&crate::loadout_dir(), &workflow);
+        let plan_problems =
+            crate::workflow::work_plan::notes(&workflow, crate::workflow::work_plan::When::Running);
+        /* Zapis musi przyjąć nieukończony szkic, ale lista obok Startu nie może nazywać tej
+         * samej przeszkody tylko ostrzeżeniem. Podmieniamy poziom uwagi z tego samego resolvera,
+         * zamiast utrzymywać drugą odpowiedź o grafie w komendzie okna (2026-09-08, WP-02). */
+        for problem in plan_problems {
+            if let Some(note) = notes
+                .iter_mut()
+                .find(|note| note.step_id == problem.step_id && note.message == problem.message)
+            {
+                *note = problem;
+            } else {
+                notes.push(problem);
+            }
+        }
+        notes
     })
     .await
     {
@@ -3488,6 +3649,114 @@ pub async fn forget_runs_older_than(
         .map_err(|error| did_not_finish("forgetting the runs older than that", &error))
 }
 
+/// Uruchamia jedno budowanie i trzyma jego własność aż do udowodnionego końca.
+#[tauri::command]
+pub async fn build_context(
+    state: State<'_, AppState>,
+    set_id: String,
+    operation_id: String,
+    app: Option<crate::library::agents::Vendor>,
+    model: Option<String>,
+) -> Result<crate::context::ContextBuildRead, String> {
+    let (cancel, generation) =
+        state.begin_context_build_in(&set_id, &operation_id, app, model.as_deref())?;
+    // 2026-09-08 — TEN ODCZYT SZEDL NA WATKU, NA KTORYM TAURI ZAWOLALO KOMENDE, i ten sam
+    // watek niesie Stop, linie biegu w drodze na ekran oraz kazdy zapis do indeksu. Reszta tej
+    // komendy jest `async`, wiec zostal wylacznie ten jeden synchroniczny dotyk dysku — i tylko
+    // on wystarczyl, zeby `no_command_freezes_the_window` wskazal ja po imieniu.
+    let home = state.home.clone();
+    let budget_usd = tokio::task::spawn_blocking(move || {
+        commands::settings::read_settings_inner(&home)
+            .ok()
+            .map(|settings| settings.default_budget_usd)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the spending limit", &error))?;
+    let request = commands::context_build::BuildContextRequest {
+        set_id,
+        operation_id: operation_id.clone(),
+        app,
+        model,
+        generation,
+        deadline: Duration::from_mins(crate::context::limits::BUILD_MINUTES),
+        budget_usd,
+    };
+    let result = commands::context_build::build_context_inner(
+        &state.home,
+        &state.project,
+        &state.drivers,
+        &state.slots,
+        &request,
+        &cancel,
+    )
+    .await;
+    let remains_in_use = result.as_ref().is_ok_and(|view| {
+        view.build
+            .as_ref()
+            .is_some_and(|build| build.end == crate::context::BuildEnd::StillRunning)
+    });
+    state.finish_context_build_in(&operation_id, generation, !remains_in_use);
+    result.map_err(|error| error.to_string())
+}
+
+/// Czyta postęp z `state.json`, nie z pamięci zamontowanej karty.
+#[tauri::command]
+pub async fn read_context_build(
+    state: State<'_, AppState>,
+    set_id: String,
+) -> Result<crate::context::ContextBuildRead, String> {
+    let live = state.context_build_owner_in(&set_id);
+    commands::context_build::read_context_build_inner(
+        &state.home,
+        &state.drivers,
+        &set_id,
+        live.as_ref()
+            .map(|(operation, generation)| (operation.as_str(), *generation)),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Stop celuje w jedną operację i czeka na zapisany dowód jej końca.
+#[tauri::command]
+pub async fn stop_context_build(
+    state: State<'_, AppState>,
+    set_id: String,
+    operation_id: String,
+) -> Result<crate::context::ContextBuild, String> {
+    let (cancel, generation) = state
+        .context_build_cancel_in(&operation_id)
+        .ok_or_else(|| "That context build is not running now.".to_owned())?;
+    let result = commands::context_build::stop_context_build_inner(
+        &state.home,
+        &set_id,
+        &operation_id,
+        &cancel,
+    )
+    .await;
+    let remains_in_use = result
+        .as_ref()
+        .is_ok_and(|build| build.end == crate::context::BuildEnd::StillRunning);
+    state.finish_context_build_in(&operation_id, generation, !remains_in_use);
+    result.map_err(|error| error.to_string())
+}
+
+/// Korekta idzie blokująco na dysk, ale publikacja pozostaje poza wątkiem okna.
+#[tauri::command]
+pub async fn save_context_revision(
+    state: State<'_, AppState>,
+    set_id: String,
+    edit: crate::context::RevisionEdit,
+) -> Result<crate::context::ContextBuildRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_build::save_context_revision_inner(&home, &set_id, &edit)
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that context version", &error))?
+    .map_err(|error| error.to_string())
+}
+
 /// Wszystkie gotowe zestawy biblioteki Context.
 ///
 /// # Cztery skorupy, jeden korzeń
@@ -3518,6 +3787,32 @@ pub async fn read_context_set(
         .await
         .map_err(|error| did_not_finish("opening that context set", &error))?
         .map_err(|error| error.to_string())
+}
+
+/// 2026-09-08 (CT-05): jeden parser daje ten sam wybór pickerowi i Startowi, poza wątkiem okna.
+#[tauri::command]
+pub async fn resolve_workflow_context(
+    state: State<'_, AppState>,
+    workflow: crate::workflow::WorkflowFile,
+) -> Result<commands::workflow_context::WorkflowContextView, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::workflow_context::resolve_workflow_context_inner(&home, &workflow)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading this workflow's context", &error))?
+}
+
+/// 2026-09-08 (WP-02): ten sam resolver zasila panel i mapę zamrażaną przed Startem.
+#[tauri::command]
+pub async fn resolve_workflow_plan(
+    workflow: crate::workflow::WorkflowFile,
+) -> Result<commands::workflow_plan::WorkflowPlanView, String> {
+    tokio::task::spawn_blocking(move || {
+        commands::workflow_plan::resolve_workflow_plan_inner(&workflow)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading this workflow's plan", &error))
 }
 
 /// Nowy zestaw pod nazwą, którą wpisał człowiek.
@@ -3560,6 +3855,111 @@ pub async fn save_context_draft(
     })
     .await
     .map_err(|error| did_not_finish("saving that context set", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił.
+///
+/// # Cztery kolejne skorupy, ten sam korzeń
+///
+/// Tak jak czwórka wyżej, biorą `state.home` i nic poza nim. Różnica jest jedna i wynika
+/// z rodzaju pracy: te cztery kopiują pliki, dekodują obrazy i publikują strony, więc `home`
+/// jedzie do puli blokującej razem z całą robotą — komenda bez `async` biegnie na wątku, na
+/// którym rysuje się okno, a kopiowanie 50 MiB zamraża je na cały ten czas
+/// (`no_command_freezes_the_window`).
+///
+/// `items` niesie ścieżki plików ALBO wklejone bajty. Ścieżki, bo okno nie ma po co czytać
+/// pliku, którego i tak nie zobaczy; bajty, bo schowka nie da się otworzyć z Rusta.
+#[tauri::command]
+pub async fn import_context_sources(
+    state: State<'_, AppState>,
+    set_id: String,
+    operation_id: String,
+    items: Vec<crate::context::sources::ImportItem>,
+    expected_revision: Option<String>,
+) -> Result<crate::context::sources::ImportReport, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::import_context_sources_inner(
+            &home,
+            &set_id,
+            &operation_id,
+            expected_revision,
+            items,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("adding those files to that context set", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Zatwierdza jedną przygotowaną stronę dokumentu.
+///
+/// Strona niesie numer operacji i odcisk pliku, bo TO są dwie rzeczy, które rozstrzygają, czy
+/// wolno ją przyjąć: wynik poprzedniego importu, który dotarł po następnym, ma trafić do swojej
+/// operacji, a nie do tej, która akurat trwa (PLAN §5).
+#[tauri::command]
+pub async fn complete_context_source_preparation(
+    state: State<'_, AppState>,
+    set_id: String,
+    source_id: String,
+    page: crate::context::sources::PreparedPage,
+    expected_revision: Option<String>,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::complete_context_source_preparation_inner(
+            &home,
+            &set_id,
+            &source_id,
+            &page,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("preparing that file", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Kawałek zatwierdzonego źródła do podglądu — miniatura, strona albo początek tekstu.
+///
+/// **Adresem jest identyfikator ŹRÓDŁA, nigdy ścieżka od okna** (PLAN §12). Ścieżka podana przez
+/// webview byłaby drogą do dowolnego pliku na dysku człowieka, przebraną za podgląd.
+#[tauri::command]
+pub async fn read_context_source(
+    state: State<'_, AppState>,
+    set_id: String,
+    source_id: String,
+    page: Option<u32>,
+) -> Result<crate::context::sources::SourcePart, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::read_context_source_inner(&home, &set_id, &source_id, page)
+    })
+    .await
+    .map_err(|error| did_not_finish("opening that file", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Zdejmuje źródło z zestawu.
+#[tauri::command]
+pub async fn remove_context_source(
+    state: State<'_, AppState>,
+    set_id: String,
+    source_id: String,
+    expected_revision: Option<String>,
+) -> Result<crate::context::ContextSetRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_sources::remove_context_source_inner(
+            &home,
+            &set_id,
+            &source_id,
+            expected_revision.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("taking that file out of the set", &error))?
     .map_err(|error| error.to_string())
 }
 
@@ -5158,6 +5558,7 @@ macro_rules! every_command_the_window_can_call {
             apply_eval_fix,
             apply_setup,
             author_skill,
+            build_context,
             check_agent_apps,
             check_trigger,
             check_workflow,
@@ -5165,6 +5566,7 @@ macro_rules! every_command_the_window_can_call {
             compare_import_copies,
             continue_run,
             answer_checkpoint,
+            complete_context_source_preparation,
             copy_diagnostics,
             create_context_set,
             create_eval_set,
@@ -5188,6 +5590,7 @@ macro_rules! every_command_the_window_can_call {
             set_result_kept,
             forget_runs_older_than,
             forget_what_the_old_runs_left,
+            import_context_sources,
             install_skill,
             interrupt_the_lead,
             list_agents,
@@ -5215,12 +5618,17 @@ macro_rules! every_command_the_window_can_call {
             put_eval_case,
             put_eval_variant,
             put_note_to_use,
+            read_context_build,
             read_context_set,
+            read_context_source,
             read_eval_board,
             read_run,
             read_settings,
             read_project_settings,
             preview_additional_inputs,
+            remove_context_source,
+            resolve_workflow_context,
+            resolve_workflow_plan,
             rerun_step,
             resume_run,
             resume_trigger,
@@ -5233,6 +5641,7 @@ macro_rules! every_command_the_window_can_call {
             stop_generating_agent,
             save_agent,
             save_context_draft,
+            save_context_revision,
             save_eval_protection,
             save_settings,
             save_project_settings,
@@ -5246,6 +5655,7 @@ macro_rules! every_command_the_window_can_call {
             set_trigger_enabled,
             start_process,
             stop_comparing_copies,
+            stop_context_build,
             stop_draft,
             stop_process,
             stop_proposing_cases,

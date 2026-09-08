@@ -568,8 +568,9 @@ impl Limiter {
     /// Bierze miejsce z puli, czekając, aż będzie wolne. Prośba ciężka bierze **dwa**: jedno
     /// z węższego limitu i jedno z puli.
     ///
-    /// Prywatne z rozmysłem: jedyne wejście do puli prowadzi przez [`Run::dispatch`], więc nie
-    /// da się wziąć slotu z pominięciem pauzy biegu.
+    /// Prywatny rdzeń: graf wchodzi przez [`Run::dispatch`], a operacje spoza grafu wyłącznie
+    /// przez wąskie [`Self::place`]. Dzięki temu pauzy biegu nie udają polityki prac, które
+    /// biegiem nie są, ale żadna z tych dróg nie tworzy własnej puli (2026-09-08, CT-04).
     async fn take_slot(&self, weight: Weight) -> Slot {
         // NAJPIERW MIEJSCE CIĘŻKIE, DOPIERO POTEM Z PULI, i ta kolejność jest treścią. Odwrotna
         // daje pulę zapchaną krokami ciężkimi, z których biegnie jeden: trzy prośby ciężkie
@@ -601,6 +602,16 @@ impl Limiter {
             pool: Arc::clone(&self.pool),
             weight,
         }
+    }
+
+    /// Bierze miejsce dla pracy aplikacji, która nie jest częścią grafu.
+    ///
+    /// 2026-09-08 (CT-04) — budowanie opracowania jest operacją biblioteki, więc nie ma
+    /// [`Run`] ani pauzy biegu, przez którą mogłoby wejść. Bez tego jednego addytywnego wejścia
+    /// taka praca omijałaby wspólną pulę i „ile naraz" przestałoby znaczyć naraz dla maszyny
+    /// (niezmiennik 11). Waga nadal idzie przez dokładnie ten sam prywatny rdzeń i ten sam Drop.
+    pub async fn place(&self, weight: Weight) -> Slot {
+        self.take_slot(weight).await
     }
 }
 

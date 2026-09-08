@@ -2,7 +2,7 @@
 //!
 //! Trzy własności, które trzeba mieć **naraz** [T3 §8.4]:
 //!
-//! - **odmowa zamiast zgadywania w przód.** Plik z `format` większym niż [`CURRENT`] nie jest
+//! - **odmowa zamiast zgadywania w przód.** Plik z `format` większym niż [`HIGHEST_SUPPORTED`] nie jest
 //!   wczytywany ani dotykany. Zgadnięcie kończy się tak: starszy build zapisuje plik z powrotem
 //!   i kasuje pracę nowszego bez jednego komunikatu.
 //! - **`.bak` przed pierwszą prawdziwą zmianą** — nie przy każdym wczytaniu. Kopia po nieudanym
@@ -24,8 +24,21 @@ use crate::durable_file::{
 use super::WorkflowFile;
 use super::check::{Level, Note, check};
 
-/// Wersja formatu, którą pisze ten build.
+/// Bazowy format dokumentu, który nie korzysta z nowszej funkcji.
 pub const CURRENT: u32 = 1;
+
+/// Format wymagany przez dokument niosący przypięcia Context.
+pub const CONTEXT_FORMAT: u32 = 2;
+
+/// Format wymagany przez dokument niosący ustawienie Plan.
+pub const PLAN_FORMAT: u32 = 3;
+
+/// Najwyższy format, który ten build umie wykonać zgodnie z intencją autora.
+///
+/// 2026-09-08 (WP-02) — Plan dostał własny numer ponad Context. Czytnik znający format 2
+/// wykonałby inaczej poprawny dokument, ignorując Plan, gdyby obie niezależne funkcje miały 2.
+/// `CURRENT` pozostaje 1, żeby zwykły stary dokument nie migrował przy samym odczycie.
+pub const HIGHEST_SUPPORTED: u32 = PLAN_FORMAT;
 
 /// `MIGRATIONS[i]` przenosi format `i + 1` na `i + 2`, więc długość tablicy jest zawsze
 /// `CURRENT - 1`.
@@ -44,7 +57,7 @@ pub static MIGRATIONS: &[fn(Value) -> Value] = &[];
 /// Każdy wariant ma być osobnym zdaniem dla użytkownika, bo każdy naprawia się inaczej.
 #[derive(Debug)]
 pub enum LoadError {
-    /// `format` większy niż [`CURRENT`]. Plik zostaje na dysku bez zmian i bez `.bak`.
+    /// `format` większy niż [`HIGHEST_SUPPORTED`]. Plik zostaje na dysku bez zmian i bez `.bak`.
     ///
     /// Zdanie wymagane przez AC-1 brzmi dokładnie:
     /// `This workflow was saved by a newer Loadout. Update Loadout to open it.`
@@ -153,7 +166,7 @@ pub fn load(path: &Path) -> Result<WorkflowFile, LoadError> {
 /// Parsuje bajty odczytane przez descriptor-bound loader biblioteki. Pierwsza przyszła
 /// migracja musi dostać równie descriptor-bound publikację `.bak`; do tego czasu snapshot
 /// odmawia migracji zamiast wracać do ścieżkowego `copy` po bezpiecznym odczycie.
-pub(crate) fn load_snapshot(path: &Path, bytes: &[u8]) -> Result<WorkflowFile, LoadError> {
+pub fn load_snapshot(path: &Path, bytes: &[u8]) -> Result<WorkflowFile, LoadError> {
     let text = std::str::from_utf8(bytes).map_err(|error| {
         LoadError::Unreadable(io::Error::new(io::ErrorKind::InvalidData, error))
     })?;
@@ -178,7 +191,7 @@ fn load_text(
     // Nigdy nie zgaduj w przód. Zgadnięcie kończy się dokładnie tak: starszy build wczytuje
     // plik, którego połowy nie rozumie, zapisuje go z powrotem i kasuje pracę nowszego bez
     // jednego komunikatu. Plik zostaje na dysku nietknięty i bez `.bak`.
-    if format > u64::from(CURRENT) {
+    if format > u64::from(HIGHEST_SUPPORTED) {
         return Err(LoadError::TooNew);
     }
 
@@ -249,6 +262,26 @@ pub fn save(
     path: &Path,
     expected: Option<&str>,
 ) -> Result<String, SaveError> {
+    // 2026-09-08 (CT-05): pusty szkic omija pełny `check`, ale Context nadal jest zapisywaną
+    // treścią. Bez tej osobnej bramy błędny wybór na workflow bez kroków trafiłby na dysk.
+    if let Err(message) = super::context::validate(workflow) {
+        return Err(SaveError::Refused(Note {
+            level: Level::Problem,
+            step_id: None,
+            message,
+            fix: None,
+        }));
+    }
+    // 2026-09-08 (WP-02): jak Context, kształt ustawienia sprawdzamy także dla szkicu, który
+    // omija pełne sprawdzenie grafu. Przyszły tryb nie może zapisać się i później zagrać jako Off.
+    if let Err(message) = super::work_plan::validate(workflow) {
+        return Err(SaveError::Refused(Note {
+            level: Level::Problem,
+            step_id: None,
+            message,
+            fix: None,
+        }));
+    }
     // Kolejność jest całą treścią tej funkcji: najpierw sprawdź, dopiero potem dotknij dysku.
     // Implementacja, która zapisuje i waliduje po zapisie, niszczy poprzednią wersję pliku
     // dokładnie w tym momencie, w którym sprawdzenie miało jej bronić. Ostrzeżenie nie blokuje
@@ -279,7 +312,12 @@ pub fn save(
         return Err(SaveError::Refused(refusal));
     }
 
-    let mut text = serde_json::to_string_pretty(workflow).map_err(SaveError::Malformed)?;
+    let mut written = workflow.clone();
+    super::context::remove_empty(&mut written);
+    super::work_plan::remove_empty(&mut written);
+    written.format = super::context::format_needed_by(&written)
+        .max(super::work_plan::format_needed_by(&written));
+    let mut text = serde_json::to_string_pretty(&written).map_err(SaveError::Malformed)?;
     // Znak nowej linii na końcu: bez niego każda zmiana ostatniego wiersza niesie w diffie
     // dodatkowe „\ No newline at end of file", a plik przestaje być zwykłym plikiem tekstowym.
     text.push('\n');
@@ -290,6 +328,7 @@ pub fn save(
             "a workflow path has no controlled parent",
         ))
     })?;
+    back_up_before_format_upgrade(path, root, expected, written.format)?;
     // 2026-09 (Z-32): odrzucony workflow nie zostawia pustej półki. Walidacja stoi wyżej,
     // więc katalog jest pierwszym skutkiem ubocznym wyłącznie poprawnego pliku.
     fs::create_dir_all(root).map_err(SaveError::Unwritable)?;
@@ -307,4 +346,48 @@ pub fn save(
             other => SaveError::Unwritable(other.into_io()),
         })?;
     Ok(revision_of(text.as_bytes()))
+}
+
+/// Zachowuje pierwsze bajty starszego formatu przed pierwszym faktycznym podniesieniem.
+fn back_up_before_format_upgrade(
+    path: &Path,
+    root: &Path,
+    expected: Option<&str>,
+    wanted: u32,
+) -> Result<(), SaveError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(SaveError::Changed),
+        Err(error) => return Err(SaveError::Unwritable(error)),
+    };
+    if revision_of(&bytes) != expected {
+        return Err(SaveError::Changed);
+    }
+    let format = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|document| document.get("format").and_then(Value::as_u64));
+    if format.is_none_or(|format| format >= u64::from(wanted)) {
+        return Ok(());
+    }
+    let backup = path.with_extension("json.bak");
+    match DurableFilePublisher::new(root).atomic_create_if_absent(
+        &backup,
+        &bytes,
+        ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+    ) {
+        Ok(()) => Ok(()),
+        // 2026-09-08 (CT-05): ponowienie po awarii może zastać gotową kopię, ale obca kopia
+        // pod tą nazwą nie dowodzi niczego o podnoszonym pliku i nie pozwala go nadpisać.
+        Err(PublishError::Conflict { .. }) if fs::read(&backup).is_ok_and(|old| old == bytes) => {
+            Ok(())
+        }
+        Err(PublishError::Conflict { .. }) => Err(SaveError::Unwritable(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a different workflow backup already exists",
+        ))),
+        Err(error) => Err(SaveError::Unwritable(error.into_io())),
+    }
 }

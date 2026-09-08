@@ -47,6 +47,8 @@ pub mod chat;
 pub mod checkpoint;
 /// Biblioteka Context: nazwane zestawy materiałów, wypisane, czytane i zapisywane z plików.
 pub mod context;
+pub mod context_build;
+pub mod context_sources;
 /// Allowlistowany raport wsparcia dla aktywnego workspace. Wypelnia T-34.
 pub mod diagnostics;
 /// Praca kilku kroków zniesiona do jednej kopii — i odmowa, kiedy dwa z nich piszą co innego.
@@ -89,6 +91,8 @@ pub mod skills;
 pub mod sweep;
 /// Zrodla zdarzen, ktore pytaja zewnetrzny serwis i pamietaja kursor w pliku.
 pub mod triggers;
+pub mod workflow_context;
+pub mod workflow_plan;
 /// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
 pub mod workflows;
 pub mod workspaces;

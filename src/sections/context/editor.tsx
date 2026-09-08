@@ -16,7 +16,25 @@
 import type { ReactElement } from 'react';
 import { useState } from 'react';
 
-import type { ContextDraft, ContextSetRead, DraftEdit } from '../../state/context';
+import type {
+  ContextApp,
+  ContextBuild,
+  ContextDraft,
+  ContextRevision,
+  ContextSetRead,
+  DraftEdit,
+  ImportItem,
+  ImportResult,
+  RevisionEdit,
+  SourcePart,
+} from '../../state/context';
+import type { AgentAppStatus } from '../../state/agent-apps';
+import BuildControls from './build-controls';
+import ContextOverview from './overview';
+import { carriesAPicture, pastedIntoMaterial } from './paste';
+import { chooseFilesToAdd } from './pick-files';
+import SourceList from './source-list';
+import SourcePreview from './source-preview';
 
 /** Identyfikator jedynego źródła tekstowego zestawu — powód stoi w nagłówku pliku. */
 const TYPED = 'typed';
@@ -29,8 +47,31 @@ export interface ContextEditorProps {
   open: ContextSetRead;
   /** Zdanie po odmowie — `null`, kiedy nie ma o czym mówić. */
   refusal: string | null;
+  /** Wynik ostatniego importu: jeden wiersz na każdą pozycję, którą człowiek wybrał. */
+  imported: readonly ImportResult[];
+  /** Otwarty podgląd — `null`, kiedy nikt o niego nie prosił. */
+  preview: { readonly sourceId: string; readonly part: SourcePart } | null;
+  /** Źródło, które właśnie się przygotowuje. */
+  preparing: string | null;
+  build: ContextBuild | null;
+  version: ContextRevision | null;
+  buildWith: ContextApp;
+  buildModel: string;
+  claudeCode: AgentAppStatus;
+  codex: AgentAppStatus;
   /** `true`, kiedy zapis naprawdę wszedł. Ekran zostaje otwarty, cokolwiek wróci. */
   onSave: (edit: DraftEdit) => Promise<boolean>;
+  /** Kładzie w zestawie to, co człowiek wybrał albo wkleił. */
+  onAdd: (items: ImportItem[]) => void;
+  onPrepare: (sourceId: string) => void;
+  onPreview: (sourceId: string, page: number | null) => void;
+  onHidePreview: () => void;
+  onRemove: (sourceId: string) => void;
+  onChooseBuildWith: (app: ContextApp) => void;
+  onBuildModel: (model: string) => void;
+  onBuild: () => void;
+  onStopBuild: () => void;
+  onSaveRevision: (edit: RevisionEdit) => void;
   onClose: () => void;
 }
 
@@ -40,10 +81,15 @@ function typedText(draft: ContextDraft): string {
 }
 
 /**
- * Szkic po edycji: jedno źródło tekstowe albo żadne.
+ * Szkic po edycji: pole materiału plus WSZYSTKIE źródła plikowe, których to pole nie dotyczy.
  *
  * Pusty materiał nie zostawia pustego źródła: wiersz bez treści na liście źródeł byłby kształtem
  * materiału, którego nikt nie wpisał — a to jest ta sama wada, co pole z napisem `null`.
+ *
+ * 2026-09-07 (CT-02) — DRUGA POŁOWA TEJ FUNKCJI POWSTAŁA Z NAPRAWY. Do dziś wymieniała CAŁĄ
+ * listę źródeł na jeden wpis `typed`, bo innych źródeł nie było. Od chwili, w której zestaw
+ * może trzymać pliki, pierwszy `Save` po imporcie kasowałby każdy z nich — i wyglądałby przy
+ * tym na udany.
  */
 function draftFrom(
   was: ContextDraft,
@@ -55,20 +101,23 @@ function draftFrom(
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
+  const typed = was.sources.find((source) => source.id === TYPED);
   return {
     ...was,
-    sources:
-      text === ''
+    sources: [
+      ...(text === ''
         ? []
         : [
             {
               id: TYPED,
-              kind: 'text',
+              kind: 'text' as const,
               name: TYPED_NAME,
-              description: was.sources.find((source) => source.id === TYPED)?.description ?? '',
+              description: typed?.description ?? '',
               text,
             },
-          ],
+          ]),
+      ...was.sources.filter((source) => source.id !== TYPED),
+    ],
     howToPrepare,
     requirements: lines,
   };
@@ -77,7 +126,26 @@ function draftFrom(
 export default function ContextEditor({
   open,
   refusal,
+  imported,
+  preview,
+  preparing,
+  build,
+  version,
+  buildWith,
+  buildModel,
+  claudeCode,
+  codex,
   onSave,
+  onAdd,
+  onPrepare,
+  onPreview,
+  onHidePreview,
+  onRemove,
+  onChooseBuildWith,
+  onBuildModel,
+  onBuild,
+  onStopBuild,
+  onSaveRevision,
   onClose,
 }: ContextEditorProps): ReactElement {
   const [tab, setTab] = useState<'sources' | 'overview'>('sources');
@@ -96,6 +164,14 @@ export default function ContextEditor({
       /* Rewizja, którą to okno PRZECZYTAŁO. Bez niej zapis z okna otwartego pięć minut temu
          kasuje pracę zapisaną minutę temu i wygląda przy tym na udany. */
       expectedRevision: open.revision,
+    });
+  };
+
+  /* Okno wyboru pliku oddaje ŚCIEŻKI, a Rust sam je otwiera i kopiuje. Anulowanie jest pustą
+     listą, czyli wartością, nie błędem (niezmiennik 7) — i wtedy nie ma czego wysyłać. */
+  const addFiles = (): void => {
+    void chooseFilesToAdd().then((paths) => {
+      onAdd(paths.map((path) => ({ name: '', path, text: null, image: null })));
     });
   };
 
@@ -178,8 +254,81 @@ export default function ContextEditor({
               onChange={(event) => {
                 setText(event.target.value);
               }}
+              onPaste={(event) => {
+                /* PRZEJMUJEMY WYŁĄCZNIE WKLEJENIE Z OBRAZEM. Sprawdzenie musi być tutaj
+                   i synchronicznie: po pierwszym `await` jest już za późno na `preventDefault`,
+                   a pole, w którym Cmd+V przestaje wstawiać zdanie, jest polem zepsutym. */
+                if (!carriesAPicture(event.clipboardData)) return;
+                event.preventDefault();
+                void pastedIntoMaterial(event.clipboardData).then((item) => {
+                  if (item !== null) onAdd([item]);
+                });
+              }}
             />
           </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button data-add-files type="button" className="btn" onClick={addFiles}>
+              Add files
+            </button>
+            <span className="lead">
+              Pictures, PDF files, Markdown and plain text. Paste a screenshot into Material to keep
+              it here too.
+            </span>
+          </div>
+
+          {imported.length === 0 ? null : (
+            /* JEDEN WIERSZ NA KAŻDY WYBRANY PLIK (PLAN §5). Jedno zdanie „część plików nie
+               weszła" jest odpowiedzią, po której człowiek musi zgadywać, które to były. */
+            <ul data-import-results className="flex flex-col gap-2">
+              {imported.map((one, at) => (
+                <li
+                  key={one.name + String(at)}
+                  data-import-result
+                  className="card flex flex-col gap-1"
+                >
+                  <span className="text-ink">{one.name}</span>
+                  {one.refused === null ? (
+                    <span className="value">Added</span>
+                  ) : (
+                    <span role="alert" className="text-fail">
+                      {one.refused}
+                    </span>
+                  )}
+                  {one.notes.map((note) => (
+                    <span key={note} className="lead">
+                      {note}
+                    </span>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <SourceList
+            sources={open.draft.sources.filter((source) => source.id !== TYPED)}
+            preparing={preparing}
+            onPreview={(sourceId) => {
+              /* Dokument otwiera się na PIERWSZEJ stronie; obraz i tekst numeru strony nie mają,
+                 więc idą bez niego. Strona, której jeszcze nie przygotowano, wraca z własnym
+                 zdaniem — i tak ma być, bo to jest prawda o tym pliku. */
+              const source = open.draft.sources.find((one) => one.id === sourceId);
+              onPreview(sourceId, source?.kind === 'pdf' ? 1 : null);
+            }}
+            onPrepare={onPrepare}
+            onRemove={onRemove}
+          />
+
+          {preview === null ? null : (
+            <SourcePreview
+              part={preview.part}
+              name={open.draft.sources.find((source) => source.id === preview.sourceId)?.name ?? ''}
+              onPage={(number) => {
+                onPreview(preview.sourceId, number);
+              }}
+              onClose={onHidePreview}
+            />
+          )}
 
           <div className="flex flex-col gap-1">
             <label className="label" htmlFor="context-preparation">
@@ -226,26 +375,52 @@ export default function ContextEditor({
           </div>
         </div>
       ) : (
-        <div className="card flex flex-col items-center gap-3 text-center">
-          <span aria-hidden className="mark">
-            ◇
-          </span>
-          <p data-nothing-built className="text-ink">
-            Nothing has been prepared from this material yet.
-          </p>
-          <p className="lead max-w-160">
-            Everything you write under Sources is kept exactly as you wrote it, and stays yours to
-            edit.
-          </p>
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={() => {
-              setTab('sources');
-            }}
-          >
-            Go to Sources
-          </button>
+        <div className="flex flex-col gap-4">
+          <BuildControls
+            build={build}
+            app={buildWith}
+            model={buildModel}
+            claudeCode={claudeCode}
+            codex={codex}
+            hasVersion={version !== null}
+            sourceNames={Object.fromEntries(
+              open.draft.sources.map((source) => [source.id, source.name]),
+            )}
+            onChooseApp={onChooseBuildWith}
+            onModel={onBuildModel}
+            onBuild={onBuild}
+            onStop={onStopBuild}
+          />
+          {refusal === null ? null : (
+            <p data-refusal role="alert" className="text-fail">
+              {refusal}
+            </p>
+          )}
+          {version === null ? (
+            <div className="card flex flex-col items-center gap-3 text-center">
+              <span aria-hidden className="mark">
+                ◇
+              </span>
+              <p data-nothing-built className="text-ink">
+                Nothing has been prepared from this material yet.
+              </p>
+              <p className="lead max-w-160">
+                Everything you write under Sources is kept exactly as you wrote it, and stays yours
+                to edit.
+              </p>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setTab('sources');
+                }}
+              >
+                Go to Sources
+              </button>
+            </div>
+          ) : (
+            <ContextOverview revision={version} onSave={onSaveRevision} />
+          )}
         </div>
       )}
     </div>

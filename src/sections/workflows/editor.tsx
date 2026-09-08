@@ -50,14 +50,17 @@ import {
 } from './step-panel/hands-over-the-command';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
+import { why } from '../../ipc/why';
 import type { Agent } from '../../state/agents';
-import type { Step, WorkflowFile } from '../../state/workflows';
+import type { WorkflowContextView } from '../../state/context';
+import type { Step, WorkflowFile, WorkflowPlanView } from '../../state/workflows';
 import { createWorkflowStore } from '../../state/workflows';
 import * as agentsIo from '../agents/io';
 import { WorkflowCanvas } from './canvas/canvas';
 import type { NoteFocus } from './canvas/problems';
 import { RunButton, ThingsToFix, focusNote, howMany } from './canvas/problems';
 import * as disk from './io';
+import { WorkflowContextPicker } from './step-panel/context-row';
 import { PanelForStep } from './step-panel/panel';
 
 export interface WorkflowEditorProps {
@@ -172,6 +175,10 @@ export function WorkflowEditor({
    * repo (jsdomu tu nie ma), a niesprawdzalne zdanie to zdanie, które umiera po cichu. */
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const [openStepId, setOpenStepId] = useState<string | null>(openStep ?? null);
+  const [contextView, setContextView] = useState<WorkflowContextView | null>(null);
+  const [contextSaid, setContextSaid] = useState<string | null>(null);
+  const [planView, setPlanView] = useState<WorkflowPlanView | null>(null);
+  const [planSaid, setPlanSaid] = useState<string | null>(null);
 
   /* Czy lista uwag jest rozwinięta. Zwinięta na starcie i przy każdym wejściu w plik — powód
    * w całości stoi przy plakietce w nagłówku. */
@@ -208,6 +215,42 @@ export function WorkflowEditor({
         .catch(() => undefined);
     };
   }, [store]);
+
+  /* 2026-09-08 (WP-02) — Context i Plan mają jeden wspólny debounce. Dwa efekty
+   * rozwiązywałyby ten sam dokument w dwóch chwilach i mogłyby pokazać niespójny panel. */
+  useEffect(() => {
+    let current = true;
+    /* 2026-09-08 (CT-05): edycja instrukcji tworzy dokument przy każdym znaku. Krótka zwłoka
+     * skleja te znaki w jeden odczyt biblioteki, bez drugiego licznika ani stanu produktu. */
+    const timer = window.setTimeout(() => {
+      void disk
+        .resolveContext(state.document)
+        .then((view) => {
+          if (!current) return;
+          setContextView(view);
+          setContextSaid(null);
+        })
+        .catch((error: unknown) => {
+          if (!current) return;
+          setContextSaid(why(error, 'Context choices could not be read.'));
+        });
+      void disk
+        .resolvePlan(state.document)
+        .then((view) => {
+          if (!current) return;
+          setPlanView(view);
+          setPlanSaid(null);
+        })
+        .catch((error: unknown) => {
+          if (!current) return;
+          setPlanSaid(why(error, 'Plan choices could not be read.'));
+        });
+    }, 120);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [state.document]);
 
   /* KAŻDY kafelek, nie tylko krok agenta z rozwiązanym agentem. Rodzaj kroku i to, czy agent
    * jest już wybrany, rozstrzyga `PanelForStep` — tutaj zostaje jedno pytanie: który kafelek
@@ -428,6 +471,14 @@ export function WorkflowEditor({
         }}
       />
 
+      <WorkflowContextPicker
+        value={state.document.context}
+        view={contextView}
+        onChoose={(context) => {
+          state.commit({ ...state.document, context });
+        }}
+      />
+
       {/* PASEK ODMOWY ZAPISU. Nie ma go w makiecie i to jest świadome: makieta nie przewiduje
           stanu „plik na dysku nie jest tym, co widzisz", bo powstała przed pomiarem, który ten
           stan wykrył. Kontrolki tu nie ma żadnej — zdanie znika samo, kiedy następny zapis się
@@ -538,6 +589,10 @@ export function WorkflowEditor({
               step={open}
               agents={agents}
               skills={skills}
+              context={contextView}
+              contextRefusal={contextSaid}
+              plan={planView}
+              planRefusal={planSaid ?? planView?.warnings[0] ?? null}
               onCreateAgent={onCreateAgent}
               onChooseAgent={(agentId) => {
                 /* Wybór agenta jest polem KROKU, nie nadpisaniem agenta, więc jedzie tą samą

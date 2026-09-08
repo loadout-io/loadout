@@ -84,6 +84,13 @@ pub fn local_answer(message: &Value, tools: &Value) -> Option<Value> {
 ///
 /// Treść jedzie jako tekst, nie jako obiekt: `content` z jednym blokiem `text` jest kształtem,
 /// który zmierzyłem jako działający u obu vendorów, a strukturę i tak czyta model, nie kod.
+///
+/// **Obraz jest jedynym wyjątkiem i musi nim być** (2026-09-08, CT-03a): blok `image` niesie
+/// bajty i rodzaj obrazu osobno, bo tylko z nich vendor odtwarza obrazek. Ta sama treść wysłana
+/// blokiem `text` dociera do modelu jako base64 do przeczytania — nigdy jako coś, na co da się
+/// popatrzeć. Zmierzone 2026-09-07 sondą po stdio na `claude 2.1.263` i `codex-cli 0.153.4`:
+/// obaj vendorzy odczytali z tego bloku fakt, którego nie było ani w nazwie narzędzia, ani
+/// w jego opisie.
 #[must_use]
 pub fn tool_result(id: &Value, answer: &Answer) -> Value {
     match answer {
@@ -101,6 +108,13 @@ pub fn tool_result(id: &Value, answer: &Answer) -> Value {
                 "content": [{ "type": "text", "text": said }],
                 "isError": true,
             }),
+        ),
+        /* `mimeType`, nie `mime`: tak nazywa ten klucz protokół, a nazwa spoza niego znaczy blok
+         * porzucony przez vendora W CISZY — z zewnątrz nie do odróżnienia od modelu, który nie
+         * chciał popatrzeć. `isError` tu nie ma, bo obraz, który dojechał, nie jest porażką. */
+        Answer::Image { data, mime } => reply(
+            id,
+            &json!({ "content": [{ "type": "image", "data": data, "mimeType": mime }] }),
         ),
     }
 }

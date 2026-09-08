@@ -187,6 +187,75 @@ describe('duplicating a workflow makes a second file, not a second name for the 
     ).toBe('Read the sources');
   });
 
+  it('keeps workflow and step context pins as independent exact copies', async () => {
+    const source = deepResearch();
+    source.workflow.format = 2;
+    source.workflow.context = {
+      schema: 1,
+      sets: [{ id: 'store-rules', revision: 'r1', topics: ['checkout'] }],
+    };
+    const first = firstStep(source.workflow);
+    if (first.kind !== 'agent') throw new Error('the fixture lost its agent step');
+    first.context = {
+      schema: 1,
+      inheritWorkflow: true,
+      exclude: [],
+      sets: [{ id: 'design', revision: 'r3', topics: ['checkout'] }],
+    };
+    const store = createWorkflowListStore(disk([source]));
+    await store.getState().load();
+
+    await store.getState().duplicate('wf-deep-research');
+
+    const original = named(store.getState().workflows, 'Deep research').workflow;
+    const copy = named(store.getState().workflows, 'Deep research (copy)').workflow;
+    const originalStep = firstStep(original);
+    if (originalStep.kind !== 'agent') throw new Error('the original fixture changed kind');
+    expect(copy.context).toEqual(original.context);
+    expect(firstStep(copy)).toMatchObject({ context: originalStep.context });
+    const copiedWorkflowTopics = copy.context?.sets[0]?.topics;
+    if (copiedWorkflowTopics === undefined || copiedWorkflowTopics === 'all') {
+      throw new Error('the copied workflow fixture lost its selected topics');
+    }
+    copiedWorkflowTopics.push('returns');
+    const copiedStep = firstStep(copy);
+    const copiedStepTopics =
+      copiedStep.kind === 'agent' ? copiedStep.context?.sets?.[0]?.topics : undefined;
+    if (copiedStepTopics === undefined || copiedStepTopics === 'all') {
+      throw new Error('the copied fixture lost its selected topics');
+    }
+    copiedStepTopics.push('returns');
+
+    expect(original.context?.sets[0]?.topics).toEqual(['checkout']);
+    expect(originalStep.context?.sets?.[0]?.topics).toEqual(['checkout']);
+  });
+
+  it('keeps one Plan creator and keeps Same plan as pointing inside the copied workflow', async () => {
+    const source = deepResearch();
+    source.workflow.format = 3;
+    const planner = firstStep(source.workflow);
+    const user = source.workflow.steps[1];
+    if (planner.kind !== 'agent' || user?.kind !== 'agent') {
+      throw new Error('the Plan fixture lost one of its agent steps');
+    }
+    planner.plan = { mode: 'create' };
+    user.plan = { mode: 'use', samePlanAs: planner.id };
+    const store = createWorkflowListStore(disk([source]));
+    await store.getState().load();
+
+    await store.getState().duplicate('wf-deep-research');
+
+    const copy = named(store.getState().workflows, 'Deep research (copy)').workflow;
+    const agents = copy.steps.filter((step) => step.kind === 'agent');
+    expect(agents.filter((step) => step.plan?.mode === 'create')).toHaveLength(1);
+    const copiedUser = agents.find((step) => step.plan?.mode === 'use');
+    expect(copiedUser?.plan?.samePlanAs).toBe('s_read');
+    expect(
+      copy.steps.some((step) => step.id === copiedUser?.plan?.samePlanAs),
+      'a copied explicit source must still name a real step in that copied graph',
+    ).toBe(true);
+  });
+
   it('copies the links deeply too, so wiring the copy cannot reach the original', async () => {
     const io = disk([deepResearch()]);
     const store = createWorkflowListStore(io);

@@ -18,6 +18,8 @@
 import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
+import type { PageMaker } from '../../state/context';
+import { useAgentApps } from '../../state/agent-apps';
 import { createContextStore, matching } from '../../state/context';
 import * as io from './io';
 import ContextEditor from './editor';
@@ -36,6 +38,19 @@ export interface ContextScreenProps {
 const STILL_READING = 'Reading the context sets you have saved.';
 const READING_THE_FOLDER = 'Loadout is looking through the sets you keep for your work.';
 
+/**
+ * Sterownik dokumentów, doczytywany DOPIERO przy pierwszym `Prepare`.
+ *
+ * Biblioteka rysująca strony waży więcej niż cała reszta tej sekcji razem, a większość wejść
+ * do zestawu nie przygotowuje niczego. Doczytanie stoi TUTAJ, a nie w magazynie: magazyn nie
+ * zna ani nazw komend, ani bibliotek, które rysują (niezmiennik 23). Nieudane doczytanie leci
+ * wyjątkiem prosto w `prepareSource`, więc kończy się zdaniem na ekranie, nie ciszą.
+ */
+const readTheDocument: PageMaker = async (file) => {
+  const { openTheDocument } = await import('./pdf-preparation');
+  return openTheDocument(file);
+};
+
 /** Przeczytaliśmy i naprawdę nic tam nie ma (DESIGN §6: pusty stan jest zaproszeniem). */
 const NOTHING_YET = 'No context sets yet.';
 const WHAT_A_SET_IS =
@@ -43,6 +58,11 @@ const WHAT_A_SET_IS =
 
 export default function ContextScreen({ store = useContext }: ContextScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
+  const apps = useSyncExternalStore(
+    useAgentApps.subscribe,
+    useAgentApps.getState,
+    useAgentApps.getState,
+  );
   const [typed, setTyped] = useState('');
 
   /* Biblioteka leży pod `home`, nie w projekcie, więc ten odczyt nie zależy od otwartego
@@ -50,6 +70,9 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
    * i ląduje w jego stanie jako zdanie dla człowieka. */
   useEffect(() => {
     void store.getState().load();
+    void useAgentApps.getState().check();
+    const open = store.getState().open;
+    if (open !== null) void store.getState().openSet(open.set.id);
   }, [store]);
 
   const create = (): void => {
@@ -67,7 +90,40 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
           key={state.open.set.id}
           open={state.open}
           refusal={state.refusal}
+          imported={state.imported}
+          preview={state.preview}
+          preparing={state.preparing}
+          build={state.build}
+          version={state.version}
+          buildWith={state.buildWith}
+          buildModel={state.buildModel}
+          claudeCode={apps.claudeCode}
+          codex={apps.codex}
           onSave={store.getState().save}
+          onAdd={(items) => {
+            void store.getState().addSources(items);
+          }}
+          onPrepare={(sourceId) => {
+            void store.getState().prepareSource(sourceId, readTheDocument);
+          }}
+          onPreview={(sourceId, page) => {
+            void store.getState().showSource(sourceId, page);
+          }}
+          onHidePreview={store.getState().hidePreview}
+          onRemove={(sourceId) => {
+            void store.getState().dropSource(sourceId);
+          }}
+          onChooseBuildWith={store.getState().chooseBuildWith}
+          onBuildModel={store.getState().chooseBuildModel}
+          onBuild={() => {
+            void store.getState().startBuild();
+          }}
+          onStopBuild={() => {
+            void store.getState().stopBuild();
+          }}
+          onSaveRevision={(edit) => {
+            void store.getState().saveRevision(edit);
+          }}
           onClose={store.getState().close}
         />
       </Shell>

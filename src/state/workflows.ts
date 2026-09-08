@@ -29,6 +29,7 @@ import { create } from 'zustand';
 import { why } from '../ipc/why';
 import { applyPanelEdit, withoutOverride } from '../sections/workflows/step-panel/overrides';
 import type { Agent, FileAccess } from './agents';
+import type { StepContext, WorkflowContext } from './context';
 
 /** Waga uwagi z walidatora Rusta. `Problem` blokuje Run, `Warning` nie blokuje niczego. */
 export type Level = 'problem' | 'warning';
@@ -182,6 +183,36 @@ export type WhenItFails = 'stop' | 'carry-on' | 'ask-me';
 /** Ile miejsca na maszynie bierze tura agenta. Brak pola znaczy zwykłą turę. */
 export type Weight = 'ordinary' | 'heavy';
 
+/** Ustawienie wspólnego planu konkretnego biegu. Brak pola znaczy `off`. */
+export type StepPlanMode = 'off' | 'create' | 'update' | 'use';
+
+export interface StepPlan {
+  mode: StepPlanMode;
+  canUpdate?: string[] | undefined;
+  focusOn?: string[] | undefined;
+  /** Id kroku, nie jego nazwa ani przyszły numer wersji. */
+  samePlanAs?: string | undefined;
+}
+
+export interface WorkflowPlanSource {
+  stepId: string;
+  name: string;
+  said: string;
+}
+
+export interface StepPlanView {
+  stepId: string;
+  mode: StepPlanMode;
+  source: WorkflowPlanSource | null;
+  earlier: WorkflowPlanSource[];
+  said: string | null;
+}
+
+export interface WorkflowPlanView {
+  steps: StepPlanView[];
+  warnings: string[];
+}
+
 /** Krok, który uruchamia agenta.
  *
  * Vendora ani modelu tu nie ma: krok nazywa AGENTA, a vendor, model i narzędzia mieszkają
@@ -226,6 +257,10 @@ export interface AgentStep {
    * `| undefined` JAWNIE, z tego samego powodu, co przy `borrow` obok.
    */
   criteria?: Criterion[] | undefined;
+  /** Opcjonalny wybór Context dla tego kroku; osobny od izolacji `executionInputs`. */
+  context?: StepContext | undefined;
+  /** Plan jest ustawieniem kroku; brak zachowuje lekkie workflow jako `Off`. */
+  plan?: StepPlan | undefined;
   /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */
   whenItFails?: WhenItFails;
   at: Point;
@@ -390,12 +425,14 @@ export interface CheckStep {
 export type Step = AgentStep | CheckpointStep | CheckStep | ServeStep;
 
 export interface WorkflowFile {
-  format: 1;
+  format: 1 | 2 | 3;
   id: string;
   name: string;
   description?: string;
   /** Jawne dodatkowe wejście wspólnego obrazu wszystkich świeżych kopii (WF-14). */
   additionalInputs?: string[];
+  /** Wspólny Context dziedziczony przez kroki agentów zgodnie z ich lokalnym wyborem. */
+  context?: WorkflowContext | undefined;
   /** Kolejność WSTAWIANIA, nigdy przesortowana [T3 §8.2 reguła 2]. */
   steps: Step[];
   links: Link[];
