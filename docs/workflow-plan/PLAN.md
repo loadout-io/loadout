@@ -243,7 +243,29 @@ nie zero. Luka bez pokrycia zostaje `not-tested` i **blokuje** deklarację gotow
 | **WP-02** | **WYLĄDOWANY**, CI zielone 505 s. Codex, 3 rundy + naprawa ręczna, **9 testów Rusta + 7 frontu**. |
 | **WP-03** | **WYLĄDOWANY**, CI zielone. Codex, 3 rundy + naprawa ręczna, **8 testów** (w tym dowód mutacyjny na identyfikatorach z panelu). |
 | **WP-04b** | **GOTOWY DO LĄDOWANIA** — jeden kompozytor Planu, Context i przekazań; **6 zawężonych testów Rusta** na stdin obu adapterów, wspólnym limicie, odmowie i ponownej turze. |
-| WP-05…WP-07 | czekają na CT-06…CT-09 |
+| **WP-04b** | **WYLĄDOWANY**, CI zielone 524 s. Codex, **1 runda**, 3758 s, **6 testów**. Dwie mutacje trafiły po 2 i po 1 właściwym teście. Jedna regresja złapana dopiero pełnym CI — patrz niżej. |
+| WP-05 | biegnie |
+| WP-06…WP-07 | czekają na CT-08 i CT-09 |
+
+### WP-04b: `STEP_PROMPT_BYTES` znaczy teraz sumę, nie „tyle dla Contextu"
+
+Trzy osobne przydziały po 24 KiB pozwalały Loadoutowi dołożyć **72 KiB** przed instrukcjami
+i historią vendora. Jedna liczba ogranicza teraz Plan, wymagania, indeks Contextu i indeks
+przekazań **razem**. `render_core` nie przyjmuje roli **w ogóle**, więc identyczność rdzenia
+dla implementera i QA jest strukturalna, a nie pilnowana sprawdzeniem — to ten sam chwyt,
+którym WP-01 zamknął autorytet propozycji modelu.
+
+### Regresja, którą złapała dopiero wyrocznia bajt w bajt
+
+`index_of_what_came_before` zaczynała bezwarunkowym `\n\n`, bo dopisywała na koniec
+**niepustego** promptu. WP-04b przekierował ją do świeżego bufora wspólnego bloku i separator
+stał się pustą linią na początku, a wołający dokleił własny — prompt Claude'a urósł o dwa znaki.
+Złapał to `t115_codex_handoff_paths_are_actionable::the_claude_prompt_is_byte_for_byte_the_pre_t115_prompt`,
+czyli test, którego cały sens polega na tym, że zmiana po stronie Codeksa nie rusza **ani jednego
+bajtu** promptu Claude'a. Naprawiony **produkt**, nie test (`584553a4`).
+
+**Wniosek na resztę dostawy:** wąska bramka etapu tego nie widziała. Kotwica na treści zamiast
+na bajtach przepuściłaby dwie puste linie w prompcie każdego kroku Claude'a.
 
 ### Format pliku workflow — liczba wyprowadzona, nie wybrana
 
