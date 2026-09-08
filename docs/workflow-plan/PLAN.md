@@ -244,7 +244,7 @@ nie zero. Luka bez pokrycia zostaje `not-tested` i **blokuje** deklarację gotow
 | **WP-03** | **WYLĄDOWANY**, CI zielone. Codex, 3 rundy + naprawa ręczna, **8 testów** (w tym dowód mutacyjny na identyfikatorach z panelu). |
 | **WP-04b** | **GOTOWY DO LĄDOWANIA** — jeden kompozytor Planu, Context i przekazań; **6 zawężonych testów Rusta** na stdin obu adapterów, wspólnym limicie, odmowie i ponownej turze. |
 | **WP-04b** | **WYLĄDOWANY**, CI zielone 524 s. Codex, **1 runda**, 3758 s, **6 testów**. Dwie mutacje trafiły po 2 i po 1 właściwym teście. Jedna regresja złapana dopiero pełnym CI — patrz niżej. |
-| WP-05 | biegnie |
+| **WP-05** | **WYLĄDOWANY**, CI zielone. Codex, 3 rundy, 5432 s, **8 testów**. Dwie mutacje trafiły w 2 i w 1 właściwy test. |
 | WP-06…WP-07 | czekają na CT-08 i CT-09 |
 
 ### WP-04b: `STEP_PROMPT_BYTES` znaczy teraz sumę, nie „tyle dla Contextu"
@@ -286,6 +286,21 @@ dwójki, build znający Context, ale nie Plan, przyjąłby taki dokument i wykon
 **Skutek uboczny, złapany dopiero pełnym CI:** `workflow_load_forward` zaszywał `"format": 3`
 jako „plik z przyszłości", więc podniesienie sufitu odebrało mu przesłankę. Liczba jest tam
 teraz liczona jako `HIGHEST_SUPPORTED + 1` i podniesie się sama przy każdym kolejnym formacie.
+
+### WP-05: tożsamość sprawdzona z OBU stron
+
+Najtrudniejsze wymaganie §8 brzmi „to samo ID planu przy innym kodzie nie dowodzi sprawdzenia
+właściwego produktu". Bieg oddał na to **dwa lustrzane testy**, dokładnie tak, jak żąda lekcja
+z CT-02: `the_same_plan_id_does_not_cover_another_commit` **oraz**
+`the_same_work_does_not_cover_another_plan_version`. Jeden test na obie rzeczy naraz nie
+odróżniałby ich od siebie.
+
+`about_other_work` porównuje **parę** (wersja planu, odcisk pracy) i ma osobne zdanie dla każdej
+z czterech kombinacji — meldunek o innym produkcie nie opisuje ani wady, ani zaliczenia tego
+produktu, więc wymagane kryteria lądują w `not_tested`, a werdykt w `NotJudged`.
+
+Mutacje: zdjęcie porównania odcisku pracy przewraca 2 właściwe testy, dopuszczenie milczenia do
+zamykania starej uwagi — 1 właściwy.
 
 ### Trzy zatrzymania biegu, wszystkie z tej samej przyczyny
 

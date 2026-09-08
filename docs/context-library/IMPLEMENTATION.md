@@ -327,6 +327,62 @@ Druga mutacja przywraca dokładnie to założenie, które ten etap miał zdjąć
 przy okazji, że lista i rozdzielnik są **jednym** uprawnieniem: zdjęcie nazw z listy zabija
 też odczyty, bo `bridge::host::talk` przepuszcza wyłącznie czasowniki z powitania.
 
+### 1f. CT-07 — Lead planuje z kontekstem, a wybór rozmowy dojeżdża do Startu
+
+Bieg zatrzymał się po trzech rundach na czerwonym `web-test`. Skutek kaskadowy jest tu ważniejszy
+niż sama czerwień: `rust-clippy` i `rust-test` poszły jako POMINIĘTE, więc moduł
+`lead_context_reaches_run.rs` **nie uruchomił się ani razu przez całe trzy rundy** — pięć punktów
+akceptacji nie miało dowodu wykonania, choć testy były napisane. To **piąte** zatrzymanie tej
+klasy.
+
+Domknięte ręcznie. Trzy wady produktu i jeden defekt fikstury:
+
+1. **`invoke<ChatPinsView>` to rzutowanie, nie sprawdzenie.** `T` znika przy kompilacji, więc
+   `null` z drutu wjeżdżał do stanu Reacta jako „wybór, o którym nic nie wiadomo": picker mówił
+   w kółko `Context choices are being read.` i **milczał o starych wiadomościach**. Ekran wyglądał
+   na wczytujący się zamiast powiedzieć, że nie umie odczytać.
+2. **`Keep previous selection and start` nie miał czego zachować.** Odmowa Startu przenosi żądanie
+   pod kartę biegu (`forget` + `remember`), więc podgląd się **przemontowuje**, a wybór
+   dostarczenia żył wyłącznie w `useState` i wracał do domyślnego „cały workflow". Człowiek klikał
+   „zachowaj poprzedni wybór" i wysyłał **inny zakres, niż widział** — dokładnie ta cicha podmiana,
+   której zabrania kryterium 3.
+3. **Nakładka `run_only` schodziła na zestaw, ale nie na jego pozycje.** Rachunek dostarczenia miał
+   `runOnly: true`, a pakiet biegu brał `item.run_only` sprzed nakładki, czyli zawsze `false`.
+   Zapis biegu twierdził, że materiał „tylko dla tego uruchomienia" jest zwykłym materiałem
+   workflow — różnica, której pilnuje kryterium 4.
+4. **Kolejka atrapy `what_this_chat_pinned` miała cztery wpisy przy pięciu odczytach.** Liczba
+   zmierzona sondą, nie zgadnięta. Doszła asercja, że panel **nie zawiera** zdania odmowy: bez niej
+   poprzednie asercje przechodziły **mimo** odmowy, bo szukały swojego zdania w tekście niosącym
+   oba naraz.
+
+Cztery mutacje, każda przewraca dokładnie swój test. Walidacja kształtu dostała **własną**
+specyfikację (`chat-context-answer-is-checked.test.ts`), bo jako jedyna nie miała wyroczni:
+po jej usunięciu ekran wracał do „being read" i wszystkie pozostałe testy zostawały zielone.
+
+**Wynik: 9 testów rustowych, 124 frontowe.**
+
+#### Scalenie z WP-04b: dwie funkcje o tej samej nazwie
+
+Obie gałęzie nazwały swoją funkcję `compose`, a znaczą co innego — CT-07 **rozwiązuje** przypięcia
+rozmowy w pakiet biegu, WP-04b **składa** prompt z Planu, kontekstu i indeksu przekazań. Git
+zgłosił jeden mały konflikt na linii wołania i „scalił" resztę w kod, który nie ma prawa się
+skompilować; kolizję pokazał dopiero kompilator. Nazwy rozdzielone: `prepare_pins` i `compose`.
+
+Przy okazji: `chat.rs` wklejał blok kontekstu **wprost przed prompt**, omijając wspólny przydział
+— czyli tę samą wadę, którą WP-04b naprawił dla kroków. Rozmowa Leada idzie teraz przez ten sam
+kompozytor.
+
+#### Gęstość: 57 → 55, zapadka 54 → 55 za zgodą właściciela
+
+Pomiar po CT-07 dał 57 przy zapadce 54. **Dwa z trzech nowych elementów okazały się wadami**, nie
+gęstością: sprzeczne zdania obok siebie oraz odmowa niewidoczna w zwiniętym bloku. Trzecie
+odkrycie było ogólniejsze — **zwinięty `<details>` trzyma dzieci w drzewie i kolektor je liczy**,
+więc bez leniwego renderowania całe pole szukania, katalog i każdy zestaw wchodziłyby do pomiaru
+widoku domyślnego i rosłyby z każdym zestawem w bibliotece.
+
+Po naprawach zostało **+1**: uchwyt `Context · None` przy polu rozmowy, czyli sedno etapu. Zapadka
+podniesiona osobnym commitem, po pomiarze, za zgodą właściciela — tak samo jak 52 → 54.
+
 ## 2. Kryteria odbioru (plan §14)
 
 | Scenariusz | Status | Dowód / bloker |
