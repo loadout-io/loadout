@@ -242,6 +242,7 @@ nie zero. Luka bez pokrycia zostaje `not-tested` i **blokuje** deklarację gotow
 | **WP-04a** | **WYLĄDOWANY**, CI zielone 596 s. Codex, **1 runda, 17 min**, 6 testów, mutacja zabiła dokładnie 2 właściwe. Poprawka `cap()` z §8 zlecenia. |
 | **WP-02** | **WYLĄDOWANY**, CI zielone 505 s. Codex, 3 rundy + naprawa ręczna, **9 testów Rusta + 7 frontu**. |
 | **WP-03** | **WYLĄDOWANY**, CI zielone. Codex, 3 rundy + naprawa ręczna, **8 testów** (w tym dowód mutacyjny na identyfikatorach z panelu). |
+| **WP-04b** | **GOTOWY DO LĄDOWANIA** — jeden kompozytor Planu, Context i przekazań; **6 zawężonych testów Rusta** na stdin obu adapterów, wspólnym limicie, odmowie i ponownej turze. |
 | WP-05…WP-07 | czekają na CT-06…CT-09 |
 
 ### Format pliku workflow — liczba wyprowadzona, nie wybrana

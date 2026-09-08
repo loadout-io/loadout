@@ -77,8 +77,12 @@ pub const SHORT_INDEX_BYTES: usize = 2 * 1024;
 /// Ile gotowych zestawów może otrzymać jeden fizyczny krok po rozwiązaniu dziedziczenia.
 pub const STEP_CONTEXT_SETS: usize = 8;
 
-/// Ile bajtów może dołożyć Context do promptu jednego kroku. Pełne źródła są poza tym
-/// rachunkiem i pozostają dostępne przez ograniczony czytelnik (PLAN §9).
+/// Łączny przydział na Plan, wymagania i indeks Context oraz indeks przekazań, które Loadout
+/// dokłada do promptu jednego kroku. Pełne źródła są poza tym rachunkiem i pozostają dostępne
+/// przez ograniczony czytelnik (PLAN §9).
+///
+/// 2026-09-08 (WP-04b) — jedna liczba musi ograniczać sumę, bo trzy osobne przydziały po
+/// 24 KiB pozwalałyby Loadoutowi dołożyć 72 KiB przed instrukcjami i historią vendora.
 pub const STEP_PROMPT_BYTES: usize = 24 * 1024;
 
 /// Zamknięta lista rodzajów plików, które ta biblioteka przyjmuje.

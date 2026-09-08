@@ -9,6 +9,8 @@ mod document;
 mod publish;
 mod render;
 
+pub use crate::commands::context_inputs::{Composed, ContextBlock, compose};
+pub use candidate::WorkPlanCore;
 pub use candidate::{Configuration, DOCUMENT_ID, MAX_CANDIDATE_BYTES, Mode, Prepared};
 pub use change::{
     HumanRequirement, PlanCreate, PlanUpdate, ProposedRequirement, first_document, updated_document,
@@ -21,6 +23,7 @@ pub use publish::{
     read_versions,
 };
 pub use render::{RENDERER, render_plan};
+pub use render::{detail_index, render_core, render_details};
 
 /// Pierwszy i jedyny kształt pliku, dopóki naprawdę nie pojawi się potrzeba migracji.
 pub const SCHEMA: u32 = 1;
