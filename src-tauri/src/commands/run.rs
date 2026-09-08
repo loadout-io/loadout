@@ -16527,7 +16527,19 @@ impl Live {
         // result") i przypina ogolne zdanie z T-101. Konkretne zdanie nalezy sie wylacznie
         // przypadkowi, w ktorym plik JEST, a jego tresc nie zgadza sie z tym, co opublikowano.
         let changed = || HandoffChangedAfterPublication::for_handed(hand);
-        let bytes = regular_file_length(&hand.path).map_err(|_| changed())?;
+        // 2026-09-08 — TA LINIA PRZYWRACALA WADE, KTORA KOMENTARZ WYZEJ OPISUJE JAKO NAPRAWIONA.
+        // `map_err(|_| changed())` mapowal takze BRAK pliku, wiec krok, ktoremu poprzednik
+        // usunal wynik, czytal na karcie „was changed after … published it" — nieprawde o tym,
+        // co sie stalo. Zniknieciu nalezy sie zdanie ogolne (`CONTEXT_NOT_PROVEN`), bo tamten
+        // przypadek nie wie, ktory plik i dlaczego; „zmieniony" nalezy sie wylacznie plikowi,
+        // ktory JEST. Zlapane przy landowaniu WP-03 przez `a_missing_handoff_stops_the_step`.
+        let bytes = regular_file_length(&hand.path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                anyhow::Error::new(error)
+            } else {
+                changed().into()
+            }
+        })?;
         let published = handoff::read_handoff(&hand.path).map_err(|_| changed())?;
         if published.bytes_mismatch() {
             return Err(changed().into());
