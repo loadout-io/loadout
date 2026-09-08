@@ -10,7 +10,12 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type {
+  ContextApp,
+  ContextBuild,
+  ContextBuildRead,
   ContextDraft,
+  ContextFinding,
+  ContextRevision,
   ContextSet,
   ContextSetRead,
   DraftEdit,
@@ -19,6 +24,7 @@ import type {
   ImportResult,
   PreparedPage,
   PreviewImage,
+  RevisionEdit,
   SourcePart,
 } from '../../state/context';
 import { emptyDraft } from '../../state/context';
@@ -127,6 +133,195 @@ export async function removeSource(
     expectedRevision,
   });
   return asRead(answer, 'save');
+}
+
+/** Uruchamia budowanie; postęp podczas pracy czyta osobna krawędź poniżej. */
+export async function buildContext(
+  setId: string,
+  operationId: string,
+  app: ContextApp,
+  model: string | null,
+): Promise<ContextBuildRead> {
+  const answer = await invoke<unknown>('build_context', { setId, operationId, app, model });
+  return asBuildRead(answer, 'build');
+}
+
+/** Odczyt trwałego postępu po wejściu albo powrocie do zestawu. */
+export async function readBuild(setId: string): Promise<ContextBuildRead> {
+  return asBuildRead(await invoke<unknown>('read_context_build', { setId }), 'read');
+}
+
+/** Prosi o zatrzymanie i wraca dopiero z zapisanym końcem. */
+export async function stopBuild(setId: string, operationId: string): Promise<ContextBuild> {
+  return asBuild(
+    await invoke<unknown>('stop_context_build', { setId, operationId }),
+    'Loadout could not stop this context build.',
+  );
+}
+
+/** Publikuje zmianę człowieka jako następną, niezmienną wersję. */
+export async function saveRevision(setId: string, edit: RevisionEdit): Promise<ContextBuildRead> {
+  return asBuildRead(await invoke<unknown>('save_context_revision', { setId, edit }), 'save');
+}
+
+function asBuildRead(answer: unknown, doing: 'build' | 'read' | 'save'): ContextBuildRead {
+  if (typeof answer !== 'object' || answer === null) {
+    throw new Error('Loadout could not ' + doing + ' this context.');
+  }
+  const row = answer as Record<string, unknown>;
+  const app = asApp(row['buildWith']);
+  return {
+    build:
+      row['build'] === null || row['build'] === undefined
+        ? null
+        : asBuild(row['build'], 'Loadout could not read this context build.'),
+    revision:
+      row['revision'] === null || row['revision'] === undefined
+        ? null
+        : asRevision(row['revision']),
+    buildWith: app,
+  };
+}
+
+function asBuild(answer: unknown, refused: string): ContextBuild {
+  if (typeof answer !== 'object' || answer === null) throw new Error(refused);
+  const row = answer as Record<string, unknown>;
+  if (typeof row['operationId'] !== 'string' || typeof row['said'] !== 'string') {
+    throw new Error(refused);
+  }
+  return {
+    operationId: row['operationId'],
+    setId: text(row['setId']),
+    generation: number(row['generation']),
+    draftRevision: number(row['draftRevision']),
+    stage: asStage(row['stage']),
+    end: asEnd(row['end']),
+    app: asApp(row['app']),
+    requestedModel: optionalText(row['requestedModel']),
+    model: optionalText(row['model']),
+    batchesDone: number(row['batchesDone']),
+    batchesTotal: number(row['batchesTotal']),
+    sources: Array.isArray(row['sources']) ? row['sources'].map(asProgress) : [],
+    said: row['said'],
+    revisionId: optionalText(row['revisionId']),
+    startedAt: text(row['startedAt']),
+    changedAt: text(row['changedAt']),
+  };
+}
+
+function asRevision(answer: unknown): ContextRevision {
+  if (typeof answer !== 'object' || answer === null) {
+    throw new Error('Loadout could not read the ready context version.');
+  }
+  const row = answer as Record<string, unknown>;
+  if (typeof row['id'] !== 'string' || !Array.isArray(row['findings'])) {
+    throw new Error('Loadout could not read the ready context version.');
+  }
+  return {
+    id: row['id'],
+    setId: text(row['setId']),
+    draftRevision: number(row['draftRevision']),
+    app: asApp(row['app']),
+    requestedModel: optionalText(row['requestedModel']),
+    model: optionalText(row['model']),
+    createdAt: text(row['createdAt']),
+    origin: row['origin'] === 'human' || row['origin'] === 'generated' ? row['origin'] : 'unknown',
+    topics: Array.isArray(row['topics'])
+      ? row['topics'].map((topic) => {
+          const value = object(topic);
+          return { id: text(value['id']), title: text(value['title']) };
+        })
+      : [],
+    findings: row['findings'].map(asFinding),
+    questions: strings(row['questions']),
+    conflicts: strings(row['conflicts']),
+    sources: Array.isArray(row['sources']) ? row['sources'].map(asProgress) : [],
+  };
+}
+
+function asFinding(value: unknown): ContextFinding {
+  const row = object(value);
+  return {
+    id: text(row['id']),
+    kind:
+      row['kind'] === 'requirement' ||
+      row['kind'] === 'fact' ||
+      row['kind'] === 'visual-reference' ||
+      row['kind'] === 'assumption' ||
+      row['kind'] === 'question' ||
+      row['kind'] === 'conflict'
+        ? row['kind']
+        : 'unknown',
+    text: text(row['text']),
+    condition: text(row['condition']),
+    sources: Array.isArray(row['sources'])
+      ? row['sources'].map((source) => {
+          const reference = object(source);
+          return { sourceId: text(reference['sourceId']), part: text(reference['part']) };
+        })
+      : [],
+    topic: text(row['topic']),
+    conflictsWith: strings(row['conflictsWith']),
+    origin: row['origin'] === 'human' || row['origin'] === 'generated' ? row['origin'] : 'unknown',
+  };
+}
+
+function asProgress(value: unknown): ContextBuild['sources'][number] {
+  const row = object(value);
+  const outcome = row['outcome'];
+  return {
+    sourceId: text(row['sourceId']),
+    part: text(row['part']),
+    outcome:
+      outcome === 'processed' || outcome === 'excluded' || outcome === 'failed'
+        ? outcome
+        : 'unknown',
+    said: text(row['said']),
+  };
+}
+
+function asApp(value: unknown): ContextApp {
+  if (value === 'codex') return 'codex';
+  if (value === 'claude-code') return 'claude-code';
+  throw new Error('Loadout could not tell which app would read this material.');
+}
+
+function asStage(value: unknown): ContextBuild['stage'] {
+  const known = [
+    'freezing',
+    'splitting',
+    'extracting',
+    'grouping',
+    'publishing',
+    'ready',
+    'interrupted',
+  ];
+  return known.includes(String(value)) ? (value as ContextBuild['stage']) : 'unknown';
+}
+
+function asEnd(value: unknown): ContextBuild['end'] {
+  const known = ['running', 'ready', 'cancelled', 'failed', 'stillRunning', 'interrupted'];
+  return known.includes(String(value)) ? (value as ContextBuild['end']) : 'unknown';
+}
+
+function object(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function optionalText(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function number(value: unknown): number {
+  return typeof value === 'number' ? value : 0;
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string') : [];
 }
 
 /** Czy to, co przyszło, jest wierszem wyniku importu. */

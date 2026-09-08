@@ -27,6 +27,7 @@ answer_the_lead
 apply_eval_fix
 apply_setup
 author_skill
+build_context
 check_agent_apps
 check_trigger
 check_workflow
@@ -80,6 +81,7 @@ propose_eval_fix
 put_eval_case
 put_eval_variant
 put_note_to_use
+read_context_build
 read_context_set
 read_context_source
 read_eval_board
@@ -97,6 +99,7 @@ run_eval_set
 run_workflow
 save_agent
 save_context_draft
+save_context_revision
 save_eval_protection
 save_project_settings
 save_settings
@@ -110,6 +113,7 @@ scan_setup
 set_trigger_enabled
 start_process
 stop_comparing_copies
+stop_context_build
 stop_draft
 stop_generating_agent
 stop_process

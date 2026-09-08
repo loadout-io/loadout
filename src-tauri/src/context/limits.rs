@@ -53,6 +53,18 @@ pub const AGENT_EDGE: u32 = 1_568;
 /// Ile tekstu oddaje jeden odczyt podglądu (PLAN §9: do 16 KiB na wynik, z kursorem).
 pub const READ_TEXT_BYTES: usize = 16 * 1024;
 
+/// Najwięcej tekstu w jednej partii budowania (PLAN §9).
+pub const BATCH_TEXT_BYTES: usize = 24 * 1024;
+
+/// Domyślny sufit całego budowania, razem z jedyną korektą formatu.
+pub const BUILD_MINUTES: u64 = 20;
+
+/// Ile razy wolno poprawić wyłącznie format odpowiedzi.
+pub const CORRECTIONS: usize = 1;
+
+/// Docelowy sufit krótkiego indeksu. Pełne ustalenia zawsze zostają w tematach i JSON-ie.
+pub const SHORT_INDEX_BYTES: usize = 2 * 1024;
+
 /// Zamknięta lista rodzajów plików, które ta biblioteka przyjmuje.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Accepted {
@@ -237,6 +249,12 @@ pub enum Refusal {
     NothingToPrepare,
     /// Ta strona jeszcze nie powstała.
     PageNotReady { number: u32 },
+    /// Źródło wymaga dokończenia przygotowania przed budowaniem.
+    SourceNotReady { name: String },
+    /// Żadna z dwóch aplikacji agentów nie jest dostępna.
+    NoAgentApp,
+    /// Odpowiedź nie może zostać opublikowana bez utraty części materiału.
+    BuildNotPublishable { said: String },
 }
 
 impl fmt::Display for Refusal {
@@ -311,6 +329,17 @@ impl fmt::Display for Refusal {
             Self::PageNotReady { number } => write!(
                 formatter,
                 "Page {number} of this file is not prepared yet. Prepare the file to read it.",
+            ),
+            Self::SourceNotReady { name } => write!(
+                formatter,
+                "Prepare {name} before building this context. Nothing from the earlier ready version changed.",
+            ),
+            Self::NoAgentApp => formatter.write_str(
+                "Neither Claude Code nor Codex is available here. Install or sign in to one of them, then try Rebuild context.",
+            ),
+            Self::BuildNotPublishable { said } => write!(
+                formatter,
+                "This result could not become a ready version: {said} Try Rebuild context after fixing it.",
             ),
         }
     }

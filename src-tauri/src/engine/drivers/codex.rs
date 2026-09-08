@@ -1156,7 +1156,10 @@ fn curated_app_item(item: Item) -> Option<Value> {
     }
 }
 
-async fn write_app_line(stdin: &mut ChildStdin, body: &[u8]) -> anyhow::Result<()> {
+async fn write_app_line(stdin: &mut Option<ChildStdin>, body: &[u8]) -> anyhow::Result<()> {
+    let stdin = stdin
+        .as_mut()
+        .ok_or_else(|| anyhow!("The Codex App Server input already closed."))?;
     stdin
         .write_all(body)
         .await
@@ -1171,9 +1174,22 @@ async fn write_app_line(stdin: &mut ChildStdin, body: &[u8]) -> anyhow::Result<(
         .map_err(|_| anyhow!("The Codex App Server stopped reading requests."))
 }
 
+async fn close_app_input(stdin: &mut Option<ChildStdin>) -> anyhow::Result<()> {
+    let Some(mut input) = stdin.take() else {
+        return Ok(());
+    };
+    // 2026-09-08 (CT-04) — unixowy `ChildStdin::shutdown` w Tokio tylko zwraca `Ok`.
+    // `take` porzuca deskryptor przed drenażem stdout; inaczej CLI czeka na EOF wejścia,
+    // a aktor na EOF wyjścia i spokojne zamknięcie zawsze dobija do swojego sufitu.
+    input
+        .shutdown()
+        .await
+        .map_err(|_| anyhow!("The Codex App Server input could not be closed."))
+}
+
 async fn handle_app_command(
     command: Option<AppCommand>,
-    stdin: &mut ChildStdin,
+    stdin: &mut Option<ChildStdin>,
     pending: &mut HashMap<u64, PendingAppRequest>,
     state: &mut AppServerState,
     evidence_target: Option<&EvidenceTarget>,
@@ -1224,10 +1240,7 @@ async fn handle_app_command(
             true
         }
         Some(AppCommand::Close { reply }) => {
-            let result = stdin
-                .shutdown()
-                .await
-                .map_err(|_| anyhow!("The Codex App Server input could not be closed."));
+            let result = close_app_input(stdin).await;
             if result.is_err() {
                 mark_evidence_incomplete(evidence_target);
             }
@@ -1238,7 +1251,7 @@ async fn handle_app_command(
         }
         None => {
             mark_evidence_incomplete(evidence_target);
-            let _ = stdin.shutdown().await;
+            let _ = close_app_input(stdin).await;
             false
         }
     }
@@ -1400,7 +1413,7 @@ where
     Output: AsyncRead + Unpin,
 {
     let AppServerInput {
-        mut stdin,
+        stdin,
         stdout,
         model,
         prices,
@@ -1411,6 +1424,7 @@ where
         mut evidence,
         evidence_target,
     } = input;
+    let mut stdin = Some(stdin);
     let mut reader = BufReader::new(stdout);
     let mut buffer = Vec::with_capacity(8 * 1024);
     let mut pending: HashMap<u64, PendingAppRequest> = HashMap::new();
@@ -4261,6 +4275,44 @@ mod stop_proof_tests {
         );
         let proof = stop_startup_process(&mut process).await;
         assert!(matches!(proof, GroupProof::Dead { .. }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closing_app_input_reaches_a_child_waiting_for_eof() -> anyhow::Result<()> {
+        let mut command = Command::new("sh");
+        command.args(["-c", "while IFS= read -r _line; do :; done"]);
+        let mut process = supervisor::spawn(command, StdinPlan::Keep(String::new()))?;
+        let stdout = process
+            .stdout()
+            .ok_or_else(|| anyhow::anyhow!("the App Server child has no output pipe"))?;
+        let stdin = process
+            .stdin()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("the App Server child has no input pipe"))?;
+        let (commands, command_inbox) = mpsc::channel(1);
+        let (events, _event_inbox) = mpsc::channel(1);
+        let (outcomes, _outcome_inbox) = mpsc::channel(1);
+        let reader = tokio::spawn(app_server_actor(AppServerInput {
+            stdin,
+            stdout,
+            model: None,
+            prices: Prices::default(),
+            commands: command_inbox,
+            events,
+            outcomes,
+            complaint: Arc::new(Mutex::new(String::new())),
+            evidence: None,
+            evidence_target: None,
+        }));
+        let client = AppClient::new(commands, None);
+
+        client.close().await?;
+        let status = tokio::time::timeout(Duration::from_secs(2), process.wait())
+            .await
+            .map_err(|_| anyhow::anyhow!("the App Server child did not receive input EOF"))??;
+        assert!(status.success(), "the App Server child exited as {status}");
+        reader.await?;
         Ok(())
     }
 
