@@ -359,32 +359,60 @@ export function ChatContextPicker({
   onChoose: (value: ContextPin[]) => void;
 }): ReactElement {
   const pins = readablePins(value);
+  /* 2026-09-08 (CT-07) — WNĘTRZE POWSTAJE DOPIERO PO ROZWINIĘCIU. Zwinięty `<details>`
+   * trzyma swoje dzieci w drzewie, a kolektor gęstości JE LICZY — zmierzone: zdanie
+   * schowane w środku podbijało `textElements` w widoku domyślnym. Bez tego całe pole
+   * szukania, katalog i każdy zestaw wchodziłyby do pomiaru widoku, w którym człowiek
+   * ich nawet nie widzi. */
+  const [open, setOpen] = useState(false);
   return (
-    <details data-chat-context className="mb-2 rounded-md border border-line bg-panel p-2">
+    <details
+      data-chat-context
+      className="mb-2 rounded-md border border-line bg-panel p-2"
+      onToggle={(event) => {
+        setOpen(event.currentTarget.open);
+      }}
+    >
+      {/* 2026-09-08 (CT-07) — STAN NIEUDANEGO ODCZYTU STOI NA UCHWYCIE, nie tylko w środku.
+          Picker jest zwinięty domyślnie, więc odmowa widoczna wyłącznie po rozwinięciu jest
+          odmową, której nikt nie przeczyta: człowiek zobaczyłby „Context · None" i uznał, że
+          po prostu nic nie wybrał. Pełne zdanie zostaje w środku, dla tego, kto rozwinie. */}
       <summary className="label cursor-pointer">
-        Context · {pins.length === 0 ? 'None' : `${String(pins.length)} selected`}
+        Context ·{' '}
+        {refusal === null || refusal === undefined
+          ? pins.length === 0
+            ? 'None'
+            : `${String(pins.length)} selected`
+          : 'could not be read'}
       </summary>
-      <div className="stack pt-2" data-gap="2">
-        {view === null ? (
-          <p className="caption">Context choices are being read.</p>
-        ) : (
-          <ContextPickerBox
-            searchLabel="Search conversation context"
-            catalog={view.catalog}
-            pins={pins}
-            resolved={view.workflow}
-            onChoose={onChoose}
-          />
-        )}
-        {view?.warnings.map((warning) => (
-          <p key={warning} className="text-body text-warn">
-            {warning}
-          </p>
-        ))}
-        {refusal === null || refusal === undefined ? null : (
-          <p className="text-body text-warn">{refusal}</p>
-        )}
-      </div>
+      {!open ? null : (
+        <div className="stack pt-2" data-gap="2">
+          {/* 2026-09-08 (CT-07) — JEDNO ZDANIE NARAZ. Stało tu „Context choices are being read."
+            OBOK zdania odmowy, więc ekran mówił jednocześnie, że właśnie czyta wybór i że nie
+            umiał go odczytać. Nieudany odczyt nie jest trwaniem odczytu: gdy jest odmowa, to
+            ona jest całą prawdą o tym stanie. */}
+          {refusal === null || refusal === undefined ? (
+            view === null ? (
+              <p className="caption">Context choices are being read.</p>
+            ) : (
+              <ContextPickerBox
+                searchLabel="Search conversation context"
+                catalog={view.catalog}
+                pins={pins}
+                resolved={view.workflow}
+                onChoose={onChoose}
+              />
+            )
+          ) : (
+            <p className="text-body text-warn">{refusal}</p>
+          )}
+          {view?.warnings.map((warning) => (
+            <p key={warning} className="text-body text-warn">
+              {warning}
+            </p>
+          ))}
+        </div>
+      )}
     </details>
   );
 }
