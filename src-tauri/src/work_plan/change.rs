@@ -152,11 +152,24 @@ fn proposal(requirement: ProposedRequirement) -> Requirement {
     }
 }
 
+/// Identyfikator wymagania ma być **stabilny i nadający się na klucz**, a nie zgodny
+/// z jakimś jednym kształtem.
+///
+/// 2026-09-08 — STAŁO TU `R` PLUS SAME CYFRY i to była wada, nie ostrożność. Zlecenie mówi
+/// „wymagania ze stabilnymi identyfikatorami, **np.** R1, R2" — przykład został tu zamieniony
+/// w twardą regułę. Tymczasem kontrolka, którą człowiek naprawdę wypełnia, nadaje `c1`, `c2`
+/// (`src/sections/workflows/step-panel/criteria-row.tsx`), a nic po drodze tego nie
+/// przepisuje. Skutek był taki, że KAŻDY krok `Create`, którego kryteria pochodzą z aplikacji,
+/// kończył się `Malformed` i nie publikował ani jednej wersji.
+///
+/// Co naprawdę musi być prawdą, żeby reszta modelu działała: identyfikator ma się nadawać na
+/// klucz mapy i na odwołanie w renderowanym tekście, więc nie może być pusty ani nieść
+/// białych znaków; i ma być **jedyny w dokumencie**, bo na tym stoi „aktualizacja jednej
+/// sekcji nie renumeruje pozostałych".
 fn remember_requirement(seen: &mut BTreeSet<String>, id: &str) -> Result<(), Error> {
-    let digits = id.strip_prefix('R').unwrap_or_default();
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+    if id.is_empty() || id.chars().any(char::is_whitespace) {
         return Err(Error::Malformed(format!(
-            "requirement identifier {id:?} must be R followed by digits"
+            "requirement identifier {id:?} has to be one word that stays the same between versions"
         )));
     }
     if !seen.insert(id.to_owned()) {

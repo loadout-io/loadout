@@ -399,6 +399,60 @@ pub struct ContextAccess {
 }
 
 impl ContextAccess {
+    /// Buduje jeden zamrożony, tekstowy przydział bez tworzenia drugiego czytnika.
+    #[must_use]
+    pub(crate) fn one_text(
+        holder: impl Into<String>,
+        set_id: impl Into<String>,
+        revision: impl Into<String>,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        text: impl Into<String>,
+        expires: CancellationToken,
+    ) -> Self {
+        let set_id = set_id.into();
+        let revision = revision.into();
+        let id = id.into();
+        let text: Arc<str> = text.into().into();
+        let mut materials = BTreeMap::new();
+        materials.insert(
+            id.clone(),
+            Material {
+                listed: ContextItem {
+                    id: id.clone(),
+                    source_id: id.clone(),
+                    address: format!("context://{set_id}@{revision}/{id}"),
+                    name: name.into(),
+                    description: String::new(),
+                    kind: ContextItemKind::Text,
+                    page: None,
+                    pages_total: None,
+                    has_text: true,
+                    has_image: false,
+                },
+                text: Some(TextAt::Inline(text)),
+                preview: None,
+                agent_image: None,
+            },
+        );
+        let grants = BTreeMap::from([(id, 0..usize::MAX)]);
+        // 2026-09-08 — plan używa tego samego rejestru kursorów i limitu 16 KiB co Context;
+        // osobny pager rozszedłby się z granicą dostępu zmierzoną w CT-03b.
+        Self {
+            shelf: Arc::new(Shelf {
+                set_id,
+                revision,
+                materials,
+                by_source: BTreeMap::new(),
+                sources: BTreeMap::new(),
+                cursors: Mutex::new(BTreeMap::new()),
+            }),
+            holder: holder.into(),
+            grants,
+            expires,
+        }
+    }
+
     /// Wypisuje tylko to, co naprawdę znajduje się w tym przydziale.
     pub fn list(&self) -> Result<ContextList, Denied> {
         self.alive()?;

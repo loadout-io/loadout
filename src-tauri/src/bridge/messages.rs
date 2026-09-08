@@ -393,6 +393,7 @@ pub(crate) struct StepDesk {
     pub services: Option<Arc<ServiceAccess>>,
     pub messages: Option<Messages>,
     pub context: Option<super::context::ContextDesk>,
+    pub plan: Option<super::work_plan::PlanDesk>,
 }
 impl fmt::Debug for StepDesk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -400,6 +401,7 @@ impl fmt::Debug for StepDesk {
             .field("messages", &self.messages.is_some())
             .field("services", &self.services.is_some())
             .field("context", &self.context.is_some())
+            .field("plan", &self.plan.is_some())
             .finish()
     }
 }
@@ -424,6 +426,9 @@ impl StepDesk {
         if let Some(context) = &self.context {
             tools.extend(context.tools().as_array().into_iter().flatten().cloned());
         }
+        if let Some(plan) = &self.plan {
+            tools.extend(plan.tools().as_array().into_iter().flatten().cloned());
+        }
         json!(tools)
     }
 }
@@ -445,6 +450,14 @@ impl Answers for StepDesk {
                 None => Answer::Refused(
                     "Context is not available to this step. Nothing from another step was read."
                         .to_owned(),
+                ),
+            };
+        }
+        if call.call == "read_plan" {
+            return match &self.plan {
+                Some(plan) => plan.answer(call).await,
+                None => Answer::Refused(
+                    "A plan version is not available to this step. Nothing was read.".to_owned(),
                 ),
             };
         }

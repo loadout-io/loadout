@@ -51,7 +51,7 @@ pub enum SectionKey {
 }
 
 impl SectionKey {
-    pub(super) fn label(&self) -> &str {
+    pub(crate) fn label(&self) -> &str {
         match self {
             Self::Implementation => "Implementation",
             Self::Design => "Design",

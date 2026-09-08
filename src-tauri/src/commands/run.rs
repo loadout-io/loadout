@@ -4260,6 +4260,10 @@ struct AgentJob {
     /// widać — dowiązanie położone tam przez kogoś wcześniej — jest odmową o chwilę później,
     /// ale wciąż przed startem kroku ([`Live::the_answer_has_somewhere_to_go`]).
     write_results_to: Option<PathBuf>,
+    /// 2026-09-08 — uprawnienie Plan jest zamrożone z fizycznym krokiem; brak pola to Off.
+    work_plan: crate::work_plan::Configuration,
+    /// 2026-09-08 — roboczy plik jest pod katalogiem kroku; agent dostaje, lecz nie wybiera adresu.
+    plan_candidate: PathBuf,
     /// Pola, które ten krok ma oddać obok swojej odpowiedzi. Pusty wektor dla kroku bez
     /// formularza — i to jest odpowiedź, nie brak: krok, o którego pola nikt nie prosił, nie ma
     /// czego oddawać i nie wolno go o nic sądzić.
@@ -6315,6 +6319,14 @@ fn plan_agent(
     let connections = the_connections_this_step_opens(step, &effective, setup)?;
 
     let write_results_to = where_results_go(&effective, step)?;
+    let work_plan = crate::work_plan::Configuration::from_step(step.extra.get("plan"))
+        .map_err(|error| RunError::Io(io::Error::other(error.to_string())))?;
+    let session = Uuid::now_v7();
+    // 2026-09-08 — nazwa pochodzi z fizycznej sesji, nie z kafelka. Ponowiona próba nie
+    // odziedziczy więc starego kandydata i nie uzna go za wynik nowego procesu.
+    let plan_candidate = PathBuf::from(".loadout")
+        .join("plan-candidates")
+        .join(format!("{session}.json"));
 
     /* KAŻDA KOPIA WIE, KTÓRA JEST. Trzy sesje z identycznym zdaniem robią tę samą robotę trzy
      * razy, czyli są najdroższym możliwym sposobem na jedną odpowiedź — a podstawienie bez
@@ -6356,10 +6368,12 @@ fn plan_agent(
             crate::workflow::Weight::Heavy => limits::Weight::Heavy,
         },
         agent_name: effective.name.clone(),
-        session: Uuid::now_v7(),
+        session,
         cwd: spot.cwd,
         ours: spot.ours,
         write_results_to,
+        work_plan,
+        plan_candidate,
         // Formularz albo nic. `Handover::Plain` znaczy „oddaj to, co masz do powiedzenia,
         // i tyle" — czyli dokładnie to, co robi każdy krok bez tego pola.
         handover: match &step.handover {
@@ -10969,6 +10983,10 @@ struct Live {
     route_evidence: Mutex<Vec<Option<RouteEvidence>>>,
     /// Trwały dowód wyboru, kopiowany do `run.json` przy każdym zrzucie.
     route_decisions: Mutex<Vec<RouteDecision>>,
+    /// 2026-09-08 — przypięty rodzic i zakres; zamek nie przechodzi przez `await`.
+    plan_turns: Mutex<Vec<Option<crate::work_plan::Prepared>>>,
+    /// 2026-09-08 — wersja oddana dopiero po pełnym sukcesie; nigdy sam przypięty input.
+    plan_outputs: Mutex<Vec<Option<crate::work_plan::PlanVersion>>>,
 }
 
 /// Zmienna połowa biegu — dokładnie to, co zmienia się między zrzutami `run.json`.
@@ -11023,6 +11041,8 @@ struct StepRun {
     assessment: Option<crate::engine::drivers::command::assessment::Assessment>,
     end_cause: Option<super::run_inputs::EndCause>,
     result_files: Option<super::run_inputs::ResultFiles>,
+    /// 2026-09-08 — wersja kroku; dokument nadal ma jedną kopię w `plans/`.
+    plan_version: Option<WorkPlanReceipt>,
     /// Stan kroku. `paused` tu nie istnieje i nie ma go w [`StepState`] — to jest stan biegu.
     status: StepState,
     execution: ExecutionFacts,
@@ -11117,6 +11137,25 @@ struct StepRun {
     /// [`StepRun`] wchodzi wypełnione (`Live::new`). Ciężkie znalezisko nie ma jak tu dojechać —
     /// zabrało cały bieg przy planowaniu.
     borrowed_concerns: Vec<BorrowedConcern>,
+}
+
+/// 2026-09-08 — trwały adres wersji w wyniku kroku, bez drugiej kopii całego dokumentu.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkPlanReceipt {
+    document_id: String,
+    version: u64,
+    version_id: String,
+}
+
+impl From<&crate::work_plan::PlanVersion> for WorkPlanReceipt {
+    fn from(version: &crate::work_plan::PlanVersion) -> Self {
+        Self {
+            document_id: version.document_id.clone(),
+            version: version.version,
+            version_id: version.version_id.clone(),
+        }
+    }
 }
 
 /// Co aplikacja agenta dobrała sobie z folderu kroku — zapisywane do `run.json`.
@@ -11272,6 +11311,14 @@ impl HandoffChangedAfterPublication {
     }
 }
 
+/// Konkretna odmowa przygotowania planu pracy, którą wolno pokazać człowiekowi słowo w słowo.
+///
+/// 2026-09-08 — bez osobnego typu wspólna granica błędów kontekstu zastępowała nazwany brak
+/// planu ogólnym komunikatem, chociaż kolejny krok został poprawnie zatrzymany przed procesem.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct WorkPlanRefused(String);
+
 /// Czym jest plik wymieniony w indeksie — z punktu widzenia kroku, który ten indeks czyta.
 ///
 /// Zamknięta lista, bo etykieta jest po to, żeby ROZRÓŻNIAĆ: nazwa kafelka i ścieżka mówią, skąd
@@ -11358,6 +11405,55 @@ struct Told {
     extra_dirs: Vec<PathBuf>,
 }
 
+/// 2026-09-08 — wspólna kotwica integralności kandydata i opublikowanego przekazania.
+fn regular_file_length(path: &Path) -> io::Result<usize> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(io::Error::other("the path is not one regular file"));
+    }
+    usize::try_from(metadata.len())
+        .map_err(|_| io::Error::other("the file length does not fit on this machine"))
+}
+
+/// 2026-09-08 — oba odczyty używają tej samej kontroli typu pliku, limitu i długości.
+fn plan_candidate_bytes(
+    cwd: &Path,
+    prepared: &crate::work_plan::Prepared,
+) -> Result<Vec<u8>, crate::work_plan::Error> {
+    let path = Live::room_for_the_answer(cwd, prepared.candidate())
+        .map_err(|error| crate::work_plan::Error::NotDelivered(error.to_string()))?;
+    let before = regular_file_length(&path).map_err(|error| {
+        let reason = if error.kind() == io::ErrorKind::NotFound {
+            "the candidate file is missing".to_owned()
+        } else {
+            format!("the candidate file could not be read safely: {error}")
+        };
+        crate::work_plan::Error::NotDelivered(reason)
+    })?;
+    if before > crate::work_plan::MAX_CANDIDATE_BYTES {
+        return Err(crate::work_plan::Error::NotDelivered(format!(
+            "the candidate is larger than {} bytes",
+            crate::work_plan::MAX_CANDIDATE_BYTES
+        )));
+    }
+    let bytes = fs::read(&path).map_err(|error| {
+        crate::work_plan::Error::NotDelivered(format!(
+            "the candidate file could not be read: {error}"
+        ))
+    })?;
+    let after = regular_file_length(&path).map_err(|error| {
+        crate::work_plan::Error::NotDelivered(format!(
+            "the candidate file changed while Loadout read it: {error}"
+        ))
+    })?;
+    if before != after || bytes.len() != before {
+        return Err(crate::work_plan::Error::NotDelivered(
+            "the candidate file changed while Loadout read it".to_owned(),
+        ));
+    }
+    Ok(bytes)
+}
+
 impl Live {
     /// Świeży bieg: wszystkie kroki czekają, nic jeszcze nie ruszyło.
     fn new(
@@ -11383,6 +11479,7 @@ impl Live {
                 end_cause: None,
                 assessment: None,
                 result_files: None,
+                plan_version: None,
                 not_run_because: None,
                 round_outcome: None,
                 started_at: None,
@@ -11423,6 +11520,8 @@ impl Live {
         let said_so_far = Mutex::new(vec![String::new(); plan.steps.len()]);
         let settled_at = Mutex::new(vec![None; plan.loops.len()]);
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
+        let plan_turns = Mutex::new(vec![None; plan.steps.len()]);
+        let plan_outputs = Mutex::new(vec![None; plan.steps.len()]);
         // Od tej chwili receipt jest częścią zmiennej księgi. Plan nie trzyma drugiej kopii,
         // która mogłaby rozjechać się z listami odbiorców podczas równoległych startów.
         let memory = std::mem::take(&mut plan.memory);
@@ -11464,6 +11563,8 @@ impl Live {
             lineage: Mutex::new(BTreeMap::new()),
             route_evidence,
             route_decisions: Mutex::new(Vec::new()),
+            plan_turns,
+            plan_outputs,
             processes,
         }
     }
@@ -14236,6 +14337,154 @@ impl Live {
         driver.start(turn.spec, turn.events).await
     }
 
+    fn prepared_work_plan(
+        &self,
+        id: StepId,
+        job: &AgentJob,
+    ) -> Result<Option<crate::work_plan::Prepared>, String> {
+        if job.work_plan.mode() == crate::work_plan::Mode::Off {
+            return Ok(None);
+        }
+        if let Some(prepared) = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Clone::clone)
+        {
+            return Ok(Some(prepared));
+        }
+        let human_requirements = job
+            .criteria
+            .iter()
+            .map(|criterion| crate::work_plan::HumanRequirement {
+                id: criterion.id.clone(),
+                text: criterion.behaviour.clone(),
+                acceptance: vec![crate::work_plan::AcceptanceCriterion {
+                    text: criterion.behaviour.clone(),
+                    verification: criterion.method.said().to_owned(),
+                }],
+            })
+            .collect();
+        let current = match job.work_plan.mode() {
+            crate::work_plan::Mode::Update | crate::work_plan::Mode::Use => {
+                Some(self.inherited_work_plan(id)?)
+            }
+            crate::work_plan::Mode::Create
+            | crate::work_plan::Mode::Off
+            | crate::work_plan::Mode::Unknown => None,
+        };
+        let prepared = job
+            .work_plan
+            .prepare_pinned(
+                self.plan
+                    .dir
+                    .join("plans")
+                    .join(crate::work_plan::DOCUMENT_ID),
+                job.plan_candidate.clone(),
+                human_requirements,
+                current,
+            )
+            .map_err(|error| error.to_string())?;
+        let mut turns = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(slot) = turns.get_mut(id) else {
+            return Err("Loadout could not pin this step's plan version.".to_owned());
+        };
+        *slot = Some(prepared.clone());
+        Ok(Some(prepared))
+    }
+
+    fn inherited_work_plan(&self, id: StepId) -> Result<crate::work_plan::PlanVersion, String> {
+        fn collect(
+            live: &Live,
+            id: StepId,
+            outputs: &[Option<crate::work_plan::PlanVersion>],
+            visited: &mut BTreeSet<StepId>,
+            found: &mut BTreeMap<String, crate::work_plan::PlanVersion>,
+        ) -> Result<(), String> {
+            if !visited.insert(id) {
+                return Ok(());
+            }
+            let Some(step) = live.plan.steps.get(id) else {
+                return Err("Loadout could not follow this step's plan source.".to_owned());
+            };
+            for parent_key in &step.depends_on {
+                let Some(parent) = live
+                    .plan
+                    .steps
+                    .iter()
+                    .position(|candidate| candidate.node_key == *parent_key)
+                else {
+                    return Err("Loadout could not follow this step's plan source.".to_owned());
+                };
+                let parent_step = &live.plan.steps[parent];
+                let mode = match &parent_step.job {
+                    Job::Agent(job) => job.work_plan.mode(),
+                    Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => crate::work_plan::Mode::Off,
+                };
+                if mode == crate::work_plan::Mode::Off {
+                    collect(live, parent, outputs, visited, found)?;
+                    continue;
+                }
+                let Some(version) = outputs.get(parent).and_then(Clone::clone) else {
+                    return Err(format!(
+                        "Loadout did not start this step because {} did not finish the plan version it was meant to provide.",
+                        parent_step.name
+                    ));
+                };
+                found.insert(version.version_id.clone(), version);
+            }
+            Ok(())
+        }
+
+        let outputs = self
+            .plan_outputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let mut found = BTreeMap::new();
+        collect(self, id, &outputs, &mut BTreeSet::new(), &mut found)?;
+        match found.len() {
+            1 => found
+                .into_values()
+                .next()
+                .ok_or_else(|| "Loadout could not pin this step's plan version.".to_owned()),
+            0 => Err(
+                "Loadout did not start this step because none of its earlier steps provided a plan."
+                    .to_owned(),
+            ),
+            _ => Err(
+                "Loadout did not start this step because its earlier steps provided different plan versions."
+                    .to_owned(),
+            ),
+        }
+    }
+
+    fn record_plan_output(
+        &self,
+        id: StepId,
+        version: &crate::work_plan::PlanVersion,
+    ) -> Result<(), String> {
+        let mut outputs = self
+            .plan_outputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(slot) = outputs.get_mut(id) else {
+            return Err("Loadout could not remember this step's plan version.".to_owned());
+        };
+        *slot = Some(version.clone());
+        drop(outputs);
+        // 2026-09-08 — dokument zostaje wyłącznie w `plans/`; wynik kroku zapisuje jego adres,
+        // żeby po restarcie było wiadomo, którą wersję ten konkretny Use naprawdę dostał.
+        self.update(|book| {
+            book.steps[id].plan_version = Some(WorkPlanReceipt::from(version));
+        });
+        Ok(())
+    }
+
     /// Zwykły Step dostaje wyłącznie swój host usług. Nie jest Desk-em Leada.
     async fn service_bridge_for(
         &self,
@@ -14243,7 +14492,17 @@ impl Live {
         job: &AgentJob,
         expires: CancellationToken,
     ) -> anyhow::Result<Option<crate::bridge::host::Bridge>> {
-        if job.service_access.is_empty() && !job.agent_messages {
+        let prepared = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Clone::clone);
+        let has_plan = prepared
+            .as_ref()
+            .and_then(crate::work_plan::Prepared::current)
+            .is_some();
+        if job.service_access.is_empty() && !job.agent_messages && !has_plan {
             return Ok(None);
         }
         let services = (!job.service_access.is_empty()).then(|| {
@@ -14267,19 +14526,29 @@ impl Live {
                             .configuration
                             .context_key(&step.tile_key)
                             .map(str::to_owned),
-                        expires,
+                        expires.clone(),
                     )
                     .map_err(anyhow::Error::msg)?,
             )
         } else {
             None
         };
+        let plan = prepared.as_ref().and_then(|prepared| {
+            prepared.current().map(|version| {
+                crate::bridge::work_plan::PlanDesk::new(
+                    format!("{}:{}", self.plan.id, step.node_key),
+                    version,
+                    expires.clone(),
+                )
+            })
+        });
         // CT-06 poda tu zamrożony przydział kroku. Pole jest jawne już od 2026-09-08, żeby
         // lista czasowników i rozdzielnik wyrastały z tej samej wartości, nigdy z dwóch flag.
         let access = Arc::new(crate::bridge::messages::StepDesk {
             services,
             messages,
             context: None,
+            plan,
         });
         Ok(Some(
             crate::bridge::host::Bridge::open_with_tools(
@@ -14313,9 +14582,13 @@ impl Live {
         } = match self.prompt_for(id, &job.prompt, &job.context, job.minutes) {
             Ok(told) => told,
             Err(error) => {
-                let text = error
-                    .downcast_ref::<HandoffChangedAfterPublication>()
-                    .map_or_else(|| CONTEXT_NOT_PROVEN.to_owned(), ToString::to_string);
+                let text = if let Some(refusal) = error.downcast_ref::<WorkPlanRefused>() {
+                    refusal.to_string()
+                } else {
+                    error
+                        .downcast_ref::<HandoffChangedAfterPublication>()
+                        .map_or_else(|| CONTEXT_NOT_PROVEN.to_owned(), ToString::to_string)
+                };
                 // 2026-08-25 (T-101) — TEN SAM POWÓD, ALE JEDNE DRZWI PORAŻKI. Zapis przed
                 // `never_started` zachowuje dokładny tekst odmowy; wspólne domknięcie dopiero
                 // potem pyta `whenItFails`, więc `carry-on` i `ask-me` nie są tu martwe.
@@ -14675,10 +14948,10 @@ impl Live {
         Ok(())
     }
 
-    fn freeze_result_files(
+    fn finalizable_working_folder(
         &self,
         id: StepId,
-    ) -> io::Result<Option<super::run_inputs::ResultFiles>> {
+    ) -> io::Result<Option<(PathBuf, crate::commands::processes::CopyFinalizationGuard)>> {
         let proved = {
             let book = self.book();
             !book.steps[id].execution.process_started || book.steps[id].death_proof
@@ -14691,22 +14964,124 @@ impl Live {
         let Some(cwd) = where_the_job_works(&self.plan.steps[id].job) else {
             return Ok(None);
         };
-        let _guard = self
+        let cwd = cwd.to_path_buf();
+        let guard = self
             .processes
-            .try_finalize_copy(cwd)?
+            .try_finalize_copy(&cwd)?
             .ok_or_else(|| io::Error::other("A background app is still using these files."))?;
-        self.copy_processes_stopped(cwd).map_err(io::Error::other)?;
-        change_native_skills(&self.plan.dir, cwd, None)?;
+        self.copy_processes_stopped(&cwd)
+            .map_err(io::Error::other)?;
+        Ok(Some((cwd, guard)))
+    }
+
+    fn finish_work_plan(&self, id: StepId) -> Result<(), String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return Ok(());
+        };
+        if job.work_plan.mode() == crate::work_plan::Mode::Off {
+            return Ok(());
+        }
+        let prepared = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Clone::clone)
+            .ok_or_else(|| {
+                crate::work_plan::Error::NotDelivered(
+                    "Loadout did not pin the plan parent for this try".to_owned(),
+                )
+                .to_string()
+            })?;
+        if job.work_plan.mode() == crate::work_plan::Mode::Use {
+            let current = prepared.current().cloned().ok_or_else(|| {
+                crate::work_plan::Error::NotDelivered(
+                    "Loadout did not keep the plan version pinned to this step".to_owned(),
+                )
+                .to_string()
+            })?;
+            return self.record_plan_output(id, &current);
+        }
+        let Some((cwd, _guard)) = self.finalizable_working_folder(id).map_err(|error| {
+            crate::work_plan::Error::NotDelivered(error.to_string()).to_string()
+        })?
+        else {
+            return Err(crate::work_plan::Error::NotDelivered(
+                "this step has no working folder".to_owned(),
+            )
+            .to_string());
+        };
+        let bytes = plan_candidate_bytes(&cwd, &prepared).map_err(|error| error.to_string())?;
+        let step = &self.plan.steps[id];
+        let stamp = crate::work_plan::Stamp {
+            run_id: self.plan.id.clone(),
+            document_id: crate::work_plan::DOCUMENT_ID.to_owned(),
+            step_id: step.id.clone(),
+            attempt: u32::from(step.turn).saturating_add(1),
+            operation: format!("{}:{}:{}", self.plan.id, step.id, step.turn),
+            parent: prepared.current().map(|version| version.version_id.clone()),
+            at: crate::commands::now_utc(),
+        };
+        let publication = prepared
+            .publish(&stamp, &bytes)
+            .map_err(|error| error.to_string())?;
+        let version = match publication {
+            crate::work_plan::Publication::Published(version)
+            | crate::work_plan::Publication::Unchanged(version)
+            | crate::work_plan::Publication::AlreadyPublished(version) => version,
+        };
+        self.record_plan_output(id, &version)?;
+        let path = cwd.join(prepared.candidate());
+        // 2026-09-08 — kandydat nie jest historią planu. Po publikacji czyta go już tylko
+        // sprzątanie; błąd kasowania nie może cofnąć atomowo opublikowanej wersji.
+        if let Err(error) = fs::remove_file(&path) {
+            tracing::debug!(%error, "the published plan candidate was left in the working folder");
+        }
+        Ok(())
+    }
+
+    /// 2026-09-08 — tylko podgląd do korekty; publikacja nadal czeka na dowód śmierci procesu.
+    fn plan_candidate_problem_during_session(&self, id: StepId, job: &AgentJob) -> Option<String> {
+        if !job.work_plan.writes_candidate() {
+            return None;
+        }
+        let prepared = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Clone::clone)?;
+        let path = job.cwd.join(prepared.candidate());
+        if matches!(
+            fs::symlink_metadata(&path),
+            Err(ref error) if error.kind() == io::ErrorKind::NotFound
+        ) {
+            return None;
+        }
+        plan_candidate_bytes(&job.cwd, &prepared)
+            .and_then(|bytes| prepared.validate(&bytes))
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    fn freeze_result_files(
+        &self,
+        id: StepId,
+    ) -> io::Result<Option<super::run_inputs::ResultFiles>> {
+        let Some((cwd, _guard)) = self.finalizable_working_folder(id)? else {
+            return Ok(None);
+        };
+        change_native_skills(&self.plan.dir, &cwd, None)?;
         let relative = PathBuf::from("check-inputs").join(&self.plan.steps[id].node_key);
         supervisor::PublicationRoot::open(&self.plan.dir)?.ensure_directory(&relative, 0o700)?;
         // WF-16 (2026-09-06): Project/Pick nie są własnością biegu. Zamrożenie wyniku
         // nie daje nowej zgody na import prywatnego .env gospodarza. Własna kopia ma już
         // rozstrzygnięte wejścia WF-14 i zachowuje także pliki utworzone później przez agenta.
         let snapshot = if cwd.starts_with(self.plan.dir.join(WORK_DIR)) {
-            super::input_snapshot::capture_saved_result(cwd, &self.plan.dir.join(&relative))?
+            super::input_snapshot::capture_saved_result(&cwd, &self.plan.dir.join(&relative))?
         } else {
             super::input_snapshot::capture_selected(
-                cwd,
+                &cwd,
                 &self.plan.dir.join(&relative),
                 &self.plan.additional_inputs,
             )?
@@ -15662,7 +16037,10 @@ impl Live {
                 .or_else(|| {
                     self.verdict_after(id, &outcome.text, native.as_ref())
                         .map(str::to_owned)
-                });
+                })
+                // 2026-09-08 — publikacja stoi za KAŻDYM kontraktem wyniku. Zielony proces
+                // bez wymaganego pola nie może zostawić planu, którego krok nie dostarczył.
+                .or_else(|| self.finish_work_plan(id).err());
             match why {
                 Some(why) => self.when_this_one_fails(id, &why).await,
                 None => StepReport::Succeeded,
@@ -15847,12 +16225,25 @@ impl Live {
                 finished = Ended::Turn(Ok(done));
                 break;
             };
-            let Some(next) = self
-                .control
-                .next_turn_or_stop_accepting(&node_key, message_generation)
-            else {
-                finished = Ended::Turn(Ok(done));
-                break;
+            let correction = match &self.plan.steps[id].job {
+                Job::Agent(job) => self.plan_candidate_problem_during_session(id, job),
+                Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => None,
+            };
+            let next = if let Some(why) = correction {
+                // 2026-09-08 — poprawka jedzie do TEJ SAMEJ sesji i pod pozostałym czasem
+                // kroku. Nowy agent zgubiłby przypięte wejścia i podwoił koszt formatu.
+                format!(
+                    "Loadout checked the plan candidate and could not accept it: {why} Correct the candidate at the same path, then finish this step again."
+                )
+            } else {
+                let Some(next) = self
+                    .control
+                    .next_turn_or_stop_accepting(&node_key, message_generation)
+                else {
+                    finished = Ended::Turn(Ok(done));
+                    break;
+                };
+                next
             };
             if voice.send(ToAgent::Turn(next)).await.is_err() {
                 // Transport padł między przyjęciem a podaniem. Krok kończy się na tym, co ma;
@@ -15938,6 +16329,16 @@ impl Live {
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
+        if let Job::Agent(job) = &self.plan.steps[id].job
+            && let Some(instruction) = self
+                .prepared_work_plan(id, job)
+                .map_err(|why| anyhow::Error::new(WorkPlanRefused(why)))?
+                .and_then(|prepared| prepared.instruction())
+        {
+            // 2026-09-08 — stoi po zakazie zapisu zwykłego wyniku, aby kandydat był jawnie
+            // nazwanym wyjątkiem i nie zastąpił przekazania, które Loadout nadal zapisuje sam.
+            told.prompt.push_str(&instruction);
+        }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(&Self::how_long_this_step_has(minutes));
         // Pola specyficzne dla kafelka stoją za wspólnym blokiem odpowiedzi i czasu. Dzięki
@@ -16126,27 +16527,21 @@ impl Live {
         // result") i przypina ogolne zdanie z T-101. Konkretne zdanie nalezy sie wylacznie
         // przypadkowi, w ktorym plik JEST, a jego tresc nie zgadza sie z tym, co opublikowano.
         let changed = || HandoffChangedAfterPublication::for_handed(hand);
-        let metadata = fs::symlink_metadata(&hand.path)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(changed().into());
-        }
+        let bytes = regular_file_length(&hand.path).map_err(|_| changed())?;
         let published = handoff::read_handoff(&hand.path).map_err(|_| changed())?;
         if published.bytes_mismatch() {
             return Err(changed().into());
         }
 
         if let Some(full) = &hand.attachment {
-            let full_metadata = fs::symlink_metadata(full)?;
-            if full_metadata.file_type().is_symlink() || !full_metadata.is_file() {
-                return Err(changed().into());
-            }
+            let full_bytes = regular_file_length(full).map_err(|_| changed())?;
             if let Some(expected) = hand.attachment_bytes
-                && usize::try_from(full_metadata.len()).ok() != Some(expected)
+                && full_bytes != expected
             {
                 return Err(changed().into());
             }
         }
-        usize::try_from(metadata.len()).map_err(|_| changed().into())
+        Ok(bytes)
     }
 
     /// Dokłada zdanie o wyniku — **tylko sędziemu pętli**.
@@ -16703,18 +17098,24 @@ impl Live {
     ///
     /// Krok bez wskazanej ścieżki nie prosi o żaden plik, więc nie ma tu czego sprawdzać.
     fn the_answer_has_somewhere_to_go(job: &AgentJob) -> Result<(), String> {
-        let Some(under) = job.write_results_to.as_ref() else {
-            return Ok(());
-        };
-        Self::room_for_the_answer(&job.cwd, under)
-            .map(|_| ())
-            .map_err(|error| {
+        if let Some(under) = job.write_results_to.as_ref() {
+            Self::room_for_the_answer(&job.cwd, under).map_err(|error| {
                 format!(
                     "Loadout did not start this step: {WRITE_RESULTS_TO} points at \"{}\", and \
                      {error}.",
                     under.display()
                 )
-            })
+            })?;
+        }
+        if job.work_plan.writes_candidate() {
+            Self::room_for_the_answer(&job.cwd, &job.plan_candidate).map_err(|error| {
+                format!(
+                    "Loadout did not start this step because its plan candidate path could not \
+                     be kept inside the working folder: {error}."
+                )
+            })?;
+        }
+        Ok(())
     }
 
     /// Kafelek kontrolny: bieg staje i pyta człowieka (T3 §6.1 reguła 5).
@@ -17446,6 +17847,7 @@ fn step_entry<'a>(planned: &'a Planned, run: &'a StepRun) -> StepEntry<'a> {
         end_cause: run.end_cause,
         assessment: run.assessment.as_ref(),
         result_files: run.result_files.as_ref(),
+        plan_version: run.plan_version.as_ref(),
         execution: ExecutionEntry {
             executed: run.execution.executed,
             process_started: run.execution.process_started,
@@ -17504,6 +17906,9 @@ struct StepEntry<'a> {
     end_cause: Option<super::run_inputs::EndCause>,
     #[serde(skip_serializing_if = "Option::is_none")]
     result_files: Option<&'a super::run_inputs::ResultFiles>,
+    /// 2026-09-08 — adres kompletnego dokumentu w `plans/`, a nie jego druga kopia.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_version: Option<&'a WorkPlanReceipt>,
     id: &'a str,
     node_key: &'a str,
     name: &'a str,

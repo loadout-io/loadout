@@ -3,11 +3,13 @@
 use std::fmt;
 use std::io;
 
+mod candidate;
 mod change;
 mod document;
 mod publish;
 mod render;
 
+pub use candidate::{Configuration, DOCUMENT_ID, MAX_CANDIDATE_BYTES, Mode, Prepared};
 pub use change::{
     HumanRequirement, PlanCreate, PlanUpdate, ProposedRequirement, first_document, updated_document,
 };
@@ -32,6 +34,8 @@ pub enum Error {
     WouldWeakenHumanRequirement,
     RepeatedRequirement,
     NoSuchPlan,
+    NotAllowed,
+    NotDelivered(String),
     Malformed(String),
     Unwritable(io::Error),
 }
@@ -54,6 +58,13 @@ impl fmt::Display for Error {
             Self::NoSuchPlan => {
                 formatter.write_str("Loadout has no published plan under that identity.")
             }
+            Self::NotAllowed => formatter.write_str(
+                "This step cannot publish a plan because its Plan setting does not allow changes.",
+            ),
+            Self::NotDelivered(reason) => write!(
+                formatter,
+                "This step did not deliver a valid plan document: {reason}. No plan was published."
+            ),
             Self::Malformed(reason) => write!(
                 formatter,
                 "This plan candidate was refused because its shape is not valid: {reason}."
