@@ -89,6 +89,7 @@ read_project_settings
 read_run
 read_settings
 remove_context_source
+resolve_workflow_context
 rerun_step
 resume_run
 resume_trigger

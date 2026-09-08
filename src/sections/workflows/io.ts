@@ -20,6 +20,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import type { HostMaterial, Note, WorkflowFile } from '../../state/workflows';
 import type { Definition } from '../../state/library';
+import type { WorkflowContextView } from '../../state/context';
 import { definitionsOf, healthyOnly } from '../../state/library';
 import type { WorkflowEntry } from './list/store';
 import { activeWorkspace } from '../../state/workspaces';
@@ -103,6 +104,11 @@ export function remove(path: string): Promise<void> {
  */
 export function check(workflow: WorkflowFile): Promise<Note[]> {
   return invoke<Note[]>('check_workflow', { workflow });
+}
+
+/** Efektywny wybór i katalog do obu pickerów. `null` jest dozwolone dla starszej atrapy IPC. */
+export function resolveContext(workflow: WorkflowFile): Promise<WorkflowContextView | null> {
+  return invoke<WorkflowContextView | null>('resolve_workflow_context', { workflow });
 }
 
 /**

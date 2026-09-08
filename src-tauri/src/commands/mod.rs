@@ -91,6 +91,7 @@ pub mod skills;
 pub mod sweep;
 /// Zrodla zdarzen, ktore pytaja zewnetrzny serwis i pamietaja kursor w pliku.
 pub mod triggers;
+pub mod workflow_context;
 /// Pliki workflow: wczytaj, zapisz, sprawdź. Wypełnia T-27.
 pub mod workflows;
 pub mod workspaces;

@@ -8,7 +8,7 @@
  * (`./more-settings.tsx`) i jest tam wymienione co do sztuki:
  *   Can it change files · Give up after · Write results to · Try again up to ·
  *   If this step does not pass · Takes the heavy seat · What it hands over · Skills ·
- *   Borrow from this project
+ *   Borrow from this project · Context
  *
  * 2026-08-31 — POWÓD, ZMIERZONY. Ten nagłówek mówił „siedem etykiet, w tej kolejności, i ani
  * jednej ósmej" i był o SZEŚĆ bloków nieaktualny. Panel montował 21 kontrolek stałych,
@@ -72,6 +72,7 @@
 import { useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { Agent, FileAccess } from '../../../state/agents';
+import type { WorkflowContextView } from '../../../state/context';
 import { PlacesField } from '../../paths/places-field';
 import type {
   AgentStep,
@@ -94,6 +95,7 @@ import { ServePanel } from './serve-panel';
 import { resolve } from './overrides';
 import { BorrowRow, borrowRowStands, nothingBorrowed, useHostMaterial } from './borrow-row';
 import { CriteriaRow } from './criteria-row';
+import { ContextRow, contextRowStands } from './context-row';
 import { HandoverRow } from './handover-row';
 import { SkillsRow, skillsRowStands } from './skills-row';
 import { WhereItWorks } from './where-it-works';
@@ -112,6 +114,7 @@ export type AgentStepFields = Partial<
     | 'handover'
     | 'criteria'
     | 'projectInstructions'
+    | 'context'
   >
 >;
 
@@ -1081,6 +1084,10 @@ export interface PanelForStepProps {
    * wie. Pusta lista znaczy „nie ma czego wybierać" i wiersz wtedy nie powstaje.
    */
   skills: readonly string[];
+  /** 2026-09-08 (CT-05): jedna odpowiedź zasila wspólny picker i ten panel, bez drugiego resolvera. */
+  context?: WorkflowContextView | null;
+  /** 2026-09-08 (CT-05): odmowa stoi przy kontrolce, której dotyczy, zamiast gasić cały panel. */
+  contextRefusal?: string | null;
   onChooseAgent: (agentId: string) => void;
   /** Skrót na sekcję Agents — z pozycji `＋ Create a new agent…` i z pustej biblioteki. */
   onCreateAgent: () => void;
@@ -1149,6 +1156,8 @@ export function PanelForStep({
   step,
   agents,
   skills,
+  context = null,
+  contextRefusal = null,
   onChooseAgent,
   onCreateAgent,
   onEdit,
@@ -1218,6 +1227,8 @@ export function PanelForStep({
         agent={agent}
         agents={agents}
         skills={skills}
+        context={context}
+        contextRefusal={contextRefusal}
         onChooseAgent={onChooseAgent}
         onCreateAgent={onCreateAgent}
         onEdit={onEdit}
@@ -1233,6 +1244,8 @@ export function PanelForStep({
 
 interface AgentPanelProps extends Omit<StepPanelProps, 'onEdit' | 'more'> {
   skills: readonly string[];
+  context: WorkflowContextView | null;
+  contextRefusal: string | null;
   /** Agent jedzie Z POWROTEM do wołającego — ten sam powód, co w `PanelForStepProps`. */
   onEdit: (agent: Agent, edit: Overrides) => void;
   onChooseSkills: (choice: SkillChoice) => void;
@@ -1259,6 +1272,8 @@ function AgentPanel({
   agent,
   agents,
   skills,
+  context,
+  contextRefusal,
   onChooseAgent,
   onCreateAgent,
   onEdit,
@@ -1324,6 +1339,21 @@ function AgentPanel({
      strony: tamto mówi, co ten krok ODDAJE, a to — co ma zostać sprawdzone, zanim odda.
      Powód, dla którego ten wiersz w ogóle powstał, stoi w całości w `./criteria-row.tsx`. */
   more.push(<CriteriaRow key="criteria" value={step.criteria} onEditStep={onEditStep} />);
+
+  if (contextRowStands()) {
+    more.push(
+      <ContextRow
+        key="context"
+        value={step.context}
+        view={context?.steps.find((one) => one.stepId === step.id) ?? null}
+        catalog={context?.catalog ?? []}
+        refusal={contextRefusal}
+        onChoose={(choice) => {
+          onEditStep({ context: choice });
+        }}
+      />,
+    );
+  }
 
   /* Wiersza Skills nie ma przy agencie na Codeksie ani przy pustym katalogu umiejętności —
      powód w całości stoi przy `skillsRowStands`. */

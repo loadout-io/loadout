@@ -496,12 +496,27 @@ pub fn read_latest_revision(
     let Some(id) = read.set.latest_ready_revision.as_deref() else {
         return Ok(None);
     };
-    if !safe_directory_name(id) {
+    read_revision(library, set_id, id).map(Some)
+}
+
+/// 2026-09-08 (CT-05): odczytuje dokładną, przypiętą wersję — nigdy nie zastępuje jej bieżącą.
+pub fn read_revision(
+    library: &Path,
+    set_id: &str,
+    revision_id: &str,
+) -> Result<ContextRevision, Error> {
+    if !safe_directory_name(revision_id) {
         return Err(incomplete_revision());
     }
     let folder = files::folder_of(library, set_id)?;
-    let revision_folder = folder.join(VERSIONS).join(id);
-    let held = PublicationRoot::open(&revision_folder).map_err(|_| incomplete_revision())?;
+    let revision_folder = folder.join(VERSIONS).join(revision_id);
+    let held = PublicationRoot::open(&revision_folder).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            Error::NoSuchRevision
+        } else {
+            incomplete_revision()
+        }
+    })?;
     let manifest = read_revision_file(&held, Path::new(MANIFEST))?;
     let mut revision: ContextRevision = serde_json::from_slice(&manifest)?;
     let expected_topics = revision
@@ -509,7 +524,7 @@ pub fn read_latest_revision(
         .iter()
         .map(|topic| format!("topics/{}.md", topic.id))
         .collect::<Vec<_>>();
-    if revision.id != id
+    if revision.id != revision_id
         || revision.set_id != set_id
         || revision.index_file != INDEX
         || revision.findings_file != FINDINGS
@@ -522,7 +537,7 @@ pub fn read_latest_revision(
         read_revision_file(&held, Path::new(path))?;
     }
     revision.findings = serde_json::from_slice(&read_revision_file(&held, Path::new(FINDINGS))?)?;
-    Ok(Some(revision))
+    Ok(revision)
 }
 
 fn read_revision_file(root: &PublicationRoot, relative: &Path) -> Result<Vec<u8>, Error> {

@@ -510,6 +510,7 @@ mod workflow_check_cycles;
 mod workflow_check_ids;
 mod workflow_check_islands;
 mod workflow_check_overlap;
+mod workflow_context_selection;
 mod workflow_load_forward;
 mod workflow_loop_back_edge;
 mod workflow_product_acceptance;

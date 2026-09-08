@@ -29,6 +29,7 @@ import { create } from 'zustand';
 import { why } from '../ipc/why';
 import { applyPanelEdit, withoutOverride } from '../sections/workflows/step-panel/overrides';
 import type { Agent, FileAccess } from './agents';
+import type { StepContext, WorkflowContext } from './context';
 
 /** Waga uwagi z walidatora Rusta. `Problem` blokuje Run, `Warning` nie blokuje niczego. */
 export type Level = 'problem' | 'warning';
@@ -226,6 +227,8 @@ export interface AgentStep {
    * `| undefined` JAWNIE, z tego samego powodu, co przy `borrow` obok.
    */
   criteria?: Criterion[] | undefined;
+  /** Opcjonalny wybór Context dla tego kroku; osobny od izolacji `executionInputs`. */
+  context?: StepContext | undefined;
   /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */
   whenItFails?: WhenItFails;
   at: Point;
@@ -390,12 +393,14 @@ export interface CheckStep {
 export type Step = AgentStep | CheckpointStep | CheckStep | ServeStep;
 
 export interface WorkflowFile {
-  format: 1;
+  format: 1 | 2;
   id: string;
   name: string;
   description?: string;
   /** Jawne dodatkowe wejście wspólnego obrazu wszystkich świeżych kopii (WF-14). */
   additionalInputs?: string[];
+  /** Wspólny Context dziedziczony przez kroki agentów zgodnie z ich lokalnym wyborem. */
+  context?: WorkflowContext | undefined;
   /** Kolejność WSTAWIANIA, nigdy przesortowana [T3 §8.2 reguła 2]. */
   steps: Step[];
   links: Link[];

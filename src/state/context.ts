@@ -150,6 +150,69 @@ export interface ContextSet {
   changedAt: string;
 }
 
+/** Dokładna wersja zestawu i tematy wybrane do workflow albo jednego kroku. */
+export type ContextTopics = 'all' | string[];
+
+export interface ContextPin {
+  id: string;
+  revision: string;
+  topics: ContextTopics;
+}
+
+export interface WorkflowContext {
+  schema: 1;
+  sets: ContextPin[];
+}
+
+export interface StepContext {
+  schema: 1;
+  inheritWorkflow?: boolean | undefined;
+  exclude?: string[] | undefined;
+  sets?: ContextPin[] | undefined;
+}
+
+export interface ContextChoice {
+  id: string;
+  title: string;
+  description: string;
+  revision: string | null;
+  topics: ContextTopic[];
+  said: string | null;
+}
+
+export interface SelectedContext {
+  id: string;
+  title: string;
+  revision: string;
+  selectedTopics: ContextTopics;
+  topics: ContextTopic[];
+  source: 'workflow' | 'step';
+  update: 'Update available' | null;
+  said: string | null;
+}
+
+export interface OmittedContext {
+  id: string;
+  title: string;
+  said: string;
+}
+
+export interface StepContextView {
+  stepId: string;
+  sets: SelectedContext[];
+  omitted: OmittedContext[];
+  inheritsWorkflow: boolean;
+  protectedScope: boolean;
+  said: string | null;
+}
+
+export interface WorkflowContextView {
+  catalog: ContextChoice[];
+  workflow: SelectedContext[];
+  steps: StepContextView[];
+  warnings: string[];
+}
+
 /** Zestaw odczytany w całości — i rewizja, którą okno odda przy następnym zapisie. */
 export interface ContextSetRead {
   set: ContextSet;
@@ -398,7 +461,10 @@ export function pagesDone(source: ContextSource | undefined): number {
 }
 
 /** Zestawy, które pasują do tego, czego człowiek szuka. Po nazwie — tak mówi PLAN §12. */
-export function matching(sets: readonly ContextSet[], search: string): ContextSet[] {
+export function matching<T extends Pick<ContextSet, 'title'>>(
+  sets: readonly T[],
+  search: string,
+): T[] {
   const wanted = search.trim().toLowerCase();
   if (wanted === '') return [...sets];
   return sets.filter((set) => set.title.toLowerCase().includes(wanted));
