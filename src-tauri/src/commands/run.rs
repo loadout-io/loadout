@@ -3640,6 +3640,8 @@ pub async fn say_to_agent_inner(
 struct Plan {
     replay: Option<Arc<super::replay::ReplayMaterial>>,
     inputs: super::run_inputs::BoundInputs,
+    /// 2026-09-08 (WP-02): fizyczne źródła wersji, policzone raz przed pierwszym procesem.
+    work_plan_sources: crate::workflow::work_plan::AuthorMap,
     protection: BTreeMap<StepId, protection::Boundary>,
     lead_origin: Option<super::lead_start::LeadStartOrigin>,
     /// uuid v7 biegu — sortuje się po czasie.
@@ -4506,7 +4508,7 @@ fn nothing_stops_this_run(
     project: &Path,
     home: &Path,
     part: Option<&Part>,
-) -> Result<(), RunError> {
+) -> Result<crate::workflow::work_plan::AuthorMap, RunError> {
     // Bieg nie ufa UI (T3 §5.2): plik mógł zostać zmergowany gitem albo poprawiony ręcznie
     // między zapisem a naciśnięciem Start. Odmawiamy zdaniem WALIDATORA, słowo w słowo —
     // własne tłumaczenie byłoby drugim miejscem, w którym mieszka ten sam komunikat.
@@ -4542,6 +4544,15 @@ fn nothing_stops_this_run(
             fix: None,
         })
     })?;
+    let work_plan_sources =
+        super::workflow_plan::plan_ready_to_start(file, &included).map_err(|refusal| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
+                message: refusal.message,
+                fix: None,
+            })
+        })?;
 
     /* PRÓG DYSKU, sprawdzany zanim ruszy pierwszy proces (T-208, 2026-08-29).
      *
@@ -4558,7 +4569,7 @@ fn nothing_stops_this_run(
     {
         return Err(RunError::Refused(refusal));
     }
-    Ok(())
+    Ok(work_plan_sources)
 }
 
 /// Sklada wszystko, czego planista potrzebuje o tym biegu, w jeden zamrozony obraz.
@@ -4723,7 +4734,8 @@ fn plan_run_with_identity(
     let replay = lead_start.and_then(|start| start.replay.as_ref());
     let recorded = replay.filter(|replay| replay.mode == super::replay::ReplayMode::Recorded);
     let (bytes, file) = the_graph_this_run_starts_from(request, lead_start, replay, recorded)?;
-    nothing_stops_this_run(&file, deps.project, deps.home, request.part.as_ref())?;
+    let work_plan_sources =
+        nothing_stops_this_run(&file, deps.project, deps.home, request.part.as_ref())?;
 
     /* CENNIK CZYTANY TU, PRZED KATALOGIEM BIEGU (2026-09, Z-44). Plik, którego nie da się
      * przeczytać, jest odmową Startu, a nie cichym powrotem do tabeli wbudowanej: literówka
@@ -4772,6 +4784,7 @@ fn plan_run_with_identity(
     Ok(Plan {
         replay: replay.cloned(),
         inputs,
+        work_plan_sources,
         protection: BTreeMap::new(),
         id,
         dir,
@@ -5041,6 +5054,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         title,
         lead_origin: None,
         inputs: super::run_inputs::BoundInputs::default(),
+        work_plan_sources: crate::workflow::work_plan::AuthorMap::default(),
         protection: BTreeMap::new(),
         input_snapshot: None,
         workspace_inputs: BTreeMap::new(),
@@ -14426,68 +14440,56 @@ impl Live {
     }
 
     fn inherited_work_plan(&self, id: StepId) -> Result<crate::work_plan::PlanVersion, String> {
-        fn collect(
-            live: &Live,
-            id: StepId,
-            outputs: &[Option<crate::work_plan::PlanVersion>],
-            visited: &mut BTreeSet<StepId>,
-            found: &mut BTreeMap<String, crate::work_plan::PlanVersion>,
-        ) -> Result<(), String> {
-            if !visited.insert(id) {
-                return Ok(());
-            }
-            let Some(step) = live.plan.steps.get(id) else {
-                return Err("Loadout could not follow this step's plan source.".to_owned());
-            };
-            for parent_key in &step.depends_on {
-                let Some(parent) = live
-                    .plan
-                    .steps
-                    .iter()
-                    .position(|candidate| candidate.node_key == *parent_key)
-                else {
-                    return Err("Loadout could not follow this step's plan source.".to_owned());
-                };
-                let parent_step = &live.plan.steps[parent];
-                let mode = match &parent_step.job {
-                    Job::Agent(job) => job.work_plan.mode(),
-                    Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => crate::work_plan::Mode::Off,
-                };
-                if mode == crate::work_plan::Mode::Off {
-                    collect(live, parent, outputs, visited, found)?;
-                    continue;
-                }
-                let Some(version) = outputs.get(parent).and_then(Clone::clone) else {
-                    return Err(format!(
-                        "Loadout did not start this step because {} did not finish the plan version it was meant to provide.",
-                        parent_step.name
-                    ));
-                };
-                found.insert(version.version_id.clone(), version);
-            }
-            Ok(())
-        }
-
+        let step = self
+            .plan
+            .steps
+            .get(id)
+            .ok_or_else(|| "Loadout could not follow this step's plan source.".to_owned())?;
+        let sources = self
+            .plan
+            .work_plan_sources
+            .sources
+            .get(&step.node_key)
+            .ok_or_else(|| {
+                format!(
+                    "Loadout did not start this step because {} has no resolved plan source.",
+                    step.name
+                )
+            })?;
         let outputs = self
             .plan_outputs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let mut found = BTreeMap::new();
-        collect(self, id, &outputs, &mut BTreeSet::new(), &mut found)?;
+        for source in sources {
+            let Some(at) = self
+                .plan
+                .steps
+                .iter()
+                .position(|candidate| candidate.node_key == *source)
+            else {
+                return Err("Loadout could not follow this step's plan source.".to_owned());
+            };
+            // 2026-09-08 (WP-02): `Same plan as` może wskazać Use w pętli. Późniejsze próby
+            // bywają prawidłowo pominięte, więc bierzemy wyłącznie wynik próby, która ruszyła.
+            if let Some(version) = outputs.get(at).and_then(Clone::clone) {
+                found.insert(version.version_id.clone(), version);
+            }
+        }
         match found.len() {
             1 => found
                 .into_values()
                 .next()
                 .ok_or_else(|| "Loadout could not pin this step's plan version.".to_owned()),
-            0 => Err(
-                "Loadout did not start this step because none of its earlier steps provided a plan."
-                    .to_owned(),
-            ),
-            _ => Err(
-                "Loadout did not start this step because its earlier steps provided different plan versions."
-                    .to_owned(),
-            ),
+            0 => Err(format!(
+                "Loadout did not start this step because the earlier work chosen for {} did not provide a plan.",
+                step.name
+            )),
+            _ => Err(format!(
+                "Loadout did not start this step because the earlier work chosen for {} used different plan versions.",
+                step.name
+            )),
         }
     }
 

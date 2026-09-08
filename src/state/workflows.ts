@@ -183,6 +183,36 @@ export type WhenItFails = 'stop' | 'carry-on' | 'ask-me';
 /** Ile miejsca na maszynie bierze tura agenta. Brak pola znaczy zwykłą turę. */
 export type Weight = 'ordinary' | 'heavy';
 
+/** Ustawienie wspólnego planu konkretnego biegu. Brak pola znaczy `off`. */
+export type StepPlanMode = 'off' | 'create' | 'update' | 'use';
+
+export interface StepPlan {
+  mode: StepPlanMode;
+  canUpdate?: string[] | undefined;
+  focusOn?: string[] | undefined;
+  /** Id kroku, nie jego nazwa ani przyszły numer wersji. */
+  samePlanAs?: string | undefined;
+}
+
+export interface WorkflowPlanSource {
+  stepId: string;
+  name: string;
+  said: string;
+}
+
+export interface StepPlanView {
+  stepId: string;
+  mode: StepPlanMode;
+  source: WorkflowPlanSource | null;
+  earlier: WorkflowPlanSource[];
+  said: string | null;
+}
+
+export interface WorkflowPlanView {
+  steps: StepPlanView[];
+  warnings: string[];
+}
+
 /** Krok, który uruchamia agenta.
  *
  * Vendora ani modelu tu nie ma: krok nazywa AGENTA, a vendor, model i narzędzia mieszkają
@@ -229,6 +259,8 @@ export interface AgentStep {
   criteria?: Criterion[] | undefined;
   /** Opcjonalny wybór Context dla tego kroku; osobny od izolacji `executionInputs`. */
   context?: StepContext | undefined;
+  /** Plan jest ustawieniem kroku; brak zachowuje lekkie workflow jako `Off`. */
+  plan?: StepPlan | undefined;
   /** Co zrobić z robotą, kiedy ten krok nie przejdzie. Brak znaczy `carry-on`. */
   whenItFails?: WhenItFails;
   at: Point;
@@ -393,7 +425,7 @@ export interface CheckStep {
 export type Step = AgentStep | CheckpointStep | CheckStep | ServeStep;
 
 export interface WorkflowFile {
-  format: 1 | 2;
+  format: 1 | 2 | 3;
   id: string;
   name: string;
   description?: string;

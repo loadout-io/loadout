@@ -30,12 +30,15 @@ pub const CURRENT: u32 = 1;
 /// Format wymagany przez dokument niosący przypięcia Context.
 pub const CONTEXT_FORMAT: u32 = 2;
 
+/// Format wymagany przez dokument niosący ustawienie Plan.
+pub const PLAN_FORMAT: u32 = 3;
+
 /// Najwyższy format, który ten build umie wykonać zgodnie z intencją autora.
 ///
-/// 2026-09-08 (CT-05) — to nie może być ta sama liczba co [`CURRENT`]. Podniesienie `CURRENT`
-/// migrowałoby każdy stary plik przy samym odczycie, choć format 2 zmienia tylko dokumenty
-/// z przypiętym Context. Stary dokument pozostaje więc w 1, a czytnik przyjmuje oba formaty.
-pub const HIGHEST_SUPPORTED: u32 = CONTEXT_FORMAT;
+/// 2026-09-08 (WP-02) — Plan dostał własny numer ponad Context. Czytnik znający format 2
+/// wykonałby inaczej poprawny dokument, ignorując Plan, gdyby obie niezależne funkcje miały 2.
+/// `CURRENT` pozostaje 1, żeby zwykły stary dokument nie migrował przy samym odczycie.
+pub const HIGHEST_SUPPORTED: u32 = PLAN_FORMAT;
 
 /// `MIGRATIONS[i]` przenosi format `i + 1` na `i + 2`, więc długość tablicy jest zawsze
 /// `CURRENT - 1`.
@@ -269,6 +272,16 @@ pub fn save(
             fix: None,
         }));
     }
+    // 2026-09-08 (WP-02): jak Context, kształt ustawienia sprawdzamy także dla szkicu, który
+    // omija pełne sprawdzenie grafu. Przyszły tryb nie może zapisać się i później zagrać jako Off.
+    if let Err(message) = super::work_plan::validate(workflow) {
+        return Err(SaveError::Refused(Note {
+            level: Level::Problem,
+            step_id: None,
+            message,
+            fix: None,
+        }));
+    }
     // Kolejność jest całą treścią tej funkcji: najpierw sprawdź, dopiero potem dotknij dysku.
     // Implementacja, która zapisuje i waliduje po zapisie, niszczy poprzednią wersję pliku
     // dokładnie w tym momencie, w którym sprawdzenie miało jej bronić. Ostrzeżenie nie blokuje
@@ -301,7 +314,9 @@ pub fn save(
 
     let mut written = workflow.clone();
     super::context::remove_empty(&mut written);
-    written.format = super::context::format_needed_by(&written);
+    super::work_plan::remove_empty(&mut written);
+    written.format = super::context::format_needed_by(&written)
+        .max(super::work_plan::format_needed_by(&written));
     let mut text = serde_json::to_string_pretty(&written).map_err(SaveError::Malformed)?;
     // Znak nowej linii na końcu: bez niego każda zmiana ostatniego wiersza niesie w diffie
     // dodatkowe „\ No newline at end of file", a plik przestaje być zwykłym plikiem tekstowym.
@@ -333,7 +348,7 @@ pub fn save(
     Ok(revision_of(text.as_bytes()))
 }
 
-/// Zachowuje pierwsze bajty formatu 1 przed pierwszym faktycznym zapisem formatu 2.
+/// Zachowuje pierwsze bajty starszego formatu przed pierwszym faktycznym podniesieniem.
 fn back_up_before_format_upgrade(
     path: &Path,
     root: &Path,

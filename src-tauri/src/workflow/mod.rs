@@ -37,6 +37,7 @@ pub mod execution;
 pub mod file;
 pub mod roster;
 pub mod unroll;
+pub mod work_plan;
 
 /// Skok siatki płótna w pikselach [T3 §8.2 reguła 1].
 ///
@@ -291,6 +292,12 @@ impl AgentStep {
     /// Ten sam parser co przy workflow; brak klucza zachowuje zachowanie sprzed CT-05.
     pub fn context(&self) -> Result<Option<context::StepContext>, String> {
         context::step_from(self.extra.get("context"))
+    }
+
+    /// Brak klucza jest `Off`; nieznany tryb wraca jako odmowa, nigdy jako wartość domyślna.
+    pub fn work_plan(&self) -> Result<crate::work_plan::Configuration, String> {
+        crate::work_plan::Configuration::from_step(self.extra.get("plan"))
+            .map_err(|error| error.to_string())
     }
 }
 

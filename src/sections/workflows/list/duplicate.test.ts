@@ -230,6 +230,32 @@ describe('duplicating a workflow makes a second file, not a second name for the 
     expect(originalStep.context?.sets?.[0]?.topics).toEqual(['checkout']);
   });
 
+  it('keeps one Plan creator and keeps Same plan as pointing inside the copied workflow', async () => {
+    const source = deepResearch();
+    source.workflow.format = 3;
+    const planner = firstStep(source.workflow);
+    const user = source.workflow.steps[1];
+    if (planner.kind !== 'agent' || user?.kind !== 'agent') {
+      throw new Error('the Plan fixture lost one of its agent steps');
+    }
+    planner.plan = { mode: 'create' };
+    user.plan = { mode: 'use', samePlanAs: planner.id };
+    const store = createWorkflowListStore(disk([source]));
+    await store.getState().load();
+
+    await store.getState().duplicate('wf-deep-research');
+
+    const copy = named(store.getState().workflows, 'Deep research (copy)').workflow;
+    const agents = copy.steps.filter((step) => step.kind === 'agent');
+    expect(agents.filter((step) => step.plan?.mode === 'create')).toHaveLength(1);
+    const copiedUser = agents.find((step) => step.plan?.mode === 'use');
+    expect(copiedUser?.plan?.samePlanAs).toBe('s_read');
+    expect(
+      copy.steps.some((step) => step.id === copiedUser?.plan?.samePlanAs),
+      'a copied explicit source must still name a real step in that copied graph',
+    ).toBe(true);
+  });
+
   it('copies the links deeply too, so wiring the copy cannot reach the original', async () => {
     const io = disk([deepResearch()]);
     const store = createWorkflowListStore(io);

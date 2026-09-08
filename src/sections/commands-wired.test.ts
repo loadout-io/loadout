@@ -468,6 +468,13 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'workflows',
+    what: 'resolvePlan',
+    command: 'resolve_workflow_plan',
+    given: [WORKFLOW],
+    call: () => workflows.resolvePlan(WORKFLOW),
+  },
+  {
+    where: 'workflows',
     what: 'listHostMaterial',
     command: 'list_host_material',
     given: [FOLDER],
