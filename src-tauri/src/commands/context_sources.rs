@@ -11,9 +11,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::fs::File;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,8 +41,10 @@ const MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 const READ_LOG_BYTES: usize = 4 * 1024 * 1024;
 const READ_LOG_ENTRIES: usize = 4096;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
+const READER_LOCK: &str = "context-sources/.reader.lock";
 
 type InputReader = (Box<dyn Read>, Option<(PublicationRoot, PathBuf)>);
+type SavedSources = BTreeMap<String, (Snapshot, PathBuf, Arc<File>)>;
 
 /// Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił — i oddaje wynik KAŻDEJ pozycji.
 pub fn import_context_sources_inner(
@@ -214,7 +217,15 @@ pub(crate) struct Binding {
     pub digest: String,
 }
 
+/// Adres złożonego węzła Labu i odpowiadającego mu węzła historycznego przypadku.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SavedNode {
+    pub source_run_id: String,
+    pub source_node_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredFile {
     relative: String,
@@ -222,7 +233,7 @@ struct StoredFile {
     bytes: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ItemRecord {
     address: Address,
@@ -249,6 +260,10 @@ struct Manifest {
     /// dokładne adresy. Rachunek stoi osobno, bo nie jest uprawnieniem do odczytu.
     nodes: BTreeMap<String, Vec<Address>>,
     delivery: BTreeMap<String, Vec<Delivery>>,
+    /// 2026-09-08 (CT-08) — stary pakiet nie miał bloków replay, więc pusta mapa znika z
+    /// serializacji: jego `Binding` pozostaje identyczny i historia dalej się otwiera.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    blocks: BTreeMap<String, super::context_inputs::ContextBlock>,
 }
 
 #[derive(Clone)]
@@ -271,9 +286,12 @@ impl fmt::Debug for CopyInput {
 /// Zamrożony plan pakietu. `inputs` istnieją tylko do chwili publikacji; manifest i pliki są
 /// jedyną prawdą historii biegu.
 #[derive(Clone)]
-pub(crate) struct Snapshot {
-    manifest: Manifest,
+pub struct Snapshot {
+    manifest: Box<Manifest>,
     inputs: Vec<CopyInput>,
+    source_dir: Option<Arc<PathBuf>>,
+    /// Zamek każdego biegu przypadku żyje do publikacji wspólnego pakietu Labu.
+    _source_holds: Option<Arc<Vec<Arc<File>>>>,
 }
 
 impl fmt::Debug for Snapshot {
@@ -288,9 +306,10 @@ impl fmt::Debug for Snapshot {
 }
 
 impl Snapshot {
-    pub fn new(
+    pub(crate) fn new(
         mut items: Vec<PackageItem>,
         nodes: BTreeMap<String, NodeSelection>,
+        blocks: BTreeMap<String, super::context_inputs::ContextBlock>,
     ) -> io::Result<Self> {
         items.sort_by(|left, right| left.address.cmp(&right.address));
         let mut inputs = Vec::new();
@@ -328,17 +347,125 @@ impl Snapshot {
             items: records,
             nodes,
             delivery,
+            blocks,
         };
-        let snapshot = Self { manifest, inputs };
+        let snapshot = Self {
+            manifest: Box::new(manifest),
+            inputs,
+            source_dir: None,
+            _source_holds: None,
+        };
         snapshot.validate()?;
         Ok(snapshot)
     }
 
-    pub fn binding(&self) -> io::Result<Binding> {
+    pub(crate) fn binding(&self) -> io::Result<Binding> {
         Ok(Binding {
             id: self.manifest.id.clone(),
             digest: digest(&serde_json::to_vec(&self.manifest).map_err(io::Error::other)?),
         })
+    }
+
+    pub fn replay_blocks(
+        &self,
+    ) -> io::Result<&BTreeMap<String, super::context_inputs::ContextBlock>> {
+        if self.manifest.blocks.keys().collect::<BTreeSet<_>>()
+            != self.manifest.nodes.keys().collect::<BTreeSet<_>>()
+        {
+            return Err(unavailable(
+                "the saved package has no matching replay input for every step",
+            ));
+        }
+        Ok(&self.manifest.blocks)
+    }
+
+    /// Zamraża historyczne przydziały przypadków pod fizycznymi adresami komórek Labu.
+    pub(crate) fn from_saved_nodes(
+        project: &Path,
+        bindings: &BTreeMap<String, SavedNode>,
+    ) -> io::Result<Option<Self>> {
+        let sources = held_saved_sources(project, bindings)?;
+        let mut items = BTreeMap::<Address, (ItemRecord, PathBuf)>::new();
+        let mut nodes = BTreeMap::new();
+        let mut delivery = BTreeMap::new();
+        let mut blocks = BTreeMap::new();
+        for (target, binding) in bindings {
+            let Some((snapshot, source_dir, _)) = sources.get(&binding.source_run_id) else {
+                continue;
+            };
+            let Some(selected) = snapshot
+                .manifest
+                .nodes
+                .get(&binding.source_node_key)
+                .cloned()
+            else {
+                // 2026-09-08 (CT-08): brak wpisu jest historycznym faktem „ten krok nie dostał
+                // Context", nie zgodą na rozwiązanie jego dzisiejszych przypięć z biblioteki.
+                continue;
+            };
+            for address in &selected {
+                let record = snapshot
+                    .manifest
+                    .items
+                    .iter()
+                    .find(|item| &item.address == address)
+                    .ok_or_else(|| unavailable("a saved Lab input points to a missing item"))?;
+                if let Some((known, _)) = items.get(address) {
+                    if known != record {
+                        return Err(unavailable(
+                            "two saved Lab inputs disagree about one material version",
+                        ));
+                    }
+                } else {
+                    items.insert(address.clone(), (record.clone(), source_dir.clone()));
+                }
+            }
+            nodes.insert(target.clone(), selected);
+            delivery.insert(
+                target.clone(),
+                snapshot.manifest.delivery[&binding.source_node_key].clone(),
+            );
+            blocks.insert(
+                target.clone(),
+                snapshot.replay_blocks()?[&binding.source_node_key].clone(),
+            );
+        }
+        if nodes.is_empty() {
+            return Ok(None);
+        }
+        let mut inputs = Vec::new();
+        let records = items
+            .into_values()
+            .map(|(record, source_dir)| {
+                for stored in [&record.text, &record.preview, &record.agent_image]
+                    .into_iter()
+                    .flatten()
+                {
+                    inputs.push(CopyInput {
+                        stored: stored.clone(),
+                        input: MaterialInput::File(source_dir.join(&stored.relative)),
+                    });
+                }
+                record
+            })
+            .collect();
+        let snapshot = Self {
+            manifest: Box::new(Manifest {
+                schema: 1,
+                id: uuid::Uuid::now_v7().to_string(),
+                items: records,
+                nodes,
+                delivery,
+                blocks,
+            }),
+            inputs,
+            source_dir: None,
+            _source_holds: Some(Arc::new(
+                sources.into_values().map(|(_, _, held)| held).collect(),
+            )),
+        };
+        snapshot.validate()?;
+        Ok(Some(snapshot))
     }
 
     pub fn save_to(&self, run_dir: &Path) -> io::Result<()> {
@@ -387,6 +514,49 @@ impl Snapshot {
         Ok(())
     }
 
+    /// Kopiuje wyłącznie pliki związane odciskami w manifeście, nigdy ścieżkę podaną przez UI.
+    pub fn copy_to(&self, run_dir: &Path) -> io::Result<()> {
+        let source_dir = self
+            .source_dir
+            .as_deref()
+            .ok_or_else(|| unavailable("the saved package has no source folder"))?;
+        let _hold = hold(source_dir)?;
+        self.validate()?;
+        // 2026-09-08 (CT-08): zatwierdzony snapshot nie wystarcza, bo plik mógł zostać
+        // podmieniony po zgodzie. Kopiowanie ponownie wiąże źródło przed pierwszym bajtem.
+        if read_package(source_dir)?.binding()? != self.binding()? {
+            return Err(unavailable(
+                "the saved package changed before it could be copied",
+            ));
+        }
+        let needed = stored_files(&self.manifest).try_fold(0_u64, |total, stored| {
+            total
+                .checked_add(stored.bytes as u64)
+                .ok_or_else(|| unavailable("the package is too large to measure safely"))
+        })?;
+        if free_bytes(run_dir)? < needed {
+            return Err(io::Error::other(
+                "There is not enough free space to copy the recorded reference materials. Nothing started.",
+            ));
+        }
+        let source = PublicationRoot::open(source_dir)?;
+        let destination = PublicationRoot::open(run_dir)?;
+        destination.ensure_directory(Path::new("context-sources"), 0o700)?;
+        destination.ensure_directory(Path::new(READS), 0o700)?;
+        for stored in stored_files(&self.manifest) {
+            let relative = Path::new(&stored.relative);
+            if let Some(parent) = relative.parent() {
+                destination.ensure_directory(parent, 0o700)?;
+            }
+            copy_stored(&source, &destination, stored)?;
+        }
+        source.validate_path_identity(source_dir)?;
+        for stored in stored_files(&self.manifest) {
+            verify_stored(&destination, stored)?;
+        }
+        Ok(())
+    }
+
     pub fn access_for(
         &self,
         run_dir: &Path,
@@ -396,6 +566,9 @@ impl Snapshot {
         let Some(addresses) = self.manifest.nodes.get(node_key) else {
             return Ok(None);
         };
+        if addresses.is_empty() {
+            return Ok(None);
+        }
         let by_address = self
             .manifest
             .items
@@ -434,10 +607,17 @@ impl Snapshot {
         .map_err(io::Error::other)
     }
 
-    pub fn recorder_for(&self, run_dir: &Path, node_key: &str) -> io::Result<Option<Recorder>> {
+    pub(crate) fn recorder_for(
+        &self,
+        run_dir: &Path,
+        node_key: &str,
+    ) -> io::Result<Option<Recorder>> {
         let Some(addresses) = self.manifest.nodes.get(node_key) else {
             return Ok(None);
         };
+        if addresses.is_empty() {
+            return Ok(None);
+        }
         let written = read_opened(run_dir, node_key)?.len();
         let addresses = addresses
             .iter()
@@ -456,6 +636,26 @@ impl Snapshot {
             // kroków, które mają naprawdę działać równolegle (niezmiennik 11).
             writes: Mutex::new(written),
         }))
+    }
+
+    pub fn recording_desk_for(
+        &self,
+        run_dir: &Path,
+        node_key: &str,
+        expires: CancellationToken,
+    ) -> io::Result<Option<crate::bridge::context::ContextDesk>> {
+        match (
+            self.access_for(run_dir, node_key, expires)?,
+            self.recorder_for(run_dir, node_key)?,
+        ) {
+            (Some(access), Some(recorder)) => Ok(Some(
+                crate::bridge::context::ContextDesk::recording(access, recorder),
+            )),
+            (None, None) => Ok(None),
+            _ => Err(io::Error::other(
+                "The saved reference-material permissions do not match this step.",
+            )),
+        }
     }
 
     pub fn evidence_for(&self, node_key: &str) -> io::Result<Vec<EvidenceSource>> {
@@ -488,7 +688,7 @@ impl Snapshot {
     }
 
     /// Łączy zamrożony przydział z ograniczonym dziennikiem skutecznych odczytów tego odbiorcy.
-    pub fn delivery_for(&self, run_dir: &Path, node_key: &str) -> io::Result<Vec<Delivery>> {
+    pub(crate) fn delivery_for(&self, run_dir: &Path, node_key: &str) -> io::Result<Vec<Delivery>> {
         let Some(addresses) = self.manifest.nodes.get(node_key) else {
             return Ok(Vec::new());
         };
@@ -506,6 +706,9 @@ impl Snapshot {
                     "the read history names material outside this step's allocation",
                 ));
             }
+            if record.bytes == 0 {
+                continue;
+            }
             let total = totals.entry(record.address).or_default();
             *total = total
                 .checked_add(record.bytes)
@@ -521,6 +724,21 @@ impl Snapshot {
             }
         }
         Ok(delivery)
+    }
+
+    /// Trzy liczby raportu wsparcia: zestawy, pozycje i pozycje naprawdę otwarte.
+    pub fn diagnostic_counts(&self, run_dir: &Path, node_key: &str) -> io::Result<[usize; 3]> {
+        let delivery = self.delivery_for(run_dir, node_key)?;
+        let sets = delivery
+            .iter()
+            .map(|record| (&record.set_name, &record.version))
+            .collect::<BTreeSet<_>>()
+            .len();
+        let opened = delivery
+            .iter()
+            .filter(|record| record.state == DeliveryState::Opened)
+            .count();
+        Ok([sets, delivery.len(), opened])
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -613,6 +831,35 @@ impl Snapshot {
     }
 }
 
+fn held_saved_sources(
+    project: &Path,
+    bindings: &BTreeMap<String, SavedNode>,
+) -> io::Result<SavedSources> {
+    let mut sources = SavedSources::new();
+    for binding in bindings.values() {
+        if sources.contains_key(&binding.source_run_id) {
+            continue;
+        }
+        let source = super::lead_history::source_for(project, &binding.source_run_id)
+            .map_err(|error| unavailable(&error))?;
+        let source_dir = project.join(".loadout/runs").join(source.run_folder);
+        let Some(before_hold) = read_bound(&source_dir)? else {
+            continue;
+        };
+        let held = Arc::new(hold(&source_dir)?);
+        let snapshot = read_bound(&source_dir)?
+            .ok_or_else(|| unavailable("a saved Lab package disappeared while it was held"))?;
+        if snapshot.binding()? != before_hold.binding()? {
+            return Err(unavailable(
+                "a saved Lab package changed while it was being held",
+            ));
+        }
+        snapshot.replay_blocks()?;
+        sources.insert(binding.source_run_id.clone(), (snapshot, source_dir, held));
+    }
+    Ok(sources)
+}
+
 /// Osobny, per-node zapis skutecznych odczytów. Mutex nie przeżywa await; w tym typie nie ma
 /// nawet funkcji asynchronicznej (niezmiennik 8).
 pub(crate) struct Recorder {
@@ -647,6 +894,9 @@ impl Recorder {
             .addresses
             .get(address)
             .ok_or_else(|| unavailable("an opened item is outside this step's allocation"))?;
+        if bytes == 0 {
+            return Ok(());
+        }
         let mut writes = self.writes.lock().unwrap_or_else(PoisonError::into_inner);
         if *writes >= READ_LOG_ENTRIES {
             return Err(io::Error::other(
@@ -682,7 +932,7 @@ impl Recorder {
     }
 }
 
-pub(crate) fn read_bound(run_dir: &Path) -> io::Result<Option<Snapshot>> {
+pub fn read_bound(run_dir: &Path) -> io::Result<Option<Snapshot>> {
     let root = PublicationRoot::open(run_dir)?;
     let saved: Value = serde_json::from_slice(&bounded_read(
         &root,
@@ -715,8 +965,10 @@ fn read_package(run_dir: &Path) -> io::Result<Snapshot> {
     )?)
     .map_err(|_| unavailable("the saved package manifest cannot be read"))?;
     let snapshot = Snapshot {
-        manifest,
+        manifest: Box::new(manifest),
         inputs: Vec::new(),
+        source_dir: Some(Arc::new(run_dir.to_path_buf())),
+        _source_holds: None,
     };
     snapshot.validate()?;
     for item in &snapshot.manifest.items {
@@ -729,6 +981,68 @@ fn read_package(run_dir: &Path) -> io::Result<Snapshot> {
     }
     root.validate_path_identity(run_dir)?;
     Ok(snapshot)
+}
+
+/// Wspólny zamek chroni pakiet od podglądu replay do końca kopiowania.
+pub(crate) fn hold(run_dir: &Path) -> io::Result<File> {
+    package_lock(run_dir, false)
+}
+
+pub(crate) fn is_held(run_dir: &Path) -> io::Result<bool> {
+    if !run_dir.join(MANIFEST).is_file() {
+        return Ok(false);
+    }
+    match package_lock(run_dir, true) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+/// Trzyma wyłączność od ostatniego sprawdzenia aż po usunięcie katalogu biegu.
+pub(crate) fn removal_guard(run_dir: &Path) -> io::Result<Option<File>> {
+    if !run_dir.join(MANIFEST).is_file() {
+        return Ok(None);
+    }
+    package_lock(run_dir, true).map(Some)
+}
+
+fn package_lock(run_dir: &Path, exclusive: bool) -> io::Result<File> {
+    let root = PublicationRoot::open(run_dir)?;
+    let relative = Path::new(READER_LOCK);
+    let opened = match root
+        .open_private_existing(relative, PrivateFileModePolicy::ExactOwnerOnly)
+        .map_err(io::Error::other)?
+    {
+        Some(opened) => opened,
+        None => match root.create_private(relative) {
+            Ok(opened) => opened,
+            Err(_) => root
+                .open_private_existing(relative, PrivateFileModePolicy::ExactOwnerOnly)
+                .map_err(io::Error::other)?
+                .ok_or_else(|| unavailable("the package reader lock could not be created"))?,
+        },
+    };
+    let file = opened.file().try_clone()?;
+    let locked = if exclusive {
+        file.try_lock()
+    } else {
+        file.try_lock_shared()
+    };
+    locked.map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "This run's reference materials are being read or copied. Keep the run until that finishes.",
+        )
+    })?;
+    root.validate_path_identity(run_dir)?;
+    if !root
+        .validate_private_identity(relative, opened.identity())
+        .map_err(io::Error::other)?
+    {
+        return Err(unavailable("the package reader lock changed identity"));
+    }
+    Ok(file)
 }
 
 fn read_opened(run_dir: &Path, node_key: &str) -> io::Result<Vec<Opened>> {
@@ -846,6 +1160,65 @@ fn copy_input(root: &PublicationRoot, input: &CopyInput) -> io::Result<()> {
         .map_err(io::Error::other)?
     {
         return Err(unavailable("a copied source changed before publication"));
+    }
+    Ok(())
+}
+
+fn stored_files(manifest: &Manifest) -> impl Iterator<Item = &StoredFile> {
+    manifest.items.iter().flat_map(|item| {
+        [&item.text, &item.preview, &item.agent_image]
+            .into_iter()
+            .flatten()
+    })
+}
+
+fn copy_stored(
+    source: &PublicationRoot,
+    destination: &PublicationRoot,
+    stored: &StoredFile,
+) -> io::Result<()> {
+    let relative = Path::new(&stored.relative);
+    if destination
+        .open_private_existing(relative, PrivateFileModePolicy::ExactOwnerOnly)
+        .map_err(io::Error::other)?
+        .is_some()
+    {
+        return verify_stored(destination, stored);
+    }
+    let mut input = source
+        .open_private_existing(relative, PrivateFileModePolicy::ExactOwnerOnly)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| unavailable("a package source is missing while it is copied"))?;
+    let mut output = destination
+        .create_private(relative)
+        .map_err(io::Error::other)?;
+    let mut hasher = Sha256::new();
+    let mut total = 0usize;
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES].into_boxed_slice();
+    loop {
+        let read = input.file_mut().read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.file_mut().write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        total = total
+            .checked_add(read)
+            .ok_or_else(|| unavailable("a package source grew while it was copied"))?;
+    }
+    output.file().sync_all()?;
+    if total != stored.bytes || format!("{:x}", hasher.finalize()) != stored.digest {
+        return Err(unavailable(
+            "a package source changed or is incomplete while it is copied",
+        ));
+    }
+    if !destination
+        .validate_private_identity(relative, output.identity())
+        .map_err(io::Error::other)?
+    {
+        return Err(unavailable(
+            "a copied package source changed before publication",
+        ));
     }
     Ok(())
 }

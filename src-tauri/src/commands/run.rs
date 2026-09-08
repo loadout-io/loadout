@@ -4740,6 +4740,7 @@ fn freeze_context_inputs(
     setup: &Setup<'_>,
     steps: &mut [Planned],
     overlay: Option<&super::lead_start::LeadContextOverlay>,
+    recorded: Option<&Arc<super::replay::ReplayMaterial>>,
 ) -> Result<Option<super::context_sources::Snapshot>, RunError> {
     let recipient_values = steps
         .iter()
@@ -4786,24 +4787,46 @@ fn freeze_context_inputs(
             }));
         }
     }
-    let prepared = match overlay {
-        Some(overlay) => super::context_inputs::prepare_with_overlay(
-            deps.home,
-            file,
-            &setup.inputs,
-            &recipients,
-            Some(overlay),
-        ),
-        None => super::context_inputs::prepare(deps.home, file, &setup.inputs, &recipients),
-    }
-    .map_err(|refusal| {
-        RunError::Refused(Note {
-            level: Level::Problem,
-            step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
-            message: refusal.message,
-            fix: None,
-        })
-    })?;
+    let prepared = if let Some(recorded) = recorded {
+        recorded
+            .context_sources
+            .clone()
+            .map_or_else(
+                || Ok(super::context_inputs::Prepared::empty()),
+                super::context_inputs::Prepared::from_frozen,
+            )
+            .map_err(RunError::Io)?
+    } else if let Some(prepared) =
+        super::context_inputs::Prepared::from_saved_cases(deps.project, file).map_err(|error| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: None,
+                message: super::replay::unavailable(&error.to_string()),
+                fix: None,
+            })
+        })?
+    {
+        prepared
+    } else {
+        match overlay {
+            Some(overlay) => super::context_inputs::prepare_with_overlay(
+                deps.home,
+                file,
+                &setup.inputs,
+                &recipients,
+                Some(overlay),
+            ),
+            None => super::context_inputs::prepare(deps.home, file, &setup.inputs, &recipients),
+        }
+        .map_err(|refusal| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
+                message: refusal.message,
+                fix: None,
+            })
+        })?
+    };
     for step in steps {
         if let Job::Agent(job) = &mut step.job {
             job.reference_materials = prepared.prompt_for(&step.node_key);
@@ -4865,6 +4888,7 @@ fn plan_run_with_identity(
         &setup,
         &mut steps,
         lead_start.and_then(|start| start.context.as_ref()),
+        recorded,
     )?;
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
     let memory_sources =
@@ -10499,6 +10523,12 @@ pub(super) fn retention_blocker(run_dir: &Path) -> io::Result<Option<String>> {
     if let Some(said) = copy_lifetime_blocker(run_dir)? {
         return Ok(Some(said));
     }
+    if super::context_sources::is_held(run_dir)? {
+        return Ok(Some(
+            "This run's reference materials are being read or copied. Keep the run until that finishes."
+                .to_owned(),
+        ));
+    }
     let kept = kept_folders_in(run_dir)?;
     if !kept.is_empty() {
         return Ok(Some(format!(
@@ -10692,6 +10722,16 @@ fn bring_recorded_sources(plan: &mut Plan) -> Result<(), RunError> {
     };
     if let Some(instructions) = &replay.instructions {
         instructions.save_to(&plan.dir)?;
+    }
+    if let Some(context) = &replay.context_sources {
+        context.copy_to(&plan.dir).map_err(|error| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: None,
+                message: super::replay::unavailable(&error.to_string()),
+                fix: None,
+            })
+        })?;
     }
     for step in &mut plan.steps {
         let Job::Agent(job) = &mut step.job else {
@@ -14844,20 +14884,9 @@ impl Live {
             .is_some();
         let step = &self.plan.steps[id];
         let context = match &self.plan.context_sources {
-            Some(snapshot) => match (
-                snapshot.access_for(&self.plan.dir, &step.node_key, expires.clone())?,
-                snapshot.recorder_for(&self.plan.dir, &step.node_key)?,
-            ) {
-                (Some(access), Some(recorder)) => Some(
-                    crate::bridge::context::ContextDesk::recording(access, recorder),
-                ),
-                (None, None) => None,
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "The saved reference-material permissions do not match this step."
-                    ));
-                }
-            },
+            Some(snapshot) => {
+                snapshot.recording_desk_for(&self.plan.dir, &step.node_key, expires.clone())?
+            }
             None => None,
         };
         if job.service_access.is_empty() && !job.agent_messages && !has_plan && context.is_none() {

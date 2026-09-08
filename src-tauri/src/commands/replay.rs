@@ -44,9 +44,11 @@ pub struct ReplayMaterial {
     pub skills: BTreeMap<String, super::run::SavedSkillBundles>,
     pub instructions: Option<crate::inherit::instructions::InstructionSnapshot>,
     pub(crate) memory_sources: Option<super::memory_sources::Snapshot>,
+    pub(crate) context_sources: Option<super::context_sources::Snapshot>,
     pub preview: Value,
     source_revision: String,
     policy_revisions: BTreeMap<PathBuf, String>,
+    _context_hold: Option<std::fs::File>,
 }
 
 impl fmt::Debug for ReplayMaterial {
@@ -109,6 +111,24 @@ impl ReplayMaterial {
                     "the saved memory sources changed after this preview",
                 ));
             }
+            let actual = super::context_sources::read_bound(&self.source_dir)
+                .map_err(|error| unavailable(&error.to_string()))?;
+            let actual = actual
+                .as_ref()
+                .map(super::context_sources::Snapshot::binding)
+                .transpose()
+                .map_err(|error| unavailable(&error.to_string()))?;
+            let expected = self
+                .context_sources
+                .as_ref()
+                .map(super::context_sources::Snapshot::binding)
+                .transpose()
+                .map_err(|error| unavailable(&error.to_string()))?;
+            if actual != expected {
+                return Err(unavailable(
+                    "the saved reference materials changed after this preview",
+                ));
+            }
             for (key, expected) in &self.skills {
                 let actual = super::run::saved_skill_bundles(&self.source_dir, key)
                     .map_err(|error| unavailable(&error.to_string()))?;
@@ -132,7 +152,7 @@ impl ReplayMaterial {
     }
 }
 
-fn unavailable(detail: &str) -> String {
+pub(crate) fn unavailable(detail: &str) -> String {
     format!("Recorded inputs are unavailable: {detail}. Nothing was replaced with today's files.")
 }
 
@@ -193,6 +213,7 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
             .ok_or_else(|| unavailable("the workflow was not saved"))?,
     )
     .map_err(|_| unavailable("the saved workflow cannot be read"))?;
+    let expected_context = super::context_inputs::has_selected_context(&recorded_graph)?;
     let (current, revision, workflow) = todays_workflow_for(home, project, &recorded_graph.id)?;
     let changed =
         serde_json::to_value(&recorded_graph).ok() != serde_json::to_value(&current.workflow).ok();
@@ -210,6 +231,8 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
     } else {
         None
     };
+    let (context_sources, context_hold) =
+        recorded_context_sources(mode, &source_dir, expected_context)?;
     let recorded = RecordedSource {
         mode,
         saved: &saved,
@@ -265,10 +288,67 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
         skills,
         instructions,
         memory_sources,
+        context_sources,
         preview,
         source_revision: crate::durable_file::revision_of(&source_bytes),
         policy_revisions,
+        _context_hold: context_hold,
     }))
+}
+
+fn recorded_context_sources(
+    mode: ReplayMode,
+    source_dir: &Path,
+    expected: bool,
+) -> Result<
+    (
+        Option<super::context_sources::Snapshot>,
+        Option<std::fs::File>,
+    ),
+    String,
+> {
+    if mode != ReplayMode::Recorded {
+        return Ok((None, None));
+    }
+    let Some(before_hold) = super::context_sources::read_bound(source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?
+    else {
+        if expected {
+            return Err(unavailable(
+                "the saved reference-material package is missing",
+            ));
+        }
+        return Ok((None, None));
+    };
+    let hold = super::context_sources::hold(source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?;
+    let snapshot = super::context_sources::read_bound(source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?
+        .ok_or_else(|| unavailable("the saved reference materials disappeared while held"))?;
+    // 2026-09-08 (CT-08): pakiet bez kontekstu jest poprawnym historycznym wejściem, ale
+    // istniejący pakiet nie może zniknąć ani zmienić się w oknie między odczytem i blokadą.
+    //
+    // BEZ ŚWIADKA I ŚWIADOMIE. To jest wyścig między dwoma odczytami w jednej synchronicznej
+    // funkcji, więc test nie ma jak wejść pomiędzy nie bez szwu wstawionego wyłącznie dla
+    // niego. Mutacja zamieniająca to `Err` na `Ok(None)` przechodzi całą suitę — sprawdzone
+    // 2026-09-08. Sąsiednie okno, między podglądem a potwierdzeniem, JEST pokryte
+    // (`package_changes_after_preview_or_confirmation_refuse_before_a_process`), a podmiana
+    // całego cudzego pakietu też (`a_whole_foreign_package_refuses_even_though_every_digest_matches`).
+    if snapshot
+        .binding()
+        .map_err(|error| unavailable(&error.to_string()))?
+        != before_hold
+            .binding()
+            .map_err(|error| unavailable(&error.to_string()))?
+    {
+        return Err(unavailable(
+            "the saved reference materials changed while they were being held",
+        ));
+    }
+    snapshot
+        .replay_blocks()
+        .map_err(|error| unavailable(&error.to_string()))?;
+    Ok((Some(snapshot), Some(hold)))
 }
 
 /// Wskazany zapis w kształcie, w jakim wolno go powtarzać: bez tych sześciu rzeczy podgląd

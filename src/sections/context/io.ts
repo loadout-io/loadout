@@ -14,6 +14,7 @@ import type {
   ContextBuild,
   ContextBuildRead,
   ContextDraft,
+  DeleteContextSet,
   ContextFinding,
   ContextRevision,
   ContextSet,
@@ -30,12 +31,44 @@ import type {
 import { emptyDraft } from '../../state/context';
 
 /** Wszystkie gotowe zestawy tej biblioteki. */
-export async function list(): Promise<ContextSet[]> {
-  const answer = await invoke<unknown>('list_context_sets');
+export async function list(archived: boolean): Promise<ContextSet[]> {
+  const answer = await invoke<unknown>('list_context_sets', { archived });
   if (!Array.isArray(answer)) {
     throw new Error('Loadout could not read the context sets you have saved.');
   }
   return answer.filter(isSet);
+}
+
+/** Przenosi zestaw między dwiema półkami bez ruszania jego przypięć. */
+export async function archive(setId: string, archived: boolean): Promise<ContextSet> {
+  const answer = await invoke<unknown>('archive_context_set', { id: setId, archived });
+  if (!isSet(answer)) throw new Error('Loadout could not move that context set.');
+  return answer;
+}
+
+/** Pierwszy obrót zwraca pytanie z użyciami, drugi wykonuje tę samą rozstrzygniętą czynność. */
+export async function deleteSet(setId: string, confirmed: boolean): Promise<DeleteContextSet> {
+  const answer = await invoke<unknown>('delete_context_set', {
+    id: setId,
+    confirmed,
+    folder: null,
+  });
+  if (typeof answer !== 'object' || answer === null) {
+    throw new Error('Loadout could not check that context set before deleting it.');
+  }
+  const row = answer as Partial<DeleteContextSet>;
+  if (typeof row.setId !== 'string' || typeof row.said !== 'string') {
+    throw new Error('Loadout could not check that context set before deleting it.');
+  }
+  return {
+    setId: row.setId,
+    title: typeof row.title === 'string' ? row.title : '',
+    uses: Array.isArray(row.uses)
+      ? row.uses.filter((use): use is string => typeof use === 'string')
+      : [],
+    deleted: row.deleted === true,
+    said: row.said,
+  };
 }
 
 /** Jeden zestaw w całości: manifest, szkic i rewizja, którą okno odda przy zapisie. */

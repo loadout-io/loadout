@@ -27,7 +27,7 @@ const PRIVATE: [&str; 12] = [
     "PRIVATE_NAME_T34",
 ];
 
-const ALLOWED_KEYS: [&str; 41] = [
+const ALLOWED_KEYS: [&str; 42] = [
     "appVersion",
     "artifacts",
     "attempts",
@@ -57,6 +57,8 @@ const ALLOWED_KEYS: [&str; 41] = [
     "present",
     "receipt",
     "reason",
+    // 2026-09-08 (CT-08) — jedna tablica trzech liczb, nigdy nazwy ani treść materiału.
+    "referenceMaterials",
     "runs",
     "schemaVersion",
     "startedAt",
