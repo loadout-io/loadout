@@ -31,6 +31,7 @@ pub mod library;
 pub(crate) mod messages;
 pub mod serve;
 pub mod verbs;
+pub mod work_plan;
 
 use std::io::{self, Write as _};
 use std::path::Path;
