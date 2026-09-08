@@ -513,8 +513,18 @@ async fn a_failed_plan_author_is_not_bypassed_by_carry_on() -> Result<(), Box<dy
     .await?;
     assert_eq!(report.steps, vec![StepState::Failed, StepState::Failed]);
     let run_file = fs::read_to_string(report.dir.join("run.json"))?;
+    // 2026-09-08 — ASERCJA PRZESTAWIONA NA KONTRAKT, nie na dawne brzmienie. WP-02
+    // przeformułował oba zdania i stare („Create did not finish the plan version it was meant
+    // to provide") nie istnieje juz nigdzie w drzewie. ZACHOWANIE jest to samo i to ono jest
+    // kryterium: autor nazywa, ze nie opublikowal planu, a konsument NIE PODSTAWIA innego —
+    // odmawia, wskazujac wczesniejsza prace. Pytamy wiec o te dwa fakty, a nie o zdanie,
+    // ktore wolno poprawic bez zmiany umowy.
     assert!(
-        run_file.contains("Create did not finish the plan version it was meant to provide"),
+        run_file.contains("No plan was published"),
+        "the failing author has to say it published no plan: {run_file}"
+    );
+    assert!(
+        run_file.contains("did not provide a plan"),
         "the Use step silently fell back to another plan: {run_file}"
     );
     assert_eq!(

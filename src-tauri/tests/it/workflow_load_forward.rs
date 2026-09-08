@@ -26,10 +26,24 @@ use loadout_lib::workflow::file::{LoadError, load};
 /// version 2" nie mówi nic, a wersja pliku nie jest niczym, co użytkownik może naprawić sam.
 const TOO_NEW: &str = "This workflow was saved by a newer Loadout. Update Loadout to open it.";
 
-/// Workflow zapisany przez build, którego jeszcze nie ma: `format: 3` i pole, którego ta
-/// wersja nie zna.
-const FROM_THE_FUTURE: &str = r#"{
-  "format": 3,
+/// Workflow zapisany przez build, którego jeszcze nie ma: format o jeden wyższy niż
+/// najwyższy obsługiwany, plus pole, którego ta wersja nie zna.
+///
+/// 2026-09-08 — LICZBA JEST WYPROWADZONA, NIE WPISANA. Stało tu `"format": 3` na sztywno,
+/// więc w dniu, w którym `HIGHEST_SUPPORTED` doszedł do 3 (WP-02, dokument z Planem), plik
+/// przestał być „z przyszłości" i wczytywał się normalnie — a test, który miał dowodzić
+/// odmowy, padał na własnej przesłance. Numer formatu jest jednym faktem i ma jedno miejsce
+/// zamieszkania (niezmiennik 13); test, który go przepisuje, rozjeżdża się przy pierwszym
+/// podniesieniu.
+fn from_the_future() -> String {
+    FROM_THE_FUTURE_SHAPE.replace(
+        "__FORMAT__",
+        &(loadout_lib::workflow::file::HIGHEST_SUPPORTED + 1).to_string(),
+    )
+}
+
+const FROM_THE_FUTURE_SHAPE: &str = r#"{
+  "format": __FORMAT__,
   "id": "wf_ship",
   "name": "Ship a feature",
   "steps": [
@@ -90,7 +104,7 @@ fn written(dir: &Path, name: &str, source: &str) -> Result<PathBuf, Box<dyn Erro
 #[test]
 fn a_file_from_a_newer_loadout_is_refused_by_name() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
-    let path = written(dir.path(), "future", FROM_THE_FUTURE)?;
+    let path = written(dir.path(), "future", &from_the_future())?;
 
     let error = load(&path)
         .err()
@@ -111,7 +125,7 @@ fn a_file_from_a_newer_loadout_is_refused_by_name() -> Result<(), Box<dyn Error>
 #[test]
 fn refusing_a_file_from_the_future_leaves_the_disk_alone() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
-    let path = written(dir.path(), "future", FROM_THE_FUTURE)?;
+    let path = written(dir.path(), "future", &from_the_future())?;
     let before = fs::read(&path)?;
 
     let refusal = load(&path);
