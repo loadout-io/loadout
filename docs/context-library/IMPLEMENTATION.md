@@ -437,20 +437,29 @@ mutacją, zanim wpiszę im `passed`.
 
 ## 2. Kryteria odbioru (plan §14)
 
-| Scenariusz | Status | Dowód / bloker |
+Status jest **per ścieżka dowodu**, nie per wrażenie. `passed` znaczy: istnieje test na
+produkcyjnym szwie, uruchomiłem go i widziałem licznik przejść. `not-tested` znaczy, że
+kryterium ma pokrycie **częściowe albo żadne** — i wtedy kolumna mówi dokładnie, czego brakuje.
+
+| Scenariusz | Status | Dowód / czego brakuje |
 |---|---|---|
-| Trwały paste | `not-tested` | — |
-| Wiele źródeł | `not-tested` | — |
-| PDF | `not-tested` | — |
-| Obaj vendorzy | `not-tested` | — |
-| Dobór per krok | `not-tested` | — |
-| Plan przed wykonaniem | `not-tested` | — |
-| Izolacja | `not-tested` | — |
-| Równoległość | `not-tested` | — |
-| Anulowanie | `not-tested` | — |
-| Powtarzalność wejść | `not-tested` | — |
-| Uczciwy ekran | `not-tested` | — |
-| Prywatność danych | `not-tested` | — |
+| Trwały paste | `not-tested` | Deterministycznie pokryte: `context_source_import::a_mixed_paste_keeps_the_text_the_image_and_what_joins_them`, `::the_same_picture_pasted_twice_keeps_a_link_for_each_caption`, `context_library_survives_restart` (4/4). **Brakuje wyłącznie prawdziwego schowka macOS** — patrz D-5. |
+| Wiele źródeł | `not-tested` | Kontrakt pokryty na **pięciu** plikach (`five_files_give_five_named_results_and_one_refusal_keeps_the_rest`). Skala **≥50 mieszanych z dużym tekstem** nie ma świadka; fikstura 56 źródeł czeka w `scratchpad/ct09/sources`. |
+| PDF | `passed` | `context_source_import` (10/10), `context_reader_is_scoped::one_selected_pdf_page_has_no_road_to_the_whole_original`, e2e: wszystkie strony, dokument padający na drugiej stronie, wznowienie od brakującej strony. Fikstura `three-pages.pdf` jest w całości ASCII i recenzowalna okiem. |
+| Obaj vendorzy | `passed` | **Żywe CLI, 2026-09-08:** `context_image_reaches_vendor::both_clis_name_the_detail_that_exists_only_in_pixels`. `claude 2.1.263` i `codex-cli 0.153.4` **same wywołały** `view_context_image` i oddały „Q-6284, teal, hexagon" — kolor i kształt nie stoją ani w nazwie pliku, ani w podpisie. 29 s. |
+| Dobór per krok | `passed` | `step_receives_selected_context` (4/4); asercje na **bajtach w kopercie stdin** za prawdziwym `ClaudeDriver`, nie na wyniku resolvera. |
+| Plan przed wykonaniem | `passed` | `lead_context_reaches_run` (9/9), `work_plan_graph_is_unambiguous` (9/9), `work_plan_review_shares_the_version` (8/8) — w tym dwa lustrzane testy tożsamości planu i pracy. |
+| Izolacja | `passed` | `context_does_not_change_during_run` (5/5) i `context_reader_is_scoped` (6/6) — sfałszowany, obcy, wygasły i poza zakresem to **cztery różne zdania**, nie jedno. |
+| Równoległość | `passed` | `step_receives_selected_context::different_parallel_steps_receive_only_their_selected_material` — dowód przez **nakładanie się w czasie**, nie przez liczbę kroków (niezmiennik 11). |
+| Anulowanie | `not-tested` | Pokryte: publikacja i budowanie (`stop_returns_only_after_the_real_driver_group_is_dead`, `a_saved_running_build_is_interrupted_after_restart`, `a_measured_spending_limit_stops_the_real_codex_group`). **Bez świadka: Stop podczas importu i podczas oczekiwania na slot** — dwie z czterech ścieżek wymienionych w §14. |
+| Powtarzalność wejść | `passed` | `recorded_replay_uses_frozen_context` (9/9) i `work_plan_survives_replay` (5/5), w tym dwaj świadkowie dopisani po mutacji: cudzy pakiet przy zgodnych odciskach i pokwitowanie sprzeczne z wersją. |
+| Uczciwy ekran | `not-tested` | Siedem stanów jest osiągalnych w e2e, ale **przez atrapę IPC**, nie po prawdziwej akcji. §14 wymaga „osiągalne po prawdziwej akcji", więc przeglądarka tego nie zamyka. |
+| Prywatność danych | `passed` | `support_report_excludes_private_content` (4/4) z **zamkniętą** listą 43 kluczy plus sentinele `PRIVATE_*`, oraz `context_history_reports_delivery::available_stays_available_and_diagnostics_keep_only_counts`. Mutacja dokładająca pole `String` do raportu przewraca test. |
+
+**Bilans: 8 z 12 `passed`, 4 `not-tested`.** Cztery niezamknięte to dokładnie to, czego nie da
+się dowieść bez prawdziwego okna albo bez skali: paste, 50+ źródeł, dwie ścieżki Stopu i siedem
+stanów ekranu po prawdziwej akcji. **Każde z nich blokuje deklarację gotowości** i żadnego nie
+zamierzam przepisać na `passed` bez próby.
 
 ---
 
