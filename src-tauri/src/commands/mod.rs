@@ -47,6 +47,7 @@ pub mod chat;
 pub mod checkpoint;
 /// Biblioteka Context: nazwane zestawy materiałów, wypisane, czytane i zapisywane z plików.
 pub mod context;
+pub mod context_build;
 pub mod context_sources;
 /// Allowlistowany raport wsparcia dla aktywnego workspace. Wypelnia T-34.
 pub mod diagnostics;

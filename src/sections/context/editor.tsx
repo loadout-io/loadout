@@ -17,13 +17,20 @@ import type { ReactElement } from 'react';
 import { useState } from 'react';
 
 import type {
+  ContextApp,
+  ContextBuild,
   ContextDraft,
+  ContextRevision,
   ContextSetRead,
   DraftEdit,
   ImportItem,
   ImportResult,
+  RevisionEdit,
   SourcePart,
 } from '../../state/context';
+import type { AgentAppStatus } from '../../state/agent-apps';
+import BuildControls from './build-controls';
+import ContextOverview from './overview';
 import { carriesAPicture, pastedIntoMaterial } from './paste';
 import { chooseFilesToAdd } from './pick-files';
 import SourceList from './source-list';
@@ -46,6 +53,12 @@ export interface ContextEditorProps {
   preview: { readonly sourceId: string; readonly part: SourcePart } | null;
   /** Źródło, które właśnie się przygotowuje. */
   preparing: string | null;
+  build: ContextBuild | null;
+  version: ContextRevision | null;
+  buildWith: ContextApp;
+  buildModel: string;
+  claudeCode: AgentAppStatus;
+  codex: AgentAppStatus;
   /** `true`, kiedy zapis naprawdę wszedł. Ekran zostaje otwarty, cokolwiek wróci. */
   onSave: (edit: DraftEdit) => Promise<boolean>;
   /** Kładzie w zestawie to, co człowiek wybrał albo wkleił. */
@@ -54,6 +67,11 @@ export interface ContextEditorProps {
   onPreview: (sourceId: string, page: number | null) => void;
   onHidePreview: () => void;
   onRemove: (sourceId: string) => void;
+  onChooseBuildWith: (app: ContextApp) => void;
+  onBuildModel: (model: string) => void;
+  onBuild: () => void;
+  onStopBuild: () => void;
+  onSaveRevision: (edit: RevisionEdit) => void;
   onClose: () => void;
 }
 
@@ -111,12 +129,23 @@ export default function ContextEditor({
   imported,
   preview,
   preparing,
+  build,
+  version,
+  buildWith,
+  buildModel,
+  claudeCode,
+  codex,
   onSave,
   onAdd,
   onPrepare,
   onPreview,
   onHidePreview,
   onRemove,
+  onChooseBuildWith,
+  onBuildModel,
+  onBuild,
+  onStopBuild,
+  onSaveRevision,
   onClose,
 }: ContextEditorProps): ReactElement {
   const [tab, setTab] = useState<'sources' | 'overview'>('sources');
@@ -346,26 +375,52 @@ export default function ContextEditor({
           </div>
         </div>
       ) : (
-        <div className="card flex flex-col items-center gap-3 text-center">
-          <span aria-hidden className="mark">
-            ◇
-          </span>
-          <p data-nothing-built className="text-ink">
-            Nothing has been prepared from this material yet.
-          </p>
-          <p className="lead max-w-160">
-            Everything you write under Sources is kept exactly as you wrote it, and stays yours to
-            edit.
-          </p>
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={() => {
-              setTab('sources');
-            }}
-          >
-            Go to Sources
-          </button>
+        <div className="flex flex-col gap-4">
+          <BuildControls
+            build={build}
+            app={buildWith}
+            model={buildModel}
+            claudeCode={claudeCode}
+            codex={codex}
+            hasVersion={version !== null}
+            sourceNames={Object.fromEntries(
+              open.draft.sources.map((source) => [source.id, source.name]),
+            )}
+            onChooseApp={onChooseBuildWith}
+            onModel={onBuildModel}
+            onBuild={onBuild}
+            onStop={onStopBuild}
+          />
+          {refusal === null ? null : (
+            <p data-refusal role="alert" className="text-fail">
+              {refusal}
+            </p>
+          )}
+          {version === null ? (
+            <div className="card flex flex-col items-center gap-3 text-center">
+              <span aria-hidden className="mark">
+                ◇
+              </span>
+              <p data-nothing-built className="text-ink">
+                Nothing has been prepared from this material yet.
+              </p>
+              <p className="lead max-w-160">
+                Everything you write under Sources is kept exactly as you wrote it, and stays yours
+                to edit.
+              </p>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setTab('sources');
+                }}
+              >
+                Go to Sources
+              </button>
+            </div>
+          ) : (
+            <ContextOverview revision={version} onSave={onSaveRevision} />
+          )}
         </div>
       )}
     </div>

@@ -479,6 +479,14 @@ pub struct AppState {
     /// workflow, a Stop workflow nie ma prawa zabić generowania. Token per operacja, nigdy
     /// globalny bool — bool przecieka między operacjami (niezmiennik 7).
     generating: Mutex<std::collections::BTreeMap<String, tokio_util::sync::CancellationToken>>,
+    /// Budowania Context kluczowane operacją. Generacja rozstrzyga spóźnioną odpowiedź,
+    /// a token zatrzymuje wyłącznie to jedno budowanie (niezmiennik 7).
+    ///
+    /// `std::sync::Mutex` jest brany tylko do jednego lookup/insert/remove i nigdy przez
+    /// `await` (niezmiennik 8). Brak dowodu śmierci zostawia wpis, bo wolnego miejsca nad
+    /// żywym agentem nie wolno ogłosić (niezmienniki 6, 11).
+    building: Mutex<std::collections::BTreeMap<String, (tokio_util::sync::CancellationToken, u64)>>,
+    build_generation: AtomicU64,
     /// Foldery, ktorych biegi ta sesja juz uzgodnila z tym, co naprawde zyje na maszynie.
     ///
     /// 2026-08-23 — RAZ NA FOLDER NA SESJE, i oba slowa sa tu wazne. „Raz", bo uzgodnienie
@@ -784,6 +792,8 @@ impl AppState {
             store,
             drivers,
             generating: Mutex::new(std::collections::BTreeMap::new()),
+            building: Mutex::new(std::collections::BTreeMap::new()),
+            build_generation: AtomicU64::new(0),
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
             slots,
             live,
@@ -814,6 +824,10 @@ impl AppState {
     /// zatrzymanie któregoś biegu się nie udało — czyli dokładnie wtedy, kiedy sprzątanie po nim
     /// jest do czegoś potrzebne.
     pub async fn close_everything_down(&self) {
+        /* 2026-09-08 (CT-04) — budowanie Context nie jest biegiem workflow, więc jego uchwyty
+         * nie stoją w `live`. Bez osobnego wezwania zamknięcie okna zostawiałoby czytającego
+         * agenta pod PID 1 mimo poprawnego sprzątania wszystkich biegów. */
+        self.stop_context_builds_before_closing().await;
         /* KAŻDY ŻYWY FOLDER, nie jeden uchwyt: od 2026-08-28 zapadka biegu jest kluczowana
          * workspace'em, więc dwa foldery mogą mieć swoje biegi w tej samej chwili. Wyjście
          * sięgające do jednego z nich zostawiłoby drugi żywy pod PID 1 — dokładnie tę sierotę,
@@ -1449,6 +1463,137 @@ impl AppState {
             .remove(operation)
         {
             cancel.cancel();
+        }
+    }
+
+    fn begin_context_build_in(
+        &self,
+        set_id: &str,
+        operation: &str,
+        app: Option<crate::library::agents::Vendor>,
+        model: Option<&str>,
+    ) -> Result<(tokio_util::sync::CancellationToken, u64), String> {
+        let library = crate::context::files::library_root(&self.home);
+        let mut building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
+        let already_building = building.keys().any(|owned| {
+            crate::context::build::read_build(&library, set_id, Some(owned))
+                .ok()
+                .flatten()
+                .is_some_and(|state| {
+                    matches!(
+                        state.end,
+                        crate::context::BuildEnd::Running | crate::context::BuildEnd::StillRunning
+                    )
+                })
+        });
+        if already_building {
+            return Err(
+                "This context is already being built. Stop it before starting another build."
+                    .to_owned(),
+            );
+        }
+        if building.contains_key(operation) {
+            return Err("That build is already in use. Try again with a new action.".to_owned());
+        }
+        let generation = self.build_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let read =
+            crate::context::files::read_set(&library, set_id).map_err(|error| error.to_string())?;
+        let request = commands::context_build::BuildContextRequest {
+            set_id: set_id.to_owned(),
+            operation_id: operation.to_owned(),
+            app,
+            model: model.map(str::to_owned),
+            generation,
+            deadline: Duration::from_mins(crate::context::limits::BUILD_MINUTES),
+            budget_usd: None,
+        };
+        let shown_app = match app {
+            Some(crate::library::agents::Vendor::Codex) => "codex",
+            Some(crate::library::agents::Vendor::ClaudeCode) | None => "claude-code",
+        };
+        let state = crate::context::build::initial_state(
+            &request,
+            shown_app,
+            read.set.draft_revision,
+            String::new(),
+            Vec::new(),
+            &commands::now_utc(),
+        );
+        // 2026-09-08 (CT-04) — zapis stoi POD tym samym krótkim zamkiem co insert. Dzięki temu
+        // następny Start tego zestawu widzi albo oba fakty (plik i właściciela), albo żaden;
+        // samo późniejsze `build_context_inner` zostawiało okno dwóch równoległych budowań.
+        crate::context::build::write_state(&library, &state).map_err(|error| error.to_string())?;
+        building.insert(operation.to_owned(), (cancel.clone(), generation));
+        Ok((cancel, generation))
+    }
+
+    fn context_build_owner_in(&self, set_id: &str) -> Option<(String, u64)> {
+        let library = crate::context::files::library_root(&self.home);
+        let operation = crate::context::build::read_build(&library, set_id, None)
+            .ok()
+            .flatten()?
+            .operation_id;
+        self.building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&operation)
+            .map(|(_, generation)| (operation, *generation))
+    }
+
+    fn context_build_cancel_in(
+        &self,
+        operation: &str,
+    ) -> Option<(tokio_util::sync::CancellationToken, u64)> {
+        self.building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(operation)
+            .cloned()
+    }
+
+    fn finish_context_build_in(&self, operation: &str, generation: u64, release: bool) {
+        if release {
+            let mut building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
+            if building
+                .get(operation)
+                .is_some_and(|(_, current)| *current == generation)
+            {
+                building.remove(operation);
+            }
+        }
+    }
+
+    async fn stop_context_builds_before_closing(&self) {
+        let cancels = self
+            .building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(|(cancel, _)| cancel.clone())
+            .collect::<Vec<_>>();
+        for cancel in cancels {
+            cancel.cancel();
+        }
+        let until = Instant::now() + Duration::from_secs(15);
+        while !self
+            .building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+            && Instant::now() < until
+        {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if !self
+            .building
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+        {
+            tracing::error!(
+                "closing anyway: a context build may still be running after its stop request"
+            );
         }
     }
 
@@ -3488,6 +3633,105 @@ pub async fn forget_runs_older_than(
         .map_err(|error| did_not_finish("forgetting the runs older than that", &error))
 }
 
+/// Uruchamia jedno budowanie i trzyma jego własność aż do udowodnionego końca.
+#[tauri::command]
+pub async fn build_context(
+    state: State<'_, AppState>,
+    set_id: String,
+    operation_id: String,
+    app: Option<crate::library::agents::Vendor>,
+    model: Option<String>,
+) -> Result<crate::context::ContextBuildRead, String> {
+    let (cancel, generation) =
+        state.begin_context_build_in(&set_id, &operation_id, app, model.as_deref())?;
+    let budget_usd = commands::settings::read_settings_inner(&state.home)
+        .ok()
+        .map(|settings| settings.default_budget_usd);
+    let request = commands::context_build::BuildContextRequest {
+        set_id,
+        operation_id: operation_id.clone(),
+        app,
+        model,
+        generation,
+        deadline: Duration::from_mins(crate::context::limits::BUILD_MINUTES),
+        budget_usd,
+    };
+    let result = commands::context_build::build_context_inner(
+        &state.home,
+        &state.project,
+        &state.drivers,
+        &state.slots,
+        &request,
+        &cancel,
+    )
+    .await;
+    let remains_in_use = result.as_ref().is_ok_and(|view| {
+        view.build
+            .as_ref()
+            .is_some_and(|build| build.end == crate::context::BuildEnd::StillRunning)
+    });
+    state.finish_context_build_in(&operation_id, generation, !remains_in_use);
+    result.map_err(|error| error.to_string())
+}
+
+/// Czyta postęp z `state.json`, nie z pamięci zamontowanej karty.
+#[tauri::command]
+pub async fn read_context_build(
+    state: State<'_, AppState>,
+    set_id: String,
+) -> Result<crate::context::ContextBuildRead, String> {
+    let live = state.context_build_owner_in(&set_id);
+    commands::context_build::read_context_build_inner(
+        &state.home,
+        &state.drivers,
+        &set_id,
+        live.as_ref()
+            .map(|(operation, generation)| (operation.as_str(), *generation)),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Stop celuje w jedną operację i czeka na zapisany dowód jej końca.
+#[tauri::command]
+pub async fn stop_context_build(
+    state: State<'_, AppState>,
+    set_id: String,
+    operation_id: String,
+) -> Result<crate::context::ContextBuild, String> {
+    let (cancel, generation) = state
+        .context_build_cancel_in(&operation_id)
+        .ok_or_else(|| "That context build is not running now.".to_owned())?;
+    let result = commands::context_build::stop_context_build_inner(
+        &state.home,
+        &set_id,
+        &operation_id,
+        &cancel,
+    )
+    .await;
+    let remains_in_use = result
+        .as_ref()
+        .is_ok_and(|build| build.end == crate::context::BuildEnd::StillRunning);
+    state.finish_context_build_in(&operation_id, generation, !remains_in_use);
+    result.map_err(|error| error.to_string())
+}
+
+/// Korekta idzie blokująco na dysk, ale publikacja pozostaje poza wątkiem okna.
+#[tauri::command]
+pub async fn save_context_revision(
+    state: State<'_, AppState>,
+    set_id: String,
+    edit: crate::context::RevisionEdit,
+) -> Result<crate::context::ContextBuildRead, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context_build::save_context_revision_inner(&home, &set_id, &edit)
+    })
+    .await
+    .map_err(|error| did_not_finish("saving that context version", &error))?
+    .map_err(|error| error.to_string())
+}
+
 /// Wszystkie gotowe zestawy biblioteki Context.
 ///
 /// # Cztery skorupy, jeden korzeń
@@ -5263,6 +5507,7 @@ macro_rules! every_command_the_window_can_call {
             apply_eval_fix,
             apply_setup,
             author_skill,
+            build_context,
             check_agent_apps,
             check_trigger,
             check_workflow,
@@ -5322,6 +5567,7 @@ macro_rules! every_command_the_window_can_call {
             put_eval_case,
             put_eval_variant,
             put_note_to_use,
+            read_context_build,
             read_context_set,
             read_context_source,
             read_eval_board,
@@ -5342,6 +5588,7 @@ macro_rules! every_command_the_window_can_call {
             stop_generating_agent,
             save_agent,
             save_context_draft,
+            save_context_revision,
             save_eval_protection,
             save_settings,
             save_project_settings,
@@ -5355,6 +5602,7 @@ macro_rules! every_command_the_window_can_call {
             set_trigger_enabled,
             start_process,
             stop_comparing_copies,
+            stop_context_build,
             stop_draft,
             stop_process,
             stop_proposing_cases,

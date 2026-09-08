@@ -142,6 +142,7 @@ mod codex_tools_never_refuse_the_run;
 mod complete_skill_bundle_reaches_every_supported_session;
 mod conditional_edges_choose_one_branch;
 mod connection_tools_are_approved;
+mod context_build_publishes_complete_version;
 mod context_failures_take_the_chosen_path;
 mod context_image_reaches_vendor;
 mod context_library_survives_restart;

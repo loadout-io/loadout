@@ -19,8 +19,11 @@ use std::io;
 use serde::{Deserialize, Serialize};
 
 pub mod access;
+pub mod build;
 pub mod files;
+pub mod findings;
 pub mod limits;
+pub mod prompt;
 pub mod sources;
 
 /// Wersja kształtu obu plików zestawu. Jedna, dopóki nie zajdzie potrzeba drugiej
@@ -202,6 +205,237 @@ pub struct ContextSetRead {
     pub revision: String,
 }
 
+/// Kto wprowadził ustalenie do gotowej wersji.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Origin {
+    Human,
+    Generated,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Rodzaj jednego ustalenia w opracowaniu.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FindingKind {
+    Requirement,
+    Fact,
+    VisualReference,
+    Assumption,
+    Question,
+    Conflict,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Dokładne miejsce w źródle, z którego pochodzi ustalenie.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceReference {
+    #[serde(default)]
+    pub source_id: String,
+    #[serde(default)]
+    pub part: String,
+}
+
+/// Jedno ustalenie zaakceptowane przez aplikację.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextFinding {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub kind: FindingKind,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub condition: String,
+    #[serde(default)]
+    pub sources: Vec<SourceReference>,
+    #[serde(default)]
+    pub topic: String,
+    #[serde(default)]
+    pub conflicts_with: Vec<String>,
+    #[serde(default)]
+    pub origin: Origin,
+}
+
+/// Temat wersji, wybrany z zaakceptowanych ustaleń.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextTopic {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+}
+
+/// Wynik jednego fragmentu materiału.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceOutcome {
+    Processed,
+    Excluded,
+    Failed,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Postęp jednego fragmentu źródła.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceProgress {
+    #[serde(default)]
+    pub source_id: String,
+    #[serde(default)]
+    pub part: String,
+    #[serde(default)]
+    pub outcome: SourceOutcome,
+    #[serde(default)]
+    pub said: String,
+}
+
+/// Pięć etapów budowania i stany odczytane po jego końcu.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BuildStage {
+    Freezing,
+    Splitting,
+    Extracting,
+    Grouping,
+    Publishing,
+    Ready,
+    Interrupted,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Końcowa wartość budowania. Anulowanie nie jest błędem (niezmiennik 7).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BuildEnd {
+    Running,
+    Ready,
+    Cancelled,
+    Failed,
+    StillRunning,
+    Interrupted,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Niezmienna, gotowa wersja opracowania.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextRevision {
+    #[serde(default)]
+    pub schema: u32,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub set_id: String,
+    #[serde(default)]
+    pub draft_revision: u64,
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub origin: Origin,
+    #[serde(default)]
+    pub topics: Vec<ContextTopic>,
+    #[serde(default)]
+    pub findings: Vec<ContextFinding>,
+    #[serde(default)]
+    pub questions: Vec<String>,
+    #[serde(default)]
+    pub conflicts: Vec<String>,
+    #[serde(default)]
+    pub sources: Vec<SourceProgress>,
+    #[serde(default)]
+    pub index_file: String,
+    #[serde(default)]
+    pub findings_file: String,
+    #[serde(default)]
+    pub topic_files: Vec<String>,
+}
+
+/// Trwały stan jednej operacji z `builds/<id>/state.json`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBuild {
+    #[serde(default)]
+    pub schema: u32,
+    #[serde(default)]
+    pub operation_id: String,
+    #[serde(default)]
+    pub set_id: String,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub draft_revision: u64,
+    #[serde(default)]
+    pub stage: BuildStage,
+    #[serde(default)]
+    pub end: BuildEnd,
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub requested_model: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub batches_done: usize,
+    #[serde(default)]
+    pub batches_total: usize,
+    #[serde(default)]
+    pub sources: Vec<SourceProgress>,
+    #[serde(default)]
+    pub said: String,
+    #[serde(default)]
+    pub revision_id: Option<String>,
+    #[serde(default)]
+    pub input_fingerprint: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub changed_at: String,
+}
+
+/// To, co ekran dostaje przy odczycie budowania.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBuildRead {
+    #[serde(default)]
+    pub build: Option<ContextBuild>,
+    #[serde(default)]
+    pub revision: Option<ContextRevision>,
+    #[serde(default)]
+    pub build_with: String,
+}
+
+/// Zmiana człowieka publikowana jako następna, niezmienna wersja.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RevisionEdit {
+    #[serde(default)]
+    pub correction: String,
+    #[serde(default)]
+    pub finding_id: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
 /// Dlaczego zestawu nie da się zapisać albo odczytać.
 ///
 /// Każdy wariant jest osobnym zdaniem po angielsku (D5, niezmiennik 14), bo każdy naprawia się
@@ -215,6 +449,12 @@ pub enum Error {
     /// Zestaw jest, ale nie ma w nim źródła o tym identyfikatorze. Podgląd i usuwanie celują
     /// ZATWIERDZONYM identyfikatorem, nie ścieżką od okna, więc to jest jedyna droga pudła.
     NoSuchSource,
+    /// Nie ma wskazanej operacji budowania.
+    NoSuchBuild,
+    /// Nie ma gotowej wersji, którą można poprawić.
+    NoSuchRevision,
+    /// Nazwana porażka budowania, zachowana także w `state.json`.
+    BuildFailed(String),
     /// Zestaw jest, ale jego pliki nie są tym, co ten build umie przeczytać.
     Malformed(serde_json::Error),
     /// Dysk odmówił.
@@ -242,6 +482,13 @@ impl fmt::Display for Error {
             Self::NoSuchSource => {
                 formatter.write_str("This context set holds nothing under that name any more.")
             }
+            Self::NoSuchBuild => {
+                formatter.write_str("Loadout has no saved context build under that name.")
+            }
+            Self::NoSuchRevision => {
+                formatter.write_str("Build this context before saving a correction.")
+            }
+            Self::BuildFailed(said) => formatter.write_str(said),
             Self::Malformed(error) => write!(
                 formatter,
                 "This context set is not one Loadout can read: {error}."

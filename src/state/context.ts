@@ -157,6 +157,97 @@ export interface ContextSetRead {
   revision: string;
 }
 
+export type ContextApp = 'claude-code' | 'codex';
+export type SourceOutcome = 'processed' | 'excluded' | 'failed' | 'unknown';
+export type BuildStage =
+  | 'freezing'
+  | 'splitting'
+  | 'extracting'
+  | 'grouping'
+  | 'publishing'
+  | 'ready'
+  | 'interrupted'
+  | 'unknown';
+export type BuildEnd =
+  'running' | 'ready' | 'cancelled' | 'failed' | 'stillRunning' | 'interrupted' | 'unknown';
+export type FindingKind =
+  'requirement' | 'fact' | 'visual-reference' | 'assumption' | 'question' | 'conflict' | 'unknown';
+
+export interface SourceReference {
+  sourceId: string;
+  part: string;
+}
+
+export interface ContextFinding {
+  id: string;
+  kind: FindingKind;
+  text: string;
+  condition: string;
+  sources: SourceReference[];
+  topic: string;
+  conflictsWith: string[];
+  origin: 'human' | 'generated' | 'unknown';
+}
+
+export interface ContextTopic {
+  id: string;
+  title: string;
+}
+
+export interface SourceProgress {
+  sourceId: string;
+  part: string;
+  outcome: SourceOutcome;
+  said: string;
+}
+
+export interface ContextBuild {
+  operationId: string;
+  setId: string;
+  generation: number;
+  draftRevision: number;
+  stage: BuildStage;
+  end: BuildEnd;
+  app: ContextApp;
+  requestedModel: string | null;
+  model: string | null;
+  batchesDone: number;
+  batchesTotal: number;
+  sources: SourceProgress[];
+  said: string;
+  revisionId: string | null;
+  startedAt: string;
+  changedAt: string;
+}
+
+export interface ContextRevision {
+  id: string;
+  setId: string;
+  draftRevision: number;
+  app: ContextApp;
+  requestedModel: string | null;
+  model: string | null;
+  createdAt: string;
+  origin: 'human' | 'generated' | 'unknown';
+  topics: ContextTopic[];
+  findings: ContextFinding[];
+  questions: string[];
+  conflicts: string[];
+  sources: SourceProgress[];
+}
+
+export interface ContextBuildRead {
+  build: ContextBuild | null;
+  revision: ContextRevision | null;
+  buildWith: ContextApp;
+}
+
+export interface RevisionEdit {
+  correction: string;
+  findingId: string | null;
+  text: string | null;
+}
+
 /** To, co okno wysyła przy zapisie. Tytuł i szkic jadą razem: to jedna decyzja człowieka. */
 export interface DraftEdit {
   id: string;
@@ -192,6 +283,15 @@ export interface ContextIo {
     sourceId: string,
     expectedRevision: string | null,
   ): Promise<ContextSetRead>;
+  buildContext(
+    setId: string,
+    operationId: string,
+    app: ContextApp,
+    model: string | null,
+  ): Promise<ContextBuildRead>;
+  readBuild(setId: string): Promise<ContextBuildRead>;
+  stopBuild(setId: string, operationId: string): Promise<ContextBuild>;
+  saveRevision(setId: string, edit: RevisionEdit): Promise<ContextBuildRead>;
 }
 
 /**
@@ -263,6 +363,11 @@ export interface ContextState {
   preview: { sourceId: string; part: SourcePart } | null;
   /** Źródło, które właśnie się przygotowuje — `null`, kiedy nic nie trwa. */
   preparing: string | null;
+  /** Postęp zawsze pochodzi z zapisanego `state.json`, także po powrocie do sekcji. */
+  build: ContextBuild | null;
+  version: ContextRevision | null;
+  buildWith: ContextApp;
+  buildModel: string;
   load: () => Promise<void>;
   create: (title: string) => Promise<void>;
   openSet: (id: string) => Promise<void>;
@@ -278,6 +383,12 @@ export interface ContextState {
   showSource: (sourceId: string, page: number | null) => Promise<void>;
   hidePreview: () => void;
   dropSource: (sourceId: string) => Promise<void>;
+  chooseBuildWith: (app: ContextApp) => void;
+  chooseBuildModel: (model: string) => void;
+  startBuild: () => Promise<void>;
+  readBuild: () => Promise<void>;
+  stopBuild: () => Promise<void>;
+  saveRevision: (edit: RevisionEdit) => Promise<void>;
 }
 
 /** Ile stron tego źródła jest już gotowych. Nieznany stan liczy się jak zero. */
@@ -314,6 +425,10 @@ export function createContextStore(io: ContextIo) {
     imported: [],
     preview: null,
     preparing: null,
+    build: null,
+    version: null,
+    buildWith: 'claude-code',
+    buildModel: '',
 
     load: async () => {
       set({ refusal: null, library: 'reading' });
@@ -335,7 +450,12 @@ export function createContextStore(io: ContextIo) {
         /* Dysk PIERWSZY, ekran drugi. W odwrotnej kolejności zestaw, którego zapis odmówił,
          * siedzi na liście do najbliższego uruchomienia i wygląda na zapisany (niezmiennik 4). */
         const made = await io.create(title.trim());
-        set({ sets: upsert(get().sets, made.set), open: made });
+        set({
+          sets: upsert(get().sets, made.set),
+          open: made,
+          build: null,
+          version: null,
+        });
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not make that context set.') });
       }
@@ -344,7 +464,14 @@ export function createContextStore(io: ContextIo) {
     openSet: async (id: string) => {
       set({ refusal: null });
       try {
-        set({ open: await io.read(id) });
+        const open = await io.read(id);
+        set({ open });
+        try {
+          const view = await io.readBuild(id);
+          set({ build: view.build, version: view.revision, buildWith: view.buildWith });
+        } catch (error) {
+          set({ refusal: why(error, 'Loadout could not read the saved build for this set.') });
+        }
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not open that context set.') });
       }
@@ -353,7 +480,14 @@ export function createContextStore(io: ContextIo) {
     close: () => {
       /* Wyniki importu i podgląd należą do OTWARTEGO zestawu, więc wychodzą razem z nim.
        * Zostawione, opowiadałyby o plikach następnego zestawu, do którego ktoś wejdzie. */
-      set({ open: null, refusal: null, imported: [], preview: null });
+      set({
+        open: null,
+        refusal: null,
+        imported: [],
+        preview: null,
+        build: null,
+        version: null,
+      });
     },
 
     save: async (edit: DraftEdit) => {
@@ -512,6 +646,130 @@ export function createContextStore(io: ContextIo) {
         });
       } catch (error) {
         set({ refusal: why(error, 'Loadout could not take that file out of this set.') });
+      }
+    },
+
+    chooseBuildWith: (app: ContextApp) => {
+      set({ buildWith: app });
+    },
+
+    chooseBuildModel: (model: string) => {
+      set({ buildModel: model });
+    },
+
+    startBuild: async () => {
+      const open = get().open;
+      if (open === null) return;
+      const operationId = crypto.randomUUID();
+      const app = get().buildWith;
+      const model = get().buildModel.trim();
+      set({
+        refusal: null,
+        build: {
+          operationId,
+          setId: open.set.id,
+          generation: 0,
+          draftRevision: open.set.draftRevision,
+          stage: 'freezing',
+          end: 'running',
+          app,
+          requestedModel: model === '' ? null : model,
+          model: null,
+          batchesDone: 0,
+          batchesTotal: 0,
+          sources: [],
+          said: 'Loadout is freezing the material for this build.',
+          revisionId: null,
+          startedAt: '',
+          changedAt: '',
+        },
+      });
+
+      /* 2026-09-08 (CT-04) — wywołanie budowania odpowiada dopiero po końcu, więc pasek czyta
+       * zapisany stan równolegle. Bez tego żywa operacja istnieje, ale ekran stoi na pierwszym
+       * zdaniu aż do publikacji. */
+      let done = false;
+      const refresh = (): void => {
+        void io
+          .readBuild(open.set.id)
+          .then((view) => {
+            if (get().build?.operationId === operationId) {
+              set({ build: view.build, version: view.revision, buildWith: view.buildWith });
+            }
+          })
+          .catch(() => undefined);
+      };
+      const timer = globalThis.setInterval(() => {
+        if (!done) refresh();
+      }, 250);
+      try {
+        const view = await io.buildContext(
+          open.set.id,
+          operationId,
+          app,
+          model === '' ? null : model,
+        );
+        const reopened = await io.read(open.set.id);
+        set({
+          build: view.build,
+          version: view.revision,
+          buildWith: view.buildWith,
+          open: reopened,
+          sets: upsert(get().sets, reopened.set),
+        });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not build this context.') });
+        refresh();
+      } finally {
+        done = true;
+        globalThis.clearInterval(timer);
+      }
+    },
+
+    readBuild: async () => {
+      const open = get().open;
+      if (open === null) return;
+      try {
+        const view = await io.readBuild(open.set.id);
+        set({ build: view.build, version: view.revision, buildWith: view.buildWith });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not read the saved build for this set.') });
+      }
+    },
+
+    stopBuild: async () => {
+      const open = get().open;
+      const build = get().build;
+      if (
+        open === null ||
+        build === null ||
+        (build.end !== 'running' && build.end !== 'stillRunning')
+      )
+        return;
+      set({ refusal: null });
+      try {
+        set({ build: await io.stopBuild(open.set.id, build.operationId) });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not stop this context build.') });
+      }
+    },
+
+    saveRevision: async (edit: RevisionEdit) => {
+      const open = get().open;
+      if (open === null) return;
+      set({ refusal: null });
+      try {
+        const view = await io.saveRevision(open.set.id, edit);
+        const reopened = await io.read(open.set.id);
+        set({
+          build: view.build,
+          version: view.revision,
+          buildWith: view.buildWith,
+          open: reopened,
+          sets: upsert(get().sets, reopened.set),
+        });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not save that context version.') });
       }
     },
   }));

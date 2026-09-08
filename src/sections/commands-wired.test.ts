@@ -40,7 +40,7 @@ import * as triggers from './triggers/io';
 import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
-import type { ContextDraft, PreparedPage } from '../state/context';
+import type { ContextDraft, PreparedPage, RevisionEdit } from '../state/context';
 import type { Authored, Import, Landing } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
@@ -196,6 +196,12 @@ const CONTEXT_PAGE: PreparedPage = {
   number: 2,
   text: 'Page two, with the totals table.',
   image: { mime: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUg==' },
+};
+const CONTEXT_MODEL = 'sonnet-4.5';
+const CONTEXT_REVISION_EDIT: RevisionEdit = {
+  correction: 'Keep both totals when the sources disagree.',
+  findingId: null,
+  text: null,
 };
 
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
@@ -373,6 +379,36 @@ const WIRES: readonly Wire[] = [
     command: 'remove_context_source',
     given: [CONTEXT_ID, CONTEXT_SOURCE_ID, REVISION],
     call: () => context.removeSource(CONTEXT_ID, CONTEXT_SOURCE_ID, REVISION),
+  },
+  /* 2026-09-08 (CT-04) — CZTERY KRAWĘDZIE BUDOWANIA. Operacja, aplikacja i model są
+   * nie-domyślne, żeby zgubiony klucz nie mógł przejść na wartości podstawionej pod spodem. */
+  {
+    where: 'context',
+    what: 'buildContext',
+    command: 'build_context',
+    given: [CONTEXT_ID, CONTEXT_OPERATION, 'claude-code', CONTEXT_MODEL],
+    call: () => context.buildContext(CONTEXT_ID, CONTEXT_OPERATION, 'claude-code', CONTEXT_MODEL),
+  },
+  {
+    where: 'context',
+    what: 'readBuild',
+    command: 'read_context_build',
+    given: [CONTEXT_ID],
+    call: () => context.readBuild(CONTEXT_ID),
+  },
+  {
+    where: 'context',
+    what: 'stopBuild',
+    command: 'stop_context_build',
+    given: [CONTEXT_ID, CONTEXT_OPERATION],
+    call: () => context.stopBuild(CONTEXT_ID, CONTEXT_OPERATION),
+  },
+  {
+    where: 'context',
+    what: 'saveRevision',
+    command: 'save_context_revision',
+    given: [CONTEXT_ID, CONTEXT_REVISION_EDIT],
+    call: () => context.saveRevision(CONTEXT_ID, CONTEXT_REVISION_EDIT),
   },
   {
     where: 'workflows',
