@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::drivers::{AgentEvent, FinishReason, Outcome, is_unknown_price_notice};
 
@@ -2078,6 +2078,51 @@ pub fn context_per_turn(uncached_input: u64, cache_read: u64, turns: u32) -> Opt
         "{turns} {plural} · {} length per turn on average",
         compact_length(average)
     ))
+}
+
+/// Stan jednej pozycji materiałów, z którego historia składa zdanie dla człowieka.
+///
+/// 2026-09-08 (CT-06) — stan jest typem wspólnym dla zapisu pakietu i słownika ekranu.
+/// Osobny `match` w historii byłby drugą polityką nazw dla tego samego rachunku.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ReferenceMaterialState {
+    Included,
+    Available,
+    Opened,
+    NotIncluded,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Jedno widoczne zdanie o tym, co stało się z pozycją zamrożonego zestawu.
+#[must_use]
+pub(crate) fn reference_material_delivery(
+    state: ReferenceMaterialState,
+    set: &str,
+    version: &str,
+    item: &str,
+    kind: &str,
+    bytes: usize,
+) -> String {
+    let prefix = format!("{set} · version {version} · {kind} {item}");
+    match state {
+        ReferenceMaterialState::Included => {
+            format!("{prefix} was included when this step started ({bytes} bytes).")
+        }
+        ReferenceMaterialState::Available => {
+            format!("{prefix} was available to read ({bytes} bytes).")
+        }
+        ReferenceMaterialState::Opened => {
+            format!("{prefix} was opened ({bytes} bytes returned).")
+        }
+        ReferenceMaterialState::NotIncluded => {
+            format!("{prefix} was not included for this step.")
+        }
+        ReferenceMaterialState::Unknown => {
+            format!("{prefix} has a delivery state this version cannot read.")
+        }
+    }
 }
 
 /// Krótki zapis liczby, który mieści się w jednym wierszu historii.

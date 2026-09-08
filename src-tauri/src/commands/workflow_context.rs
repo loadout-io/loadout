@@ -1,7 +1,6 @@
 //! Widok przypięć dla edytora i preflight tych samych przypięć przed Startem.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::Path;
 
 use serde::Serialize;
@@ -12,9 +11,6 @@ use crate::context::{ContextRevision, ContextSet, ContextTopic};
 use crate::workflow::context::{ContextPin, Topics, effective_for};
 use crate::workflow::execution::RunInputs;
 use crate::workflow::{Step, WorkflowFile};
-
-const MOST_SETS_PER_STEP: usize = 8;
-const MOST_CONTEXT_BYTES_PER_STEP: u64 = 24 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContextRefusal {
@@ -386,7 +382,7 @@ pub fn context_ready_to_start(
                 step_id: agent.id.clone(),
                 message,
             })?;
-        if effective.sets.len() > MOST_SETS_PER_STEP {
+        if effective.sets.len() > crate::context::limits::STEP_CONTEXT_SETS {
             return Err(ContextRefusal {
                 step_id: agent.id.clone(),
                 message: format!(
@@ -395,7 +391,6 @@ pub fn context_ready_to_start(
                 ),
             });
         }
-        let mut bytes = 0u64;
         for pin in &effective.sets {
             let revision = build::read_revision(&library, &pin.id, &pin.revision).map_err(|_| {
                 ContextRefusal {
@@ -415,56 +410,7 @@ pub fn context_ready_to_start(
                     ),
                 });
             }
-            bytes = bytes.saturating_add(
-                selected_material_bytes(&library, pin, &revision).map_err(|_| {
-                    ContextRefusal {
-                        step_id: agent.id.clone(),
-                        message: format!(
-                            "{} cannot start because context set {} version {} is missing, damaged or not ready. Open Context and rebuild it or choose another ready version.",
-                            agent.name, pin.id, pin.revision
-                        ),
-                    }
-                })?,
-            );
-            if bytes > MOST_CONTEXT_BYTES_PER_STEP {
-                return Err(ContextRefusal {
-                    step_id: agent.id.clone(),
-                    message: format!(
-                        "{} cannot start because context set {} makes its selected context larger than 24 KiB. Choose fewer topics.",
-                        agent.name, pin.id
-                    ),
-                });
-            }
         }
     }
     Ok(())
-}
-
-fn selected_material_bytes(
-    library: &Path,
-    pin: &ContextPin,
-    revision: &ContextRevision,
-) -> Result<u64, String> {
-    let folder = files::folder_of(library, &pin.id).map_err(|error| error.to_string())?;
-    let root = folder.join("versions").join(&pin.revision);
-    let selected = revision
-        .topics
-        .iter()
-        .zip(&revision.topic_files)
-        .filter(|(topic, _)| match &pin.topics {
-            Topics::All => true,
-            Topics::Only(ids) => ids.contains(&topic.id),
-        })
-        .map(|(_, path)| path);
-    let mut bytes = fs::metadata(root.join(&revision.index_file))
-        .map_err(|error| error.to_string())?
-        .len();
-    for path in selected {
-        bytes = bytes.saturating_add(
-            fs::metadata(root.join(path))
-                .map_err(|error| error.to_string())?
-                .len(),
-        );
-    }
-    Ok(bytes)
 }

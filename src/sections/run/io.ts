@@ -1256,6 +1256,8 @@ export interface PastStep {
   readonly memory?: readonly PastMemory[];
   /** WF-12: frozen instruction sources supplied by Loadout, not native auto-loading. */
   readonly projectInstructions?: readonly import('../../state/settings-io').ProjectInstructionSource[];
+  /** CT-06: sentences from this physical step's bounded reference-material receipt. */
+  readonly referenceMaterials?: readonly string[] | null;
   /**
    * Co aplikacja agenta wczytała z folderu, zanim ten krok powiedział pierwsze słowo.
    *

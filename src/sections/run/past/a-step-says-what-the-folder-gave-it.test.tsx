@@ -86,6 +86,12 @@ const SKILLS = [
 const SENTENCE =
   'This step also read 18 skills and a plugin from ' + FOLDER + ' that Loadout did not give it';
 
+/** Rust składa te zdania z ograniczonego rachunku; front ma je tylko umieścić w istniejącym panelu. */
+const REFERENCE_MATERIALS = [
+  'Checkout brief · version revision-7 · requirement Important requirements was included when this step started (81 bytes).',
+  'Checkout brief · version revision-7 · source Receipt API was opened (4096 bytes returned).',
+];
+
 /** Kawałek tamtego zdania, po którym poznać je nawet w innym brzmieniu — do dowodzenia CISZY. */
 const ANY_OF_IT = 'also read';
 
@@ -128,6 +134,7 @@ const OPENED: PastRun = {
         agents: ['Explore', 'Plan'],
       },
       whatLoadoutDidNotGive: SENTENCE,
+      referenceMaterials: REFERENCE_MATERIALS,
       lines: [],
     },
     {
@@ -258,6 +265,18 @@ describe('an opened run says what each step took beyond what it was given', () =
         'thing. The step drew: ' +
         block,
     ).toBe(true);
+  });
+
+  it('puts the frozen reference-material receipt in that same visible region', () => {
+    const block = blockOf(withTheRun, CLAUDE_STEP);
+    expect(block, 'the step that carries the receipt has to be on the screen at all').not.toBe('');
+    for (const said of REFERENCE_MATERIALS) {
+      expect(
+        block.indexOf('data-step-memory') >= 0 && block.indexOf(said) >= 0,
+        'the Rust receipt reached the history wire but not the panel a person reads. The step drew: ' +
+          block,
+      ).toBe(true);
+    }
   });
 
   it('says nothing at all about a step whose record nobody kept', () => {

@@ -125,7 +125,7 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | CT-03b | `h-ct-03b` | `0b4e45f8` | mutacja zakresu → **4 testy padły** | **10 Rust** (+1 żywa próba `#[ignore]`) | **zielone, 609 s** | ~35 USD | **WYLĄDOWANY** |
 | CT-04 | `h-ct-04` | `60220c09` | 3 rundy weryfikatora + 3 naprawy ręczne | **29 Rust** | **zielone, 504 s** | ~180 USD | **WYLĄDOWANY** |
 | CT-05 | `h-ct-05` | — | `todo!()` uruchomione, 3 rundy weryfikatora | **17 Rust + 120 frontu** | — | — | naprawiony ręcznie, ląduje |
-| CT-06 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-06 | `h-ct-06` | — | kontrola starego warunku mostu, patrz §1e | 12 zielonych (4+5+3); dwie mutacje po 4/4 | clippy `too_many_lines` + dwa defekty fikstury, naprawione ręcznie po STOP | — | zielony lokalnie, czeka na pełne CI przy lądowaniu |
 | CT-07 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-08 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-09 | — | — | — | — | — | — | nie rozpoczęty |
@@ -240,6 +240,92 @@ produktu, nie usterkami testów.
 
 **Wniosek operacyjny:** przy pracy równoległej planuj poprawkę na trunku mniej więcej co
 trzecie–czwarte lądowanie i nie traktuj lądowania jak formalności.
+
+### 1e. CT-06 — prywatny pakiet biegu i naprawa po czerwonej bramce
+
+Stan wejściowy worktree `loadout-h-ct-06` na `0286cb46` zawierał już niezatwierdzony szkic
+implementacji i trzech nowych modułów testowych, bez zapisu wcześniejszego RED. Żeby nie
+przedstawiać tego jako dowodu, kontrola negatywna przywróciła na chwilę dokładną starą semantykę
+`service_bridge_for`: brak usług, wiadomości i planu wyłączał most także wtedy, gdy krok miał
+Context. `different_parallel_steps_receive_only_their_selected_material` uruchomił się i padł
+na zachowaniu: dwa kontrolowane kroki zgłosiły `the context-only step did not receive a bridge`.
+Po pomiarze warunek został przywrócony do wersji uwzględniającej przydział Context.
+
+Zaimplementowane: jeden resolver wejść per fizyczny `node_key`, prywatny pakiet z odciskami,
+strumieniowym kopiowaniem i sprawdzeniem miejsca, dokładny zakres stron PDF, dodatek do finalnego
+promptu przez stdin, most uruchamiany przez sam Context, osobne adresy i rachunki kopii/rund,
+łączny zapis udanych odczytów oraz zdania w istniejącym panelu `What this step knew`. Test
+`a_step_with_only_context_reads_its_own_set_through_the_bridge` używa prawdziwego
+`ClaudeDriver`, kontrolowanego procesu CLI i produkcyjnej binarki mostu MCP; pozostałe scenariusze
+Startu mierzą różne przydziały, nakładanie w czasie, `copies`, pętlę, fan-in, zamrożenie po
+edycji/usunięciu biblioteki, obcy zakres i brak globalnego `extra_dirs`.
+
+Pierwsza pełna bramka po implementacji przeszła 26 z 29 zawężonych testów. Nie była to porażka
+granic systemowych: w tym samym przebiegu inne scenariusze z gniazdem i chronionym krokiem były
+zielone. Dwie czerwienie kończyły się dopiero na historii `Opened`, a trzecia na odczycie finalnego
+promptu za prawdziwym `ClaudeDriver`.
+
+Naprawa rachunku przestała odzyskiwać tożsamość odczytanej pozycji z tekstowej ścieżki dowodu.
+Prywatny manifest wiąże teraz rekord `Available` bezpośrednio z logicznym `Address`, waliduje ten
+adres względem przydziału fizycznego `node_key` i po nim sumuje bajty skutecznych odpowiedzi.
+Ścieżka względna `context-sources/...` pozostaje osobnym adresem dowodu dla
+`SafeInputManifest`. Dzięki temu kopie i rundy nadal mają osobne pliki odczytów, a promocja do
+`Opened` nie zależy od ponownego zgadywania tożsamości z nazwy pliku.
+
+Trzecia czerwień była błędem świadka: atrapa Claude'a zapisywała stdin operatorem `>`, więc
+późniejsza prywatna refleksja nadpisywała prompt właściwego kroku. Test zapisuje teraz wszystkie
+fizyczne uruchomienia, wybiera kopertę kroku po jego markerze i wybiera manifest wejścia po
+`referenceMaterial`, nie po przypadkowej kolejności katalogu. Na tej kopercie wymagania różniące
+się wyłącznie warunkiem pozostają dwoma wpisami, stoją przed indeksem, zachowują dokładne brzmienie
+i nie trafiają do argv.
+
+Zarządzana piaskownica używana do ręcznej naprawy nadal odrzuca lokalny `UnixListener::bind`,
+więc nie jest podstawą statusu etapu. Autorytatywny stan to poprzednia czerwona bramka; CT-06
+pozostaje w naprawie do jej ponownego, zielonego przebiegu. Lokalnie zielone są obie odmowy
+budżetowe, formatowanie oraz kontrola finalnego promptu wykonana z tymczasowo wyłączonym tylko
+transportem gniazda; wyjątek diagnostyczny nie pozostał w kodzie.
+
+#### Zamknięcie po zatrzymaniu biegu (2026-09-08, ręcznie)
+
+Bieg stanął po trzech rundach na **`clippy::too_many_lines`** (102/100 w `prepare()`). Pod
+`-D warnings` to błąd kompilacji `lib` i `lib test`, więc `rust-test` poleciał jako POMINIĘTY
+i **ani jeden** z dwunastu napisanych testów nie wykonał się w tej rundzie — stąd werdykt
+„żaden punkt akceptacji nie ma dowodu wykonania". To **czwarte** zatrzymanie tej samej klasy
+(po CT-04, CT-05 i WP-02) i pierwsze na `too_many_lines`, a nie na braku `allow` w module.
+
+Naprawa lintu: ciało pętli `for set in resolved` wyszło z `prepare()` do
+`account_for_set()`. Adnotacja `#[allow]` nie wchodziła w grę — `checks/suppressions.sh`
+gerpuje ten wzorzec po całym `src-tauri/src`, więc zamieniłaby czerwień clippy na czerwień
+suppressions. W `context_budget_preserves_requirements.rs` (103 linie w jednym teście)
+`#![allow(clippy::too_many_lines)]` **jest** w porządku i ma zapisany powód: bramka
+suppressions nie skanuje `tests/`, a dzielenie tego testu rozerwałoby jedną narrację dowodu
+na dwie połówki, z których żadna nie dowodzi kryterium.
+
+Po zieleni clippy wyszły **dwa defekty fikstury**, oba niespełnialne niezależnie od produktu:
+
+1. `greeting["tools"]` — pomocnik `call()` oddaje **już samą tablicę** `greeting.tools`,
+   więc indeks po kluczu na tablicy dawał `Null` i lista narzędzi wychodziła pusta zawsze.
+   Most naprawdę wystawia cztery czytelniki.
+2. `"what the step before this one left"` — zdanie, którego produkt **nigdy nie emituje**:
+   zlepek nagłówka indeksu („Steps before this one left what they found in these files:")
+   i znacznika przy pozycji („(what the step before left)"). Fan-in działał przez cały czas.
+   Asercja stoi teraz na **wskaźniku** `handoffs/`, tak jak wyrocznia tego zachowania
+   (`handoff_index_for_fan_in.rs`), bo proza ma jedno miejsce zamieszkania i wolno jej się
+   zmienić, a wskaźnik jest kontraktem dla obu rodziców.
+
+**Wynik: 12 testów zielonych** — `step_receives_selected_context` 4,
+`context_does_not_change_during_run` 5, `context_budget_preserves_requirements` 3.
+
+**Dowód mutacyjny**, żeby zieleń po naprawie fikstury nie była pusta:
+
+| Mutacja w kodzie produktu | Skutek |
+|---|---|
+| `StepDesk::tools()` przestaje dokładać `context.tools()` | **4/4 padają** |
+| `service_bridge_for` znów oddaje `Ok(None)` bez usług, wiadomości i planu | **4/4 padają** |
+
+Druga mutacja przywraca dokładnie to założenie, które ten etap miał zdjąć. Pierwsza pokazuje
+przy okazji, że lista i rozdzielnik są **jednym** uprawnieniem: zdjęcie nazw z listy zabija
+też odczyty, bo `bridge::host::talk` przepuszcza wyłącznie czasowniki z powitania.
 
 ## 2. Kryteria odbioru (plan §14)
 

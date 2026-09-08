@@ -74,6 +74,13 @@ pub const CORRECTIONS: usize = 1;
 /// Docelowy sufit krótkiego indeksu. Pełne ustalenia zawsze zostają w tematach i JSON-ie.
 pub const SHORT_INDEX_BYTES: usize = 2 * 1024;
 
+/// Ile gotowych zestawów może otrzymać jeden fizyczny krok po rozwiązaniu dziedziczenia.
+pub const STEP_CONTEXT_SETS: usize = 8;
+
+/// Ile bajtów może dołożyć Context do promptu jednego kroku. Pełne źródła są poza tym
+/// rachunkiem i pozostają dostępne przez ograniczony czytelnik (PLAN §9).
+pub const STEP_PROMPT_BYTES: usize = 24 * 1024;
+
 /// Zamknięta lista rodzajów plików, które ta biblioteka przyjmuje.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Accepted {

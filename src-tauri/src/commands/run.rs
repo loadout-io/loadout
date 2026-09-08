@@ -2100,6 +2100,7 @@ fn everything_before_the_first_process(
     bring_recorded_sources(&mut plan)?;
     bring_project_instructions(&mut plan, &project)?;
     plan.memory_sources.save_to(&plan.dir)?;
+    save_context_sources(&plan)?;
     // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
     // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
@@ -2203,6 +2204,15 @@ fn everything_before_the_first_process(
     }
     provisional.disarm();
     Ok((live, isolated, dag))
+}
+
+fn save_context_sources(plan: &Plan) -> io::Result<()> {
+    if let Some(context) = &plan.context_sources {
+        // 2026-09-08 (CT-06) — własna kopia musi istnieć przed ogrodzeniem chronionych kroków;
+        // późniejszy odczyt biblioteki zamieniałby bieg w ruchomy cel.
+        context.save_to(&plan.dir)?;
+    }
+    Ok(())
 }
 
 fn accept_trigger_after_durable_run(
@@ -3654,6 +3664,8 @@ struct Plan {
     project_instructions: Option<Value>,
     /// WF-23: pełne źródła wybranych notatek, nie gotowe prompty; zapis przed procesami.
     memory_sources: super::memory_sources::Snapshot,
+    /// CT-06: prywatny pakiet opracowań, związany z fizycznymi kluczami kroków.
+    context_sources: Option<super::context_sources::Snapshot>,
     additional_inputs: Vec<String>,
     /// Dokładny zapisany wynik, od którego zaczyna każda wznowiona kopia (WF-01).
     starting_results: BTreeMap<String, StartingResult>,
@@ -4295,6 +4307,8 @@ struct AgentJob {
     /// nikt, więc indeksu nie ma tu z czego zbudować. Jedno i drugie jedzie do sterownika jako
     /// **dane** i wychodzi stdinem (niezmiennik 9).
     prompt: String,
+    /// Osobny blok danych referencyjnych. Nie trafia do instrukcji systemowych agenta.
+    reference_materials: String,
     /// O co poproszono TEN kafelek — dosłownie z pliku workflow, bez ani jednego naszego bajtu.
     ///
     /// Jedyne zdanie o tym kroku, które napisał człowiek, więc jedyne, które nadaje się na tytuł
@@ -4501,12 +4515,7 @@ fn the_graph_this_run_starts_from(
 ///
 /// Obie sa tu z tego samego powodu (niezmiennik 12): awaria w polowie biegu zostawia
 /// obciety transkrypt i `run.json`, ktory mowi „running" o czyms, co juz nie zyje.
-fn nothing_stops_this_run(
-    file: &WorkflowFile,
-    project: &Path,
-    home: &Path,
-    part: Option<&Part>,
-) -> Result<(), RunError> {
+fn nothing_stops_this_run(file: &WorkflowFile, project: &Path) -> Result<(), RunError> {
     // Bieg nie ufa UI (T3 §5.2): plik mógł zostać zmergowany gitem albo poprawiony ręcznie
     // między zapisem a naciśnięciem Start. Odmawiamy zdaniem WALIDATORA, słowo w słowo —
     // własne tłumaczenie byłoby drugim miejscem, w którym mieszka ten sam komunikat.
@@ -4519,29 +4528,6 @@ fn nothing_stops_this_run(
     {
         return Err(RunError::Refused(refusal));
     }
-
-    // 2026-09-08 (CT-05): materiał sprawdzamy po zawężeniu `/run`, żeby brak w kafelku, który
-    // tym razem nie rusza, nie blokował poprawnej części — ale nadal przed pierwszym procesem.
-    let unrolled = crate::workflow::unroll::unroll(file);
-    let wanted = which_nodes(&unrolled, file, part);
-    let included = unrolled
-        .nodes
-        .iter()
-        .zip(wanted)
-        .filter_map(|(node, wanted)| {
-            wanted
-                .then(|| file.steps.get(node.step).map(Step::id))
-                .flatten()
-        })
-        .collect::<BTreeSet<_>>();
-    super::workflow_context::context_ready_to_start(home, file, &included).map_err(|refusal| {
-        RunError::Refused(Note {
-            level: Level::Problem,
-            step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
-            message: refusal.message,
-            fix: None,
-        })
-    })?;
 
     /* PRÓG DYSKU, sprawdzany zanim ruszy pierwszy proces (T-208, 2026-08-29).
      *
@@ -4709,6 +4695,57 @@ fn the_inputs_bound_to_checks(
         })
 }
 
+fn freeze_context_inputs(
+    deps: &RunDeps<'_>,
+    file: &WorkflowFile,
+    setup: &Setup<'_>,
+    steps: &mut [Planned],
+) -> Result<Option<super::context_sources::Snapshot>, RunError> {
+    let recipient_values = steps
+        .iter()
+        .filter(|step| matches!(&step.job, Job::Agent(_)))
+        .map(|step| {
+            (
+                step.node_key.clone(),
+                step.tile_key.clone(),
+                step.name.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let recipients = recipient_values
+        .iter()
+        .map(
+            |(node_key, tile_key, name)| super::context_inputs::Recipient {
+                node_key,
+                tile_key,
+                name,
+            },
+        )
+        .collect::<Vec<_>>();
+    let prepared = super::context_inputs::prepare(deps.home, file, &setup.inputs, &recipients)
+        .map_err(|refusal| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
+                message: refusal.message,
+                fix: None,
+            })
+        })?;
+    for step in steps {
+        if let Job::Agent(job) = &mut step.job {
+            prepared
+                .prompt_for(&step.node_key)
+                .clone_into(&mut job.reference_materials);
+            job.context.extend(
+                prepared
+                    .evidence_for(&step.node_key)
+                    .map_err(RunError::Io)?,
+            );
+        }
+    }
+    Ok(prepared.into_snapshot())
+}
+
 fn plan_run_with_identity(
     deps: &RunDeps<'_>,
     request: &RunRequest,
@@ -4723,7 +4760,7 @@ fn plan_run_with_identity(
     let replay = lead_start.and_then(|start| start.replay.as_ref());
     let recorded = replay.filter(|replay| replay.mode == super::replay::ReplayMode::Recorded);
     let (bytes, file) = the_graph_this_run_starts_from(request, lead_start, replay, recorded)?;
-    nothing_stops_this_run(&file, deps.project, deps.home, request.part.as_ref())?;
+    nothing_stops_this_run(&file, deps.project)?;
 
     /* CENNIK CZYTANY TU, PRZED KATALOGIEM BIEGU (2026-09, Z-44). Plik, którego nie da się
      * przeczytać, jest odmową Startu, a nie cichym powrotem do tabeli wbudowanej: literówka
@@ -4751,6 +4788,7 @@ fn plan_run_with_identity(
         steps[child].depends_on.push(keys[parent].clone());
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
+    let context_sources = freeze_context_inputs(deps, &file, &setup, &mut steps)?;
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
     let memory_sources =
         freeze_memory_sources(&memory, &steps, deps.home, deps.project, recorded.is_none())?;
@@ -4780,6 +4818,7 @@ fn plan_run_with_identity(
         workspace_inputs: BTreeMap::new(),
         project_instructions: None,
         memory_sources,
+        context_sources,
         additional_inputs: file
             .additional_inputs()
             .map_err(|said| RunError::Io(io::Error::other(said)))?,
@@ -5046,6 +5085,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         workspace_inputs: BTreeMap::new(),
         project_instructions: None,
         memory_sources,
+        context_sources: None,
         additional_inputs: file
             .additional_inputs()
             .map_err(|said| RunError::Io(io::Error::other(said)))?,
@@ -6418,6 +6458,7 @@ fn plan_agent(
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
         prompt: with_what_we_know(&knows, &with_the_task(task, &instructions)),
+        reference_materials: String::new(),
         asked: instructions,
         context,
         memory,
@@ -12820,6 +12861,12 @@ impl Live {
             lead_origin: self.plan.lead_origin.as_ref(),
             project_instructions: self.plan.project_instructions.as_ref(),
             memory_sources: self.plan.memory_sources.binding()?,
+            context_sources: self
+                .plan
+                .context_sources
+                .as_ref()
+                .map(super::context_sources::Snapshot::binding)
+                .transpose()?,
             input_snapshot: self.plan.input_snapshot.as_ref().map(|snapshot| {
                 serde_json::json!({
                     "id": snapshot.id(), "manifest": "input/manifest.json"
@@ -14530,7 +14577,25 @@ impl Live {
             .as_ref()
             .and_then(crate::work_plan::Prepared::current)
             .is_some();
-        if job.service_access.is_empty() && !job.agent_messages && !has_plan {
+        let step = &self.plan.steps[id];
+        let context = match &self.plan.context_sources {
+            Some(snapshot) => match (
+                snapshot.access_for(&self.plan.dir, &step.node_key, expires.clone())?,
+                snapshot.recorder_for(&self.plan.dir, &step.node_key)?,
+            ) {
+                (Some(access), Some(recorder)) => Some(
+                    crate::bridge::context::ContextDesk::recording(access, recorder),
+                ),
+                (None, None) => None,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "The saved reference-material permissions do not match this step."
+                    ));
+                }
+            },
+            None => None,
+        };
+        if job.service_access.is_empty() && !job.agent_messages && !has_plan && context.is_none() {
             return Ok(None);
         }
         let services = (!job.service_access.is_empty()).then(|| {
@@ -14542,7 +14607,6 @@ impl Live {
                 expires.clone(),
             ))
         });
-        let step = &self.plan.steps[id];
         let messages = if job.agent_messages {
             Some(
                 self.messages
@@ -14570,12 +14634,10 @@ impl Live {
                 )
             })
         });
-        // CT-06 poda tu zamrożony przydział kroku. Pole jest jawne już od 2026-09-08, żeby
-        // lista czasowników i rozdzielnik wyrastały z tej samej wartości, nigdy z dwóch flag.
         let access = Arc::new(crate::bridge::messages::StepDesk {
             services,
             messages,
-            context: None,
+            context,
             plan,
         });
         Ok(Some(
@@ -16346,6 +16408,14 @@ impl Live {
             context: planned_context.to_vec(),
             extra_dirs: Vec::new(),
         };
+        if let Job::Agent(job) = &self.plan.steps[id].job
+            && !job.reference_materials.is_empty()
+        {
+            // 2026-09-08 (CT-06) — materiały są osobnym blokiem danych przed przekazaniami;
+            // kontrakt odpowiedzi zostaje na końcu i `system_append` pozostaje nietknięty.
+            told.prompt.push_str("\n\n");
+            told.prompt.push_str(&job.reference_materials);
+        }
         if !handed.is_empty() {
             self.index_of_what_came_before(&handed, &mut told)?;
             if let Job::Agent(job) = &self.plan.steps[id].job
@@ -17799,6 +17869,8 @@ struct RunFile<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     project_instructions: Option<&'a Value>,
     memory_sources: super::memory_sources::Binding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_sources: Option<super::context_sources::Binding>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     starting_results: &'a BTreeMap<String, StartingResult>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

@@ -540,8 +540,8 @@ fn unready_and_damaged_versions_each_refuse_before_start() -> Result<(), Box<dyn
 }
 
 #[test]
-fn removed_topics_and_the_size_limit_each_need_a_specific_new_choice() -> Result<(), Box<dyn Error>>
-{
+fn removed_topics_need_a_new_choice_but_large_material_stays_available()
+-> Result<(), Box<dyn Error>> {
     let home = tempfile::tempdir()?;
     let changed_id = create_set(home.path(), "Changed topics")?;
     publish_revision(
@@ -567,13 +567,12 @@ fn removed_topics_and_the_size_limit_each_need_a_specific_new_choice() -> Result
         &"x".repeat(24 * 1024 + 1),
     )?;
     let large = workflow(Some(shared(vec![pin(&large_id, "r1", json!("all"))])), None);
-    let over_limit = context_ready_to_start(home.path(), &large, &included())
-        .expect_err("an oversized context started");
+    // 2026-09-08 (CT-06) — 24 KiB ogranicza dodatek do promptu, nie prywatny pakiet,
+    // bo agent ma zawsze móc doczytać pełny materiał przez most.
+    context_ready_to_start(home.path(), &large, &included()).map_err(|refusal| refusal.message)?;
 
     assert!(missing_topic.message.contains(&changed_id));
     assert!(missing_topic.message.contains("choose its topics again"));
-    assert!(over_limit.message.contains(&large_id));
-    assert!(over_limit.message.contains("24 KiB"));
     Ok(())
 }
 
