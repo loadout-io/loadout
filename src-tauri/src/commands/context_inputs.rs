@@ -16,7 +16,9 @@ use crate::context::{
     SourceReference,
 };
 use crate::workflow::WorkflowFile;
-use crate::workflow::context::{ContextPin, Topics, effective_for};
+use crate::workflow::context::{
+    ContextPin, Topics, effective_for, remember_revisions, validate_pins,
+};
 use crate::workflow::execution::RunInputs;
 
 use super::context_sources::{
@@ -108,6 +110,21 @@ impl Prepared {
     pub fn into_snapshot(self) -> Option<Snapshot> {
         self.snapshot
     }
+
+    /// Publikuje prywatny przydział rozmowy i oddaje ten sam ograniczony czytnik co krok.
+    pub fn access_at(
+        &self,
+        folder: &Path,
+        node_key: &str,
+        expires: tokio_util::sync::CancellationToken,
+    ) -> std::io::Result<Option<crate::context::access::ContextAccess>> {
+        let Some(snapshot) = &self.snapshot else {
+            return Ok(None);
+        };
+        std::fs::create_dir_all(folder)?;
+        snapshot.save_to(folder)?;
+        snapshot.access_for(folder, node_key, expires)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -128,6 +145,14 @@ struct ResolvedSet {
     sources: Vec<(String, String)>,
     items: Vec<PackageItem>,
     omitted_topics: Vec<(String, String)>,
+    run_only: bool,
+}
+
+struct SelectedRecipient {
+    node_key: String,
+    tile_key: String,
+    name: String,
+    sets: Vec<(ContextPin, bool)>,
 }
 
 /// Rozwiązuje wszystkie fizyczne węzły przed pierwszym zapisem i pierwszym procesem.
@@ -137,18 +162,114 @@ pub(crate) fn prepare(
     inputs: &RunInputs,
     recipients: &[Recipient<'_>],
 ) -> Result<Prepared, ContextRefusal> {
+    prepare_with_overlay(home, file, inputs, recipients, None)
+}
+
+/// Ten sam resolver dla rozmowy i kroków. `run_only` znaczy nakładkę, nie drugi resolver.
+///
+/// 2026-09-08 — NAZWA ROZDZIELONA PRZY SCALANIU CT-07 z WP-04b. Obie gałęzie nazwały swoją
+/// funkcję `compose`, a znaczą co innego: ta ROZWIĄZUJE przypięcia rozmowy w pakiet biegu,
+/// tamta SKŁADA prompt z Planu, kontekstu i indeksu przekazań. Git nie widział kolizji, bo
+/// definicje stoją w różnych miejscach pliku — zobaczył ją dopiero kompilator.
+pub(crate) fn prepare_pins(
+    home: &Path,
+    pins: &[ContextPin],
+    recipients: &[Recipient<'_>],
+    run_only: bool,
+) -> Result<Prepared, ContextRefusal> {
+    validate_pins(pins).map_err(|message| refusal("", message))?;
+    let selected = recipients
+        .iter()
+        .map(|recipient| SelectedRecipient {
+            node_key: recipient.node_key.to_owned(),
+            tile_key: recipient.tile_key.to_owned(),
+            name: recipient.name.to_owned(),
+            sets: pins.iter().cloned().map(|pin| (pin, run_only)).collect(),
+        })
+        .collect();
+    prepare_selected(home, selected)
+}
+
+pub(crate) fn prepare_with_overlay(
+    home: &Path,
+    file: &WorkflowFile,
+    inputs: &RunInputs,
+    recipients: &[Recipient<'_>],
+    overlay: Option<&super::lead_start::LeadContextOverlay>,
+) -> Result<Prepared, ContextRefusal> {
+    let mut revisions = BTreeMap::new();
+    let mut selected = Vec::with_capacity(recipients.len());
+    for recipient in recipients {
+        let effective = effective_for(file, recipient.tile_key, inputs)
+            .map_err(|message| refusal(recipient.tile_key, message))?;
+        let mut sets = effective
+            .sets
+            .into_iter()
+            .map(|pin| (pin, false))
+            .collect::<Vec<_>>();
+        if let Some(overlay) = overlay
+            && overlay.applies_to(recipient.tile_key, effective.inherits_workflow)
+        {
+            for pin in &overlay.sets {
+                // 2026-09-08 (CT-07) — wspólna nakładka zachowuje jawne wykluczenie kroku;
+                // wybór konkretnych kroków jest późniejszą, równie jawną decyzją człowieka.
+                if matches!(
+                    &overlay.target,
+                    super::lead_start::LeadContextTarget::Workflow
+                ) && effective.excluded_workflow.contains(&pin.id)
+                {
+                    continue;
+                }
+                if let Some((known, _)) = sets.iter().find(|(known, _)| known.id == pin.id)
+                    && known.revision != pin.revision
+                {
+                    return Err(refusal(
+                        recipient.tile_key,
+                        format!(
+                            "Context set {} uses versions {} and {} in the same run. Choose one version before starting.",
+                            pin.id, known.revision, pin.revision
+                        ),
+                    ));
+                }
+                if let Some(at) = sets.iter().position(|(known, _)| known.id == pin.id) {
+                    sets[at] = (pin.clone(), true);
+                } else {
+                    sets.push((pin.clone(), true));
+                }
+            }
+        }
+        let pins = sets.iter().map(|(pin, _)| pin.clone()).collect::<Vec<_>>();
+        remember_revisions(&pins, &mut revisions)
+            .map_err(|message| refusal(recipient.tile_key, message))?;
+        selected.push(SelectedRecipient {
+            node_key: recipient.node_key.to_owned(),
+            tile_key: recipient.tile_key.to_owned(),
+            name: recipient.name.to_owned(),
+            sets,
+        });
+    }
+    prepare_selected(home, selected)
+}
+
+fn prepare_selected(
+    home: &Path,
+    recipients: Vec<SelectedRecipient>,
+) -> Result<Prepared, ContextRefusal> {
     let library = crate::context::files::library_root(home);
     let mut prompts = BTreeMap::new();
     let mut package = BTreeMap::<Address, PackageItem>::new();
     let mut nodes = BTreeMap::new();
 
-    for recipient in recipients {
-        let effective = effective_for(file, recipient.tile_key, inputs)
-            .map_err(|message| refusal(recipient.tile_key, message))?;
-        if effective.sets.is_empty() {
+    for selected_recipient in recipients {
+        let recipient = Recipient {
+            node_key: &selected_recipient.node_key,
+            tile_key: &selected_recipient.tile_key,
+            name: &selected_recipient.name,
+        };
+        if selected_recipient.sets.is_empty() {
             continue;
         }
-        if effective.sets.len() > STEP_CONTEXT_SETS {
+        if selected_recipient.sets.len() > STEP_CONTEXT_SETS {
             return Err(refusal(
                 recipient.tile_key,
                 format!(
@@ -158,9 +279,21 @@ pub(crate) fn prepare(
             ));
         }
 
-        let mut resolved = Vec::with_capacity(effective.sets.len());
-        for pin in &effective.sets {
-            resolved.push(resolve_set(&library, pin, recipient)?);
+        let mut resolved = Vec::with_capacity(selected_recipient.sets.len());
+        for (pin, run_only) in &selected_recipient.sets {
+            let mut set = resolve_set(&library, pin, &recipient)?;
+            /* 2026-09-08 (CT-07) — NAKŁADKA MUSI ZEJŚĆ NA POZYCJE, nie tylko na zestaw.
+             * `set.run_only` czytał wyłącznie rachunek dostarczenia, a pakiet biegu brał
+             * `item.run_only` z rozwiązania sprzed nakładki — czyli zawsze `false`. Zapis biegu
+             * twierdził wtedy, że materiał przypięty „tylko dla tego uruchomienia" jest zwykłym
+             * materiałem workflow, i to jest dokładnie ta różnica, której pilnuje kryterium 4. */
+            set.run_only = *run_only;
+            if *run_only {
+                for item in &mut set.items {
+                    item.run_only = true;
+                }
+            }
+            resolved.push(set);
         }
         let prompt = prompt_for(&resolved);
         // 2026-09-08 (WP-04b) — wymagania Context są znane przed biegiem. Przechodzą przez
@@ -170,7 +303,7 @@ pub(crate) fn prepare(
         let mut selected = Vec::new();
         let mut delivery = Vec::new();
         for set in resolved {
-            account_for_set(set, recipient, &mut package, &mut selected, &mut delivery)?;
+            account_for_set(set, &recipient, &mut package, &mut selected, &mut delivery)?;
         }
 
         prompts.insert(recipient.node_key.to_owned(), prompt);
@@ -215,6 +348,7 @@ fn account_for_set(
             kind: "requirement".to_owned(),
             bytes: requirement_bytes(requirement),
             state: DeliveryState::Included,
+            run_only: set.run_only,
             address: None,
             // 2026-09-08 — rachunek przechowuje adres i rozmiar bloku, nie jego
             // treść. Dokładne wymagania jadą wyłącznie w promptcie przez stdin.
@@ -232,6 +366,7 @@ fn account_for_set(
             kind: item_kind(item.kind),
             bytes,
             state: DeliveryState::Available,
+            run_only: set.run_only,
             // 2026-09-08 (CT-06) — udany odczyt zapisuje ten adres logiczny. Ponowne
             // wyprowadzanie go ze ścieżki dowodu zostawiało stan `Available` mimo
             // zwrócenia treści w produkcyjnym biegu.
@@ -239,7 +374,10 @@ fn account_for_set(
             reference: item.reference(),
         });
         selected.push(item.address.clone());
-        package.entry(item.address.clone()).or_insert(item);
+        package
+            .entry(item.address.clone())
+            .and_modify(|known| known.run_only |= item.run_only)
+            .or_insert(item);
     }
     for (id, title) in set.omitted_topics {
         let address = Address {
@@ -254,6 +392,7 @@ fn account_for_set(
             kind: "topic".to_owned(),
             bytes: 0,
             state: DeliveryState::NotIncluded,
+            run_only: set.run_only,
             address: None,
             reference: PackageItem {
                 address,
@@ -266,6 +405,7 @@ fn account_for_set(
                 text: None,
                 preview: None,
                 agent_image: None,
+                run_only: set.run_only,
             }
             .reference(),
         });
@@ -375,6 +515,7 @@ fn resolve_set(
             .filter(|topic| !selected_ids.contains(&topic.id))
             .map(|topic| (topic.id.clone(), topic.title.clone()))
             .collect(),
+        run_only: false,
     })
 }
 
@@ -503,6 +644,7 @@ fn topic_items(
                 )?),
                 preview: None,
                 agent_image: None,
+                run_only: false,
             })
         })
         .collect()
@@ -533,6 +675,7 @@ fn source_items(
             text,
             preview,
             agent_image,
+            run_only: false,
         }]
     };
     match source.kind {
@@ -658,6 +801,7 @@ fn pdf_items(
             )?),
             preview: None,
             agent_image: picture.is_file().then_some(MaterialInput::File(picture)),
+            run_only: false,
         })
     })
     .collect()

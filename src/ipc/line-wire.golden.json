@@ -128,7 +128,9 @@
         "weight": "ordinary"
       }
     ],
-    "links": [{ "from": "a", "to": "a", "maxTurns": 2 }]
+    "links": [{ "from": "a", "to": "a", "maxTurns": 2 }],
+    "context": [],
+    "contextGeneration": 0
   },
   {
     "kind": "runSource",

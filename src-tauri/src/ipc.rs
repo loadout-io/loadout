@@ -1868,8 +1868,31 @@ impl AppState {
         reflection_enabled: bool,
         lines: LineSink,
     ) -> Result<commands::lead_start::StartReceipt, String> {
+        self.accept_lead_start_with_context_inner(
+            request_id,
+            how_many_at_once,
+            budget_usd,
+            reflection_enabled,
+            None,
+            lines,
+        )
+        .await
+    }
+
+    pub async fn accept_lead_start_with_context_inner(
+        &self,
+        request_id: &str,
+        how_many_at_once: usize,
+        budget_usd: Option<f64>,
+        reflection_enabled: bool,
+        context_choice: Option<commands::lead_start::LeadContextChoice>,
+        lines: LineSink,
+    ) -> Result<commands::lead_start::StartReceipt, String> {
         let starts = self.lead_starts();
-        let Some(start) = starts.claim(request_id)? else {
+        let keep_previous = context_choice
+            .as_ref()
+            .is_some_and(|choice| choice.keep_previous);
+        let Some(start) = starts.claim_with_context(request_id, keep_previous)? else {
             return starts.wait(request_id).await;
         };
         let _acceptance =
@@ -1900,6 +1923,19 @@ impl AppState {
                 start.origin,
                 start.revision,
             );
+            if let Some(selected) = start.context.as_ref() {
+                let snapshot = selected.snapshot();
+                if !snapshot.sets.is_empty() {
+                    let target = context_choice.as_ref().map_or(
+                        commands::lead_start::LeadContextTarget::Workflow,
+                        |choice| choice.target.clone(),
+                    );
+                    acceptance.context = Some(commands::lead_start::LeadContextOverlay {
+                        sets: snapshot.sets,
+                        target,
+                    });
+                }
+            }
             acceptance.replay = start.replay;
             run_workflow_in_project_with_lead_start(
                 self,
@@ -1919,6 +1955,76 @@ impl AppState {
             return Err(said);
         }
         starts.wait(request_id).await
+    }
+
+    pub async fn pin_context_to_chat_inner(
+        &self,
+        terminal: &str,
+        folder: &str,
+        sets: Vec<crate::workflow::context::ContextPin>,
+    ) -> Result<commands::chat::ChatPins, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.leads.library_is(self.home.clone());
+        let home = self.home.clone();
+        let checked = sets.clone();
+        tokio::task::spawn_blocking(move || {
+            let recipient = commands::context_inputs::Recipient {
+                node_key: "_lead",
+                tile_key: "_lead",
+                name: "Lead",
+            };
+            commands::context_inputs::prepare_pins(&home, &checked, &[recipient], true)
+                .map(|_| ())
+                .map_err(|refusal| refusal.message)
+        })
+        .await
+        .map_err(|error| did_not_finish("checking this conversation's Context", &error))??;
+        self.leads.pin_context_to_chat(
+            &commands::chat::Terminal {
+                id: terminal.to_owned(),
+                folder: project,
+            },
+            sets,
+        )
+    }
+
+    pub async fn what_this_chat_pinned_inner(
+        &self,
+        terminal: &str,
+        folder: &str,
+    ) -> Result<commands::chat::ChatPinsView, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.leads.library_is(self.home.clone());
+        let pins = self
+            .leads
+            .what_this_chat_pinned(&commands::chat::Terminal {
+                id: terminal.to_owned(),
+                folder: project,
+            })?;
+        let home = self.home.clone();
+        let selected = pins.sets.clone();
+        let view = tokio::task::spawn_blocking(move || {
+            commands::workflow_context::resolve_chat_context_inner(&home, &selected)
+        })
+        .await
+        .map_err(|error| did_not_finish("reading this conversation's Context", &error))??;
+        Ok(commands::chat::ChatPinsView { pins, view })
+    }
+
+    /// Ta sama żywa migawka, którą most dopina do żądania Startu.
+    ///
+    /// 2026-09-08 (CT-07) — test integracyjny woła dispatcher mostu bez gniazda, ponieważ
+    /// piaskownica procesu odmawia `bind`; osobna kopia wyboru nie wykryłaby zmiany z okna.
+    pub async fn chat_context_selection_inner(
+        &self,
+        terminal: &str,
+        folder: &str,
+    ) -> Result<commands::chat::ChatPinSelection, String> {
+        let project = self.project_for(Some(folder)).await?;
+        self.leads.pin_selection(&commands::chat::Terminal {
+            id: terminal.to_owned(),
+            folder: project,
+        })
     }
 
     /// Sprząta po poprzednim oknie we **wszystkich** znanych folderach, raz, przy starcie.
@@ -4390,17 +4496,40 @@ pub async fn accept_lead_start(
     how_many_at_once: usize,
     budget_usd: Option<f64>,
     reflection_enabled: bool,
+    context: Option<commands::lead_start::LeadContextChoice>,
     lines: Channel<Vec<Line>>,
 ) -> Result<commands::lead_start::StartReceipt, String> {
     state
-        .accept_lead_start_inner(
+        .accept_lead_start_with_context_inner(
             request_id,
             how_many_at_once,
             budget_usd,
             reflection_enabled,
+            context,
             pump_into(lines),
         )
         .await
+}
+
+#[tauri::command]
+pub async fn pin_context_to_chat(
+    state: State<'_, AppState>,
+    terminal: &str,
+    folder: &str,
+    sets: Vec<crate::workflow::context::ContextPin>,
+) -> Result<commands::chat::ChatPins, String> {
+    state
+        .pin_context_to_chat_inner(terminal, folder, sets)
+        .await
+}
+
+#[tauri::command]
+pub async fn what_this_chat_pinned(
+    state: State<'_, AppState>,
+    terminal: &str,
+    folder: &str,
+) -> Result<commands::chat::ChatPinsView, String> {
+    state.what_this_chat_pinned_inner(terminal, folder).await
 }
 
 #[tauri::command]
@@ -5612,6 +5741,7 @@ macro_rules! every_command_the_window_can_call {
             move_note_to_project,
             new_id,
             open_chat,
+            pin_context_to_chat,
             preview_eval_run,
             propose_eval_cases,
             propose_eval_fix,
@@ -5629,6 +5759,7 @@ macro_rules! every_command_the_window_can_call {
             remove_context_source,
             resolve_workflow_context,
             resolve_workflow_plan,
+            what_this_chat_pinned,
             rerun_step,
             resume_run,
             resume_trigger,

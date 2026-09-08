@@ -84,6 +84,8 @@ pub struct EffectiveContext {
     pub sets: Vec<ContextPin>,
     pub inherits_workflow: bool,
     pub protected_scope: bool,
+    #[serde(skip)]
+    pub(crate) excluded_workflow: BTreeSet<String>,
 }
 
 pub(super) fn workflow_from(value: Option<&Value>) -> Result<Option<WorkflowContext>, String> {
@@ -145,7 +147,7 @@ fn validate_pin(pin: &ContextPin) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_pins(pins: &[ContextPin]) -> Result<(), String> {
+pub(crate) fn validate_pins(pins: &[ContextPin]) -> Result<(), String> {
     let mut seen = BTreeSet::new();
     for pin in pins {
         validate_pin(pin)?;
@@ -227,7 +229,7 @@ pub fn validate(file: &WorkflowFile) -> Result<(), String> {
     Ok(())
 }
 
-fn remember_revisions(
+pub(crate) fn remember_revisions(
     pins: &[ContextPin],
     revisions: &mut BTreeMap<String, String>,
 ) -> Result<(), String> {
@@ -262,12 +264,85 @@ pub fn effective_for(
     resolve_agent(file, agent, inputs)
 }
 
+/// Pokazuje różnice na prawdziwych strzałkach, bez zgadywania semantyki nazwy kroku.
+#[must_use]
+pub fn differences_between_steps(file: &WorkflowFile) -> Vec<super::check::Note> {
+    let Ok(inputs) = RunInputs::from_graph(file) else {
+        return Vec::new();
+    };
+    let agents = file
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Agent(agent) => Some((agent.id.as_str(), agent.name.as_str())),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut notes = Vec::new();
+    for link in &file.links {
+        let (Some(from_name), Some(to_name)) =
+            (agents.get(link.from.as_str()), agents.get(link.to.as_str()))
+        else {
+            continue;
+        };
+        let (Ok(from), Ok(to)) = (
+            effective_for(file, &link.from, &inputs),
+            effective_for(file, &link.to, &inputs),
+        ) else {
+            continue;
+        };
+        let from_ids = from
+            .sets
+            .iter()
+            .map(|pin| pin.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let to_ids = to
+            .sets
+            .iter()
+            .map(|pin| pin.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let only_from = from_ids.difference(&to_ids).copied().collect::<Vec<_>>();
+        let only_to = to_ids.difference(&from_ids).copied().collect::<Vec<_>>();
+        if only_from.is_empty() && only_to.is_empty() {
+            continue;
+        }
+        let mut differences = Vec::new();
+        if !only_from.is_empty() {
+            differences.push(format!(
+                "{} has Context {} that {} does not",
+                from_name,
+                only_from.join(", "),
+                to_name
+            ));
+        }
+        if !only_to.is_empty() {
+            differences.push(format!(
+                "{} has Context {} that {} does not",
+                to_name,
+                only_to.join(", "),
+                from_name
+            ));
+        }
+        notes.push(super::check::Note {
+            level: super::check::Level::Warning,
+            step_id: Some(link.to.clone()),
+            message: format!("{}.", differences.join("; ")),
+            fix: None,
+        });
+    }
+    notes
+}
+
 fn resolve_agent(
     file: &WorkflowFile,
     agent: &AgentStep,
     inputs: &RunInputs,
 ) -> Result<EffectiveContext, String> {
     let local = agent.context()?;
+    let excluded_workflow = local
+        .as_ref()
+        .map(|context| context.exclude.iter().cloned().collect())
+        .unwrap_or_default();
     let protected_scope = inputs.context_for(&agent.id).is_some();
     // 2026-09-08 (CT-05) — chroniony zakres nie może dostać wspólnego materiału tylko dlatego,
     // że ktoś przypiął go później do workflow; jawne `true` jest zgodą dla tego jednego kroku.
@@ -295,6 +370,7 @@ fn resolve_agent(
         sets: selected,
         inherits_workflow,
         protected_scope,
+        excluded_workflow,
     })
 }
 

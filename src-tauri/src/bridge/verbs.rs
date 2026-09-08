@@ -240,6 +240,7 @@ pub fn for_role(role: Role) -> Vec<Verb> {
         .into_iter()
         .chain(history_verbs())
         .chain(control_verbs())
+        .chain(crate::bridge::context::context_tools())
         .collect(),
     }
 }

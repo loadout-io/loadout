@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -46,6 +46,7 @@ pub struct StartRequest {
     pub task: Option<String>,
     pub replay: Option<Arc<super::replay::ReplayMaterial>>,
     pub restore: Option<Arc<super::result_restore::ResultMaterial>>,
+    pub context: Option<super::chat::ChatPinSelection>,
 }
 
 impl fmt::Debug for StartRequest {
@@ -57,6 +58,7 @@ impl fmt::Debug for StartRequest {
             .field("workflow", &self.workflow)
             .field("has_revision", &!self.revision.is_empty())
             .field("has_task", &self.task.is_some())
+            .field("has_context", &self.context.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -67,6 +69,7 @@ pub struct LeadStart {
     pub origin: LeadStartOrigin,
     pub expected_revision: String,
     pub replay: Option<Arc<super::replay::ReplayMaterial>>,
+    pub context: Option<LeadContextOverlay>,
     requests: Arc<LeadStarts>,
 }
 
@@ -77,6 +80,7 @@ impl fmt::Debug for LeadStart {
             .field("origin", &self.origin)
             .field("has_revision", &!self.expected_revision.is_empty())
             .field("has_replay", &self.replay.is_some())
+            .field("has_context", &self.context.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -93,6 +97,7 @@ impl LeadStart {
             requests,
             expected_revision,
             replay: None,
+            context: None,
         }
     }
 
@@ -108,6 +113,43 @@ impl LeadStart {
                 },
             }),
         );
+    }
+}
+
+/// Odpowiedź człowieka w podglądzie Startu; przypięć nie wolno przysłać z okna drugi raz.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(
+    tag = "place",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum LeadContextTarget {
+    Workflow,
+    Steps { step_ids: Vec<String> },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeadContextChoice {
+    pub target: LeadContextTarget,
+    #[serde(default)]
+    pub keep_previous: bool,
+}
+
+/// Nakładka żyje tylko w planie biegu; nigdy nie jest zapisywana do definicji workflow.
+#[derive(Clone, Debug)]
+pub struct LeadContextOverlay {
+    pub sets: Vec<crate::workflow::context::ContextPin>,
+    pub target: LeadContextTarget,
+}
+
+impl LeadContextOverlay {
+    #[must_use]
+    pub fn applies_to(&self, step_id: &str, inherits_workflow: bool) -> bool {
+        match &self.target {
+            LeadContextTarget::Workflow => inherits_workflow,
+            LeadContextTarget::Steps { step_ids } => step_ids.iter().any(|id| id == step_id),
+        }
     }
 }
 
@@ -228,6 +270,7 @@ impl LeadStarts {
             task,
             replay: None,
             restore: None,
+            context: None,
         };
         let (changed, _) = watch::channel(());
         entries.insert(
@@ -244,6 +287,14 @@ impl LeadStarts {
 
     /// Jedyny atomowy wybór Pending → Claimed albo Expired. None oznacza duplikat.
     pub fn claim(&self, request_id: &str) -> Result<Option<StartRequest>, String> {
+        self.claim_with_context(request_id, false)
+    }
+
+    pub fn claim_with_context(
+        &self,
+        request_id: &str,
+        keep_previous: bool,
+    ) -> Result<Option<StartRequest>, String> {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         let entry = entries
             .get_mut(request_id)
@@ -258,6 +309,15 @@ impl LeadStarts {
                 Err("Nothing started: this preview is not an accepted run request.".to_owned())
             }
             Phase::Pending => {
+                if !keep_previous
+                    && entry
+                        .request
+                        .as_ref()
+                        .and_then(|request| request.context.as_ref())
+                        .is_some_and(|context| !context.unchanged())
+                {
+                    return Err("Context changed since this plan".to_owned());
+                }
                 entry.phase = Phase::Claimed;
                 entry.changed.send_replace(());
                 Ok(entry.request.take())
@@ -265,6 +325,21 @@ impl LeadStarts {
             Phase::Claimed | Phase::Finished(Ok(_)) => Ok(None),
             Phase::Finished(Err(said)) => Err(said.clone()),
         }
+    }
+
+    /// Dopina stan tej rozmowy do jedynego wpisu requestu, zanim wiersz trafi na ekran.
+    pub fn attach_context(
+        &self,
+        request: &mut StartRequest,
+        context: super::chat::ChatPinSelection,
+    ) -> Result<(), String> {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = entries
+            .get_mut(&request.origin.request_id)
+            .ok_or_else(|| UNKNOWN.to_owned())?;
+        request.context = Some(context);
+        entry.request = Some(request.clone());
+        Ok(())
     }
 
     pub fn refuse(&self, request_id: &str, said: String) {

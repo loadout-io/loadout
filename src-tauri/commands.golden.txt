@@ -73,6 +73,7 @@ load_workflow
 move_note_to_project
 new_id
 open_chat
+pin_context_to_chat
 open_result_folder
 preview_additional_inputs
 preview_eval_run
@@ -91,6 +92,7 @@ read_settings
 remove_context_source
 resolve_workflow_context
 resolve_workflow_plan
+what_this_chat_pinned
 rerun_step
 resume_run
 resume_trigger

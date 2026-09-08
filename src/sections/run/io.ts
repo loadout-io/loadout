@@ -39,10 +39,12 @@ import type { Step } from '../../state/run';
  * jednej zależności W CZASIE WYKONANIA od magazynu otwartego dokumentu. */
 import type { Link } from '../../state/workflows';
 import type { Line, RunRequested, StartedServiceReference } from '../../ipc/types';
+import type { ContextPin, WorkflowContextView } from '../../state/context';
 import { parseLine } from '../../ipc/types';
 import type { ConversationImage } from './entry/images';
 import { runSuggestion } from './feed/suggested';
 import { autoStarts } from './auto-start';
+import { forgetLeadContextRequest, rememberLeadContextRequest } from './lead-context';
 import { feedFor } from './feed/live';
 import { atOnce, takeTheBudget } from './limits/chosen';
 import { why } from '../../ipc/why';
@@ -780,6 +782,49 @@ function terminalOf(terminal: string | null, folder: string | null): string {
   return terminal ?? folder ?? '';
 }
 
+export interface ChatPinsView {
+  readonly pins: {
+    readonly folder: string;
+    readonly sets: readonly ContextPin[];
+    readonly generation: number;
+    readonly transcriptKeepsPreviousContext: boolean;
+  };
+  readonly view: WorkflowContextView;
+}
+
+/** Ten sam wybór, który Rust trzyma pod tożsamością terminalu i jego folderu. */
+export function whatThisChatPinned(terminal: string, folder: string): Promise<ChatPinsView> {
+  /* 2026-09-08 (CT-07) — SPRAWDZENIE, NIE RZUTOWANIE. `invoke<T>` nie ogląda odpowiedzi:
+   * `T` znika przy kompilacji, więc `null` z drutu wjeżdżał do stanu Reacta jako „wybór, o
+   * którym nic nie wiadomo". Picker mówił wtedy w kółko `Context choices are being read.`
+   * i MILCZAŁ o starych wiadomościach — czyli ekran wyglądał na wczytujący się zamiast
+   * powiedzieć, że nie umie odczytać. Odmowa idzie do `chatContextRefusal`, który już
+   * istnieje i ma swoje zdanie na ekranie. Ten sam chwyt, co `parseLine` dla wiersza. */
+  return invoke<unknown>('what_this_chat_pinned', { terminal, folder }).then((read) => {
+    if (typeof read !== 'object' || read === null || Array.isArray(read)) {
+      throw new Error('Loadout could not read this conversation Context.');
+    }
+    const row = read as Record<string, unknown>;
+    const pins = row['pins'];
+    if (typeof pins !== 'object' || pins === null || Array.isArray(pins)) {
+      throw new Error('Loadout could not read this conversation Context.');
+    }
+    if (!Object.hasOwn(row, 'view')) {
+      throw new Error('Loadout could not read this conversation Context.');
+    }
+    return read as ChatPinsView;
+  });
+}
+
+/** Picker oddaje dokładne wersje; backend sprawdza je przed podmianą wyboru rozmowy. */
+export function pinContextToChat(
+  terminal: string,
+  folder: string,
+  sets: readonly ContextPin[],
+): Promise<unknown> {
+  return invoke('pin_context_to_chat', { terminal, folder, sets });
+}
+
 /**
  * Otwiera strumień rozmowy z liderem TEGO terminalu — bez uruchamiania programu.
  *
@@ -822,7 +867,11 @@ export function openChat(
 
     for (const line of batch) {
       if (line.kind !== 'runRequested') continue;
-      void acceptLeadRequest(line).catch((error: unknown) => {
+      if ((line.context?.length ?? 0) > 0) {
+        rememberLeadContextRequest(at, line);
+        continue;
+      }
+      void acceptLeadRequest(line, null).catch((error: unknown) => {
         view.appendLines([
           {
             kind: 'note',
@@ -954,7 +1003,7 @@ export async function startReplay(folder: string, previewId: string): Promise<vo
       'The repeat request could not be read safely. Nothing was redirected to another folder.',
     );
   }
-  void acceptLeadRequest(request).catch((error: unknown) => {
+  void acceptLeadRequest(request, null).catch((error: unknown) => {
     const line = {
       kind: 'problem' as const,
       agent: 'Lead',
@@ -976,7 +1025,22 @@ export function authorizeReplay(
   return invoke<unknown>('start_replay', { folder, previewId, originalIntent });
 }
 
-function acceptLeadRequest(request: RunRequested): Promise<unknown> {
+export type LeadContextTarget =
+  | { readonly place: 'workflow' }
+  | {
+      readonly place: 'steps';
+      readonly stepIds: readonly string[];
+    };
+
+interface LeadContextChoice {
+  readonly target: LeadContextTarget;
+  readonly keepPrevious: boolean;
+}
+
+function acceptLeadRequest(
+  request: RunRequested,
+  context: LeadContextChoice | null,
+): Promise<unknown> {
   const existing = leadRequests.get(request.requestId);
   if (existing !== undefined) return existing;
   const session = runFor(request.workspace);
@@ -1005,6 +1069,7 @@ function acceptLeadRequest(request: RunRequested): Promise<unknown> {
     theCeilingFor(undefined, null),
     learnFromRuns(),
     lines,
+    context,
   ).finally(() => {
     // Odmowa zajętego workspace nie może wyczyścić pytania ani paska biegu, który już trwa.
     if (available) {
@@ -1023,14 +1088,40 @@ export function acceptLeadStart(
   budgetUsd: number | null,
   reflectionEnabled: boolean,
   lines: Channel<unknown[]>,
+  context: LeadContextChoice | null = null,
 ): Promise<unknown> {
   return invoke<unknown>('accept_lead_start', {
     requestId,
     howManyAtOnce,
     budgetUsd,
     reflectionEnabled,
+    context,
     lines,
   });
+}
+
+/** Przyjęcie używa backendowej migawki; okno wskazuje tylko miejsce dostawy i zgodę na starą. */
+export function acceptLeadContextRequest(
+  terminal: string,
+  request: RunRequested,
+  target: LeadContextTarget,
+  keepPrevious: boolean,
+): Promise<unknown> {
+  const running = acceptLeadRequest(request, { target, keepPrevious });
+  /* 2026-09-08 (CT-07) — odmowa zmiany wersji zostawia podgląd, bo tylko na nim człowiek
+   * może jawnie zachować poprzedni wybór. Sukces usuwa go dopiero po potwierdzeniu hosta. */
+  return running.then(
+    (accepted) => {
+      forgetLeadContextRequest(terminal);
+      return accepted;
+    },
+    (error: unknown) => {
+      // 2026-09-08 (CT-07) — odmowa zmiany zostawia request Pending; zapamiętana odrzucona
+      // obietnica odbierałaby przyciskowi zachowania poprzedniej wersji jego drugi handler.
+      leadRequests.delete(request.requestId);
+      throw error;
+    },
+  );
 }
 
 /**

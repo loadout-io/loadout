@@ -4739,6 +4739,7 @@ fn freeze_context_inputs(
     file: &WorkflowFile,
     setup: &Setup<'_>,
     steps: &mut [Planned],
+    overlay: Option<&super::lead_start::LeadContextOverlay>,
 ) -> Result<Option<super::context_sources::Snapshot>, RunError> {
     let recipient_values = steps
         .iter()
@@ -4761,15 +4762,48 @@ fn freeze_context_inputs(
             },
         )
         .collect::<Vec<_>>();
-    let prepared = super::context_inputs::prepare(deps.home, file, &setup.inputs, &recipients)
-        .map_err(|refusal| {
-            RunError::Refused(Note {
+    if let Some(super::lead_start::LeadContextOverlay {
+        target: super::lead_start::LeadContextTarget::Steps { step_ids },
+        ..
+    }) = overlay
+    {
+        let agents = recipient_values
+            .iter()
+            .map(|(_, tile_key, _)| tile_key.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let chosen = step_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        if chosen.len() != step_ids.len() || chosen.is_empty() || !chosen.is_subset(&agents) {
+            return Err(RunError::Refused(Note {
                 level: Level::Problem,
-                step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
-                message: refusal.message,
+                step_id: None,
+                message:
+                    "Choose at least one agent step from this preview for the conversation Context."
+                        .to_owned(),
                 fix: None,
-            })
-        })?;
+            }));
+        }
+    }
+    let prepared = match overlay {
+        Some(overlay) => super::context_inputs::prepare_with_overlay(
+            deps.home,
+            file,
+            &setup.inputs,
+            &recipients,
+            Some(overlay),
+        ),
+        None => super::context_inputs::prepare(deps.home, file, &setup.inputs, &recipients),
+    }
+    .map_err(|refusal| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
+            message: refusal.message,
+            fix: None,
+        })
+    })?;
     for step in steps {
         if let Job::Agent(job) = &mut step.job {
             job.reference_materials = prepared.prompt_for(&step.node_key);
@@ -4825,7 +4859,13 @@ fn plan_run_with_identity(
         steps[child].depends_on.push(keys[parent].clone());
     }
     let routes = planned_routes(&file, &steps, &arrows)?;
-    let context_sources = freeze_context_inputs(deps, &file, &setup, &mut steps)?;
+    let context_sources = freeze_context_inputs(
+        deps,
+        &file,
+        &setup,
+        &mut steps,
+        lead_start.and_then(|start| start.context.as_ref()),
+    )?;
     let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
     let memory_sources =
         freeze_memory_sources(&memory, &steps, deps.home, deps.project, recorded.is_none())?;

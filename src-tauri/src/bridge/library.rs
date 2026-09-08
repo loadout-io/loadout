@@ -28,12 +28,14 @@ use crate::commands::agents::list_agents_inner;
 use crate::commands::chat::LEAD;
 use crate::commands::lead_start::LeadStarts;
 use crate::commands::workflows::{
-    WorkflowPlace, library_workflows, list_workflow_definitions_inner, project_workflows, typable,
+    WorkflowEntry, WorkflowPlace, library_workflows, list_workflow_definitions_inner,
+    project_workflows, typable,
 };
 use crate::engine::line::{Line, RequestedStep};
 use crate::ipc::{LineSink, Sent};
 use crate::library::definition::Definition;
 
+mod context;
 mod control;
 mod replay;
 mod result_restore;
@@ -409,6 +411,7 @@ pub struct Desk {
     services: Option<Arc<crate::commands::processes::services::ServiceAccess>>,
     /// Aktualna tożsamość prywatnej rozmowy. Krótki mutex, nigdy przez await.
     conversation: Arc<Mutex<uuid::Uuid>>,
+    context: Option<context::LeadContextDesk>,
 }
 
 /* RĘCZNIE, bo `LineSink` nie jest `Debug` i nie ma być. Pokazujemy dwa fakty, które cokolwiek
@@ -438,6 +441,7 @@ impl Desk {
             runs: crate::commands::lead_history::LeadRunLookup::default(),
             services: None,
             conversation: Arc::new(Mutex::new(uuid::Uuid::now_v7())),
+            context: None,
         }
     }
 
@@ -481,6 +485,24 @@ impl Desk {
         access: Arc<crate::commands::processes::services::ServiceAccess>,
     ) -> Self {
         self.services = Some(access);
+        self
+    }
+
+    #[must_use]
+    pub fn using_context(
+        mut self,
+        selected: crate::commands::chat::ChatPinSelection,
+        expires: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        self.context = self.home.clone().map(|home| {
+            context::LeadContextDesk::new(
+                home,
+                self.project.clone(),
+                Arc::clone(&self.conversation),
+                selected,
+                expires,
+            )
+        });
         self
     }
 
@@ -765,34 +787,17 @@ impl Desk {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .to_string();
-        let request = starts.register(
+        let mut request = starts.register(
             conversation,
             project,
             root.join(&found.path),
             revision,
             task,
         )?;
-        let steps = found.workflow.steps.iter().map(requested_step).collect();
-        let line = Line::RunRequested {
-            agent: LEAD.to_owned(),
-            text: format!("Starting {}", found.workflow.name),
-            request_id: request.origin.request_id.clone(),
-            conversation_id: request.origin.conversation_id.clone(),
-            workspace: request.workspace.to_string_lossy().into_owned(),
-            title: found.workflow.name,
-            file_name: found.path,
-            steps,
-            links: found
-                .workflow
-                .links
-                .into_iter()
-                .map(|link| crate::engine::line::RequestedLink {
-                    from: link.from,
-                    to: link.to,
-                    max_turns: link.max_turns,
-                })
-                .collect(),
-        };
+        if let Some(context) = &self.context {
+            starts.attach_context(&mut request, context.selection())?;
+        }
+        let line = requested_run_line(found, &request, self.context.as_ref());
         let sent = lines
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -806,6 +811,41 @@ impl Desk {
             json!({ "started": true, "requestId": receipt.request_id, "run": receipt.run,
             "note": "Loadout accepted this run. Its steps may still be starting; this is not a completed result." }),
         )
+    }
+}
+
+fn requested_run_line(
+    found: WorkflowEntry,
+    request: &crate::commands::lead_start::StartRequest,
+    context: Option<&context::LeadContextDesk>,
+) -> Line {
+    let steps = found.workflow.steps.iter().map(requested_step).collect();
+    Line::RunRequested {
+        agent: LEAD.to_owned(),
+        text: format!("Starting {}", found.workflow.name),
+        request_id: request.origin.request_id.clone(),
+        conversation_id: request.origin.conversation_id.clone(),
+        workspace: request.workspace.to_string_lossy().into_owned(),
+        title: found.workflow.name,
+        file_name: found.path,
+        steps,
+        links: found
+            .workflow
+            .links
+            .into_iter()
+            .map(|link| crate::engine::line::RequestedLink {
+                from: link.from,
+                to: link.to,
+                max_turns: link.max_turns,
+            })
+            .collect(),
+        context: request.context.as_ref().map_or_else(Vec::new, |selected| {
+            context.map_or_else(Vec::new, |desk| desk.preview(&selected.snapshot()))
+        }),
+        context_generation: request
+            .context
+            .as_ref()
+            .map_or(0, |selected| selected.snapshot().generation),
     }
 }
 
@@ -836,6 +876,21 @@ fn requested_step(step: &crate::workflow::Step) -> RequestedStep {
 #[async_trait]
 impl Answers for Desk {
     async fn answer(&self, call: Call) -> Answer {
+        if crate::bridge::context::is_context_tool(&call.call) {
+            let answer = match &self.context {
+                Some(context) => context.answer(call).await,
+                None => Answer::Refused(
+                    "This conversation has no Context selection. Choose Context beside the message field first."
+                        .to_owned(),
+                ),
+            };
+            // 2026-09-08 (CT-07) — wynik narzędzia widzi model; odmowa musi dodatkowo wejść
+            // do strumienia, żeby człowiek nie dostał transcriptu udającego udany odczyt.
+            return match answer {
+                Answer::Refused(text) => self.show_control_reply(Err(text)),
+                other => other,
+            };
+        }
         if services::accepts(&call.call) {
             return self.show_control_reply(self.service_call(&call).await);
         }

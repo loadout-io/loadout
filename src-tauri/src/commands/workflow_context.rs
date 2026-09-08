@@ -108,6 +108,34 @@ pub fn resolve_workflow_context_inner(
     })
 }
 
+/// Widok wyboru rozmowy z tego samego katalogu i tego samego odczytu wersji co edytor.
+pub fn resolve_chat_context_inner(
+    home: &Path,
+    pins: &[ContextPin],
+) -> Result<WorkflowContextView, String> {
+    crate::workflow::context::validate_pins(pins)?;
+    let library = files::library_root(home);
+    let sets = files::list_sets(&library).map_err(|error| error.to_string())?;
+    let by_id = sets
+        .iter()
+        .map(|set| (set.id.as_str(), set))
+        .collect::<BTreeMap<_, _>>();
+    let mut warnings = BTreeSet::new();
+    let pinned = pins
+        .iter()
+        .map(|pin| (pin.id.clone(), pin.revision.clone()))
+        .collect();
+    Ok(WorkflowContextView {
+        catalog: catalog_from_pins(&library, &sets, &by_id, &pinned),
+        workflow: pins
+            .iter()
+            .map(|pin| inspect_pin(&library, &by_id, pin, PinSource::Workflow, &mut warnings))
+            .collect(),
+        steps: Vec::new(),
+        warnings: warnings.into_iter().collect(),
+    })
+}
+
 fn catalog_for(
     library: &Path,
     sets: &[ContextSet],
@@ -133,6 +161,15 @@ fn catalog_for(
             }
         }
     }
+    Ok(catalog_from_pins(library, sets, by_id, &pinned))
+}
+
+fn catalog_from_pins(
+    library: &Path,
+    sets: &[ContextSet],
+    by_id: &BTreeMap<&str, &ContextSet>,
+    pinned: &BTreeMap<String, String>,
+) -> Vec<ContextChoice> {
     let mut catalog = sets
         .iter()
         // 2026-09-08 (CT-05): archiwum znika z nowych wyborów, ale istniejące przypięcie musi
@@ -140,7 +177,7 @@ fn catalog_for(
         .filter(|set| !set.archived || pinned.contains_key(&set.id))
         .map(|set| catalog_choice(library, set))
         .collect::<Vec<_>>();
-    for (id, revision) in &pinned {
+    for (id, revision) in pinned {
         if by_id.contains_key(id.as_str()) {
             continue;
         }
@@ -156,7 +193,7 @@ fn catalog_for(
             ),
         });
     }
-    Ok(catalog)
+    catalog
 }
 
 fn step_views(

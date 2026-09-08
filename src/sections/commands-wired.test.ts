@@ -41,6 +41,7 @@ import * as workflows from './workflows/io';
 
 import type { Agent } from '../state/agents';
 import type { ContextDraft, PreparedPage, RevisionEdit } from '../state/context';
+import type { RunRequested } from '../ipc/types';
 import type { Authored, Import, Landing } from '../state/skills';
 import type { WorkflowFile } from '../state/workflows';
 
@@ -202,6 +203,33 @@ const CONTEXT_REVISION_EDIT: RevisionEdit = {
   correction: 'Keep both totals when the sources disagree.',
   findingId: null,
   text: null,
+};
+const CHAT_CONTEXT = {
+  id: CONTEXT_ID,
+  revision: 'context-revision-7',
+  topics: ['checkout'],
+};
+const LEAD_START_REQUEST: RunRequested = {
+  kind: 'runRequested',
+  agent: 'Lead',
+  text: 'Starting Ship a feature',
+  requestId: 'lead-context-request',
+  conversationId: 'lead-context-conversation',
+  workspace: FOLDER,
+  title: 'Ship a feature',
+  fileName: FILE_NAME,
+  steps: [
+    {
+      id: 'build',
+      name: 'Build',
+      kind: 'agent',
+      at: { x: 0, y: 0 },
+      weight: 'ordinary',
+    },
+  ],
+  links: [],
+  context: [{ ...CHAT_CONTEXT, title: 'Checkout rules' }],
+  contextGeneration: 7,
 };
 
 const LINEAR_KEY = 'lin_api_1234567890123456789012345678901234567890';
@@ -663,6 +691,19 @@ const WIRES: readonly Wire[] = [
   },
   {
     where: 'run',
+    what: 'acceptLeadContextRequest',
+    command: 'accept_lead_start',
+    given: [LEAD_START_REQUEST.requestId, 'build'],
+    call: () =>
+      run.acceptLeadContextRequest(
+        'terminal-context',
+        LEAD_START_REQUEST,
+        { place: 'steps', stepIds: ['build'] },
+        false,
+      ),
+  },
+  {
+    where: 'run',
     what: 'prepareReplay',
     command: 'prepare_replay',
     given: [FOLDER, 'saved-run-id', 'recorded'],
@@ -928,6 +969,20 @@ const WIRES: readonly Wire[] = [
     command: 'open_chat',
     given: [],
     call: () => run.openChat(null),
+  },
+  {
+    where: 'run',
+    what: 'pinContextToChat',
+    command: 'pin_context_to_chat',
+    given: ['terminal-context', FOLDER, CHAT_CONTEXT],
+    call: () => run.pinContextToChat('terminal-context', FOLDER, [CHAT_CONTEXT]),
+  },
+  {
+    where: 'run',
+    what: 'whatThisChatPinned',
+    command: 'what_this_chat_pinned',
+    given: ['terminal-context', FOLDER],
+    call: () => run.whatThisChatPinned('terminal-context', FOLDER),
   },
   {
     where: 'run',
@@ -1408,6 +1463,35 @@ describe('the section edges, the two library edges and the one list of command n
         strangers.join(', ') +
         '. The list is the one place where both sides of the seam agree on a name.',
     ).toEqual([]);
+  });
+
+  it('lets a changed Context preview retry with its previous selection', async () => {
+    const request = { ...LEAD_START_REQUEST, requestId: 'lead-context-retry' };
+    invoked
+      .mockRejectedValueOnce(new Error('Context changed since this plan'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(
+      run.acceptLeadContextRequest(
+        'terminal-context-retry',
+        request,
+        { place: 'steps', stepIds: ['build'] },
+        false,
+      ),
+    ).rejects.toThrow('Context changed since this plan');
+    await expect(
+      run.acceptLeadContextRequest(
+        'terminal-context-retry',
+        request,
+        { place: 'steps', stepIds: ['build'] },
+        true,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(invoked.mock.calls.map(([command]) => command)).toEqual([
+      'accept_lead_start',
+      'accept_lead_start',
+    ]);
   });
 
   for (const wire of WIRES) {
