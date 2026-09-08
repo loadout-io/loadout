@@ -2097,10 +2097,7 @@ fn everything_before_the_first_process(
         .map(|acceptance| acceptance.bound_prestart.clone());
     let mut provisional = ProvisionalRun::new(project.clone(), Arc::clone(&faults), bound_prestart);
     let isolated = lay_out_the_run_dir(&mut plan, &project, &mut provisional)?;
-    bring_recorded_sources(&mut plan)?;
-    bring_project_instructions(&mut plan, &project)?;
-    plan.memory_sources.save_to(&plan.dir)?;
-    save_context_sources(&plan)?;
+    bring_starting_materials(&mut plan, &project)?;
     // Wznowienie kopiuje trwałe pliki, potem dopiero buduje z nich indeks promptu. Odwrotna
     // kolejność zostawia pliki w katalogu, ale nie daje do nich drogi żadnemu agentowi.
     seed_the_handoffs(&plan)?;
@@ -2212,6 +2209,31 @@ fn save_context_sources(plan: &Plan) -> io::Result<()> {
         // późniejszy odczyt biblioteki zamieniałby bieg w ruchomy cel.
         context.save_to(&plan.dir)?;
     }
+    Ok(())
+}
+
+fn bring_starting_materials(plan: &mut Plan, project: &Path) -> Result<(), RunError> {
+    bring_recorded_sources(plan)?;
+    bring_frozen_plan(plan)?;
+    bring_project_instructions(plan, project)?;
+    plan.memory_sources.save_to(&plan.dir)?;
+    save_context_sources(plan)?;
+    Ok(())
+}
+
+fn bring_frozen_plan(plan: &mut Plan) -> Result<(), RunError> {
+    let Some(snapshot) = &plan.frozen_plan_input else {
+        return Ok(());
+    };
+    snapshot.copy_to(&plan.dir).map_err(|error| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: None,
+            message: super::replay::unavailable(&error.to_string()),
+            fix: None,
+        })
+    })?;
+    plan.work_plan_binding = Some(snapshot.binding());
     Ok(())
 }
 
@@ -3652,6 +3674,11 @@ struct Plan {
     inputs: super::run_inputs::BoundInputs,
     /// 2026-09-08 (WP-02): fizyczne źródła wersji, policzone raz przed pierwszym procesem.
     work_plan_sources: crate::workflow::work_plan::AuthorMap,
+    /// Plan przypadku Labu, rozstrzygnięty raz przed katalogiem biegu i wspólny dla kolumn.
+    frozen_plan_input: Option<Arc<crate::work_plan::RecordedSnapshot>>,
+    /// 2026-09-08 (WP-06): receipt zmienia wyłącznie publikacja hosta; przypadkowy późniejszy
+    /// zrzut księgi nie może uznać arbitralnej edycji kanonu za dozwolone `Update`.
+    work_plan_binding: Option<crate::work_plan::RecordedBinding>,
     protection: BTreeMap<StepId, protection::Boundary>,
     lead_origin: Option<super::lead_start::LeadStartOrigin>,
     /// uuid v7 biegu — sortuje się po czasie.
@@ -4522,6 +4549,8 @@ fn nothing_stops_this_run(
     file: &WorkflowFile,
     project: &Path,
     part: Option<&Part>,
+    recorded_plan: Option<&crate::work_plan::RecordedSnapshot>,
+    frozen_plan: Option<&crate::work_plan::RecordedSnapshot>,
 ) -> Result<crate::workflow::work_plan::AuthorMap, RunError> {
     // Bieg nie ufa UI (T3 §5.2): plik mógł zostać zmergowany gitem albo poprawiony ręcznie
     // między zapisem a naciśnięciem Start. Odmawiamy zdaniem WALIDATORA, słowo w słowo —
@@ -4529,7 +4558,9 @@ fn nothing_stops_this_run(
     // `check_to_run`, nie `check`: krok bez agenta jest przy zapisie ostrzeżeniem (szkic
     // w połowie zbudowany ma się zapisać), a tutaj problemem — bo za sekundę miałby ruszyć.
     // Powód w całości stoi przy `workflow::check::check_to_run`.
-    if let Some(refusal) = check_to_run(file)
+    let checked_graph = frozen_plan.map(|_| graph_without_live_plan_authors(file));
+    let checked = checked_graph.as_ref().unwrap_or(file);
+    if let Some(refusal) = check_to_run(checked)
         .into_iter()
         .find(|note| note.level == Level::Problem)
     {
@@ -4558,7 +4589,11 @@ fn nothing_stops_this_run(
                 .flatten()
         })
         .collect::<BTreeSet<_>>();
-    let work_plan_sources =
+    let work_plan_sources = if let Some(snapshot) = frozen_plan {
+        frozen_plan_sources(file, &unrolled, &included, snapshot)?
+    } else if let Some(snapshot) = recorded_plan {
+        recorded_plan_sources(file, &unrolled, &included, snapshot)?
+    } else {
         super::workflow_plan::plan_ready_to_start(file, &included).map_err(|refusal| {
             RunError::Refused(Note {
                 level: Level::Problem,
@@ -4566,7 +4601,8 @@ fn nothing_stops_this_run(
                 message: refusal.message,
                 fix: None,
             })
-        })?;
+        })?
+    };
 
     /* PRÓG DYSKU, sprawdzany zanim ruszy pierwszy proces (T-208, 2026-08-29).
      *
@@ -4584,6 +4620,136 @@ fn nothing_stops_this_run(
         return Err(RunError::Refused(refusal));
     }
     Ok(work_plan_sources)
+}
+
+fn graph_without_live_plan_authors(file: &WorkflowFile) -> WorkflowFile {
+    let mut checked = file.clone();
+    for step in &mut checked.steps {
+        if let Step::Agent(step) = step {
+            // 2026-09-08 (WP-06): Lab już zamroził wersję przypadku. Zwykły resolver słusznie
+            // odrzuca graf samych Use, lecz tutaj autor jest poza grafem i ma trwały receipt.
+            step.extra.remove("plan");
+        }
+    }
+    checked
+}
+
+fn frozen_plan_sources(
+    file: &WorkflowFile,
+    unrolled: &Unrolled,
+    included: &BTreeSet<&str>,
+    snapshot: &crate::work_plan::RecordedSnapshot,
+) -> Result<crate::workflow::work_plan::AuthorMap, RunError> {
+    for node in &unrolled.nodes {
+        let Step::Agent(step) = &file.steps[node.step] else {
+            continue;
+        };
+        if !included.contains(step.id.as_str()) {
+            continue;
+        }
+        let configuration = crate::work_plan::Configuration::from_step(step.extra.get("plan"))
+            .map_err(|error| {
+                RunError::Refused(Note {
+                    level: Level::Problem,
+                    step_id: Some(step.id.clone()),
+                    message: error.to_string(),
+                    fix: None,
+                })
+            })?;
+        if configuration.mode() == crate::work_plan::Mode::Off {
+            continue;
+        }
+        let node_key = node_key_for(&step.id, node.turn, node.copy);
+        snapshot.pinned_for(&node_key).map_err(|error| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: Some(step.id.clone()),
+                message: super::replay::unavailable(&error.to_string()),
+                fix: None,
+            })
+        })?;
+    }
+    Ok(crate::workflow::work_plan::AuthorMap::default())
+}
+
+fn recorded_plan_sources(
+    file: &WorkflowFile,
+    unrolled: &Unrolled,
+    included: &BTreeSet<&str>,
+    snapshot: &crate::work_plan::RecordedSnapshot,
+) -> Result<crate::workflow::work_plan::AuthorMap, RunError> {
+    let mut authors = crate::workflow::work_plan::authors(file).map_err(RunError::Refused)?;
+    let physical = unrolled
+        .nodes
+        .iter()
+        .map(|node| {
+            let step = &file.steps[node.step];
+            (node_key_for(step.id(), node.turn, node.copy), step.id())
+        })
+        .collect::<BTreeMap<_, _>>();
+    authors.sources.retain(|consumer, sources| {
+        let selected = physical
+            .get(consumer)
+            .is_some_and(|step_id| included.contains(*step_id));
+        if !selected {
+            return false;
+        }
+        let has_external_source = sources.iter().any(|source| {
+            physical
+                .get(source)
+                .is_some_and(|step_id| !included.contains(*step_id))
+        });
+        !has_external_source || snapshot.pinned_for(consumer).is_ok()
+    });
+    for (node_key, step_id) in physical {
+        if !included.contains(step_id)
+            || !crate::work_plan::Configuration::from_step(
+                file.steps
+                    .iter()
+                    .find(|step| step.id() == step_id)
+                    .and_then(|step| match step {
+                        Step::Agent(step) => step.extra.get("plan"),
+                        Step::Checkpoint(_) | Step::Check(_) | Step::Serve(_) => None,
+                    }),
+            )
+            .is_ok_and(|configuration| {
+                matches!(
+                    configuration.mode(),
+                    crate::work_plan::Mode::Use | crate::work_plan::Mode::Update
+                )
+            })
+        {
+            continue;
+        }
+        let sources_are_inside = authors.sources.get(&node_key).is_some_and(|sources| {
+            sources
+                .iter()
+                .all(|source| physical_source_is_included(source, file, unrolled, included))
+        });
+        if !sources_are_inside {
+            snapshot.pinned_for(&node_key).map_err(|error| {
+                RunError::Refused(Note {
+                    level: Level::Problem,
+                    step_id: Some(step_id.to_owned()),
+                    message: super::replay::unavailable(&error.to_string()),
+                    fix: None,
+                })
+            })?;
+        }
+    }
+    Ok(authors)
+}
+
+fn physical_source_is_included(
+    source: &str,
+    file: &WorkflowFile,
+    unrolled: &Unrolled,
+    included: &BTreeSet<&str>,
+) -> bool {
+    unrolled.nodes.iter().any(|node| {
+        let step = &file.steps[node.step];
+        node_key_for(step.id(), node.turn, node.copy) == source && included.contains(step.id())
+    })
 }
 
 /// Sklada wszystko, czego planista potrzebuje o tym biegu, w jeden zamrozony obraz.
@@ -4854,7 +5020,27 @@ fn plan_run_with_identity(
     let replay = lead_start.and_then(|start| start.replay.as_ref());
     let recorded = replay.filter(|replay| replay.mode == super::replay::ReplayMode::Recorded);
     let (bytes, file) = the_graph_this_run_starts_from(request, lead_start, replay, recorded)?;
-    let work_plan_sources = nothing_stops_this_run(&file, deps.project, request.part.as_ref())?;
+    let frozen_work_plan = if recorded.is_none() {
+        crate::work_plan::RecordedSnapshot::from_saved_cases(deps.project, &file)
+            .map(|snapshot| snapshot.map(Arc::new))
+            .map_err(|error| {
+                RunError::Refused(Note {
+                    level: Level::Problem,
+                    step_id: None,
+                    message: super::replay::unavailable(&error.to_string()),
+                    fix: None,
+                })
+            })?
+    } else {
+        None
+    };
+    let work_plan_sources = nothing_stops_this_run(
+        &file,
+        deps.project,
+        request.part.as_ref(),
+        recorded.and_then(|replay| replay.work_plan.as_ref()),
+        frozen_work_plan.as_deref(),
+    )?;
 
     /* CENNIK CZYTANY TU, PRZED KATALOGIEM BIEGU (2026-09, Z-44). Plik, którego nie da się
      * przeczytać, jest odmową Startu, a nie cichym powrotem do tabeli wbudowanej: literówka
@@ -4912,6 +5098,8 @@ fn plan_run_with_identity(
         replay: replay.cloned(),
         inputs,
         work_plan_sources,
+        frozen_plan_input: frozen_work_plan,
+        work_plan_binding: None,
         protection: BTreeMap::new(),
         id,
         dir,
@@ -5183,6 +5371,8 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         lead_origin: None,
         inputs: super::run_inputs::BoundInputs::default(),
         work_plan_sources: crate::workflow::work_plan::AuthorMap::default(),
+        frozen_plan_input: None,
+        work_plan_binding: None,
         protection: BTreeMap::new(),
         input_snapshot: None,
         workspace_inputs: BTreeMap::new(),
@@ -10529,6 +10719,11 @@ pub(super) fn retention_blocker(run_dir: &Path) -> io::Result<Option<String>> {
                 .to_owned(),
         ));
     }
+    if crate::work_plan::recorded_is_held(run_dir)? {
+        return Ok(Some(
+            "This run's plan is being read or copied. Keep the run until that finishes.".to_owned(),
+        ));
+    }
     let kept = kept_folders_in(run_dir)?;
     if !kept.is_empty() {
         return Ok(Some(format!(
@@ -10732,6 +10927,17 @@ fn bring_recorded_sources(plan: &mut Plan) -> Result<(), RunError> {
                 fix: None,
             })
         })?;
+    }
+    if let Some(work_plan) = &replay.work_plan {
+        work_plan.copy_to(&plan.dir).map_err(|error| {
+            RunError::Refused(Note {
+                level: Level::Problem,
+                step_id: None,
+                message: super::replay::unavailable(&error.to_string()),
+                fix: None,
+            })
+        })?;
+        plan.work_plan_binding = Some(work_plan.binding());
     }
     for step in &mut plan.steps {
         let Job::Agent(job) = &mut step.job else {
@@ -11197,6 +11403,8 @@ pub(super) enum SavedCopy {
 }
 
 struct Book {
+    /// Odcisk ostatniego pakietu opublikowanego przez hosta, nigdy przeliczany przy zwykłym spill.
+    plan_sources: Option<crate::work_plan::RecordedBinding>,
     /// Usługa jeszcze korzysta z kopii albo trwa jej końcowy zapis; chroni też przed retencją.
     pending_finalization: BTreeSet<String>,
     /// Czytelnik wznowienia korzysta z dokładnego wyniku, nie z obecnej końcówki gałęzi.
@@ -11718,6 +11926,7 @@ impl Live {
         // Od tej chwili receipt jest częścią zmiennej księgi. Plan nie trzyma drugiej kopii,
         // która mogłaby rozjechać się z listami odbiorców podczas równoległych startów.
         let memory = std::mem::take(&mut plan.memory);
+        let plan_sources = plan.work_plan_binding.take();
         let messages = Arc::new(crate::bridge::messages::Mailbox::new(
             super::lead_start::RunRef {
                 workspace: plan.project.clone(),
@@ -11730,6 +11939,7 @@ impl Live {
             plan,
             native_ui: tokio::sync::OnceCell::new(),
             book: Mutex::new(Book {
+                plan_sources,
                 pending_finalization: BTreeSet::new(),
                 copy_results: BTreeMap::new(),
                 status: RunState::Running,
@@ -13057,6 +13267,7 @@ impl Live {
                 .as_ref()
                 .map(super::context_sources::Snapshot::binding)
                 .transpose()?,
+            plan_sources: book.plan_sources.clone(),
             input_snapshot: self.plan.input_snapshot.as_ref().map(|snapshot| {
                 serde_json::json!({
                     "id": snapshot.id(), "manifest": "input/manifest.json"
@@ -14752,13 +14963,24 @@ impl Live {
                 }],
             })
             .collect();
-        let current = match job.work_plan.mode() {
-            crate::work_plan::Mode::Update | crate::work_plan::Mode::Use => {
-                Some(self.inherited_work_plan(id)?)
+        let frozen = self
+            .plan
+            .frozen_plan_input
+            .as_ref()
+            .map(|snapshot| snapshot.pinned_for(&self.plan.steps[id].node_key))
+            .transpose()
+            .map_err(|error| super::replay::unavailable(&error.to_string()))?;
+        let current = if frozen.is_some() {
+            frozen
+        } else {
+            match job.work_plan.mode() {
+                crate::work_plan::Mode::Update | crate::work_plan::Mode::Use => {
+                    Some(self.inherited_or_recorded_work_plan(id)?)
+                }
+                crate::work_plan::Mode::Create
+                | crate::work_plan::Mode::Off
+                | crate::work_plan::Mode::Unknown => None,
             }
-            crate::work_plan::Mode::Create
-            | crate::work_plan::Mode::Off
-            | crate::work_plan::Mode::Unknown => None,
         };
         let prepared = job
             .work_plan
@@ -14781,6 +15003,52 @@ impl Live {
         };
         *slot = Some(prepared.clone());
         Ok(Some(prepared))
+    }
+
+    fn inherited_or_recorded_work_plan(
+        &self,
+        id: StepId,
+    ) -> Result<crate::work_plan::PlanVersion, String> {
+        let step = self
+            .plan
+            .steps
+            .get(id)
+            .ok_or_else(|| "Loadout could not follow this step's plan source.".to_owned())?;
+        let sources = self
+            .plan
+            .work_plan_sources
+            .sources
+            .get(&step.node_key)
+            .ok_or_else(|| {
+                format!(
+                    "Loadout did not start this step because {} has no resolved plan source.",
+                    step.name
+                )
+            })?;
+        let every_source_runs_here = sources.iter().all(|source| {
+            self.plan
+                .steps
+                .iter()
+                .any(|candidate| candidate.node_key == *source)
+        });
+        if every_source_runs_here {
+            return self.inherited_work_plan(id);
+        }
+        let replay = self
+            .plan
+            .replay
+            .as_ref()
+            .filter(|replay| replay.mode == super::replay::ReplayMode::Recorded)
+            .and_then(|replay| replay.work_plan.as_ref())
+            .ok_or_else(|| {
+                format!(
+                    "Loadout did not start this step because the earlier work chosen for {} is outside this run.",
+                    step.name
+                )
+            })?;
+        replay
+            .pinned_for(&step.node_key)
+            .map_err(|error| super::replay::unavailable(&error.to_string()))
     }
 
     fn inherited_work_plan(&self, id: StepId) -> Result<crate::work_plan::PlanVersion, String> {
@@ -14842,6 +15110,9 @@ impl Live {
         id: StepId,
         version: &crate::work_plan::PlanVersion,
     ) -> Result<(), String> {
+        let binding = crate::work_plan::recorded_binding(&self.plan.dir)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Loadout could not bind the published plan to this run.".to_owned())?;
         let mut outputs = self
             .plan_outputs
             .lock()
@@ -14861,6 +15132,7 @@ impl Live {
             let mut receipt = WorkPlanReceipt::from(version);
             receipt.work = work;
             book.steps[id].plan_version = Some(receipt);
+            book.plan_sources = Some(binding);
         });
         Ok(())
     }
@@ -14919,15 +15191,20 @@ impl Live {
         } else {
             None
         };
-        let plan = prepared.as_ref().and_then(|prepared| {
-            prepared.current().map(|version| {
-                crate::bridge::work_plan::PlanDesk::new(
+        let plan = prepared
+            .as_ref()
+            .and_then(crate::work_plan::Prepared::current)
+            .map(|version| {
+                let recorder =
+                    crate::work_plan::plan_read_recorder(&self.plan.dir, &step.node_key, version)?;
+                Ok::<_, io::Error>(crate::bridge::work_plan::PlanDesk::recording(
                     format!("{}:{}", self.plan.id, step.node_key),
                     version,
                     expires.clone(),
-                )
+                    recorder,
+                ))
             })
-        });
+            .transpose()?;
         let access = Arc::new(crate::bridge::messages::StepDesk {
             services,
             messages,
@@ -18250,6 +18527,8 @@ struct RunFile<'a> {
     memory_sources: super::memory_sources::Binding,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_sources: Option<super::context_sources::Binding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_sources: Option<crate::work_plan::RecordedBinding>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     starting_results: &'a BTreeMap<String, StartingResult>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

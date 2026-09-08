@@ -504,6 +504,7 @@ function Step({
         alsoLoaded={step.whatLoadoutDidNotGive ?? null}
         instructions={step.projectInstructions ?? []}
         referenceMaterials={step.referenceMaterials ?? []}
+        workPlan={step.workPlan ?? []}
       />
 
       {/* KROK JEST PUDEŁKIEM O SKOŃCZONEJ WYSOKOŚCI, i to jest cała naprawa tego ekranu.
@@ -580,11 +581,13 @@ function StepMemory({
   alsoLoaded,
   instructions,
   referenceMaterials,
+  workPlan,
 }: {
   memory: readonly PastMemory[];
   alsoLoaded: string | null;
   instructions: NonNullable<PastStep['projectInstructions']>;
   referenceMaterials: NonNullable<PastStep['referenceMaterials']>;
+  workPlan: NonNullable<PastStep['workPlan']>;
 }): ReactElement {
   return (
     <section data-step-memory className="border-b border-line px-[18px] py-[9px]">
@@ -623,6 +626,15 @@ function StepMemory({
       {referenceMaterials.length === 0 ? null : (
         <ul data-reference-materials className="stack" data-gap="1">
           {referenceMaterials.map((said, index) => (
+            <li key={`${index}:${said}`} className="caption">
+              {said}
+            </li>
+          ))}
+        </ul>
+      )}
+      {workPlan.length === 0 ? null : (
+        <ul data-work-plan className="stack" data-gap="1">
+          {workPlan.map((said, index) => (
             <li key={`${index}:${said}`} className="caption">
               {said}
             </li>

@@ -7,6 +7,7 @@ mod candidate;
 mod change;
 mod document;
 mod publish;
+mod recorded;
 mod render;
 mod review;
 
@@ -23,6 +24,13 @@ pub use publish::{
     PlanVersion, Publication, Stamp, plan_root, publish_version, read_current_version,
     read_versions,
 };
+pub(crate) use recorded::Recorder as PlanReadRecorder;
+pub(crate) use recorded::SavedNode as RecordedPlanNode;
+pub(crate) use recorded::recorder as plan_read_recorder;
+pub(crate) use recorded::removal_guard as recorded_removal_guard;
+pub use recorded::{Binding as RecordedBinding, Snapshot as RecordedSnapshot};
+pub(crate) use recorded::{binding as recorded_binding, hold as hold_recorded};
+pub(crate) use recorded::{is_held as recorded_is_held, read_bound as read_recorded};
 pub use render::{RENDERER, render_plan};
 pub use render::{detail_index, render_core, render_details};
 pub use review::{

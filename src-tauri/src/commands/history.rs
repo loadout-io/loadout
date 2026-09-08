@@ -52,7 +52,9 @@ use super::isolate;
 use crate::engine::drivers::DecodedEvent;
 use crate::engine::drivers::claude::ClaudeDecoder;
 use crate::engine::drivers::codex::CodexDecoder;
-use crate::engine::line::{Curator, Line, Seen, context_per_turn, reference_material_delivery};
+use crate::engine::line::{
+    Curator, Line, Seen, context_per_turn, reference_material_delivery, work_plan_delivery,
+};
 use crate::engine::stream::{Decoded, decode};
 use crate::inherit::rewrite;
 
@@ -347,6 +349,8 @@ pub struct PastStepWire {
     /// Zdania z prywatnego rachunku materiałów tego fizycznego kroku.
     /// `None` znaczy, że ten bieg nie ma takiego rachunku; treść źródeł nigdy tędy nie jedzie.
     pub reference_materials: Option<Vec<String>>,
+    /// Zdania o jednej przypiętej wersji planu w istniejącym regionie wiedzy kroku.
+    pub work_plan: Option<Vec<String>>,
     /// Co aplikacja agenta wczytała z folderu tego kroku sama z siebie.
     ///
     /// `None` — a nie pusty rekord — dla każdego kroku, który tego nie ogłosił: kafelka
@@ -508,12 +512,14 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     let described = read_description(&dir);
     let (instruction_package, instruction_problem) = instructions_of_run(&dir, described.as_ref());
     let (context_package, context_problem) = context_of_run(&dir, described.as_ref());
+    let (plan_package, plan_problem) = plan_of_run(&dir, described.as_ref());
     let steps = past_steps(
         project,
         &dir,
         described.as_ref(),
         instruction_package.as_ref(),
         context_package.as_ref(),
+        plan_package.as_ref(),
     );
     // PO KROKACH, bo gałąź nazywa się kluczem kafelka, a człowiek czyta nazwy. Przed budową
     // struktury, bo `steps` idzie do niej przez przeniesienie.
@@ -555,6 +561,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     let (result_folders, result_problem) = result_folders_of_run(&dir, &steps);
     let result_problem = both_sentences(result_problem, instruction_problem);
     let result_problem = both_sentences(result_problem, context_problem);
+    let result_problem = both_sentences(result_problem, plan_problem);
     let result_problem = both_sentences(result_problem, saved_results_problem);
     let said = both_sentences(head.said, result_problem);
 
@@ -635,6 +642,33 @@ fn context_of_run(
                 None,
                 Some(format!(
                     "The saved reference materials could not be verified: {error}"
+                )),
+            ),
+        }
+    } else {
+        (None, None)
+    }
+}
+
+/// Zamrożony plan jest czytany wyłącznie przez związany pakiet; bieżąca biblioteka nie jest
+/// źródłem zastępczym dla historii ani dla uszkodzonego biegu.
+fn plan_of_run(
+    dir: &Path,
+    described: Option<&Description>,
+) -> (Option<crate::work_plan::RecordedSnapshot>, Option<String>) {
+    if described.is_some_and(|file| file.plan_sources.is_some())
+        || fs::symlink_metadata(dir.join("plans/workflow-plan/current.json")).is_ok()
+    {
+        match crate::work_plan::read_recorded(dir) {
+            Ok(Some(package)) => (Some(package), None),
+            Ok(None) => (
+                None,
+                Some("The saved workflow plan does not have a matching run record.".to_owned()),
+            ),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "The saved workflow plan could not be verified: {error}"
                 )),
             ),
         }
@@ -919,6 +953,11 @@ pub fn forget_run_with_results_inner(
             said: error.to_string(),
         }
     })?;
+    let _plan_held = crate::work_plan::recorded_removal_guard(&dir).map_err(|error| {
+        HistoryError::ResultsAreKept {
+            said: error.to_string(),
+        }
+    })?;
     let gone = forget_run_branches_while_locked(project, &dir)?;
     fs::remove_dir_all(&dir).map_err(|error| HistoryError::CouldNotForgetRun {
         path: dir.display().to_string(),
@@ -1006,6 +1045,8 @@ struct Description {
     project_instructions: Option<serde_json::Value>,
     #[serde(default)]
     context_sources: Option<serde_json::Value>,
+    #[serde(default)]
+    plan_sources: Option<serde_json::Value>,
     /// Rachunek prywatnej tury (T-165). Brak klucza znaczy „ten plik o tym nie mówi", i to jest
     /// inne zdanie niż rachunek zerowy — dlatego `Option`, a nie wartość domyślna struktury.
     #[serde(default)]
@@ -1125,6 +1166,17 @@ struct StepDescription {
     /// biegi dalej dawały się otworzyć (niezmiennik 5 na granicy pliku).
     #[serde(default)]
     loaded_by_the_app: Option<LoadedByTheAppWire>,
+    #[serde(default)]
+    plan_version: Option<PlanVersionDescription>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanVersionDescription {
+    #[serde(default)]
+    version: u64,
+    #[serde(default)]
+    version_id: String,
 }
 
 /// To samo zdanie, które [`crate::engine::line::done_line`] wkłada do widocznego wiersza.
@@ -1134,6 +1186,7 @@ fn past_steps(
     described: Option<&Description>,
     instruction_package: Option<&crate::inherit::instructions::InstructionSnapshot>,
     context_package: Option<&crate::commands::context_sources::Snapshot>,
+    plan_package: Option<&crate::work_plan::RecordedSnapshot>,
 ) -> Vec<PastStepWire> {
     match described {
         Some(file) => file
@@ -1188,6 +1241,33 @@ fn past_steps(
                             "The reference-material delivery record could not be verified: {error}"
                         )]),
                     }),
+                work_plan: plan_package.and_then(|package| {
+                    let receipt = step
+                        .plan_version
+                        .as_ref()
+                        .filter(|_| step.executed == Some(true))?;
+                    Some(match package.delivery_for(dir, &step.node_key) {
+                        Ok(delivery)
+                            if delivery.version == receipt.version
+                                && delivery.version_id == receipt.version_id =>
+                        {
+                            work_plan_delivery(
+                                delivery.version,
+                                &delivery.version_id,
+                                delivery.core_bytes,
+                                delivery.detail_bytes,
+                                delivery.opened_bytes,
+                            )
+                        }
+                        Ok(_) => vec![
+                            "The workflow-plan delivery record does not match this step's saved receipt."
+                                .to_owned(),
+                        ],
+                        Err(error) => vec![format!(
+                            "The workflow-plan delivery record could not be verified: {error}"
+                        )],
+                    })
+                }),
                 what_loadout_did_not_give: what_loadout_did_not_give(
                     step.loaded_by_the_app.as_ref(),
                 ),
