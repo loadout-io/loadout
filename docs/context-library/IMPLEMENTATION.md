@@ -122,7 +122,7 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | CT-01 | `h-ct-01` | `a6113319` | mutacja, patrz §1a | 4 Rust + pełna suita frontu | **zielone, 523 s** | 55,17 USD | **WYLĄDOWANY** |
 | CT-02 | `h-ct-02` | `f65ed67c` | 3 rundy weryfikatora | 13 Rust + 3 przeglądarkowe | **zielone, 495 s** | 121,09 USD | **WYLĄDOWANY** |
 | CT-03a | `h-ct-03a` | `9b9439e0` | kontrola negatywna w suicie | **7 Rust** | **zielone, 697 s** | ~28 USD | **WYLĄDOWANY** |
-| CT-03b | `h-ct-03b` | — | — | — | — | — | **w toku** |
+| CT-03b | `h-ct-03b` | `0b4e45f8` | mutacja zakresu → **4 testy padły** | **10 Rust** (+1 żywa próba `#[ignore]`) | **zielone, 609 s** | ~35 USD | **WYLĄDOWANY** |
 | CT-04 | `h-ct-04` | — | — | — | — | — | **w toku** (plan przekroczył sufit 15 USD, wznowiony przy 45) |
 | CT-05 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-06 | — | — | — | — | — | — | nie rozpoczęty |
@@ -208,6 +208,19 @@ i `e2e/tests/two-buttons-ask-two-different-vendors.spec.ts`. Zgłosił też jako
 (makieta, egzekutor, nav-groups), wbrew niezmiennikowi 13. Nie naprawiał tego — słusznie.
 
 ---
+
+### 1c. Co dowiodła mutacja CT-03b
+
+Izolacja zakresu jest własnością bezpieczeństwa, więc nie przyjąłem jej na zieleń.
+Mutacja: `grant_for` oddaje **dowolny** przydział zamiast przydziału tego odbiorcy.
+Padły cztery testy, w tym trzy, które trafiają w sedno planu §8:
+
+- `one_selected_pdf_page_has_no_road_to_the_whole_original` — wybór tematu **nie** odsłania
+  całego PDF-u przez odczyt oryginału;
+- `the_core_enforces_the_same_boundaries_without_a_socket` — granica trzyma **w rdzeniu**,
+  nie tylko na gnieździe;
+- `two_recipients_that_differ_only_in_what_they_were_given` — dwaj odbiorcy różniący się
+  **wyłącznie przydziałem** nie zamieniają się materiałem.
 
 ## 2. Kryteria odbioru (plan §14)
 
