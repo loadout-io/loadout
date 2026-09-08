@@ -192,6 +192,8 @@ export interface StepPlan {
   focusOn?: string[] | undefined;
   /** Id kroku, nie jego nazwa ani przyszły numer wersji. */
   samePlanAs?: string | undefined;
+  /** Jawny wybór QA; samo `use` nadal wyłącznie podaje agentowi plan. */
+  checkPlan?: boolean | undefined;
 }
 
 export interface WorkflowPlanSource {

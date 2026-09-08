@@ -10133,7 +10133,7 @@ fn close_one_copy(one: &Isolated, context: &ClosingRun) -> (SavedCopy, Vec<Strin
             }
         }
         Ok((input, entries, _owned)) => match sync_kept_copy(&one.cwd, one.copy_identity, &entries)
-            .and_then(|()| folder_digest(&entries))
+            .and_then(|()| super::input_snapshot::folder_digest(&entries))
         {
             /* ZATRZYMANA KOPIA TO NORMALNY WYNIK KROKU, A NIE JEGO BŁĘDNE ZAKOŃCZENIE.
              *
@@ -10258,12 +10258,6 @@ fn validated_copy_path(run_dir: &Path, key: &str) -> io::Result<PathBuf> {
     Ok(run_dir.join(relative))
 }
 
-fn folder_digest(entries: &BTreeMap<PathBuf, super::input_snapshot::Entry>) -> io::Result<String> {
-    use sha2::Digest as _;
-    let bytes = serde_json::to_vec(entries).map_err(io::Error::other)?;
-    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
-}
-
 fn sync_kept_copy(
     cwd: &Path,
     identity: PublicationIdentity,
@@ -10326,7 +10320,7 @@ pub(super) fn read_saved_folder(
     }
     let entries = super::input_snapshot::inspect(&path)?;
     held.validate_path_identity(&path)?;
-    if folder_digest(&entries)? != *digest {
+    if super::input_snapshot::folder_digest(&entries)? != *digest {
         return Err(RunError::Io(io::Error::other(
             "The saved result folder changed after the run finished. It was not reused.",
         )));
@@ -11095,6 +11089,12 @@ struct Live {
     plan_turns: Mutex<Vec<Option<crate::work_plan::Prepared>>>,
     /// 2026-09-08 — wersja oddana dopiero po pełnym sukcesie; nigdy sam przypięty input.
     plan_outputs: Mutex<Vec<Option<crate::work_plan::PlanVersion>>>,
+    /// 2026-09-08 (WP-05) — wersja planu i odciski pracy zamrożone przed startem sędziego.
+    /// `std::sync::Mutex` nie przechodzi przez `await` (niezmiennik 8).
+    plan_review: Mutex<Vec<Option<crate::work_plan::Basis>>>,
+    /// 2026-09-08 (WP-05) — tylko ID i stan uwag ostatniej próby, bez kopii raportów.
+    /// `std::sync::Mutex` nie przechodzi przez `await` (niezmiennik 8).
+    still_open: Mutex<BTreeMap<usize, crate::work_plan::StillOpen>>,
 }
 
 /// Zmienna połowa biegu — dokładnie to, co zmienia się między zrzutami `run.json`.
@@ -11254,6 +11254,9 @@ struct WorkPlanReceipt {
     document_id: String,
     version: u64,
     version_id: String,
+    /// 2026-09-08 (WP-05) — odcisk istnieje tylko dla jawnie włączonej oceny planu.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work: Option<String>,
 }
 
 impl From<&crate::work_plan::PlanVersion> for WorkPlanReceipt {
@@ -11262,6 +11265,7 @@ impl From<&crate::work_plan::PlanVersion> for WorkPlanReceipt {
             document_id: version.document_id.clone(),
             version: version.version,
             version_id: version.version_id.clone(),
+            work: None,
         }
     }
 }
@@ -11630,6 +11634,7 @@ impl Live {
         let route_evidence = Mutex::new(vec![None; plan.steps.len()]);
         let plan_turns = Mutex::new(vec![None; plan.steps.len()]);
         let plan_outputs = Mutex::new(vec![None; plan.steps.len()]);
+        let plan_review = Mutex::new(vec![None; plan.steps.len()]);
         // Od tej chwili receipt jest częścią zmiennej księgi. Plan nie trzyma drugiej kopii,
         // która mogłaby rozjechać się z listami odbiorców podczas równoległych startów.
         let memory = std::mem::take(&mut plan.memory);
@@ -11673,6 +11678,8 @@ impl Live {
             route_decisions: Mutex::new(Vec::new()),
             plan_turns,
             plan_outputs,
+            plan_review,
+            still_open: Mutex::new(BTreeMap::new()),
             processes,
         }
     }
@@ -11901,6 +11908,95 @@ impl Live {
         scheduler::Route::Blocked
     }
 
+    /// Liczy wymagania i składa jedno zdanie dla człowieka, bez drugiej reguły werdyktu.
+    fn reviewed_requirements(
+        &self,
+        id: StepId,
+        which: usize,
+        said: &str,
+        native: Option<&crate::engine::native_ui::NativeUiAccess>,
+        now: Result<Option<crate::work_plan::Basis>, String>,
+    ) -> (bool, Option<String>) {
+        let (approved, conflicts) = self.approved_for(id);
+        let mut notes = conflicts;
+        let mut judged =
+            (!approved.is_empty()).then(|| crate::workflow::criteria::judge(&approved, said));
+        if let Some(judged) = &mut judged
+            && native.is_some_and(|access| !access.can_judge_the_product())
+        {
+            crate::workflow::criteria::without_a_native_route(&approved, judged);
+        }
+
+        let frozen = self
+            .plan_review
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Clone::clone);
+        if let Some(frozen) = frozen {
+            match now {
+                Ok(Some(now)) => {
+                    if let Some(other) = crate::work_plan::about_other_work(&frozen, &now) {
+                        notes.push(other);
+                        if let Some(judged) = &mut judged {
+                            crate::work_plan::not_this_product(&approved, judged);
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::debug!(%error, "the reviewed work could not be read again");
+                    notes.push(
+                        "Loadout could not confirm that the tester answered about the same work it was given, so the result was not judged."
+                            .to_owned(),
+                    );
+                    if let Some(judged) = &mut judged {
+                        crate::work_plan::not_this_product(&approved, judged);
+                    }
+                }
+            }
+        }
+
+        let checks_plan = matches!(
+            &self.plan.steps[id].job,
+            Job::Agent(job) if job.work_plan.check_plan()
+        );
+        if checks_plan && let Some(judged) = &mut judged {
+            let previous = self
+                .still_open
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&which)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(carried) = crate::work_plan::carry(&previous, judged) {
+                notes.push(carried);
+            }
+            let next = crate::work_plan::StillOpen::from_judgement(judged);
+            let mut open = self
+                .still_open
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if next.is_empty() {
+                open.remove(&which);
+            } else {
+                open.insert(which, next);
+            }
+        }
+        if let Some(judged) = &judged {
+            let human = judged.said();
+            if !human.is_empty() {
+                notes.push(human);
+            }
+        }
+
+        let rejected = !notes.is_empty()
+            || judged
+                .as_ref()
+                .is_some_and(|one| one.outcome != crate::workflow::criteria::Outcome::Passed);
+        (rejected, (!notes.is_empty()).then(|| notes.join(" ")))
+    }
+
     /// Zapisuje werdykt sędziego pętli i mówi, czy to była ostatnia szansa.
     ///
     /// Oddaje `true`, kiedy sędzia OSTATNIEJ rundy nie przepuścił roboty — wtedy krok ma wrócić
@@ -11912,37 +12008,19 @@ impl Live {
         id: StepId,
         said: &str,
         native: Option<&crate::engine::native_ui::NativeUiAccess>,
+        reviewed_work: Result<Option<crate::work_plan::Basis>, String>,
     ) -> Option<&'static str> {
         let step = &self.plan.steps[id];
         let (which, the_loop) = self.judging(step)?;
-        /* V-02 (incydent I-05): ZATWIERDZONA LISTA BIJE OSTATNI WIERSZ. Krok QA opisał braki
-         * obowiązkowych zachowań i w tej samej odpowiedzi napisał `outcome: pass` — zgodnie
-         * z instrukcją, którą dostał. Kiedy człowiek zatwierdził wymagania, wynik powstaje
-         * z ich kompletności, a nie ze słowa, które model wybrał na końcu. */
-        let approved = match &step.job {
-            Job::Agent(job) => job.criteria.clone(),
-            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
-        };
-        let judged = (!approved.is_empty())
-            .then(|| {
-                let mut judged = crate::workflow::criteria::judge(&approved, said);
-                /* P-03a: POTWIERDZENIE, KTÓREGO TA MASZYNA NIE MOGŁA WYKONAĆ, NIE JEST
-                 * POTWIERDZENIEM. Zgoda na sterowanie cudzym oknem jest uprawnieniem systemu,
-                 * przyznawanym przez człowieka; bez niej scenariusz natywny nie miał czym się
-                 * odbyć, cokolwiek weryfikator o nim napisał. To nie jest też wada produktu —
-                 * nikt niczego nie zmierzył — więc wynik idzie do „nie zmierzono", czyli
-                 * do człowieka. */
-                if native.is_some_and(|access: &crate::engine::native_ui::NativeUiAccess| {
-                    !access.can_judge_the_product()
-                }) {
-                    crate::workflow::criteria::without_a_native_route(&approved, &mut judged);
-                }
-                judged
-            })
-            .filter(|one| one.outcome != crate::workflow::criteria::Outcome::Passed);
-        let verdict = match &judged {
-            Some(_) => crate::memory::handoff::Verdict::Fail,
-            None => crate::memory::handoff::verdict_in(said),
+        /* 2026-09-08 (WP-05) — wymagania workflow i planu przechodzą przez jeden sędzia.
+         * Zwrócony bool oznacza wyłącznie, że istniejący `criteria::judge` albo ochrona
+         * pochodzenia nie pozwoliły uznać raportu; nie jest drugim enumem wyniku. */
+        let (requirements_rejected, requirements_said) =
+            self.reviewed_requirements(id, which, said, native, reviewed_work);
+        let verdict = if requirements_rejected {
+            crate::memory::handoff::Verdict::Fail
+        } else {
+            crate::memory::handoff::verdict_in(said)
         };
         // 2026-08-25 (T-100) — zapisujemy to samo rozstrzygnięcie, którym sterujemy pętlą,
         // zanim którakolwiek gałąź wróci. Osobne parsowanie dla `run.json` mogłoby pokazać
@@ -11965,13 +12043,8 @@ impl Live {
          * — i tak zostaje. Dla człowieka to robota do poprawki kontra zepsuty kontrakt, czyli
          * dwie różne czynności. Jedno zdanie na oba stany kazałoby mu zgadywać, którą wykonać.
          */
-        /* ZDANIE O WYMAGANIACH WYGRYWA Z OGÓLNYM „nie przepuścił", bo mówi CO ZROBIĆ:
-         * wymaganie bez odpowiedzi jest brakiem raportu, wymaganie bez pomiaru jest brakiem
-         * środowiska, a wymaganie niespełnione jest robotą do poprawki. Jedno zdanie na
-         * wszystkie trzy kazałoby człowiekowi zgadywać, którą z nich wykonać. */
-        if let Some(judged) = &judged {
-            let said = judged.said();
-            self.update(|book| book.steps[id].error = Some(said.clone()));
+        if let Some(requirements_said) = requirements_said {
+            self.update(|book| book.steps[id].error = Some(requirements_said));
             return Some(WORK_LEFT_A_REQUIREMENT_OPEN);
         }
         let why = if crate::memory::handoff::said_an_outcome(said) {
@@ -12295,12 +12368,10 @@ impl Live {
         &self,
         id: StepId,
     ) -> Option<crate::engine::native_ui::NativeUiAccess> {
-        let needed = match &self.plan.steps[id].job {
-            Job::Agent(job) => job.criteria.iter().any(|one| {
-                one.required && one.method == crate::workflow::criteria::Method::FullRuntime
-            }),
-            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => false,
-        };
+        let (approved, _) = self.approved_for(id);
+        let needed = approved.iter().any(|one| {
+            one.required && one.method == crate::workflow::criteria::Method::FullRuntime
+        });
         if !needed {
             return None;
         }
@@ -13085,6 +13156,17 @@ impl Live {
         if let Err(why) = prepared {
             // Wynik świadomie porzucony: pełna kolejka do okna jest normalnym stanem
             // (`ipc::Sent`), a bieg nie ma prawa stanąć dlatego, że okno nie nadąża.
+            let _ = self.lines.send(Line::Problem {
+                agent: self.plan.steps[id].name.clone(),
+                text: why.clone(),
+                resets_at: None,
+            });
+            let report = self.when_this_one_fails(id, &why).await;
+            return self.finish_this_step(id, report).await;
+        }
+        if let Err(why) = self.freeze_plan_review(id) {
+            // 2026-09-08 (WP-05) — ta odmowa powstaje na pierwszym etapie, zanim proces może
+            // zobaczyć niezamrożoną podstawę; później obsługujemy już tylko zmianę po starcie.
             let _ = self.lines.send(Line::Problem {
                 agent: self.plan.steps[id].name.clone(),
                 text: why.clone(),
@@ -14451,6 +14533,116 @@ impl Live {
         driver.start(turn.spec, turn.events).await
     }
 
+    /// Jedyna lista, którą dostają prompt, sonda natywna i sędzia wyniku.
+    fn approved_for(&self, id: StepId) -> (Vec<crate::workflow::criteria::Criterion>, Vec<String>) {
+        let workflow = match &self.plan.steps[id].job {
+            Job::Agent(job) => job.criteria.clone(),
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
+        };
+        let from_plan = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Option::as_ref)
+            .map_or_else(Vec::new, crate::work_plan::Prepared::plan_criteria);
+        let conflicts = crate::work_plan::conflicts(&workflow, &from_plan);
+        (crate::work_plan::approved(&workflow, &from_plan), conflicts)
+    }
+
+    /// Odciski obejmują wyłącznie pracę wykonaną w ocenianej rundzie, nie katalog sędziego.
+    fn plan_review_basis(
+        &self,
+        id: StepId,
+        version_id: String,
+    ) -> Result<crate::work_plan::Basis, String> {
+        let step = &self.plan.steps[id];
+        let (_, the_loop) = self
+            .judging(step)
+            .ok_or_else(|| "Only a loop tester can check the plan's requirements.".to_owned())?;
+        let body = self.round_body_without_the_judge(the_loop, step.turn);
+        let folders = {
+            let book = self.book();
+            body.into_iter()
+                .filter(|at| book.steps[*at].execution.executed)
+                .filter_map(|at| {
+                    where_the_job_works(&self.plan.steps[at].job)
+                        .map(|cwd| (self.plan.steps[at].node_key.clone(), cwd.to_path_buf()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut work = BTreeMap::new();
+        for (node_key, cwd) in folders {
+            let entries = super::input_snapshot::inspect(&cwd)
+                .map_err(|error| format!("could not read work {node_key}: {error}"))?;
+            let digest = super::input_snapshot::folder_digest(&entries)
+                .map_err(|error| format!("could not identify work {node_key}: {error}"))?;
+            work.insert(node_key, digest);
+        }
+        Ok(crate::work_plan::Basis { version_id, work })
+    }
+
+    /// Zamrożenie stoi po fan-in i przed sterownikiem, więc opisuje dokładne wejście QA.
+    fn freeze_plan_review(&self, id: StepId) -> Result<(), String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return Ok(());
+        };
+        if !job.work_plan.check_plan() {
+            return Ok(());
+        }
+        let prepared = self
+            .prepared_work_plan(id, job)?
+            .ok_or_else(|| "Loadout could not pin the plan used for this review.".to_owned())?;
+        let version = prepared
+            .current()
+            .ok_or_else(|| "Loadout could not pin the plan used for this review.".to_owned())?;
+        let basis = self
+            .plan_review_basis(id, version.version_id.clone())
+            .map_err(|error| {
+                tracing::debug!(%error, "the review basis could not be frozen");
+                "Loadout could not read the work before review, so the tester was not started."
+                    .to_owned()
+            })?;
+        let mut reviews = self
+            .plan_review
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(slot) = reviews.get_mut(id) else {
+            return Err("Loadout could not remember what this tester was given.".to_owned());
+        };
+        *slot = Some(basis.clone());
+        drop(reviews);
+        let mut receipt = WorkPlanReceipt::from(version);
+        receipt.work = basis.one_work_digest().map(str::to_owned);
+        self.update(|book| book.steps[id].plan_version = Some(receipt));
+        Ok(())
+    }
+
+    fn current_plan_review_basis(
+        &self,
+        id: StepId,
+    ) -> Result<Option<crate::work_plan::Basis>, String> {
+        let has_frozen_basis = self
+            .plan_review
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .is_some_and(Option::is_some);
+        if !has_frozen_basis {
+            return Ok(None);
+        }
+        let version_id = self
+            .plan_turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .and_then(Option::as_ref)
+            .and_then(crate::work_plan::Prepared::current)
+            .map(|version| version.version_id.clone())
+            .ok_or_else(|| "the pinned plan version disappeared during review".to_owned())?;
+        self.plan_review_basis(id, version_id).map(Some)
+    }
+
     fn prepared_work_plan(
         &self,
         id: StepId,
@@ -14581,8 +14773,14 @@ impl Live {
         drop(outputs);
         // 2026-09-08 — dokument zostaje wyłącznie w `plans/`; wynik kroku zapisuje jego adres,
         // żeby po restarcie było wiadomo, którą wersję ten konkretny Use naprawdę dostał.
+        let work = self.book().steps[id]
+            .plan_version
+            .as_ref()
+            .and_then(|receipt| receipt.work.clone());
         self.update(|book| {
-            book.steps[id].plan_version = Some(WorkPlanReceipt::from(version));
+            let mut receipt = WorkPlanReceipt::from(version);
+            receipt.work = work;
+            book.steps[id].plan_version = Some(receipt);
         });
         Ok(())
     }
@@ -16147,12 +16345,22 @@ impl Live {
             self.hand_over(id, &outcome.text, turn.reads);
             self.remember_handoff_evidence(id, &outcome.text);
             let native = self.native_route_for(id).await;
+            /* 2026-09-08 (WP-05) — odcisk powstaje przed zapisaniem odpowiedzi QA do jego
+             * katalogu. Taki plik jest wynikiem testera, nie zmianą ocenianego produktu. */
+            let reviewed_work = if matches!(
+                &self.plan.steps[id].job,
+                Job::Agent(job) if job.work_plan.check_plan()
+            ) {
+                self.current_plan_review_basis(id)
+            } else {
+                Ok(None)
+            };
             let why = self
                 .file_the_answer(id, &outcome.text)
                 .err()
                 .or_else(|| self.missing_a_required_field(id, &outcome.text))
                 .or_else(|| {
-                    self.verdict_after(id, &outcome.text, native.as_ref())
+                    self.verdict_after(id, &outcome.text, native.as_ref(), reviewed_work)
                         .map(str::to_owned)
                 })
                 // 2026-09-08 — publikacja stoi za KAŻDYM kontraktem wyniku. Zielony proces
@@ -16757,18 +16965,33 @@ impl Live {
          *
          * Blok wchodzi także do kroku, którego nikt nie sądzi pętlą: wymagania są umową
          * o tym, co ma być potwierdzone, a nie mechanizmem domykania rundy. */
-        let approved = match &self.plan.steps[id].job {
-            Job::Agent(job) => job.criteria.clone(),
-            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => Vec::new(),
-        };
+        let (approved, _) = self.approved_for(id);
         if !approved.is_empty() {
             told.prompt.push_str("\n\n");
             told.prompt
                 .push_str(&crate::workflow::criteria::asked_for(&approved));
             told.prompt.push('\n');
         }
-        if self.judging(&self.plan.steps[id]).is_none() {
+        let Some((which, _)) = self.judging(&self.plan.steps[id]) else {
             return;
+        };
+        if matches!(
+            &self.plan.steps[id].job,
+            Job::Agent(job) if job.work_plan.check_plan()
+        ) {
+            let open = self
+                .still_open
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&which)
+                .cloned()
+                .unwrap_or_default();
+            let reminder = crate::work_plan::told_what_is_still_open(&open);
+            if !reminder.is_empty() {
+                told.prompt.push_str("\n\n");
+                told.prompt.push_str(&reminder);
+                told.prompt.push('\n');
+            }
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(OUTCOME_ASKED_FOR);

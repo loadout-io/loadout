@@ -24,14 +24,18 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import type { Criterion } from '../../../state/workflows';
+import type { Criterion, StepPlan } from '../../../state/workflows';
 import { CriteriaRow } from './criteria-row';
 
-function markup(value: readonly Criterion[] | undefined): string {
+function markup(value: readonly Criterion[] | undefined, plan?: StepPlan): string {
   return renderToStaticMarkup(
     <CriteriaRow
       value={value}
+      plan={plan}
       onEditStep={() => {
+        /* To kryterium pyta o markup, nie o skutek zmiany. */
+      }}
+      onChoosePlan={() => {
         /* To kryterium pyta o markup, nie o skutek zmiany. */
       }}
     />,
@@ -84,11 +88,44 @@ describe('approving what a step must confirm', () => {
     }
   });
 
+  it('offers plan requirements only when this step uses a plan', () => {
+    expect(markup(undefined, { mode: 'use' })).toContain('Also check the plan&#x27;s requirements');
+    expect(markup(undefined, { mode: 'create' })).not.toContain(
+      'Also check the plan&#x27;s requirements',
+    );
+    expect(markup(undefined)).not.toContain('Also check the plan&#x27;s requirements');
+  });
+
+  it('hands the explicit plan choice up instead of deriving it from Use', () => {
+    const choices: StepPlan[] = [];
+    const row = CriteriaRow({
+      value: undefined,
+      plan: { mode: 'use' },
+      onEditStep: () => {},
+      onChoosePlan: (choice) => choices.push(choice),
+    });
+    const found = handlers(row);
+
+    expect(
+      found.checkPlan,
+      'the plan-requirements choice is visible but has no handler behind it',
+    ).toBeDefined();
+    found.checkPlan?.({ target: { checked: true } });
+    found.checkPlan?.({ target: { checked: false } });
+
+    expect(choices).toEqual([
+      { mode: 'use', checkPlan: true },
+      { mode: 'use', checkPlan: undefined },
+    ]);
+  });
+
   it('hands the edited list up, and an emptied list back as no list at all', () => {
     const edits: { criteria: Criterion[] | undefined }[] = [];
     const row = CriteriaRow({
       value: ONE,
+      plan: undefined,
       onEditStep: (fields) => edits.push(fields),
+      onChoosePlan: () => {},
     });
     const found = handlers(row);
 
@@ -119,6 +156,7 @@ describe('approving what a step must confirm', () => {
 function handlers(tree: unknown): {
   behaviour?: (event: { target: { value: string } }) => void;
   method?: (event: { target: { value: string } }) => void;
+  checkPlan?: (event: { target: { checked: boolean } }) => void;
   remove?: () => void;
   add?: () => void;
 } {
@@ -135,6 +173,7 @@ function handlers(tree: unknown): {
       const field = props['data-field'];
       if (field === 'criterion-behaviour') found.behaviour = props['onChange'] as never;
       if (field === 'criterion-method') found.method = props['onChange'] as never;
+      if (field === 'check-plan') found.checkPlan = props['onChange'] as never;
       if (typeof props['children'] === 'string' && props['onClick']) {
         if (props['children'] === 'Remove') found.remove = props['onClick'] as never;
         if (props['children'] === '+ Ask it to confirm one more')

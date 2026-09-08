@@ -23,12 +23,14 @@
  */
 import type { ReactElement } from 'react';
 
-import type { Criterion, CriterionMethod } from '../../../state/workflows';
+import type { Criterion, CriterionMethod, StepPlan } from '../../../state/workflows';
 
 export interface CriteriaRowProps {
   /** Co ten krok musi dziś potwierdzić. Brak znaczy „nic nie zatwierdzono". */
   value: readonly Criterion[] | undefined;
+  plan: StepPlan | undefined;
   onEditStep: (fields: { criteria: Criterion[] | undefined }) => void;
+  onChoosePlan: (choice: StepPlan) => void;
 }
 
 const CHOICE = 'flex items-baseline gap-2 text-body text-ink';
@@ -49,7 +51,12 @@ function fresh(at: number): Criterion {
   return { id: `c${at + 1}`, behaviour: '', required: true, method: 'automated-test' };
 }
 
-export function CriteriaRow({ value, onEditStep }: CriteriaRowProps): ReactElement {
+export function CriteriaRow({
+  value,
+  plan,
+  onEditStep,
+  onChoosePlan,
+}: CriteriaRowProps): ReactElement {
   const list = value ?? [];
 
   const write = (next: readonly Criterion[]) => {
@@ -72,6 +79,25 @@ export function CriteriaRow({ value, onEditStep }: CriteriaRowProps): ReactEleme
         Left empty, this step answers in one word at the end and that word decides. With a list, it
         has to answer about every line, and saying nothing about one of them is not a pass.
       </span>
+
+      {plan?.mode === 'use' ? (
+        <label className={CHOICE}>
+          <input
+            data-field="check-plan"
+            type="checkbox"
+            checked={plan.checkPlan === true}
+            onChange={(event) => {
+              /* 2026-09-08 (WP-05) — Use podaje plan każdemu agentowi; ten jawny bit
+                 dopiero nadaje krokowi rolę sprawdzającego jego wymagania. */
+              onChoosePlan({
+                ...plan,
+                checkPlan: event.target.checked ? true : undefined,
+              });
+            }}
+          />
+          Also check the plan&apos;s requirements
+        </label>
+      ) : null}
 
       {list.map((one, at) => (
         <div key={at} className="stack pl-4">

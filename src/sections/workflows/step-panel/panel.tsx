@@ -1371,7 +1371,17 @@ function AgentPanel({
   /* CO TEN KROK MUSI POTWIERDZIĆ. Zaraz za przekazaniem, bo to jest to samo pytanie od drugiej
      strony: tamto mówi, co ten krok ODDAJE, a to — co ma zostać sprawdzone, zanim odda.
      Powód, dla którego ten wiersz w ogóle powstał, stoi w całości w `./criteria-row.tsx`. */
-  more.push(<CriteriaRow key="criteria" value={step.criteria} onEditStep={onEditStep} />);
+  more.push(
+    <CriteriaRow
+      key="criteria"
+      value={step.criteria}
+      plan={step.plan}
+      onEditStep={onEditStep}
+      onChoosePlan={(choice) => {
+        onEditStep({ plan: choice });
+      }}
+    />,
+  );
 
   if (contextRowStands()) {
     more.push(
