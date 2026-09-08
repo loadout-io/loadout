@@ -123,8 +123,8 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | CT-02 | `h-ct-02` | `f65ed67c` | 3 rundy weryfikatora | 13 Rust + 3 przeglądarkowe | **zielone, 495 s** | 121,09 USD | **WYLĄDOWANY** |
 | CT-03a | `h-ct-03a` | `9b9439e0` | kontrola negatywna w suicie | **7 Rust** | **zielone, 697 s** | ~28 USD | **WYLĄDOWANY** |
 | CT-03b | `h-ct-03b` | `0b4e45f8` | mutacja zakresu → **4 testy padły** | **10 Rust** (+1 żywa próba `#[ignore]`) | **zielone, 609 s** | ~35 USD | **WYLĄDOWANY** |
-| CT-04 | `h-ct-04` | — | — | — | — | — | **w toku** (plan przekroczył sufit 15 USD, wznowiony przy 45) |
-| CT-05 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-04 | `h-ct-04` | `60220c09` | 3 rundy weryfikatora + 3 naprawy ręczne | **29 Rust** | **zielone, 504 s** | ~180 USD | **WYLĄDOWANY** |
+| CT-05 | `h-ct-05` | — | — | — | — | — | **w toku** |
 | CT-06 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-07 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-08 | — | — | — | — | — | — | nie rozpoczęty |
@@ -221,6 +221,25 @@ Padły cztery testy, w tym trzy, które trafiają w sedno planu §8:
   nie tylko na gnieździe;
 - `two_recipients_that_differ_only_in_what_they_were_given` — dwaj odbiorcy różniący się
   **wyłącznie przydziałem** nie zamieniają się materiałem.
+
+### 1d. Trzy czerwienie, które złapało dopiero pełne CI po scaleniu
+
+To jest zmierzona cena równoległości, przewidziana przez Falę 6 i potwierdzona trzykrotnie.
+Wspólna cecha: **każdy z tych testów sądzi cały plik albo cały zbiór**, więc zawężona bramka
+zadania (`cargo test --test it <moduł>::`, `vitest <pliki>`) nie uruchamia go nigdy.
+
+| Kiedy | Objaw | Co to było naprawdę |
+|---|---|---|
+| po CT-02 | `context-sources.spec.ts` przewrócona, 2100 testów zielonych | rozgrzew `addScriptTag` ściągał `pdfjs-dist`, vite wymuszał **przeładowanie**, a ono niszczyło kontekst tego samego wywołania |
+| po WP-03 | `a_missing_handoff_stops_the_step_that_reads_it` | **regresja produktu**: zniknięty plik znów udawał zmieniony, wbrew naprawie Z-41 z 2026-09-05 — komentarz w kodzie mówił co innego niż linia pod nim |
+| po CT-04 | `no_command_freezes_the_window` | **wada produktu**: `build_context` czytał ustawienia synchronicznie na wątku okna, który niesie też Stop i linie biegu |
+
+Wszystkie trzy naprawione **bez pętli harnessu** — w każdej znałem przyczynę — a dowodem
+jest za każdym razem pełne CI, nie moje zdanie. Druga i trzecia były prawdziwymi wadami
+produktu, nie usterkami testów.
+
+**Wniosek operacyjny:** przy pracy równoległej planuj poprawkę na trunku mniej więcej co
+trzecie–czwarte lądowanie i nie traktuj lądowania jak formalności.
 
 ## 2. Kryteria odbioru (plan §14)
 
