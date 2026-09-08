@@ -325,6 +325,25 @@ fn run_dir(bench: &Bench, run_id: &str) -> Result<PathBuf, Box<dyn Error>> {
         .join(source.run_folder))
 }
 
+/// Przestawia numer wersji w POKWITOWANIU kroku, nie ruszając ani jednego bajtu pakietu.
+///
+/// 2026-09-08 (WP-06, luka wyroczni) — `replace_one_plan_byte` psuje zawartość opublikowanej
+/// wersji, więc wpada w kontrolę odcisków i nigdy nie dociera do sprawdzenia, czy pokwitowanie
+/// kroku ZGADZA SIĘ z wersją, na którą wskazuje. Mutacja kasująca to sprawdzenie przechodziła
+/// całą suitę. Tu wszystkie pliki i odciski zostają nietknięte; niezgodne jest samo twierdzenie
+/// zapisu biegu o tym, czego krok użył.
+fn contradict_the_step_receipt(run_dir: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    let path = run_dir.join("run.json");
+    let original = fs::read(&path)?;
+    let mut saved: Value = serde_json::from_slice(&original)?;
+    let was = saved["steps"][1]["plan_version"]["version"]
+        .as_u64()
+        .ok_or("the source consumer has no plan version to contradict")?;
+    saved["steps"][1]["plan_version"]["version"] = json!(was + 7);
+    fs::write(&path, serde_json::to_vec_pretty(&saved)?)?;
+    Ok(original)
+}
+
 fn published_version_file(run_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let root = run_dir.join("plans/workflow-plan");
     let current: Value = serde_json::from_slice(&fs::read(root.join("current.json"))?)?;
@@ -500,6 +519,48 @@ async fn the_recorded_replay_hands_the_consumer_the_same_plan_text() -> Result<(
         required_plan_core(&source_prompt)?
     );
     state.close_everything_down().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_receipt_that_contradicts_its_saved_version_is_refused_with_every_digest_intact()
+-> Result<(), Box<dyn Error>> {
+    let bench = Bench::new()?;
+    let observed = Arc::new(Observed::default());
+    let selected_drivers = drivers(Arc::clone(&observed));
+    let workflow = workflow(&bench)?;
+    let source = source_run(&bench, workflow, Arc::clone(&selected_drivers)).await?;
+    let _ = recorded_version(&source.dir)?;
+    let folder = bench
+        .project
+        .path()
+        .to_str()
+        .ok_or("the fixture project path is not text")?;
+    let part = json!({"kind":"step", "step_id":"use"});
+    let state = AppState::new(
+        bench.home.path().to_path_buf(),
+        bench.project.path().to_path_buf(),
+        Store::open(&bench.db())?,
+        Arc::clone(&selected_drivers),
+    );
+
+    // Przesłanka: nietknięty zapis MUSI dać podgląd. Bez niej ta asercja przechodzi także dla
+    // `prepare_replay_inner`, które odmawia zawsze, i nie dowodzi niczego o pokwitowaniu.
+    let honest = state
+        .prepare_replay_inner(folder, &source.id, part.clone(), "recorded")
+        .await;
+    assert!(
+        honest.is_ok(),
+        "the fixture cannot preview its own untouched run: {honest:?}"
+    );
+
+    let original = contradict_the_step_receipt(&source.dir)?;
+    let refused = state
+        .prepare_replay_inner(folder, &source.id, part.clone(), "recorded")
+        .await
+        .expect_err("a step receipt that contradicts its saved version was accepted");
+    assert_recorded_refusal(&refused);
+    replace_file(&source.dir.join("run.json"), &original)?;
     Ok(())
 }
 
