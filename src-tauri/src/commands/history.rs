@@ -1164,6 +1164,7 @@ fn past_steps(
                                         &record.item,
                                         &record.kind,
                                         record.bytes,
+                                        record.run_only,
                                     )
                                 })
                                 .collect()

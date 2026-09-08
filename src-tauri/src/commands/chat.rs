@@ -896,6 +896,9 @@ struct ThreadRegistry {
     /// Ten sam `Arc` widzi biurko, więc to jest jedno miejsce na jeden fakt (niezmiennik 13),
     /// oglądane z dwóch stron.
     waiting: HashMap<String, Arc<AskWaiting>>,
+    /// 2026-09-08 (CT-07) — wybór należy do terminalu i folderu; uchwyt jest wspólny
+    /// z istniejącym mostem tej rozmowy.
+    pinned: HashMap<String, Arc<Mutex<ChatPins>>>,
 }
 
 /// Sufit kolejki jednego terminalu. Kolejka porządkuje tury, nie uruchamia ich równolegle.
@@ -2567,16 +2570,17 @@ impl Threads {
             /* Kanał odpowiedzi schodzi razem z wątkiem. Porzucony nadawca zamyka pytanie, które
              * na nim stało, więc lider dostaje zdanie zamiast tury wiszącej bez końca. */
             state.waiting.remove(terminal);
+            // 2026-09-08 (CT-07) — wybór należy do tej rozmowy, nie do przyszłej karty,
+            // która przez wadę klienta dostałaby kiedyś ponownie ten sam identyfikator.
+            state.pinned.remove(terminal);
         }
     }
 
     /// Zdejmuje sam widok terminalu, w którym nikt jeszcze nie rozpoczął rozmowy.
     fn stop_watching(&self, terminal: &str) {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .lines
-            .remove(terminal);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.lines.remove(terminal);
+        state.pinned.remove(terminal);
     }
 }
 
@@ -2624,7 +2628,164 @@ pub struct Terminal {
     pub folder: PathBuf,
 }
 
+/// Jawny wybór materiałów jednej rozmowy. Folder jest częścią tożsamości, nie podpowiedzią.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPins {
+    pub folder: PathBuf,
+    pub sets: Vec<crate::workflow::context::ContextPin>,
+    pub generation: u64,
+    #[serde(default)]
+    pub transcript_keeps_previous_context: bool,
+    #[serde(skip)]
+    was_used: bool,
+}
+
+/// Migawka wyboru i widok tego samego resolvera, z którego korzysta picker workflow.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPinsView {
+    pub pins: ChatPins,
+    pub view: super::workflow_context::WorkflowContextView,
+}
+
+/// Zamrożony wybór planu plus uchwyt, z którym Start porównuje go przy przyjęciu.
+#[derive(Clone)]
+pub struct ChatPinSelection {
+    snapshot: ChatPins,
+    current: Arc<Mutex<ChatPins>>,
+}
+
+impl std::fmt::Debug for ChatPinSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChatPinSelection")
+            .field("folder", &self.snapshot.folder)
+            .field("sets", &self.snapshot.sets.len())
+            .field("generation", &self.snapshot.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ChatPinSelection {
+    #[must_use]
+    pub fn snapshot(&self) -> ChatPins {
+        self.snapshot.clone()
+    }
+
+    #[must_use]
+    pub fn unchanged(&self) -> bool {
+        *self.current.lock().unwrap_or_else(PoisonError::into_inner) == self.snapshot
+    }
+
+    #[must_use]
+    pub fn current(&self) -> ChatPins {
+        self.current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Od tej chwili zmiana wyboru nie może być przedstawiona jako oczyszczenie rozmowy.
+    pub fn mark_used(&self) {
+        self.current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .was_used = true;
+    }
+
+    #[must_use]
+    pub fn refreshed(&self) -> Self {
+        Self {
+            snapshot: self.current(),
+            current: Arc::clone(&self.current),
+        }
+    }
+}
+
 impl Threads {
+    pub fn pin_context_to_chat(
+        &self,
+        terminal: &Terminal,
+        sets: Vec<crate::workflow::context::ContextPin>,
+    ) -> Result<ChatPins, String> {
+        crate::workflow::context::validate_pins(&sets)?;
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = state.pinned.entry(terminal.id.clone()).or_insert_with(|| {
+            Arc::new(Mutex::new(ChatPins {
+                folder: terminal.folder.clone(),
+                sets: Vec::new(),
+                generation: 0,
+                transcript_keeps_previous_context: false,
+                was_used: false,
+            }))
+        });
+        let mut current = current.lock().unwrap_or_else(PoisonError::into_inner);
+        if current.folder != terminal.folder {
+            return Err(
+                "This conversation belongs to a different workspace. Open its original workspace or start a new conversation."
+                    .to_owned(),
+            );
+        }
+        if current.sets != sets {
+            // 2026-09-08 (CT-07) — vendor zachował stare tury; zmiana przydziału nie potrafi
+            // cofnąć danych, które już weszły do tej samej rozmowy.
+            current.transcript_keeps_previous_context |= current.was_used;
+            current.sets = sets;
+            current.generation = current.generation.saturating_add(1);
+        }
+        Ok(current.clone())
+    }
+
+    pub fn what_this_chat_pinned(&self, terminal: &Terminal) -> Result<ChatPins, String> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(current) = state.pinned.get(&terminal.id) else {
+            return Ok(ChatPins {
+                folder: terminal.folder.clone(),
+                sets: Vec::new(),
+                generation: 0,
+                transcript_keeps_previous_context: false,
+                was_used: false,
+            });
+        };
+        let current = current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if current.folder != terminal.folder {
+            return Err(
+                "This conversation belongs to a different workspace. Open its original workspace or start a new conversation."
+                    .to_owned(),
+            );
+        }
+        Ok(current)
+    }
+
+    /// Migawka używana przez most i natywną granicę Startu; oba muszą wskazywać ten sam wpis.
+    pub fn pin_selection(&self, terminal: &Terminal) -> Result<ChatPinSelection, String> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = Arc::clone(state.pinned.entry(terminal.id.clone()).or_insert_with(|| {
+            Arc::new(Mutex::new(ChatPins {
+                folder: terminal.folder.clone(),
+                sets: Vec::new(),
+                generation: 0,
+                transcript_keeps_previous_context: false,
+                was_used: false,
+            }))
+        }));
+        let snapshot = current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if snapshot.folder != terminal.folder {
+            return Err(
+                "This conversation belongs to a different workspace. Open its original workspace or start a new conversation."
+                    .to_owned(),
+            );
+        }
+        Ok(ChatPinSelection { snapshot, current })
+    }
+
     /// Okno patrzy na ten terminal: jego wiersze idą odtąd TAM, a wątek zostaje.
     ///
     /// Wołane przy każdym montażu ekranu pracy i przy każdym przeładowaniu okna, więc **nie może**
@@ -2764,7 +2925,7 @@ impl Threads {
         /* STEROWNIK WYBIERA FABRYKA, PO VENDORZE Z DEFINICJI. Zaszyty vendor nie znika przez
          * dołożenie odczytu definicji obok — zostaje jako gałąź domyślna. Tutaj nie ma ani
          * jednej gałęzi: actor dostaje jedną wartość z pliku i zachowuje kolejność tur. */
-        let configured = as_the_step_is_configured(
+        let mut configured = as_the_step_is_configured(
             drivers(lead.agent.runs_with),
             lead,
             library.as_deref(),
@@ -2780,34 +2941,21 @@ impl Threads {
          * wartość. „Czy ten vendor umie zawężać listę" jest faktem o sterowniku i musi zostać
          * odczytane, póki jest co pytać. */
         let narrows = configured.driver.narrows_its_tools();
-        let told = spec_for(lead, terminal.folder.clone(), said, reaches, narrows);
-        /* ZDANIE IDZIE NA EKRAN, ZANIM RUSZY TURA. Po niej byłoby uwagą o konfiguracji doklejoną
-         * pod odpowiedzią, której ta konfiguracja dotyczyła — czyli w miejscu, w którym człowiek
-         * już przestał jej szukać. */
-        if let Some(problem) = told.said {
-            let _ = lines
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .send(Line::Problem {
-                    agent: LEAD.to_owned(),
-                    text: problem,
-                    resets_at: None,
-                });
-        }
-        /* TĄ SAMĄ CHWILĄ I Z TEGO SAMEGO POWODU jadą zdania o umiejętnościach: „skąd lider ją
-         * wziął" jest odpowiedzią, którą człowiek czyta PRZED pierwszą odpowiedzią lidera, a nie
-         * pod nią. `Note`, nie `Problem`: to nie jest awaria, tylko wybór, który padł — a wybór
-         * pokazany jako czerwień uczy ignorować czerwień. */
-        for note in &configured.said {
-            let _ = lines
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .send(Line::Note {
-                    agent: LEAD.to_owned(),
-                    text: note.clone(),
-                    body: Vec::new(),
-                });
-        }
+        let mut told = spec_for(lead, terminal.folder.clone(), said, reaches, narrows);
+        let selected = self
+            .pin_selection(terminal)
+            .map_err(ChatError::CouldNotStart)?;
+        carry_chat_context(
+            library.clone(),
+            selected.current(),
+            &mut told,
+            &mut configured,
+        )
+        .await?;
+        // 2026-09-08 (CT-07) — znacznik wchodzi przed sterownikiem, więc Start wywołany
+        // narzędziem tej samej tury widzi już tę samą historię wyboru.
+        selected.mark_used();
+        show_conversation_setup(&lines, told.said.take(), &configured.said);
         let briefing = self.history_briefing(terminal.folder.clone());
         thread
             .say_with_images(
@@ -2866,6 +3014,12 @@ impl Threads {
          * jest właściwe zachowanie, nie brak: bieg zaczęty bez śladu na ekranie jest dokładnie
          * tą awarią, przed którą stoi całe „rusza samo". */
         let waiting = Arc::new(AskWaiting::default());
+        let selected = self
+            .pin_selection(terminal)
+            .map_err(|error| {
+                tracing::warn!(%error, "the lead's Context selection did not match its workspace");
+            })
+            .ok()?;
         let mut desk = BridgeLibrary::at(library, terminal.folder.clone())
             .showing(Arc::clone(lines))
             .starting_with(Arc::clone(&self.starts), identity)
@@ -2875,7 +3029,8 @@ impl Threads {
                     .unwrap_or_else(PoisonError::into_inner)
                     .clone(),
             )
-            .hearing(Arc::clone(&waiting));
+            .hearing(Arc::clone(&waiting))
+            .using_context(selected, expires.clone());
         let processes = self
             .services
             .lock()
@@ -3013,6 +3168,78 @@ impl Threads {
             self.forget(terminal, &thread);
         }
         proof
+    }
+}
+
+async fn carry_chat_context(
+    library: Option<PathBuf>,
+    selected: ChatPins,
+    told: &mut Told,
+    configured: &mut Configured,
+) -> Result<(), ChatError> {
+    if selected.sets.is_empty() {
+        return Ok(());
+    }
+    let home = library.ok_or_else(|| {
+        ChatError::CouldNotStart(
+            "Loadout does not know where this person's Context is saved. Reopen the work screen and try again."
+                .to_owned(),
+        )
+    })?;
+    // 2026-09-08 (CT-07) — gotowe wersje są czytane z dysku przed turą, lecz nigdy
+    // pod zamkiem rejestru ani na wątku asynchronicznym prowadzącym inne rozmowy.
+    let prepared = tokio::task::spawn_blocking(move || {
+        let recipient = super::context_inputs::Recipient {
+            node_key: "_lead",
+            tile_key: "_lead",
+            name: "Lead",
+        };
+        super::context_inputs::compose(&home, &selected.sets, &[recipient], true)
+    })
+    .await
+    .map_err(|error| ChatError::CouldNotStart(error.to_string()))?
+    .map_err(|refusal| ChatError::CouldNotStart(refusal.message))?;
+    let context = prepared.prompt_for("_lead");
+    told.spec.prompt = format!("{context}\n{}", told.spec.prompt);
+    configured.sources.extend(
+        prepared
+            .evidence_for("_lead")
+            .map_err(|error| ChatError::CouldNotStart(error.to_string()))?,
+    );
+    Ok(())
+}
+
+fn show_conversation_setup(
+    lines: &Arc<Mutex<LineSink>>,
+    problem: Option<String>,
+    notes: &[String],
+) {
+    /* ZDANIE IDZIE NA EKRAN, ZANIM RUSZY TURA. Po niej byłoby uwagą o konfiguracji doklejoną
+     * pod odpowiedzią, której ta konfiguracja dotyczyła — czyli w miejscu, w którym człowiek
+     * już przestał jej szukać. */
+    if let Some(text) = problem {
+        let _ = lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(Line::Problem {
+                agent: LEAD.to_owned(),
+                text,
+                resets_at: None,
+            });
+    }
+    /* TĄ SAMĄ CHWILĄ I Z TEGO SAMEGO POWODU jadą zdania o umiejętnościach: „skąd lider ją
+     * wziął" jest odpowiedzią, którą człowiek czyta PRZED pierwszą odpowiedzią lidera, a nie
+     * pod nią. `Note`, nie `Problem`: to nie jest awaria, tylko wybór, który padł — a wybór
+     * pokazany jako czerwień uczy ignorować czerwień. */
+    for text in notes {
+        let _ = lines
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(Line::Note {
+                agent: LEAD.to_owned(),
+                text: text.clone(),
+                body: Vec::new(),
+            });
     }
 }
 

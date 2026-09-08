@@ -129,6 +129,8 @@ pub(crate) struct Delivery {
     pub kind: String,
     pub bytes: usize,
     pub state: DeliveryState,
+    #[serde(default)]
+    pub run_only: bool,
     /// 2026-09-08 (CT-06) — logiczna pozycja przydziału. Ścieżka `reference` jest dowodem
     /// pliku, nie tożsamością używaną do rozliczania późniejszych odczytów.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -169,6 +171,7 @@ pub(crate) struct PackageItem {
     pub text: Option<MaterialInput>,
     pub preview: Option<MaterialInput>,
     pub agent_image: Option<MaterialInput>,
+    pub run_only: bool,
 }
 
 impl PackageItem {
@@ -232,6 +235,9 @@ struct ItemRecord {
     text: Option<StoredFile>,
     preview: Option<StoredFile>,
     agent_image: Option<StoredFile>,
+    /// 2026-09-08 (CT-07) — ten znacznik odróżnia nakładkę Startu od zapisu workflow.
+    #[serde(default)]
+    run_only: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -305,6 +311,7 @@ impl Snapshot {
                 text,
                 preview,
                 agent_image,
+                run_only: item.run_only,
             });
         }
         let mut delivery = BTreeMap::new();

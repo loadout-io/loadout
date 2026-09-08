@@ -73,6 +73,16 @@ pub struct RequestedLink {
     pub max_turns: Option<u32>,
 }
 
+/// Dokładne wersje rozmowy pokazane przed Startem; treść pozostaje w prywatnym pakiecie.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestedContext {
+    pub id: String,
+    pub title: String,
+    pub revision: String,
+    pub topics: crate::workflow::context::Topics,
+}
+
 /// Rodzaj wiersza. Czternaście z [T2 §7.2] plus cztery addytywne fakty produktu.
 ///
 /// **Trzy z nich nie są wpisem w historii** i nie stają się nim przez to, że silnik je
@@ -192,6 +202,8 @@ pub enum Line {
         file_name: String,
         steps: Vec<RequestedStep>,
         links: Vec<RequestedLink>,
+        context: Vec<RequestedContext>,
+        context_generation: u64,
     },
     /// `▶ Fix the login bug · Research → Plan → Build`
     Run {
@@ -2104,8 +2116,14 @@ pub(crate) fn reference_material_delivery(
     item: &str,
     kind: &str,
     bytes: usize,
+    run_only: bool,
 ) -> String {
-    let prefix = format!("{set} · version {version} · {kind} {item}");
+    let scope = if run_only {
+        " · for this run only"
+    } else {
+        ""
+    };
+    let prefix = format!("{set} · version {version}{scope} · {kind} {item}");
     match state {
         ReferenceMaterialState::Included => {
             format!("{prefix} was included when this step started ({bytes} bytes).")

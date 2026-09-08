@@ -74,6 +74,13 @@ export interface RunRequested {
     weight: 'ordinary' | 'heavy';
   }>;
   links: Array<{ from: string; to: string; maxTurns?: number }>;
+  context?: Array<{
+    id: string;
+    title: string;
+    revision: string;
+    topics: 'all' | string[];
+  }>;
+  contextGeneration?: number;
 }
 
 /** Odczytany fakt ma źródło w konkretnym workspace, nie w aktualnie wybranej karcie. */
@@ -273,6 +280,19 @@ const maybeNum: Field = (value) => value === null || num(value);
 /* `null` znaczy „jeszcze nie wiadomo", i to jest jedyne pole logiczne, które ma trzeci stan:
  * komenda, która właśnie idzie, nie udała się ani nie zawiodła (2026-09, Z-36). */
 const maybeFlag: Field = (value) => value === null || flag(value);
+const requestedContext: Field = (value) =>
+  Array.isArray(value) &&
+  value.every((one: unknown) => {
+    if (typeof one !== 'object' || one === null) return false;
+    const selected = one as Record<string, unknown>;
+    return (
+      str(selected['id']) &&
+      str(selected['title']) &&
+      str(selected['revision']) &&
+      (selected['topics'] === 'all' ||
+        (Array.isArray(selected['topics']) && selected['topics'].every(str)))
+    );
+  });
 
 /** Cztery rodzaje niosą tylko tekst i mają dokładnie ten sam komplet pól. */
 const SAYS: Readonly<Record<string, Field>> = { agent: str, text: str };
@@ -435,10 +455,24 @@ export function parseLine(value: unknown): Line | null {
   const originalShape = SHAPES.get(kind);
   // Both explicit wire versions stay strict: old Asked has no binding, new Asked has exactly
   // this one additional validated field. No permissive unknown-field fallback.
-  const shape =
+  let shape =
     kind === 'asked' && Object.hasOwn(row, 'question') && originalShape !== undefined
       ? { ...originalShape, question: questionAddress }
       : originalShape;
+  if (kind === 'runRequested' && originalShape !== undefined) {
+    /* 2026-09-08 (CT-07) — zapisane stare wiersze nie mają obu pól, a nowe mają oba.
+     * Dopuszczenie każdego z osobna zamieniłoby brak rewizji wyboru w poprawny Start. */
+    const hasContext = Object.hasOwn(row, 'context');
+    const hasGeneration = Object.hasOwn(row, 'contextGeneration');
+    if (hasContext !== hasGeneration) return null;
+    if (hasContext) {
+      shape = {
+        ...originalShape,
+        context: requestedContext,
+        contextGeneration: num,
+      };
+    }
+  }
   if (shape === undefined) {
     return null;
   }

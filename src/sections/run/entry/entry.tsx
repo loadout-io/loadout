@@ -39,6 +39,8 @@
 import type { ClipboardEvent as ReactClipboardEvent, FormEvent, ReactElement, Ref } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
+import type { ContextPin, WorkflowContextView } from '../../../state/context';
+import { ChatContextPicker } from '../../workflows/step-panel/context-row';
 import { startAskFromLine } from '../ask-command';
 import { openHistoryFromLine } from '../history-command';
 import type { WhatTheLeadCanDo } from '../io';
@@ -446,6 +448,15 @@ export function suggestions(
 }
 
 export interface EntryProps {
+  /** Wybór należy do tej instancji rozmowy; ekran dostarcza jej tożsamość i zapis. */
+  readonly context?: {
+    readonly pins: readonly ContextPin[];
+    readonly view: WorkflowContextView | null;
+    readonly changed: boolean;
+    readonly refusal: string | null;
+    readonly onChoose: (pins: ContextPin[]) => void;
+    readonly onStartNewConversation: () => void;
+  } | null;
   /**
    * Zdanie bez ukośnika. Oddaje zdanie odmowy albo `null`, kiedy doszło.
    *
@@ -681,6 +692,7 @@ export function Entry({
   fieldRef,
   agents = [],
   skills = [],
+  context = null,
 }: EntryProps): ReactElement {
   const [draft, setDraft] = useState<EntryDraft>({ text: '', images: [] });
   const draftRef = useRef(draft);
@@ -1016,6 +1028,30 @@ export function Entry({
       onSubmit={send}
       className="border-t border-line-strong px-[18px] pt-[10px] pb-3"
     >
+      {context === null ? null : (
+        <div data-chat-context-owner>
+          <ChatContextPicker
+            value={context.pins}
+            view={context.view}
+            refusal={context.refusal}
+            onChoose={context.onChoose}
+          />
+          {context.changed ? (
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="caption">
+                Earlier messages still include the Context they were sent with.
+              </p>
+              <button
+                type="button"
+                className="btn-quiet shrink-0"
+                onClick={context.onStartNewConversation}
+              >
+                Start a new conversation
+              </button>
+            </div>
+          ) : null}
+        </div>
+      )}
       <ImageStrip images={images} onRemove={removeImage} />
       <div className="grid h-10 grid-cols-[26px_1fr_auto] items-center border border-line-strong border-l-2 border-l-accent bg-well">
         {/* Znak zachęty z makiety. `aria-hidden`, bo dla czytnika ekranu to jest ozdoba. */}

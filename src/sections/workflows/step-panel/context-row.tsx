@@ -275,6 +275,41 @@ function Catalog({
   );
 }
 
+function ContextPickerBox({
+  searchLabel,
+  catalog,
+  pins,
+  resolved,
+  onChoose,
+}: {
+  searchLabel: string;
+  catalog: readonly ContextChoice[];
+  pins: readonly ContextPin[];
+  resolved: readonly SelectedContext[];
+  onChoose: (pins: ContextPin[]) => void;
+}): ReactElement {
+  const [query, setQuery] = useState('');
+  return (
+    <>
+      <input
+        className="field"
+        type="search"
+        aria-label={searchLabel}
+        placeholder="Search context"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <Catalog
+        catalog={catalog}
+        query={query}
+        pins={pins}
+        resolved={resolved}
+        onChoose={onChoose}
+      />
+    </>
+  );
+}
+
 export function WorkflowContextPicker({
   value,
   view,
@@ -284,7 +319,6 @@ export function WorkflowContextPicker({
   view: WorkflowContextView | null;
   onChoose: (value: WorkflowContext | undefined) => void;
 }): ReactElement {
-  const [query, setQuery] = useState('');
   const pins = readablePins(value?.sets);
   return (
     <details data-workflow-context className="mx-3 mt-3 rounded-md border border-line bg-panel p-2">
@@ -292,20 +326,12 @@ export function WorkflowContextPicker({
         Context · {pins.length === 0 ? 'None' : `${String(pins.length)} selected`}
       </summary>
       <div className="stack pt-2" data-gap="2">
-        <input
-          className="field"
-          type="search"
-          aria-label="Search workflow context"
-          placeholder="Search context"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
         {view === null ? (
           <p className="caption">Context choices are being read.</p>
         ) : (
-          <Catalog
+          <ContextPickerBox
+            searchLabel="Search workflow context"
             catalog={view.catalog}
-            query={query}
             pins={pins}
             resolved={view.workflow}
             onChoose={(sets) => onChoose(sets.length === 0 ? undefined : { schema: 1, sets })}
@@ -316,6 +342,48 @@ export function WorkflowContextPicker({
             {warning}
           </p>
         ))}
+      </div>
+    </details>
+  );
+}
+
+export function ChatContextPicker({
+  value,
+  view,
+  refusal,
+  onChoose,
+}: {
+  value: readonly ContextPin[];
+  view: WorkflowContextView | null;
+  refusal?: string | null;
+  onChoose: (value: ContextPin[]) => void;
+}): ReactElement {
+  const pins = readablePins(value);
+  return (
+    <details data-chat-context className="mb-2 rounded-md border border-line bg-panel p-2">
+      <summary className="label cursor-pointer">
+        Context · {pins.length === 0 ? 'None' : `${String(pins.length)} selected`}
+      </summary>
+      <div className="stack pt-2" data-gap="2">
+        {view === null ? (
+          <p className="caption">Context choices are being read.</p>
+        ) : (
+          <ContextPickerBox
+            searchLabel="Search conversation context"
+            catalog={view.catalog}
+            pins={pins}
+            resolved={view.workflow}
+            onChoose={onChoose}
+          />
+        )}
+        {view?.warnings.map((warning) => (
+          <p key={warning} className="text-body text-warn">
+            {warning}
+          </p>
+        ))}
+        {refusal === null || refusal === undefined ? null : (
+          <p className="text-body text-warn">{refusal}</p>
+        )}
       </div>
     </details>
   );
@@ -334,7 +402,6 @@ export function ContextRow({
   refusal: string | null;
   onChoose: (value: StepContext | undefined) => void;
 }): ReactElement {
-  const [query, setQuery] = useState('');
   const local = readablePins(value?.sets);
   const excluded = new Set(readableIds(value?.exclude));
   const chosen = view?.sets ?? [];
@@ -399,17 +466,9 @@ export function ContextRow({
               Use {set.title} from workflow
             </label>
           ))}
-          <input
-            className="field"
-            type="search"
-            aria-label="Search step context"
-            placeholder="Search context"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <Catalog
+          <ContextPickerBox
+            searchLabel="Search step context"
             catalog={catalog}
-            query={query}
             pins={local}
             resolved={chosen}
             onChoose={(sets) => onChoose(stepChoice(value, { sets }))}

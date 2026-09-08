@@ -217,6 +217,8 @@ fn sample(kind: LineKind) -> Line {
                 to: "a".to_owned(),
                 max_turns: Some(2),
             }],
+            context: Vec::new(),
+            context_generation: 0,
         },
         LineKind::RunSource => Line::RunSource {
             agent: "Loadout".to_owned(),

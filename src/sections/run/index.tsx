@@ -57,7 +57,9 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import type { MouseEvent, ReactElement, ReactNode } from 'react';
 
 import { why } from '../../ipc/why';
+import type { RunRequested } from '../../ipc/types';
 import { sectionEntry } from '../../ui/sections';
+import type { ContextPin } from '../../state/context';
 import type { FeedLine, Step } from '../../state/run';
 import type { Link } from '../../state/workflows';
 import { runFor, stepIsOver, useRun } from '../../state/run';
@@ -82,17 +84,29 @@ import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
 import { openOneRun, planOfPastRun, theOneThatIsGoing } from './history-command';
 import {
   answerTheLead,
+  acceptLeadContextRequest,
   answerCheckpoint,
   interruptTheLead,
   listRuns,
   openChat,
+  pinContextToChat,
   readRun,
   sendToStep,
   stepMessageRecipients,
   sayToOrchestrator,
   stop,
   whatThisFolderCouldForget,
+  whatThisChatPinned,
 } from './io';
+import type { ChatPinsView, LeadContextTarget } from './io';
+import {
+  forgetLeadContextRequest,
+  leadContextChoice,
+  leadContextRequest,
+  rememberLeadContextChoice,
+  rememberLeadContextRequest,
+  subscribeToLeadContextRequest,
+} from './lead-context';
 /* KIM JEST LIDER — jedno źródło, to samo, z którego czyta kontrolka w pasku (`./start.tsx`).
  * Ten ekran wskazania nie kopiuje i nie trzyma: pyta o nie w chwili wysyłki zdania.
  * CO TEN LIDER MOŻE, odpowiada Rust, a ten moduł trzyma jego ostatnią odpowiedź (2026-09, Z-50). */
@@ -647,6 +661,111 @@ function choiceIn({ choices, chosen, running, nextUp }: WhichWorkflowProps): {
   };
 }
 
+function LeadContextPreview({
+  request,
+  terminal,
+  currentGeneration,
+  onStart,
+  onDiscuss,
+}: {
+  request: RunRequested;
+  terminal: string;
+  currentGeneration: number | null;
+  onStart: (target: LeadContextTarget, keepPrevious: boolean) => void;
+  onDiscuss: () => void;
+}): ReactElement {
+  const agents = request.steps.filter((step) => step.kind === 'agent');
+  /* 2026-09-08 (CT-07) — stan startuje od WYBORU ZAPAMIĘTANEGO PRZY TERMINALU, nie od domyślnego
+   * „cały workflow". Odmowa Startu przenosi żądanie pod kartę biegu, więc ten komponent się
+   * przemontowuje; bez tego „Keep previous selection and start" wysyłało zakres, którego człowiek
+   * nigdy nie wybrał. */
+  const remembered = leadContextChoice(terminal);
+  const [place, setPlace] = useState<'workflow' | 'steps'>(remembered?.place ?? 'workflow');
+  const [steps, setSteps] = useState<string[]>(() =>
+    remembered !== null && remembered.place === 'steps'
+      ? [...remembered.stepIds]
+      : agents.map((step) => step.id),
+  );
+  const changed =
+    currentGeneration !== null && (request.contextGeneration ?? 0) !== currentGeneration;
+  const target: LeadContextTarget =
+    place === 'workflow' ? { place: 'workflow' } : { place: 'steps', stepIds: steps };
+  return (
+    <section
+      data-lead-context-preview
+      className="mx-[18px] mb-2 stack rounded-md border border-line-strong bg-panel p-3"
+      data-gap="2"
+    >
+      <p className="label">Context for {request.title}</p>
+      {(request.context ?? []).map((set) => (
+        <p key={`${set.id}:${set.revision}`} className="caption">
+          {set.title} · version {set.revision}
+        </p>
+      ))}
+      <label className="flex items-baseline gap-2 text-body text-ink">
+        <input
+          type="radio"
+          name={`lead-context-${request.requestId}`}
+          checked={place === 'workflow'}
+          onChange={() => {
+            setPlace('workflow');
+            rememberLeadContextChoice(terminal, { place: 'workflow' });
+          }}
+        />
+        Share with the workflow
+      </label>
+      <label className="flex items-baseline gap-2 text-body text-ink">
+        <input
+          type="radio"
+          name={`lead-context-${request.requestId}`}
+          checked={place === 'steps'}
+          onChange={() => {
+            setPlace('steps');
+            rememberLeadContextChoice(terminal, { place: 'steps', stepIds: steps });
+          }}
+        />
+        Give to selected steps
+      </label>
+      {place === 'steps'
+        ? agents.map((step) => (
+            <label key={step.id} className="ml-5 flex items-baseline gap-2 text-body text-ink">
+              <input
+                type="checkbox"
+                checked={steps.includes(step.id)}
+                onChange={(event) => {
+                  setSteps((known) => {
+                    const next = event.target.checked
+                      ? [...known, step.id]
+                      : known.filter((id) => id !== step.id);
+                    rememberLeadContextChoice(terminal, { place: 'steps', stepIds: next });
+                    return next;
+                  });
+                }}
+              />
+              {step.name}
+            </label>
+          ))
+        : null}
+      {changed ? <p className="text-body text-warn">Context changed since this plan</p> : null}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={place === 'steps' && steps.length === 0}
+          onClick={() => onStart(target, changed)}
+        >
+          {changed ? 'Keep previous selection and start' : 'Start'}
+        </button>
+        {changed ? (
+          <button type="button" className="btn-quiet" onClick={onDiscuss}>
+            Discuss the plan again
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export default function Run(): ReactElement {
   const view = useSyncExternalStore(runFeed.subscribe, currentView, currentView);
   const run = useSyncExternalStore(useRun.subscribe, useRun.getState, useRun.getState);
@@ -1023,6 +1142,32 @@ export default function Run(): ReactElement {
     canonicalEntryTerminal +
     '\u0000' +
     String(entryInstance.current.generation);
+  const [chatContext, setChatContext] = useState<ChatPinsView | null>(null);
+  const [chatContextRefusal, setChatContextRefusal] = useState<string | null>(null);
+  const leadStartPreview = useSyncExternalStore(
+    subscribeToLeadContextRequest,
+    () => leadContextRequest(canonicalEntryTerminal),
+    () => leadContextRequest(canonicalEntryTerminal),
+  );
+
+  useEffect(() => {
+    let current = true;
+    setChatContext(null);
+    setChatContextRefusal(null);
+    if (folder === null) return () => undefined;
+    void whatThisChatPinned(canonicalEntryTerminal, folder)
+      .then((read) => {
+        if (current) setChatContext(read);
+      })
+      .catch((error: unknown) => {
+        if (current) {
+          setChatContextRefusal(why(error, 'Loadout could not read this conversation Context.'));
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [canonicalEntryTerminal, entryKey, folder]);
 
   /* CZEGO TU NIE MA: przestawiania sesji przy przełączeniu zakresu. Oba magazyny robią to same
    * i każdy z nich słucha magazynu zakresów u siebie — `runFeed` w `./feed/live`, `useRun`
@@ -1379,6 +1524,63 @@ export default function Run(): ReactElement {
      * o nowe miejsce do pracy, patrzy na nie, a nie na to, co było przedtem. */
     runTabs.getState().open(newTerminal(folder, scope.name));
     field.current?.focus();
+  }
+
+  function chooseChatContext(sets: ContextPin[]): void {
+    if (folder === null) return;
+    setChatContextRefusal(null);
+    void pinContextToChat(canonicalEntryTerminal, folder, sets)
+      .then(() => whatThisChatPinned(canonicalEntryTerminal, folder))
+      .then((read) => {
+        setChatContext(read);
+      })
+      .catch((error: unknown) => {
+        setChatContextRefusal(why(error, 'Loadout could not change this conversation Context.'));
+      });
+  }
+
+  function startNewConversationWithContext(): void {
+    if (scope === null || folder === null || chatContext === null) return;
+    const next = newTerminal(folder, scope.name);
+    setChatContextRefusal(null);
+    /* 2026-09-08 (CT-07) — wybór jedzie do nowej tożsamości przed pokazaniem karty. Otworzenie
+     * jej wcześniej uruchomiłoby odczyt pustego wyboru i na chwilę pokazało nieprawdę. */
+    void pinContextToChat(next.id, folder, chatContext.pins.sets)
+      .then(() => {
+        runTabs.getState().open(next);
+        field.current?.focus();
+      })
+      .catch((error: unknown) => {
+        setChatContextRefusal(why(error, 'Loadout could not start a new conversation.'));
+      });
+  }
+
+  function startLeadContextPreview(target: LeadContextTarget, keepPrevious: boolean): void {
+    if (leadStartPreview === null) return;
+    const request = leadStartPreview;
+    const terminal = canonicalEntryTerminal;
+    void acceptLeadContextRequest(terminal, request, target, keepPrevious).catch(
+      (error: unknown) => {
+        const current = runTabs.getState().activeId ?? terminal;
+        /* 2026-09-08 (CT-07) — próba Startu zakłada kartę biegu przed odpowiedzią hosta. Odmowa
+         * musi przenieść podgląd pod tę kartę, inaczej człowiek widzi nowe puste miejsce, a jedyna
+         * kontrolka pozwalająca zachować poprzedni wybór zostaje w niewidocznym terminalu. */
+        if (current !== terminal) {
+          /* 2026-09-08 (CT-07) — wybór jedzie RAZEM z żądaniem. `forget` kasuje go przy starym
+           * terminalu, więc odczytujemy go, zanim to zrobimy; inaczej podgląd wstaje pod nową
+           * kartą z domyślnym „cały workflow" i „Keep previous selection" nie ma czego zachować. */
+          const chosen = leadContextChoice(terminal);
+          forgetLeadContextRequest(terminal);
+          rememberLeadContextRequest(current, request);
+          if (chosen !== null) rememberLeadContextChoice(current, chosen);
+        }
+        /* `runFeed` pyta o wierzch teraz; domknięcie `showInStream` nadal wskazuje terminal sprzed
+         * kliknięcia i schowałoby jedyne zdanie odmowy razem z tamtą rozmową (niezmiennik 29). */
+        runFeed.appendLines([
+          saidOf(why(error, 'Loadout could not accept that run. Ask to start it again.')),
+        ]);
+      },
+    );
   }
 
   /**
@@ -1975,6 +2177,15 @@ export default function Run(): ReactElement {
                 {said}
               </p>
             )}
+            {leadStartPreview === null ? null : (
+              <LeadContextPreview
+                request={leadStartPreview}
+                terminal={canonicalEntryTerminal}
+                currentGeneration={chatContext?.pins.generation ?? null}
+                onStart={startLeadContextPreview}
+                onDiscuss={() => field.current?.focus()}
+              />
+            )}
             <Entry
               /* SZKIC NALEŻY DO ROZMOWY, nie do całego ekranu. Zmiana folderu albo terminalu
                  odmontowuje jego właściciela: cleanup odcina blob URL, a nowe pole zaczyna
@@ -1982,6 +2193,18 @@ export default function Run(): ReactElement {
                  z projektu A wysłany przez Enter w projekcie B. Fallback terminalu i wyjątek
                  zamknięcia są składane raz, wyżej, w `entryKey`. */
               key={entryKey}
+              context={
+                folder === null
+                  ? null
+                  : {
+                      pins: chatContext?.pins.sets ?? [],
+                      view: chatContext?.view ?? null,
+                      changed: chatContext?.pins.transcriptKeepsPreviousContext ?? false,
+                      refusal: chatContextRefusal,
+                      onChoose: chooseChatContext,
+                      onStartNewConversation: startNewConversationWithContext,
+                    }
+              }
               onOpenFolder={openFolder}
               /* BEZ WARUNKU `running`. Do 2026-08-23 stało tu `running ? stopRun : null`, czyli
                  wiersz odpowiadał z pamięci okna — a ta pamięć bywa nieprawdziwa i wtedy `/stop`

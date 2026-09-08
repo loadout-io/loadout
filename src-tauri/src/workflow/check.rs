@@ -444,6 +444,7 @@ fn notes(workflow: &WorkflowFile, when: When) -> Vec<Note> {
     if let Err(message) = super::context::validate(workflow) {
         notes.push(problem(None, message));
     }
+    notes.extend(super::context::differences_between_steps(workflow));
     notes.extend(super::work_plan::notes(
         workflow,
         match when {

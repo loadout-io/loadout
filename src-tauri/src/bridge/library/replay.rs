@@ -200,6 +200,8 @@ impl Desk {
                     max_turns: link.max_turns,
                 })
                 .collect(),
+            context: Vec::new(),
+            context_generation: 0,
         })
     }
 
