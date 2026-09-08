@@ -54,6 +54,13 @@ fn a_lead_gets_the_library_and_the_start() {
             "prepare_result_restore",
             "restore_result",
             "continue_run",
+            // 2026-09-08 (CT-07) — cztery czytelniki materiałów referencyjnych. Lead planuje
+            // z przypiętych zestawów, więc musi umieć je przeczytać; wszystkie są wyłącznie
+            // czytające i nie dają mu ani grama władzy nad biegiem, której nie miał wcześniej.
+            "list_context",
+            "search_context",
+            "read_context",
+            "view_context_image",
         ],
         "the lead is the orchestrator: it has to be able to ask when it does not know, to see \
          what this person built, to start it, and to end it. These names travel to the model, so \

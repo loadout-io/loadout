@@ -87,7 +87,13 @@ const CWD: &str = "/loadout/step/ct03a";
 /// `ask_the_person` zapisuje potwierdzenie i bije jednorazowy `approvalToken`, a każdy
 /// `prepare_*` rejestruje podgląd, którym potem autoryzuje się start — więc żaden z nich tu nie
 /// stoi, choć nazwa każdego brzmi niewinnie.
-const ONLY_READ: [&str; 11] = [
+/// 2026-09-08 (CT-07) — CZTERY CZYTELNIKI KONTEKSTU DOSZŁY DO KONTRAKTU, i to jest zmiana
+/// zamierzona, nie poluzowanie tej wyroczni. Lead dostał przy polu rozmowy ten sam picker
+/// zestawów, co panel kroku, więc musi umieć je odczytać. Każdy z tych czterech naprawdę
+/// niczego nie zmienia (`bridge::context::context_tools` deklaruje `read_only: true` na
+/// wszystkich), a porównanie dalej idzie na CAŁYM zbiorze: nazwa dopisana tu bez adnotacji
+/// w kodzie, albo adnotacja bez nazwy tutaj, nadal przewraca ten test.
+const ONLY_READ: [&str; 15] = [
     "list_workflows",
     "list_agents",
     "get_run_status",
@@ -99,6 +105,10 @@ const ONLY_READ: [&str; 11] = [
     "read_messages",
     "service_status",
     "service_logs",
+    "list_context",
+    "search_context",
+    "read_context",
+    "view_context_image",
 ];
 
 /// Aplikacja oddająca obraz TYPOWANYM wariantem — droga, którą ten etap buduje.
