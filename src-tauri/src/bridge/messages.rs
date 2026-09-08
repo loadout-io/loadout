@@ -392,12 +392,14 @@ impl Messages {
 pub(crate) struct StepDesk {
     pub services: Option<Arc<ServiceAccess>>,
     pub messages: Option<Messages>,
+    pub context: Option<super::context::ContextDesk>,
 }
 impl fmt::Debug for StepDesk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StepDesk")
             .field("messages", &self.messages.is_some())
             .field("services", &self.services.is_some())
+            .field("context", &self.context.is_some())
             .finish()
     }
 }
@@ -419,6 +421,9 @@ impl StepDesk {
                     .map(super::verbs::Verb::listed),
             );
         }
+        if let Some(context) = &self.context {
+            tools.extend(context.tools().as_array().into_iter().flatten().cloned());
+        }
         json!(tools)
     }
 }
@@ -433,6 +438,15 @@ impl Answers for StepDesk {
                 || Answer::Refused("Messages are not enabled for this step.".to_owned()),
                 |one| one.answer(&call),
             );
+        }
+        if super::context::is_context_tool(&call.call) {
+            return match &self.context {
+                Some(context) => context.answer(call).await,
+                None => Answer::Refused(
+                    "Context is not available to this step. Nothing from another step was read."
+                        .to_owned(),
+                ),
+            };
         }
         match &self.services {
             Some(services) => services.answer(call).await,

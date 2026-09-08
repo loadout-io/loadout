@@ -367,6 +367,59 @@ fn a_file_still_opens_after_the_one_it_came_from_is_deleted()
 }
 
 #[test]
+fn a_document_imported_before_reader_derivatives_still_opens()
+-> Result<(), Box<dyn std::error::Error>> {
+    let library = Library::fresh()?;
+    let downloads = tempfile::tempdir()?;
+    let expected = fs::read(Path::new(FIXTURES).join("notes.md"))?;
+    let taken = put(downloads.path(), "notes.md", &expected)?;
+    let report = library.import("op-old-document", vec![from_disk(&taken)])?;
+    let id = report
+        .results
+        .first()
+        .and_then(|one| one.added.first().cloned())
+        .ok_or("the document was not added, so its old layout cannot be exercised")?;
+    let source = library
+        .sources()?
+        .into_iter()
+        .find(|source| source.id == id)
+        .ok_or("the imported document is absent from the saved draft")?;
+    let revision = source
+        .file
+        .as_ref()
+        .map(|file| file.revision.as_str())
+        .ok_or("the imported document does not name its saved revision")?;
+    let reader = folder_of(&library.root, &library.set)?
+        .join("sources")
+        .join(&id)
+        .join(revision)
+        .join("for-the-reader.txt");
+
+    // 2026-09-08 — CT-03b zaczęło tworzyć tę pochodną dopiero przy nowych importach. Jej
+    // usunięcie odtwarza układ dokumentu zapisanego przez CT-02, bez podrabiania szkicu.
+    fs::remove_file(&reader)?;
+    assert!(
+        !reader.exists(),
+        "the reader derivative still exists, so this case did not recreate an older document"
+    );
+
+    let part = library.part(&id, None)?;
+    assert_eq!(
+        part,
+        SourcePart::Text {
+            text: String::from_utf8(expected)?,
+            more: false,
+        },
+        "a document saved before reader derivatives existed has to show the same text"
+    );
+    assert!(
+        !reader.exists(),
+        "previewing an older document silently wrote a derivative without adding it to the saved budget"
+    );
+    Ok(())
+}
+
+#[test]
 fn five_files_give_five_named_results_and_one_refusal_keeps_the_rest()
 -> Result<(), Box<dyn std::error::Error>> {
     let library = Library::fresh()?;
