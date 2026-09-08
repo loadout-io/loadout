@@ -27,7 +27,14 @@ const PRIVATE: [&str; 12] = [
     "PRIVATE_NAME_T34",
 ];
 
-const ALLOWED_KEYS: [&str; 42] = [
+/// 2026-09-08 (WP-06) — `workPlan` DOPISANY, i to jest rozszerzenie listy, a nie jej
+/// poluzowanie. Klucz niesie `[usize; 3]`: trzy liczniki, dokładnie ten sam kształt, co
+/// `referenceMaterials` z CT-08, i ani jednego bajtu treści planu — `work_plan_counts`
+/// w `commands/diagnostics.rs` nie ma jak wpisać tam tekstu, bo typ na to nie pozwala.
+///
+/// Lista zostaje ZAMKNIĘTA: każdy inny nowy klucz nadal przewraca ten test, a sentinele
+/// `PRIVATE_*` sprawdzane są niezależnie i na tej zmianie się nie ruszyły.
+const ALLOWED_KEYS: [&str; 43] = [
     "appVersion",
     "artifacts",
     "attempts",
@@ -59,6 +66,7 @@ const ALLOWED_KEYS: [&str; 42] = [
     "reason",
     // 2026-09-08 (CT-08) — jedna tablica trzech liczb, nigdy nazwy ani treść materiału.
     "referenceMaterials",
+    "workPlan",
     "runs",
     "schemaVersion",
     "startedAt",
