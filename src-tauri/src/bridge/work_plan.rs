@@ -17,6 +17,7 @@ const NAME: &str = "read_plan";
 pub struct PlanDesk {
     version_id: String,
     access: ContextAccess,
+    recorder: Option<crate::work_plan::PlanReadRecorder>,
 }
 
 impl PlanDesk {
@@ -38,7 +39,22 @@ impl PlanDesk {
                 expires,
             ),
             version_id,
+            recorder: None,
         }
+    }
+
+    /// 2026-09-08 (WP-06): historia odczytu należy do fizycznego odbiorcy, a nie do wersji;
+    /// dwa równoległe kroki nie współdzielą licznika ani zamka (niezmienniki 8 i 11).
+    #[must_use]
+    pub(crate) fn recording(
+        holder: impl Into<String>,
+        version: &PlanVersion,
+        expires: CancellationToken,
+        recorder: crate::work_plan::PlanReadRecorder,
+    ) -> Self {
+        let mut desk = Self::new(holder, version, expires);
+        desk.recorder = Some(recorder);
+        desk
     }
 
     #[must_use]
@@ -68,9 +84,15 @@ impl PlanDesk {
             .access
             .read(&self.version_id, input.cursor.as_deref())
             .map_err(|error| error.to_string())?;
-        serde_json::to_value(answer)
-            .map(Answer::Ok)
-            .map_err(|_error| "Loadout could not shape this plan answer safely.".to_owned())
+        let bytes = answer.text.len();
+        let value = serde_json::to_value(answer)
+            .map_err(|_error| "Loadout could not shape this plan answer safely.".to_owned())?;
+        if let Some(recorder) = &self.recorder {
+            recorder
+                .opened(&self.version_id, bytes)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(Answer::Ok(value))
     }
 }
 

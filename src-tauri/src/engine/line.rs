@@ -2143,6 +2143,30 @@ pub(crate) fn reference_material_delivery(
     }
 }
 
+/// Jedyny słownik zdań o zamrożonym planie widocznych w historii kroku.
+#[must_use]
+pub(crate) fn work_plan_delivery(
+    version: u64,
+    version_id: &str,
+    core_bytes: usize,
+    detail_bytes: usize,
+    opened_bytes: usize,
+) -> Vec<String> {
+    let mut rows = vec![
+        format!("Workflow plan · version {version} · identity {version_id}."),
+        format!(
+            "Workflow plan · core layer was included when this step started ({core_bytes} bytes)."
+        ),
+        format!("Workflow plan · detail layer was available to read ({detail_bytes} bytes)."),
+    ];
+    if opened_bytes > 0 {
+        rows.push(format!(
+            "Workflow plan · version {version} was opened ({opened_bytes} bytes returned)."
+        ));
+    }
+    rows
+}
+
 /// Krótki zapis liczby, który mieści się w jednym wierszu historii.
 fn compact_length(value: u64) -> String {
     if value >= 1_000_000 {

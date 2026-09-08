@@ -1,7 +1,7 @@
 //! WF-23: wskazany zapis jest wejściem zwykłego wykonawcy, nie drugim wykonawcą.
 //! Podgląd nie uruchamia procesów i nie przechowuje złożonego promptu.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,10 +45,12 @@ pub struct ReplayMaterial {
     pub instructions: Option<crate::inherit::instructions::InstructionSnapshot>,
     pub(crate) memory_sources: Option<super::memory_sources::Snapshot>,
     pub(crate) context_sources: Option<super::context_sources::Snapshot>,
+    pub(crate) work_plan: Option<crate::work_plan::RecordedSnapshot>,
     pub preview: Value,
     source_revision: String,
     policy_revisions: BTreeMap<PathBuf, String>,
     _context_hold: Option<std::fs::File>,
+    _work_plan_hold: Option<std::fs::File>,
 }
 
 impl fmt::Debug for ReplayMaterial {
@@ -128,6 +130,14 @@ impl ReplayMaterial {
                 return Err(unavailable(
                     "the saved reference materials changed after this preview",
                 ));
+            }
+            if let Some(expected) = &self.work_plan {
+                let actual = crate::work_plan::read_recorded(&self.source_dir)
+                    .map_err(|error| unavailable(&error.to_string()))?
+                    .ok_or_else(|| unavailable("the saved plan disappeared after this preview"))?;
+                if actual.binding() != expected.binding() {
+                    return Err(unavailable("the saved plan changed after this preview"));
+                }
             }
             for (key, expected) in &self.skills {
                 let actual = super::run::saved_skill_bundles(&self.source_dir, key)
@@ -225,6 +235,7 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
     let part = chosen_part(input, &graph)?;
     let unrolled = crate::workflow::unroll::unroll(&graph);
     let wanted = super::run::which_nodes(&unrolled, &graph, part.as_ref());
+    let expected_plan = selected_needs_recorded_plan(&graph, &unrolled, &wanted);
     let memory_sources = if mode == ReplayMode::Recorded {
         super::memory_sources::read_bound(&source_dir)
             .map_err(|error| unavailable(&error.to_string()))?
@@ -233,6 +244,7 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
     };
     let (context_sources, context_hold) =
         recorded_context_sources(mode, &source_dir, expected_context)?;
+    let (work_plan, work_plan_hold) = recorded_work_plan(mode, &source_dir, expected_plan)?;
     let recorded = RecordedSource {
         mode,
         saved: &saved,
@@ -255,19 +267,17 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
     policy_revisions.insert(workflow.clone(), revision.clone());
     let (input_snapshot, instructions) = recorded_starting_files(&recorded)?;
     let copies = wanted.iter().filter(|&&one| one).count();
-    let source = RunRef {
-        workspace: project.to_path_buf(),
-        run_id: id,
-    };
-    let preview = preview_of(
+    let source = replay_source(project, id);
+    let preview = preview_of(&PreviewFacts {
         mode,
-        &source,
-        &graph.name,
+        source: &source,
+        title: &graph.name,
         copies,
-        &configurations,
+        configurations: &configurations,
         changed,
         budget_usd,
-    );
+        regenerates_plan: selected_regenerates_plan(&graph, &unrolled, &wanted),
+    });
     Ok(Arc::new(ReplayMaterial {
         source,
         source_dir,
@@ -289,11 +299,93 @@ pub fn prepare(home: &Path, project: &Path, input: &Value) -> Result<Arc<ReplayM
         instructions,
         memory_sources,
         context_sources,
+        work_plan,
         preview,
         source_revision: crate::durable_file::revision_of(&source_bytes),
         policy_revisions,
         _context_hold: context_hold,
+        _work_plan_hold: work_plan_hold,
     }))
+}
+
+fn replay_source(project: &Path, run_id: String) -> RunRef {
+    RunRef {
+        workspace: project.to_path_buf(),
+        run_id,
+    }
+}
+
+fn selected_needs_recorded_plan(
+    graph: &WorkflowFile,
+    unrolled: &crate::workflow::unroll::Unrolled,
+    wanted: &[bool],
+) -> bool {
+    let included = unrolled
+        .nodes
+        .iter()
+        .zip(wanted)
+        .filter(|(_node, selected)| **selected)
+        .map(|(node, _selected)| {
+            crate::workflow::check::node_key_for(graph.steps[node.step].id(), node.turn, node.copy)
+        })
+        .collect::<BTreeSet<_>>();
+    let Ok(authors) = crate::workflow::work_plan::authors(graph) else {
+        return true;
+    };
+    authors.sources.iter().any(|(consumer, sources)| {
+        included.contains(consumer) && sources.iter().any(|source| !included.contains(source))
+    })
+}
+
+fn recorded_work_plan(
+    mode: ReplayMode,
+    source_dir: &Path,
+    expected: bool,
+) -> Result<
+    (
+        Option<crate::work_plan::RecordedSnapshot>,
+        Option<std::fs::File>,
+    ),
+    String,
+> {
+    if mode != ReplayMode::Recorded || !expected {
+        return Ok((None, None));
+    }
+    let Some(before_hold) = crate::work_plan::read_recorded(source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?
+    else {
+        return Err(unavailable("the saved plan package is missing"));
+    };
+    let hold = crate::work_plan::hold_recorded(source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?;
+    let snapshot = crate::work_plan::read_recorded(source_dir)
+        .map_err(|error| unavailable(&error.to_string()))?
+        .ok_or_else(|| unavailable("the saved plan disappeared while held"))?;
+    // 2026-09-08 (WP-06): ten sam ograniczony wyścig co pakiet CT-08; dwa odczyty strzegą
+    // okna przed blokadą, a validate ponownie wiąże pakiet przed zgodą i Startem.
+    if snapshot.binding() != before_hold.binding() {
+        return Err(unavailable(
+            "the saved plan changed while it was being held",
+        ));
+    }
+    Ok((Some(snapshot), Some(hold)))
+}
+
+fn selected_regenerates_plan(
+    graph: &WorkflowFile,
+    unrolled: &crate::workflow::unroll::Unrolled,
+    wanted: &[bool],
+) -> bool {
+    unrolled.nodes.iter().zip(wanted).any(|(node, selected)| {
+        if !selected {
+            return false;
+        }
+        let Some(Step::Agent(step)) = graph.steps.get(node.step) else {
+            return false;
+        };
+        crate::work_plan::Configuration::from_step(step.extra.get("plan"))
+            .is_ok_and(|configuration| configuration.writes_candidate())
+    })
 }
 
 fn recorded_context_sources(
@@ -648,15 +740,29 @@ fn recorded_starting_files(
 /// Zdania stoją tu obok liczb z premedytacją. Ekran, który pokazuje same liczby, każe
 /// zgadywać, na co właśnie idzie zgoda — a zgoda na powtórkę jest zgodą na wydatek i na
 /// dzisiejsze prawa, nie na „to samo co ostatnio".
-fn preview_of(
+#[derive(Clone, Copy)]
+struct PreviewFacts<'a> {
     mode: ReplayMode,
-    source: &RunRef,
-    title: &str,
+    source: &'a RunRef,
+    title: &'a str,
     copies: usize,
-    configurations: &[Value],
+    configurations: &'a [Value],
     changed: bool,
     budget_usd: Option<f64>,
-) -> Value {
+    regenerates_plan: bool,
+}
+
+fn preview_of(facts: &PreviewFacts<'_>) -> Value {
+    let PreviewFacts {
+        mode,
+        source,
+        title,
+        copies,
+        configurations,
+        changed,
+        budget_usd,
+        regenerates_plan,
+    } = *facts;
     let said = match mode {
         ReplayMode::Recorded => format!(
             "Repeat the saved setup: {copies} copies, using the saved starting files. Today's permissions still apply."
@@ -667,11 +773,14 @@ fn preview_of(
     };
     let budget_said = spending_limit_said(budget_usd);
     let configuration_said = agent_settings_said(configurations);
-    let differences_said = if changed {
+    let mut differences_said = if changed {
         vec!["Today's workflow differs from this saved run. The setup selected above determines which steps will run.".to_owned()]
     } else {
         vec!["The workflow has not changed. The agent settings above are the settings selected for this repeat.".to_owned()]
     };
+    if regenerates_plan {
+        differences_said.push("Create or Update will produce a new plan version in this run. That is a new result, not an identical replay of the saved plan.".to_owned());
+    }
     json!({"mode":mode,"source":{"workspace":source.workspace,"runId":source.run_id},"title":title,
         "copies":copies,"settings":configurations,"workflowChanged":changed,"costBoundUsd":budget_usd,
         "budgetSaid":budget_said,"configurationSaid":configuration_said,"differencesSaid":differences_said,

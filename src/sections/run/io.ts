@@ -1349,6 +1349,8 @@ export interface PastStep {
   readonly projectInstructions?: readonly import('../../state/settings-io').ProjectInstructionSource[];
   /** CT-06: sentences from this physical step's bounded reference-material receipt. */
   readonly referenceMaterials?: readonly string[] | null;
+  /** WP-06: sentences about the one frozen workflow-plan version delivered to this step. */
+  readonly workPlan?: readonly string[] | null;
   /**
    * Co aplikacja agenta wczytała z folderu, zanim ten krok powiedział pierwsze słowo.
    *

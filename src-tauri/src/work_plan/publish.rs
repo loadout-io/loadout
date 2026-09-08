@@ -66,6 +66,10 @@ struct CurrentPointer {
     version: u64,
     version_id: String,
     file: String,
+    /// 2026-09-08 (WP-06): stare pointery pozostają czytelne, a nowe wiążą dokładne bajty
+    /// wersji, żeby ręczna edycja kanonu nie stała się dozwolonym `Update`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    digest: Option<String>,
 }
 
 #[must_use]
@@ -158,6 +162,7 @@ pub fn publish_version(
         version: version.version,
         version_id: version.version_id.clone(),
         file: file.clone(),
+        digest: Some(revision_of(version_text.as_bytes())),
     })?;
 
     fs::create_dir_all(root.join(VERSIONS))?;
@@ -234,7 +239,18 @@ fn read_current_state(root: &Path) -> Result<Option<CurrentState>, Error> {
             "current.json names an unsupported schema or an unsafe version file".to_owned(),
         ));
     }
-    let version: PlanVersion = read_json(&root.join(VERSIONS).join(&pointer.file))?;
+    let version_path = root.join(VERSIONS).join(&pointer.file);
+    let version_bytes = fs::read(&version_path)?;
+    if pointer
+        .digest
+        .as_ref()
+        .is_some_and(|expected| revision_of(&version_bytes) != *expected)
+    {
+        return Err(Error::Malformed(
+            "the current plan version does not match its published fingerprint".to_owned(),
+        ));
+    }
+    let version: PlanVersion = serde_json::from_slice(&version_bytes)?;
     validate_version(&version)?;
     if version.version != pointer.version
         || version.version_id != pointer.version_id
@@ -256,11 +272,13 @@ fn publish_pointer(
     expected: Option<&str>,
 ) -> Result<(), Error> {
     let file = version_file_name(version.version, &version.operation);
+    let version_text = as_file(version)?;
     let text = as_file(&CurrentPointer {
         schema: SCHEMA,
         version: version.version,
         version_id: version.version_id.clone(),
         file,
+        digest: Some(revision_of(version_text.as_bytes())),
     })?;
     DurableFilePublisher::new(root)
         .publish_definition(
@@ -270,6 +288,28 @@ fn publish_pointer(
             expected,
         )
         .map_err(publication_error)
+}
+
+pub(super) fn portable_version_file(version: &PlanVersion) -> Result<(String, Vec<u8>), Error> {
+    Ok((
+        format!(
+            "{VERSIONS}/{}",
+            version_file_name(version.version, &version.operation)
+        ),
+        as_file(version)?.into_bytes(),
+    ))
+}
+
+pub(super) fn portable_current_file(version: &PlanVersion) -> Result<Vec<u8>, Error> {
+    let (_, version_bytes) = portable_version_file(version)?;
+    let pointer = CurrentPointer {
+        schema: SCHEMA,
+        version: version.version,
+        version_id: version.version_id.clone(),
+        file: version_file_name(version.version, &version.operation),
+        digest: Some(revision_of(&version_bytes)),
+    };
+    Ok(as_file(&pointer)?.into_bytes())
 }
 
 fn version_file_name(version: u64, operation: &str) -> String {

@@ -120,6 +120,7 @@ pub fn compose_selected(
         .map(|case| super::workflow_inputs::case_seed(case))
         .collect::<Result<Vec<_>, _>>()?;
     let mut frozen_contexts = BTreeMap::new();
+    let mut frozen_plans = BTreeMap::new();
     for (column, (variant, source, subject)) in graphs.iter().enumerate() {
         for (row, case) in cases.iter().enumerate() {
             for repeat in 0..case.repeats()? {
@@ -133,6 +134,7 @@ pub fn compose_selected(
                 )?;
                 if let Some(seed) = case_seed {
                     frozen_contexts.extend(frozen_inputs_for_cell(subject, seed, &nodes)?);
+                    frozen_plans.extend(frozen_plan_for_cell(subject, seed, &nodes)?);
                 }
                 append_json(&mut contexts, inputs.contexts)?;
                 append_json(&mut assignments, inputs.step_contexts)?;
@@ -145,7 +147,14 @@ pub fn compose_selected(
                 let grader = format!("{judge_scope}__check");
                 contexts.insert(judge_scope.clone(), json!({"task":""}));
                 let prefix = format!("{} · {} · {}", case.name, variant.name, repeat + 1);
-                append_subject(&mut graph, subject, &names, &prefix, &mut conditions)?;
+                append_subject(
+                    &mut graph,
+                    subject,
+                    &names,
+                    &prefix,
+                    case_seed.is_some(),
+                    &mut conditions,
+                )?;
                 graph.steps.push(grader_step(case, &prefix, &grader));
                 assignments.insert(grader.clone(), json!(judge_scope));
                 checks.insert(grader.clone(), json!({"results":[output]}));
@@ -180,19 +189,42 @@ pub fn compose_selected(
         "cellBindings".to_owned(),
         serde_json::to_value(bindings).map_err(|error| error.to_string())?,
     );
-    if !frozen_contexts.is_empty() {
-        graph.extra.insert(
-            "frozenContextInputs".to_owned(),
-            serde_json::to_value(frozen_contexts).map_err(|error| error.to_string())?,
-        );
-    }
+    store_frozen_inputs(&mut graph, frozen_contexts, frozen_plans)?;
+    store_conditions(&mut graph, conditions)?;
+    Ok(graph)
+}
+
+fn store_conditions(
+    graph: &mut WorkflowFile,
+    conditions: Vec<ConditionalLink>,
+) -> Result<(), String> {
     if !conditions.is_empty() {
         graph.extra.insert(
             "linkConditions".to_owned(),
             serde_json::to_value(conditions).map_err(|error| error.to_string())?,
         );
     }
-    Ok(graph)
+    Ok(())
+}
+
+fn store_frozen_inputs(
+    graph: &mut WorkflowFile,
+    contexts: BTreeMap<String, crate::commands::context_sources::SavedNode>,
+    plans: BTreeMap<String, crate::work_plan::RecordedPlanNode>,
+) -> Result<(), String> {
+    if !contexts.is_empty() {
+        graph.extra.insert(
+            "frozenContextInputs".to_owned(),
+            serde_json::to_value(contexts).map_err(|error| error.to_string())?,
+        );
+    }
+    if !plans.is_empty() {
+        graph.extra.insert(
+            "frozenPlanInputs".to_owned(),
+            serde_json::to_value(plans).map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(())
 }
 
 fn agent_node_keys(subject: &WorkflowFile) -> Vec<String> {
@@ -225,6 +257,47 @@ fn frozen_inputs_for_cell(
                     source_node_key,
                 },
             ))
+        })
+        .collect()
+}
+
+fn frozen_plan_for_cell(
+    subject: &WorkflowFile,
+    seed: &crate::workflow::execution::WorkspaceSeed,
+    nodes: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, crate::work_plan::RecordedPlanNode>, String> {
+    crate::workflow::unroll::unroll(subject)
+        .nodes
+        .into_iter()
+        .filter_map(|node| {
+            let Step::Agent(step) = &subject.steps[node.step] else {
+                return None;
+            };
+            let configuration =
+                match crate::work_plan::Configuration::from_step(step.extra.get("plan")) {
+                    Ok(configuration) => configuration,
+                    Err(error) => return Some(Err(error.to_string())),
+                };
+            if configuration.mode() == crate::work_plan::Mode::Off {
+                return None;
+            }
+            let source_node_key =
+                crate::workflow::check::node_key_for(&step.id, node.turn, node.copy);
+            let target_node_key = match nodes.get(&source_node_key) {
+                Some(target) => target.clone(),
+                None => {
+                    return Some(Err(
+                        "A Lab cell lost the physical address of a plan step.".to_owned()
+                    ));
+                }
+            };
+            Some(Ok((
+                target_node_key,
+                crate::work_plan::RecordedPlanNode {
+                    source_run_id: seed.source_run_id.clone(),
+                    source_node_key,
+                },
+            )))
         })
         .collect()
 }
@@ -275,6 +348,7 @@ fn append_subject(
     subject: &WorkflowFile,
     names: &BTreeMap<String, String>,
     prefix: &str,
+    freeze_plan: bool,
     conditions: &mut Vec<ConditionalLink>,
 ) -> Result<(), String> {
     for step in &subject.steps {
@@ -283,6 +357,9 @@ fn append_subject(
                         Step::Agent(one) => {
                             one.id = names[&one.id].clone();
                             one.name = format!("{prefix} · {}", one.name);
+                            if freeze_plan {
+                                freeze_plan_setting(one)?;
+                            }
                         }
                         Step::Check(one) => {
                             one.id = names[&one.id].clone();
@@ -316,6 +393,32 @@ fn append_subject(
             conditions.push(condition);
         }
     }
+    Ok(())
+}
+
+fn freeze_plan_setting(step: &mut crate::workflow::AgentStep) -> Result<(), String> {
+    let current = crate::work_plan::Configuration::from_step(step.extra.get("plan"))
+        .map_err(|error| error.to_string())?;
+    if current.mode() == crate::work_plan::Mode::Off {
+        return Ok(());
+    }
+    // 2026-09-08 (WP-06): Lab mierzy zmianę modelu, więc autor planu staje się czytelnikiem
+    // dokładnej wersji przypadku; ponowna publikacja mieszałaby drugi parametr do pomiaru.
+    let was_use = current.mode() == crate::work_plan::Mode::Use;
+    let frozen = crate::work_plan::Configuration {
+        mode: crate::work_plan::Mode::Use,
+        focus_on: if was_use {
+            current.focus_on
+        } else {
+            Vec::new()
+        },
+        check_plan: was_use && current.check_plan,
+        ..crate::work_plan::Configuration::default()
+    };
+    step.extra.insert(
+        "plan".to_owned(),
+        serde_json::to_value(frozen).map_err(|error| error.to_string())?,
+    );
     Ok(())
 }
 

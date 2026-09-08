@@ -137,6 +137,8 @@ struct StepFacts {
     output: Option<u64>,
     /// Kolejność zamknięta: liczba zestawów, pozycji i pozycji naprawdę otwartych.
     reference_materials: [usize; 3],
+    /// Kolejność zamknięta: liczba wersji, numer przypiętej wersji i liczba otwarć.
+    work_plan: [usize; 3],
     artifacts: ArtifactSet,
 }
 
@@ -271,6 +273,14 @@ struct StepInput {
     executed: bool,
     #[serde(default)]
     process_started: bool,
+    /// Sam fakt receiptu ogranicza odczyt pakietu do kroków, które naprawdę dostały plan.
+    #[serde(default)]
+    plan_version: Option<PlanReceiptInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlanReceiptInput {
+    version: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -466,65 +476,10 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
         artifacts = artifacts.saturating_add(handoffs);
         let mut steps = Vec::new();
         for (ordinal, step) in input.steps.into_iter().enumerate() {
-            let Some(step_id) = safe_identifier(&step.id) else {
-                continue;
-            };
-            let set = step_artifacts(&run_dir, &step_id, ordinal);
-            let kind = safe_step_kind(&step.kind, &step.agent);
-            let failure_kind = safe_failure_kind(
-                kind,
-                &step.status,
-                step.end_cause.as_deref(),
-                step.exit_code,
-                step.death_proof,
-                &set,
-            );
-            // Przekazania zostały już policzone raz na poziomie biegu. Po Z-48 widać je
-            // także przy kroku, ale receipt nadal liczy fizyczne pliki, nie dwa widoki tego
-            // samego pliku (2026-09, niezmiennik 13).
-            artifacts = artifacts.saturating_add(step_log_artifact_count(&set));
-            let (usage, not_run, reference_materials) = step_metadata(&run_dir, &step);
-            steps.push(StepFacts {
-                id: step_id,
-                kind,
-                state: if not_run {
-                    "notRun"
-                } else {
-                    safe_step_state(&step.status)
-                },
-                reason: step
-                    .not_run_because
-                    .as_deref()
-                    .and_then(safe_not_run_reason),
-                vendor: step_vendor(&step),
-                model: Presence {
-                    /* Sam napis modelu jest arbitralny i moze byc sekretem wpisanym przez
-                     * czlowieka. Raportuje sie wylacznie fakt konfiguracji, nigdy wartosc. */
-                    present: step
-                        .effective
-                        .as_ref()
-                        .and_then(|effective| effective.model.as_deref())
-                        .is_some_and(|model| !model.trim().is_empty()),
-                },
-                /* `run.json` starszej wersji nie mial dowodu zejscia. `false` jest uczciwym
-                 * brakiem dowodu; nie wyprowadzamy go z terminalnego statusu ani exit code. */
-                death_proof: Presence {
-                    present: step.death_proof,
-                },
-                executed: step.executed,
-                process_started: step.process_started,
-                failure_kind,
-                started_at: step.started_at,
-                ended_at: step.ended_at,
-                exit_code: step.exit_code,
-                vendor_turns: usage.vendor_turns,
-                uncached_input: usage.uncached_input,
-                cache_read: usage.cache_read,
-                cache_write: usage.cache_write,
-                output: usage.output,
-                reference_materials,
-                artifacts: set,
-            });
+            if let Some((facts, count)) = scan_step(&run_dir, ordinal, &step) {
+                artifacts = artifacts.saturating_add(count);
+                steps.push(facts);
+            }
         }
         out.push(RunFacts {
             id,
@@ -561,6 +516,67 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
     Ok((out, artifacts))
 }
 
+fn scan_step(run_dir: &Path, ordinal: usize, step: &StepInput) -> Option<(StepFacts, usize)> {
+    let step_id = safe_identifier(&step.id)?;
+    let set = step_artifacts(run_dir, &step_id, ordinal);
+    let kind = safe_step_kind(&step.kind, &step.agent);
+    let failure_kind = safe_failure_kind(
+        kind,
+        &step.status,
+        step.end_cause.as_deref(),
+        step.exit_code,
+        step.death_proof,
+        &set,
+    );
+    let count = step_log_artifact_count(&set);
+    let (usage, not_run, reference_materials, work_plan) = step_metadata(run_dir, step);
+    Some((
+        StepFacts {
+            id: step_id,
+            kind,
+            state: if not_run {
+                "notRun"
+            } else {
+                safe_step_state(&step.status)
+            },
+            reason: step
+                .not_run_because
+                .as_deref()
+                .and_then(safe_not_run_reason),
+            vendor: step_vendor(step),
+            model: Presence {
+                /* Sam napis modelu jest arbitralny i moze byc sekretem wpisanym przez
+                 * czlowieka. Raportuje sie wylacznie fakt konfiguracji, nigdy wartosc. */
+                present: step
+                    .effective
+                    .as_ref()
+                    .and_then(|effective| effective.model.as_deref())
+                    .is_some_and(|model| !model.trim().is_empty()),
+            },
+            /* `run.json` starszej wersji nie mial dowodu zejscia. `false` jest uczciwym
+             * brakiem dowodu; nie wyprowadzamy go z terminalnego statusu ani exit code. */
+            death_proof: Presence {
+                present: step.death_proof,
+            },
+            executed: step.executed,
+            process_started: step.process_started,
+            failure_kind,
+            started_at: step.started_at,
+            ended_at: step.ended_at,
+            exit_code: step.exit_code,
+            vendor_turns: usage.vendor_turns,
+            uncached_input: usage.uncached_input,
+            cache_read: usage.cache_read,
+            cache_write: usage.cache_write,
+            output: usage.output,
+            reference_materials,
+            work_plan,
+            artifacts: set,
+        },
+        count,
+    ))
+}
+
 fn reference_material_counts(run_dir: &Path, step: &StepInput) -> [usize; 3] {
     let node_key = if step.node_key.is_empty() {
         step.id.as_str()
@@ -574,11 +590,32 @@ fn reference_material_counts(run_dir: &Path, step: &StepInput) -> [usize; 3] {
         .unwrap_or([0, 0, 0])
 }
 
-fn step_metadata(run_dir: &Path, step: &StepInput) -> (NormalizedStepUsage, bool, [usize; 3]) {
+fn work_plan_counts(run_dir: &Path, step: &StepInput) -> [usize; 3] {
+    let Some(receipt) = &step.plan_version else {
+        return [0, 0, 0];
+    };
+    let node_key = if step.node_key.is_empty() {
+        step.id.as_str()
+    } else {
+        step.node_key.as_str()
+    };
+    crate::work_plan::read_recorded(run_dir)
+        .ok()
+        .flatten()
+        .and_then(|snapshot| snapshot.diagnostic_counts(run_dir, node_key).ok())
+        .filter(|counts| counts[1] == usize::try_from(receipt.version).unwrap_or(usize::MAX))
+        .unwrap_or([0, 0, 0])
+}
+
+fn step_metadata(
+    run_dir: &Path,
+    step: &StepInput,
+) -> (NormalizedStepUsage, bool, [usize; 3], [usize; 3]) {
     (
         normalized_step_usage(step),
         step.not_run_because.is_some(),
         reference_material_counts(run_dir, step),
+        work_plan_counts(run_dir, step),
     )
 }
 
