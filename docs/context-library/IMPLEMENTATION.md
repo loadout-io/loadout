@@ -451,15 +451,23 @@ kryterium ma pokrycie **częściowe albo żadne** — i wtedy kolumna mówi dok�
 | Plan przed wykonaniem | `passed` | `lead_context_reaches_run` (9/9), `work_plan_graph_is_unambiguous` (9/9), `work_plan_review_shares_the_version` (8/8) — w tym dwa lustrzane testy tożsamości planu i pracy. |
 | Izolacja | `passed` | `context_does_not_change_during_run` (5/5) i `context_reader_is_scoped` (6/6) — sfałszowany, obcy, wygasły i poza zakresem to **cztery różne zdania**, nie jedno. |
 | Równoległość | `passed` | `step_receives_selected_context::different_parallel_steps_receive_only_their_selected_material` — dowód przez **nakładanie się w czasie**, nie przez liczbę kroków (niezmiennik 11). |
-| Anulowanie | `not-tested` | Pokryte: publikacja i budowanie (`stop_returns_only_after_the_real_driver_group_is_dead`, `a_saved_running_build_is_interrupted_after_restart`, `a_measured_spending_limit_stops_the_real_codex_group`). **Bez świadka: Stop podczas importu i podczas oczekiwania na slot** — dwie z czterech ścieżek wymienionych w §14. |
+| Anulowanie | `passed` | Analiza i publikacja: `stop_returns_only_after_the_real_driver_group_is_dead`, `a_saved_running_build_is_interrupted_after_restart`, `a_measured_spending_limit_stops_the_real_codex_group`. **Oczekiwanie na slot: świadek dopisany w CT-09** — `stop_while_waiting_for_a_slot_never_starts_a_vendor` asertuje brak pliku `context.pid`, czyli że proces vendora **nigdy nie powstał**, a nie tylko że bieg skończył się jako `Cancelled`. Import **nie ma czego przerywać**: `import_context_sources_inner` jest synchroniczny i kończy się warunkowym zapisem szkicu, więc gwarancją tej ścieżki jest brak spóźnionego zapisu — `a_late_save_does_not_undo_newer_bytes` (2/2) i `context_library_survives_restart::a_stale_revision_is_refused_and_the_newer_text_stays`. Przerwane **przygotowanie** dokumentu ma swojego świadka w `context-sources.spec.ts` (7/7). |
 | Powtarzalność wejść | `passed` | `recorded_replay_uses_frozen_context` (9/9) i `work_plan_survives_replay` (5/5), w tym dwaj świadkowie dopisani po mutacji: cudzy pakiet przy zgodnych odciskach i pokwitowanie sprzeczne z wersją. |
 | Uczciwy ekran | `not-tested` | Siedem stanów jest osiągalnych w e2e, ale **przez atrapę IPC**, nie po prawdziwej akcji. §14 wymaga „osiągalne po prawdziwej akcji", więc przeglądarka tego nie zamyka. |
 | Prywatność danych | `passed` | `support_report_excludes_private_content` (4/4) z **zamkniętą** listą 43 kluczy plus sentinele `PRIVATE_*`, oraz `context_history_reports_delivery::available_stays_available_and_diagnostics_keep_only_counts`. Mutacja dokładająca pole `String` do raportu przewraca test. |
 
-**Bilans: 8 z 12 `passed`, 4 `not-tested`.** Cztery niezamknięte to dokładnie to, czego nie da
-się dowieść bez prawdziwego okna albo bez skali: paste, 50+ źródeł, dwie ścieżki Stopu i siedem
-stanów ekranu po prawdziwej akcji. **Każde z nich blokuje deklarację gotowości** i żadnego nie
-zamierzam przepisać na `passed` bez próby.
+**Bilans: 9 z 12 `passed`, 3 `not-tested`.** Trzy niezamknięte to dokładnie to, czego nie da się
+dowieść bez prawdziwego okna albo bez skali: **paste**, **50+ źródeł** i **siedem stanów ekranu
+po prawdziwej akcji**. Każde z nich blokuje deklarację gotowości i żadnego nie przepiszę na
+`passed` bez próby.
+
+**Anulowanie przeszło z `not-tested` na `passed` w CT-09**, i to nie przez rozluźnienie
+kryterium: doszedł świadek dla oczekiwania na slot, a dla importu wykazałem, że nie ma tam
+długiej operacji do przerwania — jest jedna synchroniczna z warunkowym zapisem, więc pilnuje jej
+brak spóźnionego zapisu, a nie Stop. Mutacja zdejmująca ramię anulowania z `tokio::select!`
+w `prepare_turn` przewraca nowy test **nazwanym zdaniem** o tym, że anulowanie nie ściga się ze
+slotem — pierwsza wersja tego testu zabijała tę mutację przez zawieszenie, czyli sygnał, po
+którym nikt nie wie, co się stało.
 
 ---
 

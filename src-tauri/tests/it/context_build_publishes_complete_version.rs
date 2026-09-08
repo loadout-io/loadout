@@ -30,7 +30,7 @@ use loadout_lib::durable_file::{
 use loadout_lib::engine::drivers::claude::ClaudeDriver;
 use loadout_lib::engine::drivers::codex::CodexDriver;
 use loadout_lib::engine::drivers::{AgentDriver, DriverConfiguration};
-use loadout_lib::engine::limits::Limiter;
+use loadout_lib::engine::limits::{Limiter, Weight};
 use loadout_lib::library::agents::Vendor;
 use tokio_util::sync::CancellationToken;
 
@@ -968,6 +968,113 @@ async fn not_logged_in_is_a_named_agent_result_not_an_empty_revision() -> Result
             .iter()
             .all(|source| { source.outcome == loadout_lib::context::SourceOutcome::Failed })
     );
+    Ok(())
+}
+
+/// Stop złapany W OCZEKIWANIU NA SLOT nie zostawia po sobie ani jednego procesu vendora.
+///
+/// 2026-09-08 (CT-09) — `prepare_turn` wybiera `tokio::select!` między `cancel.cancelled()`
+/// a `slots.place(...)`, więc zachowanie istniało; nie miało świadka. Sąsiedni
+/// `stop_returns_only_after_the_real_driver_group_is_dead` anuluje bieg, który JUŻ ma żywą
+/// grupę, czyli mierzy drugą stronę tej samej bramy: tam dowodem jest śmierć grupy, tutaj
+/// dowodem jest jej NIEISTNIENIE.
+///
+/// SŁABA WERSJA TEGO KRYTERIUM: sam `BuildEnd::Cancelled`. Przechodzi ją budowanie, które
+/// odpaliło CLI, zapłaciło za turę i dopiero potem zauważyło anulowanie. Dlatego asercja stoi
+/// na braku pliku `context.pid` — czyli na tym, że proces nigdy nie powstał — i na tym, że
+/// zwolnienie slotu nie odblokowuje pracy, której człowiek już nie chce.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_while_waiting_for_a_slot_never_starts_a_vendor() -> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let fixture = tempfile::tempdir()?;
+    let project = tempfile::tempdir()?;
+    let made = create_context_set_inner(home.path(), "Waiting")?;
+    let saved = save_context_draft_inner(
+        home.path(),
+        &made.set.id,
+        &made.set.title,
+        &made.set.description,
+        ContextDraft {
+            schema: 1,
+            sources: vec![ContextSource {
+                id: "typed".to_owned(),
+                kind: SourceKind::Text,
+                name: "Notes".to_owned(),
+                text: "This must never reach a vendor.".to_owned(),
+                ..ContextSource::default()
+            }],
+            ..ContextDraft::default()
+        },
+        Some(made.revision),
+    )?;
+    let library = library_root(home.path());
+    let folder = folder_of(&library, &saved.set.id)?;
+    let operation = "stopped-in-the-queue";
+    let concrete: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::with_binary(blocking_executable(
+        fixture.path(),
+    )?));
+    let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&concrete));
+    let cancel = CancellationToken::new();
+
+    // JEDNO miejsce w puli i ono jest już zajęte. `held` żyje do końca testu, więc budowanie
+    // stoi w kolejce i nie ma jak dojść do sterownika.
+    let limiter = Limiter::new(1);
+    let held = limiter.place(Weight::Ordinary).await;
+
+    let request = BuildContextRequest {
+        set_id: saved.set.id,
+        operation_id: operation.to_owned(),
+        app: Some(Vendor::ClaudeCode),
+        model: None,
+        generation: 1,
+        deadline: Duration::from_secs(20),
+        budget_usd: None,
+    };
+    let running = build_context_inner(
+        home.path(),
+        project.path(),
+        &drivers,
+        &limiter,
+        &request,
+        &cancel,
+    );
+    tokio::pin!(running);
+
+    // Przesłanka: dopóki slot jest zajęty, budowanie NIE kończy się samo i nie odpala procesu.
+    let private = folder.join("builds").join(operation).join("private");
+    tokio::select! {
+        result = &mut running => {
+            return Err(format!("the build ended while the only slot was held: {result:?}").into());
+        }
+        () = tokio::time::sleep(Duration::from_millis(400)) => {}
+    }
+    assert!(
+        find_named(&private, "context.pid")?.is_none(),
+        "a vendor process started while the build was still queued for a slot"
+    );
+
+    cancel.cancel();
+    /* SUFIT CZASU, ŻEBY REGRESJA PADAŁA ZDANIEM, A NIE WISIAŁA. Zdjęcie ramienia
+     * `cancel.cancelled()` z `tokio::select!` w `prepare_turn` nie przewraca tej asercji —
+     * ono ZAWIESZA budowanie na zawsze, bo slot trzyma `held` do końca testu. Bez tego sufitu
+     * mutacja kończy się wywaleniem całej suity na timeout bramki, czyli sygnałem, po którym
+     * nikt nie wie, co się stało (zmierzone 2026-09-08, CT-09). */
+    let built = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .map_err(|_| {
+            "Stop did not reach the build waiting for a slot: it is still queued ten seconds \
+             later, so cancellation is not racing the slot at all"
+        })??;
+    assert_eq!(
+        built.build.as_ref().map(|build| build.end),
+        Some(BuildEnd::Cancelled)
+    );
+    assert!(built.revision.is_none());
+    assert!(
+        find_named(&private, "context.pid")?.is_none(),
+        "Stop in the queue still left a vendor process behind"
+    );
+    drop(held);
     Ok(())
 }
 
