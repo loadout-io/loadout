@@ -61,7 +61,10 @@ fn link(from: &str, to: &str) -> Value {
 }
 
 fn included(file: &WorkflowFile) -> BTreeSet<&str> {
-    file.steps.iter().map(loadout_lib::workflow::Step::id).collect()
+    file.steps
+        .iter()
+        .map(loadout_lib::workflow::Step::id)
+        .collect()
 }
 
 fn two_unordered_authors() -> WorkflowFile {
