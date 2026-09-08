@@ -458,6 +458,21 @@ martwym kodem produkcyjnym i zielony test przy niej **wygląda** jak dowód dzia
 Do usunięcia razem z przepisaniem tamtego testu; nie robię tego w rozstrzygnięciu merge'a,
 bo to zmiana zakresu CT-05, nie scalenie.
 
+**D-7. Zlecenie i produkt nazywają ten sam panel inaczej — do rozstrzygnięcia w CT-09.**
+Zgłoszone przez planistę CT-08 jako `POZA ZAKRESEM` i **słusznie nienaprawione**.
+`docs/context-library/PLAN.md` §11 pisze o panelu **`What this agent was told`**, a produkt
+renderuje **`What this step knew`** (`src/sections/run/past/panel.tsx:110`, stała
+`WHAT_THIS_STEP_KNEW`).
+
+Sprawdzone: nazwa produktu jest **starsza** niż to zlecenie i przypięta testami, więc zmiana
+napisu to zmiana widzianego tekstu i wyroczni, a nie literówka w dokumencie. Obie nazwy są przy
+tym poprawne po angielsku i obie mówią prawdę o zawartości.
+
+Rozstrzygnięcie należy do **CT-09**, którego zakres wprost obejmuje doprowadzenie dokumentacji do
+zgodności z **rzeczywiście dostarczonym** produktem. Dwa napisy na jedną rzecz to naruszenie
+niezmiennika 13 — ale w dokumencie, nie w kodzie, więc kosztuje uwagę czytelnika, a nie działanie
+aplikacji.
+
 **D-3. CSP i zasoby bundla ograniczają dwa warianty PDF — ROZSTRZYGNIĘTE: zostawiamy.**
 Zgłoszone przez plan CT-02 zamiast wykonane (AGENTS.md §7). `src-tauri/tauri.conf.json` nie ma
 `wasm-unsafe-eval` w CSP ani `resources` w `bundle`, więc PDF z obrazami **JPEG 2000**
