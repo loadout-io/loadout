@@ -408,6 +408,33 @@ sam produkcyjny `ContextDesk` i `Recorder`, których bieg używa za mostem. Aser
 odpowiedź `Answer::Image`, jej liczbę bajtów, widoczny w historii wiersz `was opened (N bytes
 returned)` oraz licznik raportu `[1, 1, 1]`; filtrowany moduł kończy się **2/2**.
 
+#### Luka wyroczni znaleziona mutacją PO zielonym biegu
+
+Kryterium 2 („uszkodzony albo podmieniony pakiet daje **odmowę**, nie pusty kontekst") było
+zielone, a jego **centralny strażnik nie miał pokrycia**. Dwie mutacje przechodziły całą suitę:
+zamiana `Err` na `Ok(None)` przy niezgodności wiązania z `run.json` oraz to samo przy porównaniu
+w oknie między odczytem a blokadą.
+
+Przyczyna: istniejący test psuje **bajty** pliku pakietu i przestawia dwa pliki miejscami, więc
+obie te drogi wpadają w kontrolę odcisków wewnątrz `read_package`. Pakiet **wewnętrznie spójny,
+ale należący do innego biegu** nie miał ani jednego świadka — a to jest mocne znaczenie słowa
+„podmieniony": nie uszkodzony, tylko cudzy.
+
+Dopisany `a_whole_foreign_package_refuses_even_though_every_digest_matches` zmienia **wyłącznie
+identyfikator manifestu**; wszystkie odciski plików zostają zgodne, więc jedyną kontrolą zdolną to
+złapać jest porównanie z zapisem biegu. Test ma własną przesłankę — nietknięty pakiet **musi** dać
+podgląd — bo bez niej przechodziłby także dla funkcji odmawiającej zawsze. Mutacja powtórzona po
+dopisaniu świadka przewraca dokładnie ten jeden test.
+
+**Druga luka zostaje, opisana w kodzie.** To wyścig między dwoma odczytami w jednej synchronicznej
+funkcji: test nie ma jak wejść pomiędzy nie bez szwu wstawionego wyłącznie dla niego. Sąsiednie
+okno, między podglądem a potwierdzeniem, **jest** pokryte
+(`package_changes_after_preview_or_confirmation_refuse_before_a_process`).
+
+**Wniosek na CT-09:** zielone kryterium nie jest dowodem, dopóki nie wiadomo, **którą** ścieżką
+biegnie jego test. Trzy z sześciu kryteriów tego etapu mają po jednym teście — te warto sprawdzić
+mutacją, zanim wpiszę im `passed`.
+
 ## 2. Kryteria odbioru (plan §14)
 
 | Scenariusz | Status | Dowód / bloker |
