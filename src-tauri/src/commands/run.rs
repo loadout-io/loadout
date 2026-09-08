@@ -14274,7 +14274,13 @@ impl Live {
         } else {
             None
         };
-        let access = Arc::new(crate::bridge::messages::StepDesk { services, messages });
+        // CT-06 poda tu zamrożony przydział kroku. Pole jest jawne już od 2026-09-08, żeby
+        // lista czasowników i rozdzielnik wyrastały z tej samej wartości, nigdy z dwóch flag.
+        let access = Arc::new(crate::bridge::messages::StepDesk {
+            services,
+            messages,
+            context: None,
+        });
         Ok(Some(
             crate::bridge::host::Bridge::open_with_tools(
                 &std::env::temp_dir(),

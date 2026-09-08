@@ -18,6 +18,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
+pub mod access;
 pub mod files;
 pub mod limits;
 pub mod sources;
@@ -221,6 +222,8 @@ pub enum Error {
     /// Nazwana odmowa biblioteki — limit, zły rodzaj pliku, spóźniony wynik przygotowania.
     /// Osobno od [`Self::Unwritable`], bo po niej człowiek ma co zrobić, a nie tylko co przeczytać.
     Refused(limits::Refusal),
+    /// Nazwana odmowa ograniczonego czytelnika — zły identyfikator, kursor albo zakres.
+    Denied(access::Denied),
 }
 
 impl fmt::Display for Error {
@@ -249,6 +252,9 @@ impl fmt::Display for Error {
             // Odmowa biblioteki niesie już całe zdanie. Opakowana w „could not be saved" mówiłaby
             // człowiekowi o dysku wtedy, gdy problemem jest jego plik.
             Self::Refused(refusal) => write!(formatter, "{refusal}"),
+            // Czytelnik także niesie gotowe zdanie. Druga otoczka zgubiłaby rozróżnienie między
+            // cudzym zakresem, wygasłym dostępem i zwykłym brakiem pliku.
+            Self::Denied(denied) => write!(formatter, "{denied}"),
         }
     }
 }
@@ -258,6 +264,12 @@ impl std::error::Error for Error {}
 impl From<limits::Refusal> for Error {
     fn from(refusal: limits::Refusal) -> Self {
         Self::Refused(refusal)
+    }
+}
+
+impl From<access::Denied> for Error {
+    fn from(denied: access::Denied) -> Self {
+        Self::Denied(denied)
     }
 }
 

@@ -52,13 +52,18 @@ const FIRST_REVISION: &str = "r1";
 const PREPARED: &str = "prepared.json";
 
 /// Katalog stron przygotowanego dokumentu.
-const PAGES: &str = "pages";
+pub(super) const PAGES: &str = "pages";
 
 /// Miniatura do podglądu.
-const THUMBNAIL: &str = "thumbnail.png";
+pub(super) const THUMBNAIL: &str = "thumbnail.png";
 
 /// Wariant, który dostaje agent. Oryginał zostaje obok, nietknięty.
-const FOR_THE_AGENT: &str = "for-the-agent.png";
+pub(super) const FOR_THE_AGENT: &str = "for-the-agent.png";
+
+/// Tekst pliku `txt`/Markdown przygotowany dla podglądu i ograniczonego czytelnika.
+/// Osobna pochodna jest konieczna od 2026-09-08: rdzeń dostępu nie otwiera `original.*`, bo
+/// ta sama reguła musi uniemożliwiać odsłonięcie pełnego PDF-a z nieprzydzielonymi stronami.
+pub(super) const READER_TEXT: &str = "for-the-reader.txt";
 
 /// Nazwa wiersza wyniku dla wklejenia, którego nikt nie nazwał.
 const PASTED: &str = "Pasted material";
@@ -398,39 +403,104 @@ pub fn read_source(
     source_id: &str,
     page: Option<u32>,
 ) -> Result<SourcePart, Error> {
-    let folder = files::folder_of(library, set_id)?;
-    let read = files::read_set(library, set_id)?;
-    let source = read
-        .draft
-        .sources
-        .into_iter()
-        .find(|one| one.id == source_id)
+    let shelf = super::access::ContextShelf::open(library, set_id)?;
+    let source = shelf.source(source_id)?;
+    // CAŁY oryginał PDF-a zostaje poza czytelnikiem: to prywatna droga lokalnego workera,
+    // który dopiero produkuje strony. Agent i podgląd gotowych stron nigdy nią nie jadą.
+    if source.kind == SourceKind::Pdf && page.is_none() {
+        let file = source.file.as_ref().ok_or(Refusal::NothingToPrepare)?;
+        let revision = source
+            .folder
+            .join(SOURCES)
+            .join(source_id)
+            .join(&file.revision);
+        return whole_file(&source.folder, &revision, source_id, file);
+    }
+
+    let access = shelf.everything();
+    let listed = access.list()?;
+    let item = listed
+        .items
+        .iter()
+        .find(|item| item.source_id == source_id && item.page == page)
         .ok_or(Error::NoSuchSource)?;
-    let Some(file) = source.file.clone() else {
-        // Materiał wpisany w polu nie ma pliku i nie ma go mieć: jego treść JEST w szkicu.
-        return Ok(part_of_text(&source.text));
-    };
-    let revision = folder.join(SOURCES).join(source_id).join(&file.revision);
     match source.kind {
-        SourceKind::Image => Ok(SourcePart::Image {
-            image: PreviewImage {
-                mime: "image/png".to_owned(),
-                base64: encoded(&fs::read(revision.join(THUMBNAIL))?),
-            },
-        }),
+        SourceKind::Image => {
+            let image = access.image(&item.id, super::access::ImageVariant::Preview)?;
+            Ok(SourcePart::Image {
+                image: PreviewImage {
+                    mime: image.mime,
+                    base64: image.data,
+                },
+            })
+        }
         // Brak numeru strony przy dokumencie znaczy „daj mi ten plik", bo strony zero nie ma.
         // Tak czyta go lokalny worker przed przygotowaniem; podgląd zawsze podaje numer.
-        SourceKind::Pdf => match page {
-            Some(number) => read_page(&revision, &file, number),
-            None => whole_file(&folder, &revision, source_id, &file),
+        SourceKind::Pdf => {
+            let read = access.read(&item.id, None)?;
+            let image = if item.has_image {
+                let image = access.image(&item.id, super::access::ImageVariant::Preview)?;
+                Some(PreviewImage {
+                    mime: image.mime,
+                    base64: image.data,
+                })
+            } else {
+                None
+            };
+            Ok(SourcePart::Page {
+                number: item.page.unwrap_or_default(),
+                pages_total: item.pages_total.unwrap_or_default(),
+                text: read.text,
+                image,
+            })
+        }
+        SourceKind::Document => match access.read(&item.id, None) {
+            Ok(read) => Ok(SourcePart::Text {
+                more: read.cursor.is_some(),
+                text: read.text,
+            }),
+            Err(super::access::Denied::Unavailable) => old_document_part(&source, source_id),
+            Err(denied) => Err(denied.into()),
         },
-        // Nieznany rodzaj z nowszego Loadouta czyta się jak tekst: pokazanie początku pliku jest
-        // uczciwsze niż odmowa nad materiałem, który po prostu ma nowszą nazwę (niezmiennik 5).
-        SourceKind::Text | SourceKind::Document | SourceKind::Unknown => {
-            let bytes = fs::read(revision.join(original_name(&file.mime)))?;
-            Ok(part_of_text(&String::from_utf8_lossy(&bytes)))
+        // Nieznany rodzaj z nowszego Loadouta czyta się wyłącznie z tekstu szkicu. Otwieranie
+        // jego nieznanego `original.*` byłoby obejściem tej samej granicy, która chroni PDF-y.
+        SourceKind::Text | SourceKind::Unknown => {
+            let read = access.read(&item.id, None)?;
+            Ok(SourcePart::Text {
+                more: read.cursor.is_some(),
+                text: read.text,
+            })
         }
     }
+}
+
+/// Czyta stary dokument tylko dla okna; czasowniki agenta nie mają tej drogi do oryginału.
+fn old_document_part(
+    source: &super::access::FrozenSource,
+    source_id: &str,
+) -> Result<SourcePart, Error> {
+    let file = source
+        .file
+        .as_ref()
+        .ok_or(super::access::Denied::Unavailable)?;
+    let revision = source
+        .folder
+        .join(SOURCES)
+        .join(source_id)
+        .join(&file.revision);
+    if revision.join(READER_TEXT).try_exists()? {
+        return Err(super::access::Denied::Unavailable.into());
+    }
+
+    // 2026-09-08 — CT-02 zapisywał tylko `original.*`. Ten wąski fallback nie kopiuje bajtów
+    // bez rozliczenia budżetu pochodnych; ich cięcie nadal wykonuje ten sam rdzeń co dla agenta.
+    let bytes = fs::read(revision.join(original_name(&file.mime)))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let (part, more) = super::access::first_text_frame(&text);
+    Ok(SourcePart::Text {
+        text: part.to_owned(),
+        more,
+    })
 }
 
 /// Zdejmuje źródło z zestawu i oddaje zestaw bez niego.
@@ -643,9 +713,10 @@ fn keep(
     } else {
         None
     };
+    let reader_text = matches!(keeping.kind, Accepted::Markdown | Accepted::Text).then_some(bytes);
     let weight = derived.as_ref().map_or(0, |pictures| {
         (pictures.thumbnail.len() + pictures.for_the_agent.len()) as u64
-    });
+    }) + reader_text.map_or(0, |text| text.len() as u64);
     room_for(draft, bytes.len() as u64, weight)?;
 
     let id = new_id();
@@ -667,6 +738,13 @@ fn keep(
             &pictures.for_the_agent,
         )
         .map_err(unwritable)?;
+    }
+    if let Some(text) = reader_text {
+        // 2026-09-08 — druga kopia jest świadoma: oryginał pozostaje materiałem importu, a ta
+        // pochodna jest jedyną drogą podglądu i agenta. Dzięki temu reguła „nigdy original.*"
+        // obejmuje każdy rodzaj pliku i nie ma wyjątku pozwalającego otworzyć pełny PDF.
+        files::publish_source_file(folder, &format!("{at}/{READER_TEXT}"), text)
+            .map_err(unwritable)?;
     }
 
     draft.sources.push(ContextSource {
@@ -843,37 +921,6 @@ fn whole_file(
         operation_id: record.operation_id,
         fingerprint: record.fingerprint,
     })
-}
-
-/// Jedna strona przygotowanego dokumentu, tak jak widzi ją podgląd.
-fn read_page(revision: &Path, file: &StoredFile, number: u32) -> Result<SourcePart, Error> {
-    let numbered = revision.join(PAGES).join(format!("page-{number:04}"));
-    // Strona, której jeszcze nie ma, ma WŁASNE zdanie. Surowy „no such file" opowiadałby
-    // człowiekowi o dysku wtedy, gdy prawdą jest, że ten plik nie jest jeszcze gotowy.
-    let text = fs::read_to_string(numbered.with_extension("txt"))
-        .map_err(|_error| Error::Refused(Refusal::PageNotReady { number }))?;
-    let drawn = fs::read(numbered.with_extension("png")).ok();
-    Ok(SourcePart::Page {
-        number,
-        pages_total: file.pages.unwrap_or(0),
-        text,
-        image: drawn.map(|bytes| PreviewImage {
-            mime: "image/png".to_owned(),
-            base64: encoded(&bytes),
-        }),
-    })
-}
-
-/// Początek materiału tekstowego i informacja, czy coś za nim zostało.
-fn part_of_text(text: &str) -> SourcePart {
-    let mut cut = text.len().min(limits::READ_TEXT_BYTES);
-    while cut < text.len() && !text.is_char_boundary(cut) {
-        cut = cut.saturating_sub(1);
-    }
-    SourcePart::Text {
-        text: text.get(..cut).unwrap_or_default().to_owned(),
-        more: cut < text.len(),
-    }
 }
 
 /// Zapis operacji tej rewizji źródła.

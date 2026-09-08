@@ -25,6 +25,7 @@
 //! ktokolwiek zadawał 2-3 pytania, wszystko zależy od analiz i potrzeb" — i ta sama reguła, co
 //! D7 („domyślnie: nic").
 
+pub mod context;
 pub mod host;
 pub mod library;
 pub(crate) mod messages;

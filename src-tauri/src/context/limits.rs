@@ -53,6 +53,15 @@ pub const AGENT_EDGE: u32 = 1_568;
 /// Ile tekstu oddaje jeden odczyt podglądu (PLAN §9: do 16 KiB na wynik, z kursorem).
 pub const READ_TEXT_BYTES: usize = 16 * 1024;
 
+/// Ile trafień mieści jedna odpowiedź wyszukiwania.
+pub const SEARCH_RESULTS: usize = 10;
+
+/// Ile waży cała tekstowa odpowiedź wyszukiwania po serializacji dla vendora.
+pub const SEARCH_ANSWER_BYTES: usize = 8 * 1024;
+
+/// Ile bajtów obrazu może nieść jeden wynik narzędzia. Każdy następny obraz to osobny odczyt.
+pub const IMAGE_ANSWER_BYTES: usize = 5 * 1024 * 1024;
+
 /// Zamknięta lista rodzajów plików, które ta biblioteka przyjmuje.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Accepted {
