@@ -74,7 +74,7 @@ pub(super) fn validate_cases(set: &EvalSet) -> Result<(), String> {
     Ok(())
 }
 
-fn case_seed(case: &Case) -> Result<Option<WorkspaceSeed>, String> {
+pub(super) fn case_seed(case: &Case) -> Result<Option<WorkspaceSeed>, String> {
     case.extra
         .get("input")
         .map(|value| {
@@ -88,6 +88,7 @@ fn case_seed(case: &Case) -> Result<Option<WorkspaceSeed>, String> {
 pub(super) fn for_cell(
     graph: &WorkflowFile,
     case: &Case,
+    case_seed: Option<&WorkspaceSeed>,
     scope: &str,
     names: &BTreeMap<String, String>,
     physical: &BTreeMap<String, String>,
@@ -105,10 +106,9 @@ pub(super) fn for_cell(
             .workspace_seeds
             .insert(seed_names[key].clone(), seed.clone());
     }
-    let case_seed = case_seed(case)?;
     let case_seed = case_seed.map(|seed| {
         let key = format!("{scope}_case_input");
-        inputs.workspace_seeds.insert(key.clone(), seed);
+        inputs.workspace_seeds.insert(key.clone(), seed.clone());
         key
     });
     inputs.contexts.insert(

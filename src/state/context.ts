@@ -150,6 +150,14 @@ export interface ContextSet {
   changedAt: string;
 }
 
+export interface DeleteContextSet {
+  setId: string;
+  title: string;
+  uses: string[];
+  deleted: boolean;
+  said: string;
+}
+
 /** Dokładna wersja zestawu i tematy wybrane do workflow albo jednego kroku. */
 export type ContextTopics = 'all' | string[];
 
@@ -323,7 +331,7 @@ export interface DraftEdit {
 
 /** Wszystko, co magazyn robi poza swoją głową. Jedna atrapa w teście zastępuje całość. */
 export interface ContextIo {
-  list(): Promise<ContextSet[]>;
+  list(archived: boolean): Promise<ContextSet[]>;
   read(id: string): Promise<ContextSetRead>;
   create(title: string): Promise<ContextSetRead>;
   saveDraft(edit: DraftEdit): Promise<ContextSetRead>;
@@ -355,6 +363,8 @@ export interface ContextIo {
   readBuild(setId: string): Promise<ContextBuildRead>;
   stopBuild(setId: string, operationId: string): Promise<ContextBuild>;
   saveRevision(setId: string, edit: RevisionEdit): Promise<ContextBuildRead>;
+  archive(setId: string, archived: boolean): Promise<ContextSet>;
+  deleteSet(setId: string, confirmed: boolean): Promise<DeleteContextSet>;
 }
 
 /**
@@ -413,6 +423,8 @@ export interface ContextState {
   open: ContextSetRead | null;
   /** Czego człowiek szuka na liście. Puste znaczy „wszystko". */
   search: string;
+  archived: boolean;
+  deleting: DeleteContextSet | null;
   /** Zdanie po odmowie z Rusta — `null`, kiedy nie ma o czym mówić. Jedno na całą sekcję. */
   refusal: string | null;
   /**
@@ -438,6 +450,11 @@ export interface ContextState {
   /** Zapisuje i oddaje `true`, kiedy naprawdę się zapisało. Ekran zostaje otwarty po odmowie. */
   save: (edit: DraftEdit) => Promise<boolean>;
   narrow: (search: string) => void;
+  showArchived: (archived: boolean) => Promise<void>;
+  archive: (setId: string, archived: boolean) => Promise<void>;
+  previewDelete: (setId: string) => Promise<void>;
+  cancelDelete: () => void;
+  confirmDelete: () => Promise<void>;
   dismiss: () => void;
   /** Kładzie w otwartym zestawie wszystko, co człowiek wybrał albo wkleił. */
   addSources: (items: ImportItem[]) => Promise<void>;
@@ -487,6 +504,8 @@ export function createContextStore(io: ContextIo) {
     library: 'reading',
     open: null,
     search: '',
+    archived: false,
+    deleting: null,
     refusal: null,
     imported: [],
     preview: null,
@@ -499,7 +518,7 @@ export function createContextStore(io: ContextIo) {
     load: async () => {
       set({ refusal: null, library: 'reading' });
       try {
-        set({ sets: await io.list(), library: 'read' });
+        set({ sets: await io.list(get().archived), library: 'read' });
       } catch (error) {
         /* Lista zostaje taka, jaka była: skasowanie jej tutaj mówiłoby „nic tam nie leży",
          * czego nie wiemy — a pusta biblioteka i nieczytelna wyglądają na ekranie tak samo. */
@@ -576,6 +595,52 @@ export function createContextStore(io: ContextIo) {
 
     narrow: (search: string) => {
       set({ search });
+    },
+
+    showArchived: async (archived: boolean) => {
+      set({ archived, deleting: null });
+      await get().load();
+    },
+
+    archive: async (setId: string, archived: boolean) => {
+      set({ refusal: null, deleting: null });
+      try {
+        await io.archive(setId, archived);
+        set({ sets: get().sets.filter((one) => one.id !== setId) });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not move that context set.') });
+      }
+    },
+
+    previewDelete: async (setId: string) => {
+      set({ refusal: null, deleting: null });
+      try {
+        set({ deleting: await io.deleteSet(setId, false) });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not check where that context set is used.') });
+      }
+    },
+
+    cancelDelete: () => {
+      set({ deleting: null });
+    },
+
+    confirmDelete: async () => {
+      const deleting = get().deleting;
+      if (deleting === null) return;
+      set({ refusal: null });
+      try {
+        const deleted = await io.deleteSet(deleting.setId, true);
+        if (!deleted.deleted) {
+          throw new Error('Loadout did not confirm that the context set was deleted.');
+        }
+        set({
+          sets: get().sets.filter((one) => one.id !== deleting.setId),
+          deleting: null,
+        });
+      } catch (error) {
+        set({ refusal: why(error, 'Loadout could not delete that context set.') });
+      }
     },
 
     dismiss: () => {

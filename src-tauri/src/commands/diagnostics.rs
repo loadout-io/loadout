@@ -135,6 +135,8 @@ struct StepFacts {
     cache_write: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output: Option<u64>,
+    /// Kolejność zamknięta: liczba zestawów, pozycji i pozycji naprawdę otwartych.
+    reference_materials: [usize; 3],
     artifacts: ArtifactSet,
 }
 
@@ -218,6 +220,8 @@ struct RunInput {
 struct StepInput {
     #[serde(default)]
     id: String,
+    #[serde(default)]
+    node_key: String,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -479,8 +483,7 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
             // także przy kroku, ale receipt nadal liczy fizyczne pliki, nie dwa widoki tego
             // samego pliku (2026-09, niezmiennik 13).
             artifacts = artifacts.saturating_add(step_log_artifact_count(&set));
-            let usage = normalized_step_usage(&step);
-            let not_run = step.not_run_because.is_some();
+            let (usage, not_run, reference_materials) = step_metadata(&run_dir, &step);
             steps.push(StepFacts {
                 id: step_id,
                 kind,
@@ -519,6 +522,7 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
                 cache_read: usage.cache_read,
                 cache_write: usage.cache_write,
                 output: usage.output,
+                reference_materials,
                 artifacts: set,
             });
         }
@@ -555,6 +559,27 @@ fn scan_runs(root: &Path) -> anyhow::Result<(Vec<RunFacts>, usize)> {
     }
     out.sort_by(|left, right| left.id.cmp(&right.id));
     Ok((out, artifacts))
+}
+
+fn reference_material_counts(run_dir: &Path, step: &StepInput) -> [usize; 3] {
+    let node_key = if step.node_key.is_empty() {
+        step.id.as_str()
+    } else {
+        step.node_key.as_str()
+    };
+    crate::commands::context_sources::read_bound(run_dir)
+        .ok()
+        .flatten()
+        .and_then(|snapshot| snapshot.diagnostic_counts(run_dir, node_key).ok())
+        .unwrap_or([0, 0, 0])
+}
+
+fn step_metadata(run_dir: &Path, step: &StepInput) -> (NormalizedStepUsage, bool, [usize; 3]) {
+    (
+        normalized_step_usage(step),
+        step.not_run_because.is_some(),
+        reference_material_counts(run_dir, step),
+    )
 }
 
 fn scan_conversations(root: &Path) -> anyhow::Result<(Vec<ConversationFacts>, usize)> {

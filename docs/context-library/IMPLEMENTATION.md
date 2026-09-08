@@ -127,7 +127,7 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | CT-05 | `h-ct-05` | — | `todo!()` uruchomione, 3 rundy weryfikatora | **17 Rust + 120 frontu** | — | — | naprawiony ręcznie, ląduje |
 | CT-06 | `h-ct-06` | — | kontrola starego warunku mostu, patrz §1e | 12 zielonych (4+5+3); dwie mutacje po 4/4 | clippy `too_many_lines` + dwa defekty fikstury, naprawione ręcznie po STOP | — | zielony lokalnie, czeka na pełne CI przy lądowaniu |
 | CT-07 | — | — | — | — | — | — | nie rozpoczęty |
-| CT-08 | — | — | — | — | — | — | nie rozpoczęty |
+| CT-08 | `h-ct-08` | — | izolowany stary `7992cadd`: 1/1 pada na braku replay Context, patrz §1f | 8 replay + 2 historii + 4 raportu + 126 frontu | — | — | implementacja lokalna; wymagane świadki zielone |
 | CT-09 | — | — | — | — | — | — | nie rozpoczęty |
 
 **Lądowanie.** `scripts/h land ct-01` → merge `a6113319`, potem pełne CI na trunku.
@@ -326,6 +326,32 @@ Po zieleni clippy wyszły **dwa defekty fikstury**, oba niespełnialne niezależ
 Druga mutacja przywraca dokładnie to założenie, które ten etap miał zdjąć. Pierwsza pokazuje
 przy okazji, że lista i rozdzielnik są **jednym** uprawnieniem: zdjęcie nazw z listy zabija
 też odczyty, bo `bridge::host::talk` przepuszcza wyłącznie czasowniki z powitania.
+
+### 1f. CT-08 — startowalny pakiet, historia, Lab i retencja
+
+Stan wejściowy worktree zawierał niezatwierdzony szkic CT-08. RED został więc wykonany na
+izolowanym eksporcie dokładnego `HEAD` `7992caddbd5a13641abf774d9118317a6d2b5602`, bez zmiany
+gita: test skompilował się, uruchomił i padł 1/1 dopiero wtedy, gdy Recorded po skasowaniu całej
+biblioteki próbował rozwiązać przypiętą wersję z dzisiejszych plików. Odmowa nazywała brakujący
+zestaw i kończyła się `Restore it or choose another ready version.` — czyli czerwień dotyczyła
+braku zachowania, nie importu ani kompilacji.
+
+Pakiet Context przechowuje teraz dokładne bloki promptu, kopiuje tylko pliki związane odciskami
+i jest ponownie sprawdzany przy podglądzie, zatwierdzeniu oraz kopiowaniu. Ten sam snapshot zasila
+pełne i częściowe Recorded, fizyczne kroki oraz komórki Labu. Wspólny zamek czytelnika żyje przez
+podgląd/kopiowanie, a sprzątanie trzyma zamek wyłączny od ostatniego sprawdzenia do
+`remove_dir_all`, więc nie zostaje okno TOCTOU. Archive zmienia wyłącznie półkę; Delete wymienia
+workflow, zachowuje kopie biegów i odmawia przy aktywnym budowaniu. Historia pomija odczyty
+zerobajtowe, a raport wsparcia zapisuje tylko trzy liczby materiałów kroku.
+
+Lokalnie zielone: `recorded_replay_uses_frozen_context` **8/8**, historia dostarczenia **2/2**,
+`support_report_excludes_private_content` **4/4**, odmowa w strumieniu **3/3** i wiring
+**123/123**. `cargo fmt --all --check` oraz `cargo clippy --lib --tests -- -D warnings` są zielone.
+Pierwszy świadek obrazu był czerwony, bo zarządzana piaskownica odrzucała `UnixListener::bind`
+przed startem sterownika. 2026-09-08 (CT-08): świadek przechodzi teraz bez transportu przez ten
+sam produkcyjny `ContextDesk` i `Recorder`, których bieg używa za mostem. Asertuje rzeczywistą
+odpowiedź `Answer::Image`, jej liczbę bajtów, widoczny w historii wiersz `was opened (N bytes
+returned)` oraz licznik raportu `[1, 1, 1]`; filtrowany moduł kończy się **2/2**.
 
 ## 2. Kryteria odbioru (plan §14)
 

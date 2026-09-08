@@ -93,6 +93,14 @@ pub fn list_sets(library: &Path) -> Result<Vec<ContextSet>, Error> {
     Ok(out)
 }
 
+/// Widok jednej półki: domyślna lista nigdy nie miesza aktywnych i archiwalnych zestawów.
+pub fn list_sets_by_archive(library: &Path, archived: bool) -> Result<Vec<ContextSet>, Error> {
+    Ok(list_sets(library)?
+        .into_iter()
+        .filter(|set| set.archived == archived)
+        .collect())
+}
+
 /// Jeden zestaw w całości: manifest, szkic i rewizja szkicu.
 ///
 /// Jeden odczyt, nie dwa wywołania: manifest i szkic pobrane osobno mogą pochodzić z dwóch
@@ -174,6 +182,38 @@ pub fn save_draft(library: &Path, edit: &DraftEdit) -> Result<ContextSetRead, Er
         draft: edit.draft.clone(),
         revision,
     })
+}
+
+/// Archive zmienia widoczność zestawu, nie jego tożsamość ani gotowe wersje.
+pub fn set_archived(
+    library: &Path,
+    id: &str,
+    archived: bool,
+    at: &str,
+) -> Result<ContextSet, Error> {
+    let folder = folder_holding(library, id)?;
+    let (mut set, expected) = read_manifest(&folder)?;
+    set.archived = archived;
+    at.clone_into(&mut set.changed_at);
+    let text = as_file(&set)?;
+    DurableFilePublisher::new(&folder)
+        .publish_definition(
+            &folder.join(MANIFEST),
+            text.as_bytes(),
+            ModePolicy::PreserveExistingOr(DEFINITION_FILE_MODE),
+            Some(&expected),
+        )
+        .map_err(|error| match error {
+            PublishError::Changed { .. } | PublishError::Conflict { .. } => Error::Changed,
+            other => Error::Unwritable(other.into_io()),
+        })?;
+    Ok(set)
+}
+
+/// Usuwa wyłącznie katalog rozstrzygnięty z manifestu o tym ID.
+pub fn delete_set(library: &Path, id: &str) -> Result<(), Error> {
+    let folder = folder_holding(library, id)?;
+    fs::remove_dir_all(folder).map_err(Error::from)
 }
 
 /// Katalog, w którym leży zestaw o tym `id` — pytany przez rejestr źródeł.

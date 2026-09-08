@@ -112,6 +112,14 @@ pub fn compose_selected(
     let mut checks = Map::new();
     let mut seeds = Map::new();
     let mut conditions = Vec::new();
+    // 2026-09-08 (CT-08): przypadek wybiera zapisane bajty raz, zanim kolumny zaczną
+    // różnić modele. Ponowne czytanie `extra.input` w każdej kolumnie mieszałoby wejście
+    // z parametrem, który Lab ma porównywać.
+    let case_seeds = cases
+        .iter()
+        .map(|case| super::workflow_inputs::case_seed(case))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut frozen_contexts = BTreeMap::new();
     for (column, (variant, source, subject)) in graphs.iter().enumerate() {
         for (row, case) in cases.iter().enumerate() {
             for repeat in 0..case.repeats()? {
@@ -119,8 +127,13 @@ pub fn compose_selected(
                 let judge_scope = format!("judge_{row}_{column}_{repeat}");
                 let names = step_names(subject, &scope);
                 let nodes = node_keys(subject, &names);
-                let inputs =
-                    super::workflow_inputs::for_cell(subject, case, &scope, &names, &nodes)?;
+                let case_seed = case_seeds[row].as_ref();
+                let inputs = super::workflow_inputs::for_cell(
+                    subject, case, case_seed, &scope, &names, &nodes,
+                )?;
+                if let Some(seed) = case_seed {
+                    frozen_contexts.extend(frozen_inputs_for_cell(subject, seed, &nodes)?);
+                }
                 append_json(&mut contexts, inputs.contexts)?;
                 append_json(&mut assignments, inputs.step_contexts)?;
                 append_json(&mut checks, inputs.checks)?;
@@ -167,6 +180,12 @@ pub fn compose_selected(
         "cellBindings".to_owned(),
         serde_json::to_value(bindings).map_err(|error| error.to_string())?,
     );
+    if !frozen_contexts.is_empty() {
+        graph.extra.insert(
+            "frozenContextInputs".to_owned(),
+            serde_json::to_value(frozen_contexts).map_err(|error| error.to_string())?,
+        );
+    }
     if !conditions.is_empty() {
         graph.extra.insert(
             "linkConditions".to_owned(),
@@ -174,6 +193,40 @@ pub fn compose_selected(
         );
     }
     Ok(graph)
+}
+
+fn agent_node_keys(subject: &WorkflowFile) -> Vec<String> {
+    crate::workflow::unroll::unroll(subject)
+        .nodes
+        .into_iter()
+        .filter_map(|node| {
+            let step = subject.steps.get(node.step)?;
+            matches!(step, Step::Agent(_))
+                .then(|| crate::workflow::check::node_key_for(step.id(), node.turn, node.copy))
+        })
+        .collect()
+}
+
+fn frozen_inputs_for_cell(
+    subject: &WorkflowFile,
+    seed: &crate::workflow::execution::WorkspaceSeed,
+    nodes: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, crate::commands::context_sources::SavedNode>, String> {
+    agent_node_keys(subject)
+        .into_iter()
+        .map(|source_node_key| {
+            let target_node_key = nodes.get(&source_node_key).ok_or_else(|| {
+                "A Lab cell lost the physical address of an agent step.".to_owned()
+            })?;
+            Ok((
+                target_node_key.clone(),
+                crate::commands::context_sources::SavedNode {
+                    source_run_id: seed.source_run_id.clone(),
+                    source_node_key,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Każdy kafelek jest osobną kopią tego samego wzorca, więc jego kroki muszą mieć

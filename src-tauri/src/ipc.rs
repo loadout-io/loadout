@@ -485,7 +485,8 @@ pub struct AppState {
     /// `std::sync::Mutex` jest brany tylko do jednego lookup/insert/remove i nigdy przez
     /// `await` (niezmiennik 8). Brak dowodu śmierci zostawia wpis, bo wolnego miejsca nad
     /// żywym agentem nie wolno ogłosić (niezmienniki 6, 11).
-    building: Mutex<std::collections::BTreeMap<String, (tokio_util::sync::CancellationToken, u64)>>,
+    building:
+        Arc<Mutex<std::collections::BTreeMap<String, (tokio_util::sync::CancellationToken, u64)>>>,
     build_generation: AtomicU64,
     /// Foldery, ktorych biegi ta sesja juz uzgodnila z tym, co naprawde zyje na maszynie.
     ///
@@ -792,7 +793,7 @@ impl AppState {
             store,
             drivers,
             generating: Mutex::new(std::collections::BTreeMap::new()),
-            building: Mutex::new(std::collections::BTreeMap::new()),
+            building: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             build_generation: AtomicU64::new(0),
             reconciled: Mutex::new(std::collections::BTreeSet::new()),
             slots,
@@ -3863,6 +3864,65 @@ pub async fn save_context_revision(
     .map_err(|error| error.to_string())
 }
 
+/// Archive ukrywa zestaw z domyślnej półki, ale nie rusza wersji ani przypięć workflow.
+#[tauri::command]
+pub async fn archive_context_set(
+    state: State<'_, AppState>,
+    id: String,
+    archived: bool,
+) -> Result<crate::context::ContextSet, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::context::archive_context_set_inner(&home, &id, archived)
+    })
+    .await
+    .map_err(|error| did_not_finish("changing that context set's shelf", &error))?
+    .map_err(|error| error.to_string())
+}
+
+/// Pierwsze wywołanie zwraca pełne pytanie; dopiero jawne potwierdzenie usuwa katalog.
+#[tauri::command]
+pub async fn delete_context_set(
+    state: State<'_, AppState>,
+    id: String,
+    confirmed: bool,
+    folder: Option<String>,
+) -> Result<commands::context::DeleteContextSet, String> {
+    let project = state
+        .project_for(folder.as_deref())
+        .await
+        .inspect_err(refused)?;
+    let home = state.home.clone();
+    let building = Arc::clone(&state.building);
+    tokio::task::spawn_blocking(move || {
+        // 2026-09-08 (CT-08): ten sam krótki zamek obejmuje sprawdzenie i usunięcie. Bez
+        // niego nowe budowanie mogło wejść między dwa kroki i stracić katalog pod sobą.
+        let _building = if confirmed {
+            let guard = building.lock().unwrap_or_else(PoisonError::into_inner);
+            let active = crate::context::build::read_build(
+                &crate::context::files::library_root(&home),
+                &id,
+                None,
+            )
+            .map_err(|error| {
+                format!(
+                    "Loadout could not prove that this context build has finished: {error}"
+                )
+            })?
+            .is_some_and(|build| guard.contains_key(&build.operation_id));
+            if active {
+                return Err("This context is still being built. Stop it and wait for confirmation before deleting it.".to_owned());
+            }
+            Some(guard)
+        } else {
+            None
+        };
+        commands::context::delete_context_set_inner(&home, &project, &id, confirmed)
+    })
+    .await
+    .map_err(|error| did_not_finish("deleting that context set", &error))?
+}
+
 /// Wszystkie gotowe zestawy biblioteki Context.
 ///
 /// # Cztery skorupy, jeden korzeń
@@ -3874,12 +3934,15 @@ pub async fn save_context_revision(
 #[tauri::command]
 pub async fn list_context_sets(
     state: State<'_, AppState>,
+    archived: Option<bool>,
 ) -> Result<Vec<crate::context::ContextSet>, String> {
     let home = state.home.clone();
-    tokio::task::spawn_blocking(move || commands::context::list_context_sets_inner(&home))
-        .await
-        .map_err(|error| did_not_finish("reading the context sets you have saved", &error))?
-        .map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || {
+        commands::context::list_context_sets_by_archive_inner(&home, archived.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the context sets you have saved", &error))?
+    .map_err(|error| error.to_string())
 }
 
 /// Jeden zestaw w całości: manifest, szkic i rewizja, którą okno odda przy następnym zapisie.
@@ -5686,6 +5749,7 @@ macro_rules! every_command_the_window_can_call {
             answer_the_lead,
             apply_eval_fix,
             apply_setup,
+            archive_context_set,
             author_skill,
             build_context,
             check_agent_apps,
@@ -5702,6 +5766,7 @@ macro_rules! every_command_the_window_can_call {
             create_trigger,
             decide_eval_case,
             delete_agent,
+            delete_context_set,
             delete_eval_set,
             delete_skill,
             delete_trigger,

@@ -884,7 +884,8 @@ pub fn forget_run_with_results_inner(
         super::run::retention_blocker(&dir).map_err(|error| HistoryError::ResultsAreKept {
             said: format!("Loadout cannot prove these result folders are safe to remove: {error}"),
         })?;
-    if blocked.is_some() || confirmed.is_some() {
+    let retention_blocked = blocked.is_some();
+    if retention_blocked || confirmed.is_some() {
         let said = blocked.unwrap_or_else(|| "The list of saved result folders changed. Open this run again before confirming their removal.".to_owned());
         if super::run::pending_copy_finalization(&dir).unwrap_or(true) {
             return Err(HistoryError::ResultsAreKept { said });
@@ -897,11 +898,23 @@ pub fn forget_run_with_results_inner(
         expected.sort();
         let mut confirmed = confirmed.map(<[PathBuf]>::to_vec).unwrap_or_default();
         confirmed.sort();
+        // 2026-09-08 (CT-08): zamek prywatnego pakietu nie ma ścieżki wyniku, którą człowiek
+        // mógłby potwierdzić. Pusta lista nie może więc zamienić aktywnego odczytu w zgodę.
+        if retention_blocked && expected.is_empty() {
+            return Err(HistoryError::ResultsAreKept { said });
+        }
         if confirmed != expected {
             return Err(HistoryError::ResultsAreKept { said });
         }
     }
     let _held = super::result_restore::removal_guard(&dir).map_err(|error| {
+        HistoryError::ResultsAreKept {
+            said: error.to_string(),
+        }
+    })?;
+    // 2026-09-08 (CT-08): samo wcześniejsze `is_held` zostawiało okno między sprawdzeniem
+    // i `remove_dir_all`. Wyłączny zamek trzymany do końca nie wpuszcza nowego replay/Labu.
+    let _context_held = super::context_sources::removal_guard(&dir).map_err(|error| {
         HistoryError::ResultsAreKept {
             said: error.to_string(),
         }

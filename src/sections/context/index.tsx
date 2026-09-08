@@ -176,7 +176,14 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
           <p className="lead max-w-160 text-center">
             {answered ? WHAT_A_SET_IS : READING_THE_FOLDER}
           </p>
-          {answered ? <NameAndCreate typed={typed} onType={setTyped} onCreate={create} /> : null}
+          {answered ? (
+            <>
+              <ShelfFilter archived={state.archived} store={store} />
+              {state.archived ? null : (
+                <NameAndCreate typed={typed} onType={setTyped} onCreate={create} />
+              )}
+            </>
+          ) : null}
         </div>
       </Shell>
     );
@@ -187,6 +194,8 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
     <Shell>
       <div className="flex flex-col gap-4">
         <NameAndCreate typed={typed} onType={setTyped} onCreate={create} />
+
+        <ShelfFilter archived={state.archived} store={store} />
 
         <div className="flex flex-col gap-1">
           <label className="label" htmlFor="context-search">
@@ -217,29 +226,109 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
           <ul className="grid content-start gap-3 sm:grid-cols-2">
             {shown.map((set) => (
               <li key={set.id}>
-                <button
-                  data-context-set={set.id}
-                  data-interactive
-                  type="button"
-                  className="card flex w-full flex-col gap-1 text-left"
-                  onClick={() => {
-                    void store.getState().openSet(set.id);
-                  }}
-                >
-                  <span className="text-heading text-ink">{set.title}</span>
-                  {set.description === '' ? null : <span className="lead">{set.description}</span>}
-                  {/* JEDEN stan pozycji (PLAN §12). Dopóki nikt nie zbudował opracowania, każdy
-                      zestaw stoi w tym samym miejscu drogi i mówi to jednym słowem. */}
-                  <span className="value">
-                    {set.latestReadyRevision === null ? 'Not prepared yet' : 'Ready'}
-                  </span>
-                </button>
+                <article className="card flex w-full flex-col gap-2">
+                  <button
+                    data-context-set={set.id}
+                    data-interactive
+                    type="button"
+                    className="flex w-full flex-col gap-1 text-left"
+                    onClick={() => {
+                      void store.getState().openSet(set.id);
+                    }}
+                  >
+                    <span className="text-heading text-ink">{set.title}</span>
+                    {set.description === '' ? null : (
+                      <span className="lead">{set.description}</span>
+                    )}
+                    {/* JEDEN stan pozycji (PLAN §12). Dopóki nikt nie zbudował opracowania,
+                        każdy zestaw stoi w tym samym miejscu drogi i mówi to jednym słowem. */}
+                    <span className="value">
+                      {set.latestReadyRevision === null ? 'Not prepared yet' : 'Ready'}
+                    </span>
+                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      data-archive-context={set.id}
+                      type="button"
+                      className="btn"
+                      onClick={() => {
+                        void store.getState().archive(set.id, !state.archived);
+                      }}
+                    >
+                      {state.archived ? 'Restore' : 'Archive'}
+                    </button>
+                    <button
+                      data-delete-context={set.id}
+                      type="button"
+                      className="btn-danger"
+                      onClick={() => {
+                        void store.getState().previewDelete(set.id);
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </article>
               </li>
             ))}
           </ul>
         )}
+
+        {state.deleting === null ? null : (
+          <div data-delete-context-confirmation role="alertdialog" className="card stack">
+            <p className="text-ink">{state.deleting.said}</p>
+            <div className="flex gap-2">
+              <button type="button" className="btn" onClick={store.getState().cancelDelete}>
+                Keep set
+              </button>
+              <button
+                data-confirm-delete-context
+                type="button"
+                className="btn-danger"
+                onClick={() => {
+                  void store.getState().confirmDelete();
+                }}
+              >
+                Delete set
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </Shell>
+  );
+}
+
+function ShelfFilter({
+  archived,
+  store,
+}: {
+  readonly archived: boolean;
+  readonly store: ContextStore;
+}): ReactElement {
+  return (
+    <div className="flex gap-2" aria-label="Context set shelf">
+      <button
+        data-context-filter="active"
+        type="button"
+        className={archived ? 'btn' : 'btn-primary'}
+        onClick={() => {
+          void store.getState().showArchived(false);
+        }}
+      >
+        Active
+      </button>
+      <button
+        data-context-filter="archived"
+        type="button"
+        className={archived ? 'btn-primary' : 'btn'}
+        onClick={() => {
+          void store.getState().showArchived(true);
+        }}
+      >
+        Archived
+      </button>
+    </div>
   );
 }
 

@@ -334,8 +334,8 @@ const WIRES: readonly Wire[] = [
     where: 'context',
     what: 'list',
     command: 'list_context_sets',
-    given: [],
-    call: () => context.list(),
+    given: [false],
+    call: () => context.list(false),
   },
   {
     where: 'context',
@@ -437,6 +437,20 @@ const WIRES: readonly Wire[] = [
     command: 'save_context_revision',
     given: [CONTEXT_ID, CONTEXT_REVISION_EDIT],
     call: () => context.saveRevision(CONTEXT_ID, CONTEXT_REVISION_EDIT),
+  },
+  {
+    where: 'context',
+    what: 'archive',
+    command: 'archive_context_set',
+    given: [CONTEXT_ID, true],
+    call: () => context.archive(CONTEXT_ID, true),
+  },
+  {
+    where: 'context',
+    what: 'deleteSet',
+    command: 'delete_context_set',
+    given: [CONTEXT_ID, true, null],
+    call: () => context.deleteSet(CONTEXT_ID, true),
   },
   {
     where: 'workflows',

@@ -26,6 +26,7 @@ answer_checkpoint
 answer_the_lead
 apply_eval_fix
 apply_setup
+archive_context_set
 author_skill
 build_context
 check_agent_apps
@@ -41,6 +42,7 @@ create_eval_set
 create_trigger
 decide_eval_case
 delete_agent
+delete_context_set
 delete_eval_set
 delete_skill
 delete_trigger

@@ -50,7 +50,7 @@ pub(crate) struct Prepared {
     snapshot: Option<Snapshot>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ContextBlock {
     pub required: String,
     pub optional: String,
@@ -93,6 +93,42 @@ pub fn compose(
 }
 
 impl Prepared {
+    /// Odtwarza gotowe bloki dokładnie z pakietu biegu; biblioteka nie bierze udziału w replay.
+    pub(crate) fn from_frozen(snapshot: Snapshot) -> std::io::Result<Self> {
+        let prompts = snapshot.replay_blocks()?.clone();
+        Ok(Self {
+            prompts,
+            snapshot: Some(snapshot),
+        })
+    }
+
+    pub(crate) fn empty() -> Self {
+        Self {
+            prompts: BTreeMap::new(),
+            snapshot: None,
+        }
+    }
+
+    /// Lab wiąże warianty z jednym zapisanym pakietem przypadku, zanim zmieni ich modele.
+    pub(crate) fn from_saved_cases(
+        project: &Path,
+        file: &WorkflowFile,
+    ) -> std::io::Result<Option<Self>> {
+        let Some(saved) = file.extra.get("frozenContextInputs") else {
+            return Ok(None);
+        };
+        let bindings = serde_json::from_value(saved.clone()).map_err(|_| {
+            std::io::Error::other("The saved reference-material addresses cannot be read.")
+        })?;
+        let snapshot = Snapshot::from_saved_nodes(project, &bindings)?;
+        let prompts = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.replay_blocks().cloned())
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Some(Self { prompts, snapshot }))
+    }
+
     pub fn prompt_for(&self, node_key: &str) -> ContextBlock {
         self.prompts.get(node_key).cloned().unwrap_or_default()
     }
@@ -125,6 +161,20 @@ impl Prepared {
         snapshot.save_to(folder)?;
         snapshot.access_for(folder, node_key, expires)
     }
+}
+
+/// 2026-09-08 (CT-08): brak wiązania pakietu jest poprawny tylko wtedy, gdy zapisany graf
+/// naprawdę nie przydzielał Context żadnemu agentowi; inaczej oznacza utracone wejście.
+pub(crate) fn has_selected_context(file: &WorkflowFile) -> Result<bool, String> {
+    let inputs = RunInputs::from_graph(file)?;
+    for step in &file.steps {
+        if matches!(step, crate::workflow::Step::Agent(_))
+            && !effective_for(file, step.id(), &inputs)?.sets.is_empty()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -316,7 +366,7 @@ fn prepare_selected(
         );
     }
 
-    let snapshot = prepared_snapshot(package, nodes)?;
+    let snapshot = prepared_snapshot(package, nodes, prompts.clone())?;
     Ok(Prepared { prompts, snapshot })
 }
 
@@ -417,11 +467,12 @@ fn account_for_set(
 fn prepared_snapshot(
     package: BTreeMap<Address, PackageItem>,
     nodes: BTreeMap<String, NodeSelection>,
+    blocks: BTreeMap<String, ContextBlock>,
 ) -> Result<Option<Snapshot>, ContextRefusal> {
     if nodes.is_empty() {
         return Ok(None);
     }
-    Snapshot::new(package.into_values().collect(), nodes)
+    Snapshot::new(package.into_values().collect(), nodes, blocks)
         .map(Some)
         .map_err(|error| refusal("", error.to_string()))
 }
