@@ -294,16 +294,29 @@ def kill_group(proc):
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         pgid = proc.pid
+    # 2026-09-08: EPERM z killpg jest TAKIM SAMYM dowodem smierci NASZEJ grupy, co ESRCH.
+    # Kazdy Popen idzie ze `start_new_session=True`, wiec pgid == pid lidera; po zebraniu
+    # lidera jadro moze ten pid przydzielic komus innemu, a wtedy killpg trafia w cudza
+    # grupe. POSIX mowi, ze kill/killpg daje EPERM dopiero wtedy, gdy nie wolno nam
+    # zasygnalizowac ZADNEGO procesu z grupy -- a wlasnemu dziecku (ten sam uid) wolno nam
+    # zawsze. EPERM znaczy wiec doslownie "w tej grupie nie ma juz nikogo naszego".
+    #
+    # Bez tego lapania harness wywalal sie traceback'iem PO wykonaniu calej pracy: bez
+    # werdyktu, bez commita i bez wpisu w rachunku. Zdarzylo sie dwa razy (CT-04, CT-06),
+    # za kazdym razem zero sierot i cala praca zywa w worktree. Milczaca zamiana dowodu
+    # ESRCH na "no to trudno" byla by zlamaniem niezmiennika 6 -- tu dowod ZOSTAJE, tylko
+    # uznajemy drugi jego ksztalt.
+    dead = (ProcessLookupError, PermissionError)
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pgid, sig)
-        except ProcessLookupError:
+        except dead:
             return True
         for _ in range(20):
             time.sleep(0.1)
             try:
                 os.killpg(pgid, 0)
-            except ProcessLookupError:
+            except dead:
                 return True
     return False
 
