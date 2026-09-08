@@ -3773,6 +3773,20 @@ pub async fn read_context_set(
         .map_err(|error| error.to_string())
 }
 
+/// 2026-09-08 (CT-05): jeden parser daje ten sam wybór pickerowi i Startowi, poza wątkiem okna.
+#[tauri::command]
+pub async fn resolve_workflow_context(
+    state: State<'_, AppState>,
+    workflow: crate::workflow::WorkflowFile,
+) -> Result<commands::workflow_context::WorkflowContextView, String> {
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        commands::workflow_context::resolve_workflow_context_inner(&home, &workflow)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading this workflow's context", &error))?
+}
+
 /// Nowy zestaw pod nazwą, którą wpisał człowiek.
 #[tauri::command]
 pub async fn create_context_set(
@@ -5585,6 +5599,7 @@ macro_rules! every_command_the_window_can_call {
             read_project_settings,
             preview_additional_inputs,
             remove_context_source,
+            resolve_workflow_context,
             rerun_step,
             resume_run,
             resume_trigger,

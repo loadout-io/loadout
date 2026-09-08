@@ -124,7 +124,7 @@ Sonda leży poza repo (scratchpad), nie jest artefaktem, którego nikt nie czyta
 | CT-03a | `h-ct-03a` | `9b9439e0` | kontrola negatywna w suicie | **7 Rust** | **zielone, 697 s** | ~28 USD | **WYLĄDOWANY** |
 | CT-03b | `h-ct-03b` | `0b4e45f8` | mutacja zakresu → **4 testy padły** | **10 Rust** (+1 żywa próba `#[ignore]`) | **zielone, 609 s** | ~35 USD | **WYLĄDOWANY** |
 | CT-04 | `h-ct-04` | `60220c09` | 3 rundy weryfikatora + 3 naprawy ręczne | **29 Rust** | **zielone, 504 s** | ~180 USD | **WYLĄDOWANY** |
-| CT-05 | `h-ct-05` | — | — | — | — | — | **w toku** |
+| CT-05 | `h-ct-05` | — | `todo!()` uruchomione, 3 rundy weryfikatora | **17 Rust + 120 frontu** | — | — | naprawiony ręcznie, ląduje |
 | CT-06 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-07 | — | — | — | — | — | — | nie rozpoczęty |
 | CT-08 | — | — | — | — | — | — | nie rozpoczęty |

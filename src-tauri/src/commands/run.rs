@@ -4501,7 +4501,12 @@ fn the_graph_this_run_starts_from(
 ///
 /// Obie sa tu z tego samego powodu (niezmiennik 12): awaria w polowie biegu zostawia
 /// obciety transkrypt i `run.json`, ktory mowi „running" o czyms, co juz nie zyje.
-fn nothing_stops_this_run(file: &WorkflowFile, project: &Path) -> Result<(), RunError> {
+fn nothing_stops_this_run(
+    file: &WorkflowFile,
+    project: &Path,
+    home: &Path,
+    part: Option<&Part>,
+) -> Result<(), RunError> {
     // Bieg nie ufa UI (T3 §5.2): plik mógł zostać zmergowany gitem albo poprawiony ręcznie
     // między zapisem a naciśnięciem Start. Odmawiamy zdaniem WALIDATORA, słowo w słowo —
     // własne tłumaczenie byłoby drugim miejscem, w którym mieszka ten sam komunikat.
@@ -4514,6 +4519,29 @@ fn nothing_stops_this_run(file: &WorkflowFile, project: &Path) -> Result<(), Run
     {
         return Err(RunError::Refused(refusal));
     }
+
+    // 2026-09-08 (CT-05): materiał sprawdzamy po zawężeniu `/run`, żeby brak w kafelku, który
+    // tym razem nie rusza, nie blokował poprawnej części — ale nadal przed pierwszym procesem.
+    let unrolled = crate::workflow::unroll::unroll(file);
+    let wanted = which_nodes(&unrolled, file, part);
+    let included = unrolled
+        .nodes
+        .iter()
+        .zip(wanted)
+        .filter_map(|(node, wanted)| {
+            wanted
+                .then(|| file.steps.get(node.step).map(Step::id))
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    super::workflow_context::context_ready_to_start(home, file, &included).map_err(|refusal| {
+        RunError::Refused(Note {
+            level: Level::Problem,
+            step_id: (!refusal.step_id.is_empty()).then_some(refusal.step_id),
+            message: refusal.message,
+            fix: None,
+        })
+    })?;
 
     /* PRÓG DYSKU, sprawdzany zanim ruszy pierwszy proces (T-208, 2026-08-29).
      *
@@ -4695,7 +4723,7 @@ fn plan_run_with_identity(
     let replay = lead_start.and_then(|start| start.replay.as_ref());
     let recorded = replay.filter(|replay| replay.mode == super::replay::ReplayMode::Recorded);
     let (bytes, file) = the_graph_this_run_starts_from(request, lead_start, replay, recorded)?;
-    nothing_stops_this_run(&file, deps.project)?;
+    nothing_stops_this_run(&file, deps.project, deps.home, request.part.as_ref())?;
 
     /* CENNIK CZYTANY TU, PRZED KATALOGIEM BIEGU (2026-09, Z-44). Plik, którego nie da się
      * przeczytać, jest odmową Startu, a nie cichym powrotem do tabeli wbudowanej: literówka

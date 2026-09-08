@@ -119,12 +119,9 @@ pub fn again(
     how_many_at_once: usize,
 ) -> Result<Again, Trouble> {
     let path = home.join("workflows").join(file_name);
-    let today: WorkflowFile = fs::read(&path)
-        .map_err(|error| Trouble::Unreadable(error.to_string()))
-        .and_then(|bytes| {
-            serde_json::from_slice(&bytes).map_err(|error| Trouble::Unreadable(error.to_string()))
-        })
-        .map_err(|_| Trouble::NoWorkflow)?;
+    let bytes = fs::read(&path).map_err(|_| Trouble::NoWorkflow)?;
+    let today = crate::workflow::file::load_snapshot(&path, &bytes)
+        .map_err(|error| Trouble::Unreadable(error.to_string()))?;
 
     /* KATALOG BIEGU ZNAJDUJEMY TUTAJ, a nie w oknie, i to jest wybór na rzecz uczciwości okna:
      * katalog biegu powstaje w środku planowania, więc okno nigdy go nie poznaje. Prosząc je
@@ -220,7 +217,7 @@ pub fn onward(
         .map_err(|error| Trouble::Unreadable(error.to_string()))?;
     let finished: Finished =
         serde_json::from_slice(&bytes).map_err(|error| Trouble::Unreadable(error.to_string()))?;
-    let (path, today) = in_the_library(home, &finished.workflow_id).ok_or(Trouble::NoWorkflow)?;
+    let (path, today) = in_the_library(home, &finished.workflow_id)?.ok_or(Trouble::NoWorkflow)?;
     let Some(named) = today.steps.iter().find(|one| one.id() == step) else {
         return Err(Trouble::NoSuchStep(step.to_owned()));
     };
@@ -266,9 +263,16 @@ fn one_run_named(project: &Path, run: &str) -> Option<PathBuf> {
 ///
 /// Po identyfikatorze, nie po nazwie pliku: nazwa jest sluggiem tytułu i zmienia się razem
 /// z nim, a identyfikator jest tym, czym bieg zapamiętał, skąd przyszedł.
-fn in_the_library(home: &Path, workflow_id: &str) -> Option<(PathBuf, WorkflowFile)> {
-    let mut names: Vec<PathBuf> = fs::read_dir(home.join("workflows"))
-        .ok()?
+fn in_the_library(
+    home: &Path,
+    workflow_id: &str,
+) -> Result<Option<(PathBuf, WorkflowFile)>, Trouble> {
+    let entries = match fs::read_dir(home.join("workflows")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Trouble::Unreadable(error.to_string())),
+    };
+    let mut names: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|one| one == "json"))
@@ -276,10 +280,21 @@ fn in_the_library(home: &Path, workflow_id: &str) -> Option<(PathBuf, WorkflowFi
     // Porządek jest ustalony, żeby dwa pliki o jednym identyfikatorze (plik i jego kopia obok)
     // dawały ZA KAŻDYM RAZEM ten sam wynik — `read_dir` nie obiecuje kolejności.
     names.sort();
-    names.into_iter().find_map(|path| {
-        let file: WorkflowFile = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
-        (file.id == workflow_id).then_some((path, file))
-    })
+    for path in names {
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if header.get("id").and_then(serde_json::Value::as_str) != Some(workflow_id) {
+            continue;
+        }
+        // 2026-09-08: format sprawdzamy dopiero dla trafionego id, bo uszkodzony obcy szkic
+        // nie może zasłonić workflow szukanego dalej w katalogu.
+        let file = crate::workflow::file::load_snapshot(&path, &bytes)
+            .map_err(|error| Trouble::Unreadable(error.to_string()))?;
+        return Ok(Some((path, file)));
+    }
+    Ok(None)
 }

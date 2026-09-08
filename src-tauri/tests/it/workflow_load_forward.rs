@@ -5,10 +5,10 @@
 //! nowszego builda bez jednego komunikatu**. Dlatego odmowa jest w przód, a nie zgadywanie
 //! [T3 §8.4].
 //!
-//! Słaba wersja tego kryterium to `assert!(load(p).is_err())` dla wersji 2. Przechodzi ją
+//! Słaba wersja tego kryterium to `assert!(load(p).is_err())` dla wersji przyszłej. Przechodzi ją
 //! `load()`, które zwraca `Err` **zawsze** — a wtedy nie da się otworzyć żadnego workflow
-//! i dowie się o tym dopiero użytkownik. Dlatego para wersji jest w jednym pliku: wersja 1
-//! musi wczytać się na `Ok` z poprawną liczbą kroków, i dopiero to nadaje odmowie wersji 2
+//! i dowie się o tym dopiero użytkownik. Dlatego obsługiwane wersje 1 i 2 muszą w suicie
+//! wczytać się na `Ok`, i dopiero to nadaje odmowie wersji 3
 //! jakiekolwiek znaczenie.
 //!
 //! Druga asercja jest o dysku, nie o wartości zwrotnej: bajty pliku przed i po nieudanym
@@ -26,10 +26,10 @@ use loadout_lib::workflow::file::{LoadError, load};
 /// version 2" nie mówi nic, a wersja pliku nie jest niczym, co użytkownik może naprawić sam.
 const TOO_NEW: &str = "This workflow was saved by a newer Loadout. Update Loadout to open it.";
 
-/// Workflow zapisany przez build, którego jeszcze nie ma: `format: 2` i pole, którego ta
+/// Workflow zapisany przez build, którego jeszcze nie ma: `format: 3` i pole, którego ta
 /// wersja nie zna.
 const FROM_THE_FUTURE: &str = r#"{
-  "format": 2,
+  "format": 3,
   "id": "wf_ship",
   "name": "Ship a feature",
   "steps": [
@@ -151,6 +151,26 @@ fn a_file_of_this_version_loads_with_all_of_its_steps() -> Result<(), Box<dyn Er
         1,
         "the one arrow in the file is a step's dependency and \
          losing it silently reorders the run"
+    );
+    Ok(())
+}
+
+#[test]
+fn format_one_is_read_without_a_migration_or_backup() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = written(dir.path(), "unchanged", OF_THIS_VERSION)?;
+    let before = fs::read(&path)?;
+
+    load(&path).map_err(|error| format!("{error:?}"))?;
+
+    assert_eq!(
+        fs::read(&path)?,
+        before,
+        "reading format 1 must not rewrite it"
+    );
+    assert!(
+        !path.with_extension("json.bak").exists(),
+        "a backup belongs to an actual format upgrade, not to reading format 1"
     );
     Ok(())
 }

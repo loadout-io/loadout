@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 pub mod check;
+pub mod context;
 pub mod criteria;
 pub mod execution;
 pub mod file;
@@ -79,6 +80,11 @@ impl WorkflowFile {
         };
         validate_additional_inputs(&patterns)?;
         Ok(patterns)
+    }
+
+    /// Typowany odczyt opcjonalnego klucza zachowanego w `extra` dla zgodności w przód.
+    pub fn context(&self) -> Result<Option<context::WorkflowContext>, String> {
+        context::workflow_from(self.extra.get("context"))
     }
 }
 
@@ -279,6 +285,13 @@ pub struct AgentStep {
     /// odtworzyć, i nie zostawia po tym ani jednego komunikatu [T3 §3.2, uruchomione].
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl AgentStep {
+    /// Ten sam parser co przy workflow; brak klucza zachowuje zachowanie sprzed CT-05.
+    pub fn context(&self) -> Result<Option<context::StepContext>, String> {
+        context::step_from(self.extra.get("context"))
+    }
 }
 
 /// Domyślna liczba kopii. Funkcja, bo `#[serde(default)]` dla `u32` dałoby zero, a zero kopii
