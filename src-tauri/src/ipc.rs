@@ -3644,9 +3644,18 @@ pub async fn build_context(
 ) -> Result<crate::context::ContextBuildRead, String> {
     let (cancel, generation) =
         state.begin_context_build_in(&set_id, &operation_id, app, model.as_deref())?;
-    let budget_usd = commands::settings::read_settings_inner(&state.home)
-        .ok()
-        .map(|settings| settings.default_budget_usd);
+    // 2026-09-08 — TEN ODCZYT SZEDL NA WATKU, NA KTORYM TAURI ZAWOLALO KOMENDE, i ten sam
+    // watek niesie Stop, linie biegu w drodze na ekran oraz kazdy zapis do indeksu. Reszta tej
+    // komendy jest `async`, wiec zostal wylacznie ten jeden synchroniczny dotyk dysku — i tylko
+    // on wystarczyl, zeby `no_command_freezes_the_window` wskazal ja po imieniu.
+    let home = state.home.clone();
+    let budget_usd = tokio::task::spawn_blocking(move || {
+        commands::settings::read_settings_inner(&home)
+            .ok()
+            .map(|settings| settings.default_budget_usd)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the spending limit", &error))?;
     let request = commands::context_build::BuildContextRequest {
         set_id,
         operation_id: operation_id.clone(),
