@@ -36,6 +36,8 @@ pub struct Configuration {
     pub can_update: Vec<SectionKey>,
     pub focus_on: Vec<SectionKey>,
     pub same_plan_as: Option<String>,
+    /// 2026-09-08 (WP-05) — jawny wybór; samo Use tylko podaje agentowi plan.
+    pub check_plan: bool,
 }
 
 impl Configuration {
@@ -59,6 +61,11 @@ impl Configuration {
                 "only a Plan Use step may name sections to focus on".to_owned(),
             ));
         }
+        if configuration.mode != Mode::Use && configuration.check_plan {
+            return Err(Error::Malformed(
+                "only a Plan Use step may check the plan's requirements".to_owned(),
+            ));
+        }
         if !matches!(configuration.mode, Mode::Update | Mode::Use)
             && configuration.same_plan_as.is_some()
         {
@@ -72,6 +79,11 @@ impl Configuration {
     #[must_use]
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    #[must_use]
+    pub fn check_plan(&self) -> bool {
+        self.check_plan
     }
 
     #[must_use]
@@ -125,6 +137,7 @@ impl Configuration {
             current,
             can_update,
             focus_on: self.focus_on.clone(),
+            check_plan: self.check_plan,
             human_requirements,
         })
     }
@@ -139,6 +152,7 @@ pub struct Prepared {
     current: Option<PlanVersion>,
     can_update: Vec<SectionKey>,
     focus_on: Vec<SectionKey>,
+    check_plan: bool,
     human_requirements: Vec<HumanRequirement>,
 }
 
@@ -170,6 +184,22 @@ impl Prepared {
     #[must_use]
     pub fn current(&self) -> Option<&PlanVersion> {
         self.current.as_ref()
+    }
+
+    #[must_use]
+    pub fn check_plan(&self) -> bool {
+        self.check_plan
+    }
+
+    /// Kryteria pochodzą wyłącznie z przypiętej wersji i tylko po jawnym wyborze w panelu.
+    #[must_use]
+    pub fn plan_criteria(&self) -> Vec<crate::workflow::criteria::Criterion> {
+        if !self.check_plan {
+            return Vec::new();
+        }
+        self.current
+            .as_ref()
+            .map_or_else(Vec::new, super::review::frozen_criteria)
     }
 
     #[must_use]

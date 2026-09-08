@@ -34,6 +34,12 @@ pub enum Entry {
     },
 }
 
+/// 2026-09-08 (WP-05) — jeden odcisk drzewa służy retencji i ocenie tej samej pracy.
+pub fn folder_digest(entries: &BTreeMap<PathBuf, Entry>) -> io::Result<String> {
+    let bytes = serde_json::to_vec(entries).map_err(io::Error::other)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Manifest {
     schema: u8,

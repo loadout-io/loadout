@@ -8,6 +8,7 @@ mod change;
 mod document;
 mod publish;
 mod render;
+mod review;
 
 pub use crate::commands::context_inputs::{Composed, ContextBlock, compose};
 pub use candidate::WorkPlanCore;
@@ -24,6 +25,10 @@ pub use publish::{
 };
 pub use render::{RENDERER, render_plan};
 pub use render::{detail_index, render_core, render_details};
+pub use review::{
+    Basis, StillOpen, about_other_work, approved, carry, conflicts, frozen_criteria,
+    not_this_product, told_what_is_still_open,
+};
 
 /// Pierwszy i jedyny kształt pliku, dopóki naprawdę nie pojawi się potrzeba migracji.
 pub const SCHEMA: u32 = 1;

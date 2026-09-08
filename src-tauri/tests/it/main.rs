@@ -511,6 +511,7 @@ mod vendor_options_reach_the_argv;
 mod work_plan_candidate_becomes_a_version;
 mod work_plan_core_reaches_both_vendors;
 mod work_plan_graph_is_unambiguous;
+mod work_plan_review_shares_the_version;
 mod work_plan_versions_are_immutable;
 mod workflow_check_cycles;
 mod workflow_check_ids;

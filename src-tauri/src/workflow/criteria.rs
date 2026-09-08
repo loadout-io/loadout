@@ -43,6 +43,24 @@ pub enum Method {
 }
 
 impl Method {
+    /// Odczytuje brzmienie, które wcześniej zapisało [`Self::said`].
+    ///
+    /// 2026-09-08 (WP-05) — plan przechowuje metodę jako walidowany tekst. Powrót do tego
+    /// enuma jest konieczny, żeby kryteria planu przeszły przez tę samą regułę siły metody,
+    /// zamiast dostać drugi, tekstowy odpowiednik `is_met_by`.
+    #[must_use]
+    pub fn from_said(said: &str) -> Self {
+        match said.trim().to_ascii_lowercase().as_str() {
+            "an automated test" | "automated test" | "automated-test" => Self::AutomatedTest,
+            "the interface with stand-in data" | "mocked ui" | "mocked-ui" => Self::MockedUi,
+            "the running application with its real backend" | "full runtime" | "full-runtime" => {
+                Self::FullRuntime
+            }
+            "a person confirming it" | "human" | "human-confirmed" => Self::HumanConfirmed,
+            _ => Self::Unknown,
+        }
+    }
+
     /// Czy `reported` wystarcza tam, gdzie zatwierdzono `self`.
     ///
     /// Pełny runtime **nie** jest zastępowalny mockiem ani testem jednostkowym. W drugą
