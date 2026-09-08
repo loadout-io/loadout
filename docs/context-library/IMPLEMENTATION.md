@@ -290,6 +290,12 @@ dopuszcza obie drogi. Bez jednej z nich zostaje `not-tested` i **blokuje** dekla
 gotowości. Przeglądarkowe e2e z atrapą IPC **nie zastępuje** natywnego Cmd+V i nie będzie
 tak liczone.
 
+**ROZSTRZYGNIĘTE 2026-09-08: droga (b).** Właściciel wykonuje **jedno ręczne wklejenie**
+obrazu do biblioteki przy CT-09; ja zapisuję próbę w §4 razem z wersją aplikacji, SHA
+i tym, co widać na ekranie. Zgoda Accessibility dla binarki testowej **nie będzie
+proszona** — jeden gest człowieka jest tańszy niż uprawnienie systemowe przypięte do
+binarki, która i tak zmienia hasz przy każdej przebudowie.
+
 **D-3. CSP i zasoby bundla ograniczają dwa warianty PDF — ROZSTRZYGNIĘTE: zostawiamy.**
 Zgłoszone przez plan CT-02 zamiast wykonane (AGENTS.md §7). `src-tauri/tauri.conf.json` nie ma
 `wasm-unsafe-eval` w CSP ani `resources` w `bundle`, więc PDF z obrazami **JPEG 2000**
