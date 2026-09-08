@@ -90,6 +90,7 @@ read_run
 read_settings
 remove_context_source
 resolve_workflow_context
+resolve_workflow_plan
 rerun_step
 resume_run
 resume_trigger

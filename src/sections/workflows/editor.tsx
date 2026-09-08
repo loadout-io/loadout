@@ -53,7 +53,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { why } from '../../ipc/why';
 import type { Agent } from '../../state/agents';
 import type { WorkflowContextView } from '../../state/context';
-import type { Step, WorkflowFile } from '../../state/workflows';
+import type { Step, WorkflowFile, WorkflowPlanView } from '../../state/workflows';
 import { createWorkflowStore } from '../../state/workflows';
 import * as agentsIo from '../agents/io';
 import { WorkflowCanvas } from './canvas/canvas';
@@ -177,6 +177,8 @@ export function WorkflowEditor({
   const [openStepId, setOpenStepId] = useState<string | null>(openStep ?? null);
   const [contextView, setContextView] = useState<WorkflowContextView | null>(null);
   const [contextSaid, setContextSaid] = useState<string | null>(null);
+  const [planView, setPlanView] = useState<WorkflowPlanView | null>(null);
+  const [planSaid, setPlanSaid] = useState<string | null>(null);
 
   /* Czy lista uwag jest rozwinięta. Zwinięta na starcie i przy każdym wejściu w plik — powód
    * w całości stoi przy plakietce w nagłówku. */
@@ -214,8 +216,8 @@ export function WorkflowEditor({
     };
   }, [store]);
 
-  /* 2026-09-08 (CT-05) — jeden odczyt zasila picker workflow i panel kroku. Dwa efekty
-   * rozwiązywałyby ten sam dokument w dwóch chwilach i mogłyby pokazać dwie różne wersje. */
+  /* 2026-09-08 (WP-02) — Context i Plan mają jeden wspólny debounce. Dwa efekty
+   * rozwiązywałyby ten sam dokument w dwóch chwilach i mogłyby pokazać niespójny panel. */
   useEffect(() => {
     let current = true;
     /* 2026-09-08 (CT-05): edycja instrukcji tworzy dokument przy każdym znaku. Krótka zwłoka
@@ -231,6 +233,17 @@ export function WorkflowEditor({
         .catch((error: unknown) => {
           if (!current) return;
           setContextSaid(why(error, 'Context choices could not be read.'));
+        });
+      void disk
+        .resolvePlan(state.document)
+        .then((view) => {
+          if (!current) return;
+          setPlanView(view);
+          setPlanSaid(null);
+        })
+        .catch((error: unknown) => {
+          if (!current) return;
+          setPlanSaid(why(error, 'Plan choices could not be read.'));
         });
     }, 120);
     return () => {
@@ -578,6 +591,8 @@ export function WorkflowEditor({
               skills={skills}
               context={contextView}
               contextRefusal={contextSaid}
+              plan={planView}
+              planRefusal={planSaid ?? planView?.warnings[0] ?? null}
               onCreateAgent={onCreateAgent}
               onChooseAgent={(agentId) => {
                 /* Wybór agenta jest polem KROKU, nie nadpisaniem agenta, więc jedzie tą samą

@@ -18,7 +18,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
-import type { HostMaterial, Note, WorkflowFile } from '../../state/workflows';
+import type { HostMaterial, Note, WorkflowFile, WorkflowPlanView } from '../../state/workflows';
 import type { Definition } from '../../state/library';
 import type { WorkflowContextView } from '../../state/context';
 import { definitionsOf, healthyOnly } from '../../state/library';
@@ -109,6 +109,11 @@ export function check(workflow: WorkflowFile): Promise<Note[]> {
 /** Efektywny wybór i katalog do obu pickerów. `null` jest dozwolone dla starszej atrapy IPC. */
 export function resolveContext(workflow: WorkflowFile): Promise<WorkflowContextView | null> {
   return invoke<WorkflowContextView | null>('resolve_workflow_context', { workflow });
+}
+
+/** Źródło planu policzone z tego samego rozwiniętego grafu, którego używa Start. */
+export function resolvePlan(workflow: WorkflowFile): Promise<WorkflowPlanView> {
+  return invoke<WorkflowPlanView>('resolve_workflow_plan', { workflow });
 }
 
 /**

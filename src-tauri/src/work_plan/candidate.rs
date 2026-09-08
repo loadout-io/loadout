@@ -33,6 +33,8 @@ pub enum Mode {
 pub struct Configuration {
     pub mode: Mode,
     pub can_update: Vec<SectionKey>,
+    pub focus_on: Vec<SectionKey>,
+    pub same_plan_as: Option<String>,
 }
 
 impl Configuration {
@@ -49,6 +51,18 @@ impl Configuration {
         if configuration.mode != Mode::Update && !configuration.can_update.is_empty() {
             return Err(Error::Malformed(
                 "only a Plan Update step may name sections it can change".to_owned(),
+            ));
+        }
+        if configuration.mode != Mode::Use && !configuration.focus_on.is_empty() {
+            return Err(Error::Malformed(
+                "only a Plan Use step may name sections to focus on".to_owned(),
+            ));
+        }
+        if !matches!(configuration.mode, Mode::Update | Mode::Use)
+            && configuration.same_plan_as.is_some()
+        {
+            return Err(Error::Malformed(
+                "only a Plan Update or Use step may choose a plan source".to_owned(),
             ));
         }
         Ok(configuration)
@@ -109,6 +123,7 @@ impl Configuration {
             candidate,
             current,
             can_update,
+            focus_on: self.focus_on.clone(),
             human_requirements,
         })
     }
@@ -122,6 +137,7 @@ pub struct Prepared {
     candidate: PathBuf,
     current: Option<PlanVersion>,
     can_update: Vec<SectionKey>,
+    focus_on: Vec<SectionKey>,
     human_requirements: Vec<HumanRequirement>,
 }
 
@@ -173,9 +189,21 @@ impl Prepared {
             }
             Mode::Use => {
                 let current = self.current.as_ref()?;
+                let focus = if self.focus_on.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Give extra attention to these detailed sections: {}. The complete shared core and every human requirement still apply.",
+                        self.focus_on
+                            .iter()
+                            .map(SectionKey::label)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
                 Some(format!(
-                    "\nPLAN DOCUMENT\nUse the complete pinned plan version {} ({}). Read it with read_plan when needed. This step cannot publish a plan.\n",
-                    current.version, current.version_id
+                    "\nPLAN DOCUMENT\nUse the complete pinned plan version {} ({}). Read it with read_plan when needed. This step cannot publish a plan.{}\n",
+                    current.version, current.version_id, focus
                 ))
             }
             Mode::Off | Mode::Unknown => None,

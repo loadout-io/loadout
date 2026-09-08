@@ -3086,7 +3086,23 @@ pub async fn delete_workflow(
 #[tauri::command]
 pub async fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
     match tokio::task::spawn_blocking(move || {
-        commands::workflows::check_workflow_inner(&crate::loadout_dir(), workflow)
+        let mut notes = commands::workflows::check_workflow_inner(&crate::loadout_dir(), &workflow);
+        let plan_problems =
+            crate::workflow::work_plan::notes(&workflow, crate::workflow::work_plan::When::Running);
+        /* Zapis musi przyjąć nieukończony szkic, ale lista obok Startu nie może nazywać tej
+         * samej przeszkody tylko ostrzeżeniem. Podmieniamy poziom uwagi z tego samego resolvera,
+         * zamiast utrzymywać drugą odpowiedź o grafie w komendzie okna (2026-09-08, WP-02). */
+        for problem in plan_problems {
+            if let Some(note) = notes
+                .iter_mut()
+                .find(|note| note.step_id == problem.step_id && note.message == problem.message)
+            {
+                *note = problem;
+            } else {
+                notes.push(problem);
+            }
+        }
+        notes
     })
     .await
     {
@@ -3785,6 +3801,18 @@ pub async fn resolve_workflow_context(
     })
     .await
     .map_err(|error| did_not_finish("reading this workflow's context", &error))?
+}
+
+/// 2026-09-08 (WP-02): ten sam resolver zasila panel i mapę zamrażaną przed Startem.
+#[tauri::command]
+pub async fn resolve_workflow_plan(
+    workflow: crate::workflow::WorkflowFile,
+) -> Result<commands::workflow_plan::WorkflowPlanView, String> {
+    tokio::task::spawn_blocking(move || {
+        commands::workflow_plan::resolve_workflow_plan_inner(&workflow)
+    })
+    .await
+    .map_err(|error| did_not_finish("reading this workflow's plan", &error))
 }
 
 /// Nowy zestaw pod nazwą, którą wpisał człowiek.
@@ -5600,6 +5628,7 @@ macro_rules! every_command_the_window_can_call {
             preview_additional_inputs,
             remove_context_source,
             resolve_workflow_context,
+            resolve_workflow_plan,
             rerun_step,
             resume_run,
             resume_trigger,
