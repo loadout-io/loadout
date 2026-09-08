@@ -16,12 +16,13 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
+use std::io::Read as _;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
 
@@ -132,13 +133,15 @@ impl fmt::Display for Denied {
 impl std::error::Error for Denied {}
 
 /// Rodzaj pozycji na liście czytelnika.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ContextItemKind {
     #[default]
     Text,
     Image,
     Page,
+    #[serde(other)]
+    Unknown,
 }
 
 /// Jedna pozycja, którą odbiorca naprawdę dostał.
@@ -200,6 +203,8 @@ pub struct ContextImage {
     pub address: String,
     pub mime: String,
     pub data: String,
+    /// Liczba zwróconych bajtów przed base64; historia dostawy nie zgaduje jej z tekstu.
+    pub bytes: usize,
 }
 
 /// Którą pochodną obrazu czyta wołający. Model tej wartości nie wybiera.
@@ -213,14 +218,75 @@ pub enum ImageVariant {
 enum TextAt {
     Inline(Arc<str>),
     File(PathBuf),
+    Verified(FrozenFile),
+}
+
+/// 2026-09-08 (CT-06) — odcisk jest sprawdzany przy KAŻDYM odczycie, więc proces z szerokim
+/// dostępem nie może podmienić materiału między listą i późniejszą stroną tekstu.
+#[derive(Clone, Debug)]
+pub(crate) struct FrozenFile {
+    pub root: PathBuf,
+    pub relative: PathBuf,
+    pub digest: String,
+    pub bytes: usize,
+}
+
+/// Pozycja gotowa do złożenia półki jednego fizycznego odbiorcy.
+#[derive(Clone, Debug)]
+pub(crate) struct FrozenItem {
+    pub id: String,
+    pub source_id: String,
+    pub address: String,
+    pub name: String,
+    pub description: String,
+    pub kind: ContextItemKind,
+    pub page: Option<u32>,
+    pub pages_total: Option<u32>,
+    pub text: Option<FrozenFile>,
+    pub preview: Option<FrozenFile>,
+    pub agent_image: Option<FrozenFile>,
+}
+
+#[derive(Clone, Debug)]
+enum ImageAt {
+    File(PathBuf),
+    Verified(FrozenFile),
+}
+
+impl ImageAt {
+    fn read(&self) -> Result<Vec<u8>, Denied> {
+        match self {
+            Self::File(path) => fs::read(path).map_err(|_error| Denied::Unavailable),
+            Self::Verified(file) => file.read(),
+        }
+    }
+}
+
+impl FrozenFile {
+    fn read(&self) -> Result<Vec<u8>, Denied> {
+        let file = crate::engine::supervisor::open_private_file(
+            &self.root,
+            &self.relative,
+            crate::engine::supervisor::PrivateFileAccess::Read,
+        )
+        .map_err(|_error| Denied::Unavailable)?;
+        let mut bytes = Vec::new();
+        file.take(self.bytes as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_error| Denied::Unavailable)?;
+        if bytes.len() != self.bytes || format!("{:x}", Sha256::digest(&bytes)) != self.digest {
+            return Err(Denied::Unavailable);
+        }
+        Ok(bytes)
+    }
 }
 
 #[derive(Clone, Debug)]
 struct Material {
     listed: ContextItem,
     text: Option<TextAt>,
-    preview: Option<PathBuf>,
-    agent_image: Option<PathBuf>,
+    preview: Option<ImageAt>,
+    agent_image: Option<ImageAt>,
 }
 
 #[derive(Clone, Debug)]
@@ -399,6 +465,58 @@ pub struct ContextAccess {
 }
 
 impl ContextAccess {
+    /// Składa czytelnik wyłącznie z plików prywatnego pakietu biegu. Każde wywołanie dostaje
+    /// własną półkę i własny rejestr kursorów; wspólny zestaw nie tworzy globalnej blokady.
+    pub(crate) fn frozen(
+        holder: impl Into<String>,
+        package: impl Into<String>,
+        items: Vec<FrozenItem>,
+        expires: CancellationToken,
+    ) -> Result<Self, Error> {
+        let package = package.into();
+        let mut materials = BTreeMap::new();
+        for item in items {
+            let id = item.id.clone();
+            let material = Material {
+                listed: ContextItem {
+                    id: item.id,
+                    source_id: item.source_id,
+                    address: item.address,
+                    name: item.name,
+                    description: item.description,
+                    kind: item.kind,
+                    page: item.page,
+                    pages_total: item.pages_total,
+                    has_text: item.text.is_some(),
+                    has_image: item.agent_image.is_some(),
+                },
+                text: item.text.map(TextAt::Verified),
+                preview: item.preview.map(ImageAt::Verified),
+                agent_image: item.agent_image.map(ImageAt::Verified),
+            };
+            if materials.insert(id, material).is_some() {
+                return Err(Denied::OutsideRange.into());
+            }
+        }
+        let grants = materials
+            .keys()
+            .map(|id| (id.clone(), 0..usize::MAX))
+            .collect();
+        Ok(Self {
+            shelf: Arc::new(Shelf {
+                set_id: package.clone(),
+                revision: package,
+                materials,
+                by_source: BTreeMap::new(),
+                sources: BTreeMap::new(),
+                cursors: Mutex::new(BTreeMap::new()),
+            }),
+            holder: holder.into(),
+            grants,
+            expires,
+        })
+    }
+
     /// Buduje jeden zamrożony, tekstowy przydział bez tworzenia drugiego czytnika.
     #[must_use]
     pub(crate) fn one_text(
@@ -561,20 +679,22 @@ impl ContextAccess {
         self.alive()?;
         let material = self.material(id)?;
         self.grant_for(id)?;
-        let path = match variant {
+        let image = match variant {
             ImageVariant::Preview => material.preview.as_ref(),
             ImageVariant::Agent => material.agent_image.as_ref(),
         }
         .ok_or(Denied::NoImage)?;
-        let bytes = fs::read(path).map_err(|_error| Denied::Unavailable)?;
+        let bytes = image.read()?;
         if bytes.len() > limits::IMAGE_ANSWER_BYTES {
             return Err(Denied::ImageTooLarge);
         }
+        let byte_count = bytes.len();
         Ok(ContextImage {
             id: id.to_owned(),
             address: material.listed.address.clone(),
             mime: "image/png".to_owned(),
             data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            bytes: byte_count,
         })
     }
 
@@ -678,8 +798,8 @@ struct MaterialSpec {
     page: Option<u32>,
     pages_total: Option<u32>,
     text: Option<TextAt>,
-    preview: Option<PathBuf>,
-    agent_image: Option<PathBuf>,
+    preview: Option<ImageAt>,
+    agent_image: Option<ImageAt>,
 }
 
 /// Buduje wyłącznie bezpieczne pochodne jednego źródła; `open` składa z nich zamrożoną półkę.
@@ -729,8 +849,8 @@ fn materials_of(
                 MaterialSpec {
                     id,
                     kind: ContextItemKind::Image,
-                    preview: Some(version_root.join(THUMBNAIL)),
-                    agent_image: Some(version_root.join(FOR_THE_AGENT)),
+                    preview: Some(ImageAt::File(version_root.join(THUMBNAIL))),
+                    agent_image: Some(ImageAt::File(version_root.join(FOR_THE_AGENT))),
                     ..MaterialSpec::default()
                 },
             ))
@@ -757,8 +877,8 @@ fn materials_of(
                         page: Some(number),
                         pages_total: Some(pages),
                         text: Some(TextAt::File(stem.with_extension("txt"))),
-                        preview: picture.is_file().then_some(picture.clone()),
-                        agent_image: picture.is_file().then_some(picture),
+                        preview: picture.is_file().then(|| ImageAt::File(picture.clone())),
+                        agent_image: picture.is_file().then_some(ImageAt::File(picture)),
                     },
                 );
                 made.push((id, found));
@@ -827,6 +947,9 @@ fn text_of(material: &Material) -> Result<String, Denied> {
     match material.text.as_ref().ok_or(Denied::NoText)? {
         TextAt::Inline(text) => Ok(text.to_string()),
         TextAt::File(path) => fs::read_to_string(path).map_err(|_error| Denied::Unavailable),
+        TextAt::Verified(file) => {
+            String::from_utf8(file.read()?).map_err(|_error| Denied::Unavailable)
+        }
     }
 }
 

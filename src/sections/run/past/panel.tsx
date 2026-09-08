@@ -503,6 +503,7 @@ function Step({
         memory={step.memory ?? []}
         alsoLoaded={step.whatLoadoutDidNotGive ?? null}
         instructions={step.projectInstructions ?? []}
+        referenceMaterials={step.referenceMaterials ?? []}
       />
 
       {/* KROK JEST PUDEŁKIEM O SKOŃCZONEJ WYSOKOŚCI, i to jest cała naprawa tego ekranu.
@@ -569,20 +570,21 @@ function Step({
 /**
  * Zamrożony receipt — wyłącznie z `PastStep`, nigdy z dzisiejszego katalogu pamięci.
  *
- * DWA ŹRÓDŁA, JEDEN NAGŁÓWEK, i to jest niezmiennik 13: „co ten krok wiedział" jest jednym
- * pytaniem. Notatki to materiał, który Loadout do kroku WŁOŻYŁ; zdanie pod nimi to materiał,
- * który aplikacja agenta dobrała sobie z folderu POZA tym — a więc dokładnie ta różnica, po
- * którą człowiek tu przychodzi. Drugi region gdzie indziej na karcie kazałby czytać dwa
- * miejsca, żeby poznać jedną odpowiedź.
+ * JEDEN NAGŁÓWEK, i to jest niezmiennik 13: „co ten krok wiedział" jest jednym pytaniem.
+ * Instrukcje, notatki i materiały referencyjne są tym, co Loadout dał; zdanie obok mówi, co
+ * aplikacja agenta dobrała sama z folderu. Drugi region gdzie indziej na karcie kazałby czytać
+ * dwa miejsca, żeby poznać jedną odpowiedź.
  */
 function StepMemory({
   memory,
   alsoLoaded,
   instructions,
+  referenceMaterials,
 }: {
   memory: readonly PastMemory[];
   alsoLoaded: string | null;
   instructions: NonNullable<PastStep['projectInstructions']>;
+  referenceMaterials: NonNullable<PastStep['referenceMaterials']>;
 }): ReactElement {
   return (
     <section data-step-memory className="border-b border-line px-[18px] py-[9px]">
@@ -617,6 +619,15 @@ function StepMemory({
         <p data-also-loaded className="label">
           {alsoLoaded}
         </p>
+      )}
+      {referenceMaterials.length === 0 ? null : (
+        <ul data-reference-materials className="stack" data-gap="1">
+          {referenceMaterials.map((said, index) => (
+            <li key={`${index}:${said}`} className="caption">
+              {said}
+            </li>
+          ))}
+        </ul>
       )}
       {memory.length === 0 ? (
         <p className="lead">{NO_FROZEN_MEMORY}</p>

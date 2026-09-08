@@ -52,7 +52,7 @@ use super::isolate;
 use crate::engine::drivers::DecodedEvent;
 use crate::engine::drivers::claude::ClaudeDecoder;
 use crate::engine::drivers::codex::CodexDecoder;
-use crate::engine::line::{Curator, Line, Seen, context_per_turn};
+use crate::engine::line::{Curator, Line, Seen, context_per_turn, reference_material_delivery};
 use crate::engine::stream::{Decoded, decode};
 use crate::inherit::rewrite;
 
@@ -344,6 +344,9 @@ pub struct PastStepWire {
     /// WF-12: dokładne tekstowe źródła ze zwalidowanego, zamrożonego pakietu.
     /// Nie jest to raport natywnego autoładowania aplikacji agenta.
     pub project_instructions: Vec<crate::inherit::instructions::InstructionSource>,
+    /// Zdania z prywatnego rachunku materiałów tego fizycznego kroku.
+    /// `None` znaczy, że ten bieg nie ma takiego rachunku; treść źródeł nigdy tędy nie jedzie.
+    pub reference_materials: Option<Vec<String>>,
     /// Co aplikacja agenta wczytała z folderu tego kroku sama z siebie.
     ///
     /// `None` — a nie pusty rekord — dla każdego kroku, który tego nie ogłosił: kafelka
@@ -504,11 +507,13 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     let head = summary(&dir, &workflows);
     let described = read_description(&dir);
     let (instruction_package, instruction_problem) = instructions_of_run(&dir, described.as_ref());
+    let (context_package, context_problem) = context_of_run(&dir, described.as_ref());
     let steps = past_steps(
         project,
         &dir,
         described.as_ref(),
         instruction_package.as_ref(),
+        context_package.as_ref(),
     );
     // PO KROKACH, bo gałąź nazywa się kluczem kafelka, a człowiek czyta nazwy. Przed budową
     // struktury, bo `steps` idzie do niej przez przeniesienie.
@@ -549,6 +554,7 @@ pub fn read_run_inner(project: &Path, run: &str) -> Result<PastRunWire, HistoryE
     };
     let (result_folders, result_problem) = result_folders_of_run(&dir, &steps);
     let result_problem = both_sentences(result_problem, instruction_problem);
+    let result_problem = both_sentences(result_problem, context_problem);
     let result_problem = both_sentences(result_problem, saved_results_problem);
     let said = both_sentences(head.said, result_problem);
 
@@ -600,6 +606,35 @@ fn instructions_of_run(
                 None,
                 Some(format!(
                     "The saved project instructions could not be verified: {error}"
+                )),
+            ),
+        }
+    } else {
+        (None, None)
+    }
+}
+
+/// Zamrożony pakiet materiałów tego biegu — albo jedno zdanie zamiast niezweryfikowanych danych.
+fn context_of_run(
+    dir: &Path,
+    described: Option<&Description>,
+) -> (
+    Option<crate::commands::context_sources::Snapshot>,
+    Option<String>,
+) {
+    if described.is_some_and(|file| file.context_sources.is_some())
+        || fs::symlink_metadata(dir.join("context-sources/manifest.json")).is_ok()
+    {
+        match crate::commands::context_sources::read_bound(dir) {
+            Ok(Some(package)) => (Some(package), None),
+            Ok(None) => (
+                None,
+                Some("The saved reference materials do not have a matching run record.".to_owned()),
+            ),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "The saved reference materials could not be verified: {error}"
                 )),
             ),
         }
@@ -956,6 +991,8 @@ struct Description {
     memory: Vec<MemoryDescription>,
     #[serde(default)]
     project_instructions: Option<serde_json::Value>,
+    #[serde(default)]
+    context_sources: Option<serde_json::Value>,
     /// Rachunek prywatnej tury (T-165). Brak klucza znaczy „ten plik o tym nie mówi", i to jest
     /// inne zdanie niż rachunek zerowy — dlatego `Option`, a nie wartość domyślna struktury.
     #[serde(default)]
@@ -1083,6 +1120,7 @@ fn past_steps(
     dir: &Path,
     described: Option<&Description>,
     instruction_package: Option<&crate::inherit::instructions::InstructionSnapshot>,
+    context_package: Option<&crate::commands::context_sources::Snapshot>,
 ) -> Vec<PastStepWire> {
     match described {
         Some(file) => file
@@ -1112,6 +1150,30 @@ fn past_steps(
                         Vec::new,
                         crate::inherit::instructions::InstructionSnapshot::sources,
                     ),
+                reference_materials: context_package
+                    .filter(|_| step.executed == Some(true))
+                    .and_then(|package| match package.delivery_for(dir, &step.node_key) {
+                        Ok(records) => (!records.is_empty()).then(|| {
+                            records
+                                .into_iter()
+                                .map(|record| {
+                                    reference_material_delivery(
+                                        record.state,
+                                        &record.set_name,
+                                        &record.version,
+                                        &record.item,
+                                        &record.kind,
+                                        record.bytes,
+                                    )
+                                })
+                                .collect()
+                        }),
+                        // 2026-09-08 (CT-06) — uszkodzony rachunek nie staje się pustym
+                        // panelem; człowiek musi zobaczyć, że stanu Opened nie dało się dowieść.
+                        Err(error) => Some(vec![format!(
+                            "The reference-material delivery record could not be verified: {error}"
+                        )]),
+                    }),
                 what_loadout_did_not_give: what_loadout_did_not_give(
                     step.loaded_by_the_app.as_ref(),
                 ),

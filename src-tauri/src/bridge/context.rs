@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Answer, Call, host::Answers, verbs::Verb};
+use crate::commands::context_sources::Recorder;
 use crate::context::access::{ContextAccess, ImageVariant};
 
 /// Cztery nazwy należące do jednego ograniczonego czytelnika.
@@ -61,12 +62,26 @@ pub fn is_context_tool(name: &str) -> bool {
 #[derive(Debug)]
 pub struct ContextDesk {
     access: ContextAccess,
+    recorder: Option<Recorder>,
 }
 
 impl ContextDesk {
     #[must_use]
     pub fn new(access: ContextAccess) -> Self {
-        Self { access }
+        Self {
+            access,
+            recorder: None,
+        }
+    }
+
+    /// 2026-09-08 (CT-06) — wersja biegu zapisuje dopiero udane odpowiedzi. Samo wejście do
+    /// dispatchera nie jest odczytem, bo odmowa nie dostarczyła agentowi ani jednego bajtu.
+    #[must_use]
+    pub(crate) fn recording(access: ContextAccess, recorder: Recorder) -> Self {
+        Self {
+            access,
+            recorder: Some(recorder),
+        }
     }
 
     /// Lista dokładnie tego biurka, zamrożona z tym samym przydziałem co rozdzielnik.
@@ -90,14 +105,34 @@ impl ContextDesk {
                         "Give a search query and, for later pages, its exact reading cursor."
                             .to_owned()
                     })?;
-                value(self.access.search(&input.query, input.cursor.as_deref()))
+                let answer = self
+                    .access
+                    .search(&input.query, input.cursor.as_deref())
+                    .map_err(|error| error.to_string())?;
+                if let Some(recorder) = &self.recorder {
+                    for result in &answer.results {
+                        recorder
+                            .opened(&result.address, result.excerpt.len())
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                value(Ok::<_, String>(answer))
             }
             "read_context" => {
                 let input: Read = serde_json::from_value(call.input.clone()).map_err(|_error| {
                     "Choose one listed context item and pass only its exact reading cursor."
                         .to_owned()
                 })?;
-                value(self.access.read(&input.id, input.cursor.as_deref()))
+                let answer = self
+                    .access
+                    .read(&input.id, input.cursor.as_deref())
+                    .map_err(|error| error.to_string())?;
+                if let Some(recorder) = &self.recorder {
+                    recorder
+                        .opened(&answer.address, answer.text.len())
+                        .map_err(|error| error.to_string())?;
+                }
+                value(Ok::<_, String>(answer))
             }
             "view_context_image" => {
                 let input: View = serde_json::from_value(call.input.clone()).map_err(|_error| {
@@ -107,6 +142,11 @@ impl ContextDesk {
                     .access
                     .image(&input.id, ImageVariant::Agent)
                     .map_err(|error| error.to_string())?;
+                if let Some(recorder) = &self.recorder {
+                    recorder
+                        .opened(&image.address, image.bytes)
+                        .map_err(|error| error.to_string())?;
+                }
                 Ok(Answer::Image {
                     data: image.data,
                     mime: image.mime,

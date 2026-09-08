@@ -93,6 +93,9 @@ pub enum ContextKind {
     LoadedByTheApp,
     /// WF-12: treść i zakres pochodzą ze wspólnego resolvera, nie z raportu autoładowania CLI.
     ProjectInstruction,
+    /// CT-06: opracowanie i źródła zamrożone w prywatnym pakiecie biegu. Wariant dopisany
+    /// na końcu zachowuje addytywny drut starszych zapisów (niezmiennik 25).
+    ReferenceMaterial,
 }
 
 /// Bezpieczny fakt o obrazie. Bajty obrazu nie implementuja tego typu.
