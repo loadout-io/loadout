@@ -16613,7 +16613,15 @@ impl Live {
     /// Wołana wyłącznie wtedy, gdy jest co wymienić: nagłówek nad zerem wpisów jest zdaniem
     /// o niczym (powód przy [`Live::prompt_for`]).
     fn index_of_what_came_before(&self, handed: &[Handed], told: &mut Told) -> anyhow::Result<()> {
-        told.prompt.push_str("\n\n");
+        // 2026-09-08 — SEPARATOR TYLKO WTEDY, GDY JEST CO ODDZIELAĆ. Ta funkcja dopisywała
+        // kiedyś na koniec niepustego promptu, więc bezwarunkowe `\n\n` było poprawne. WP-04b
+        // przekierował ją do ŚWIEŻEGO bufora bloku wejściowego, a wtedy ten sam separator staje
+        // się pustą linią na początku — i wołający dokłada własny. Prompt Claude'a urósł przez to
+        // o dwa znaki, co złapała wyrocznia bajt w bajt z T-115. Blok nie zna już swojego
+        // sąsiedztwa, więc sklejanie należy do tego, kto go wstawia.
+        if !told.prompt.is_empty() {
+            told.prompt.push_str("\n\n");
+        }
         told.prompt.push_str(HANDOFF_INDEX_OPENS);
         for hand in handed {
             let handoff_bytes = Self::published_handoff_bytes(hand)?;
