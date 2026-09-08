@@ -7,7 +7,8 @@ use serde_json::Value;
 
 use super::{
     Error, HumanRequirement, PlanCreate, PlanDocument, PlanUpdate, PlanVersion, Publication,
-    SectionKey, Stamp, first_document, publish_version, read_current_version, updated_document,
+    SectionKey, Stamp, detail_index, first_document, publish_version, read_current_version,
+    render_core, render_details, updated_document,
 };
 
 pub const DOCUMENT_ID: &str = "workflow-plan";
@@ -141,6 +142,15 @@ pub struct Prepared {
     human_requirements: Vec<HumanRequirement>,
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkPlanCore {
+    pub version: u64,
+    pub version_id: String,
+    pub required: String,
+    pub details: String,
+    pub index: Vec<(String, String)>,
+}
+
 impl Prepared {
     #[must_use]
     pub fn mode(&self) -> Mode {
@@ -160,6 +170,18 @@ impl Prepared {
     #[must_use]
     pub fn current(&self) -> Option<&PlanVersion> {
         self.current.as_ref()
+    }
+
+    #[must_use]
+    pub fn core_for_prompt(&self) -> Option<WorkPlanCore> {
+        let current = self.current.as_ref()?;
+        Some(WorkPlanCore {
+            version: current.version,
+            version_id: current.version_id.clone(),
+            required: render_core(current),
+            details: render_details(&current.document, &self.focus_on),
+            index: detail_index(&current.document),
+        })
     }
 
     #[must_use]

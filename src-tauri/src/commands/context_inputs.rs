@@ -26,8 +26,12 @@ use super::workflow_context::ContextRefusal;
 
 const HEADING: &str = "## Reference materials";
 const REQUIREMENTS: &str = "Important requirements:";
-const INDEX: &str = "Available topics and sources:";
+const INDEX: &str = "Available topics and sources (optional):";
 const READ_MORE: &str = "Use list_context, search_context, read_context and view_context_image to read the full frozen material. These tools can only reach material given to this step.";
+const PLAN_CORE_OPENS: &str = "## Required plan core";
+const PLAN_CORE_CLOSES: &str = "## End required plan core";
+const PLAN_DETAILS: &str = "## Optional plan details";
+const PLAN_INDEX: &str = "## Optional plan index";
 
 /// Jeden fizyczny odbiorca rozwiniętego grafu. `tile_key` wybiera przypięcia, a `node_key`
 /// nadaje osobny adres kopii albo rundzie.
@@ -40,13 +44,55 @@ pub(crate) struct Recipient<'a> {
 /// Wynik czystego planowania. Pliki wejściowe pozostają prywatne i są kopiowane dopiero po
 /// utworzeniu prowizorycznego katalogu biegu.
 pub(crate) struct Prepared {
-    prompts: BTreeMap<String, String>,
+    prompts: BTreeMap<String, ContextBlock>,
     snapshot: Option<Snapshot>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ContextBlock {
+    pub required: String,
+    pub optional: String,
+    pub required_name: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct Composed {
+    pub prompt: String,
+}
+
+pub fn compose(
+    consumer: &str,
+    tile_key: &str,
+    plan: Option<&crate::work_plan::WorkPlanCore>,
+    context_block: &ContextBlock,
+    handoff_index: &str,
+) -> Result<Composed, ContextRefusal> {
+    let mut prompt = required_input(plan, context_block);
+    if prompt.len() > STEP_PROMPT_BYTES {
+        return Err(too_large(consumer, tile_key, plan, context_block));
+    }
+
+    let plan_index = plan.map_or_else(String::new, plan_index);
+    if let Some(plan) = plan
+        && !plan.details.is_empty()
+        && prompt
+            .len()
+            .saturating_add(4)
+            .saturating_add(plan.details.len())
+            .saturating_add(plan_index.len())
+            <= STEP_PROMPT_BYTES
+    {
+        push_optional(&mut prompt, &format!("{PLAN_DETAILS}\n{}", plan.details));
+    }
+    push_optional(&mut prompt, &plan_index);
+    push_optional(&mut prompt, &context_block.optional);
+    push_optional(&mut prompt, handoff_index);
+    Ok(Composed { prompt })
+}
+
 impl Prepared {
-    pub fn prompt_for(&self, node_key: &str) -> &str {
-        self.prompts.get(node_key).map_or("", String::as_str)
+    pub fn prompt_for(&self, node_key: &str) -> ContextBlock {
+        self.prompts.get(node_key).cloned().unwrap_or_default()
     }
 
     pub fn evidence_for(
@@ -116,7 +162,11 @@ pub(crate) fn prepare(
         for pin in &effective.sets {
             resolved.push(resolve_set(&library, pin, recipient)?);
         }
-        let prompt = prompt_for(&resolved, recipient)?;
+        let prompt = prompt_for(&resolved);
+        // 2026-09-08 (WP-04b) — wymagania Context są znane przed biegiem. Przechodzą przez
+        // ten sam kompozytor co późniejszy Plan i indeks przekazań, ale już tutaj odmawiają,
+        // jeżeli same nie mieszczą się przed pierwszym procesem.
+        compose(recipient.name, recipient.tile_key, None, &prompt, "")?;
         let mut selected = Vec::new();
         let mut delivery = Vec::new();
         for set in resolved {
@@ -676,48 +726,26 @@ fn existing(
     }
 }
 
-fn prompt_for(sets: &[ResolvedSet], recipient: &Recipient<'_>) -> Result<String, ContextRefusal> {
-    let mut prompt = format!("{HEADING}\n{REQUIREMENTS}\n");
+fn prompt_for(sets: &[ResolvedSet]) -> ContextBlock {
+    let mut required = format!("{HEADING}\n{REQUIREMENTS}\n");
     for set in sets {
         let _ = write!(
-            prompt,
+            required,
             "\n### {} ({})\nPurpose: {}\n",
             set.title, set.version, set.purpose
         );
         for requirement in &set.requirements {
-            let _ = write!(prompt, "- {}", requirement.text);
+            let _ = write!(required, "- {}", requirement.text);
             if !requirement.condition.trim().is_empty() {
-                let _ = write!(prompt, "\n  When: {}", requirement.condition);
+                let _ = write!(required, "\n  When: {}", requirement.condition);
             }
-            prompt.push('\n');
-        }
-        if prompt.len() > STEP_PROMPT_BYTES {
-            return Err(refusal(
-                recipient.tile_key,
-                format!(
-                    "{} cannot start because the important requirements in {} exceed 24 KiB. They were not shortened. Choose fewer topics or split the set.",
-                    recipient.name, set.title
-                ),
-            ));
+            required.push('\n');
         }
     }
-    let fixed_tail = format!("\n{INDEX}\n\n{READ_MORE}");
-    if prompt.len().saturating_add(fixed_tail.len()) > STEP_PROMPT_BYTES {
-        let title = sets
-            .last()
-            .map_or("the selected sets", |set| set.title.as_str());
-        return Err(refusal(
-            recipient.tile_key,
-            format!(
-                "{} cannot start because the important requirements in {} exceed 24 KiB. They were not shortened. Choose fewer topics or split the set.",
-                recipient.name, title
-            ),
-        ));
-    }
-    prompt.push('\n');
-    prompt.push_str(INDEX);
-    prompt.push('\n');
-    let instruction_bytes = READ_MORE.len().saturating_add(2);
+    // 2026-09-08 (WP-04b) — czasownik odczytu stoi przed zmiennym indeksem, bo to jego
+    // końcówkę obciąłby wspólny budżet jako pierwszą. Indeks bez działającej drogi odczytu
+    // byłby listą adresów bez handlera (niezmiennik 16).
+    let mut optional = format!("{INDEX}\n\n{READ_MORE}\n");
     for set in sets {
         let mut index = format!("\n### {} ({})\n", set.title, set.version);
         for (id, title) in &set.topics {
@@ -728,14 +756,86 @@ fn prompt_for(sets: &[ResolvedSet], recipient: &Recipient<'_>) -> Result<String,
             let line = format!("- Source: {name} — `{id}`\n");
             push_within(&mut index, &line, SHORT_INDEX_BYTES);
         }
-        let remaining = STEP_PROMPT_BYTES
-            .saturating_sub(prompt.len())
-            .saturating_sub(instruction_bytes);
-        push_within(&mut prompt, &index, remaining.min(SHORT_INDEX_BYTES));
+        push_within(&mut optional, &index, SHORT_INDEX_BYTES);
     }
-    prompt.push_str("\n\n");
-    prompt.push_str(READ_MORE);
-    Ok(prompt)
+    ContextBlock {
+        required,
+        optional,
+        required_name: sets.last().map(|set| set.title.clone()),
+    }
+}
+
+fn required_input(plan: Option<&crate::work_plan::WorkPlanCore>, context: &ContextBlock) -> String {
+    let mut required = String::new();
+    if let Some(plan) = plan {
+        let _ = write!(
+            required,
+            "{PLAN_CORE_OPENS}\n{}\n{PLAN_CORE_CLOSES}",
+            plan.required
+        );
+    }
+    if !context.required.is_empty() {
+        if !required.is_empty() {
+            required.push_str("\n\n");
+        }
+        required.push_str(&context.required);
+    }
+    required
+}
+
+fn plan_index(plan: &crate::work_plan::WorkPlanCore) -> String {
+    let mut index = format!(
+        "{PLAN_INDEX}\nPinned version: {} (`{}`)\n",
+        plan.version, plan.version_id
+    );
+    for (id, description) in &plan.index {
+        let _ = writeln!(index, "- `{id}` — {description}");
+    }
+    let _ = write!(
+        index,
+        "Read the pinned plan with read_plan and version ID `{}` for any detail not included above.",
+        plan.version_id
+    );
+    index
+}
+
+fn push_optional(target: &mut String, text: &str) {
+    if text.is_empty() || target.len() >= STEP_PROMPT_BYTES {
+        return;
+    }
+    let separator = if target.is_empty() { "" } else { "\n\n" };
+    let room = STEP_PROMPT_BYTES.saturating_sub(target.len());
+    if room <= separator.len() {
+        return;
+    }
+    target.push_str(separator);
+    push_within(target, text, room - separator.len());
+}
+
+fn too_large(
+    consumer: &str,
+    tile_key: &str,
+    plan: Option<&crate::work_plan::WorkPlanCore>,
+    context: &ContextBlock,
+) -> ContextRefusal {
+    if plan.is_some() {
+        return refusal(
+            tile_key,
+            format!(
+                "{consumer} cannot start because its required plan core and important reference requirements exceed 24 KiB. Nothing was shortened. Reduce or split the scope."
+            ),
+        );
+    }
+    let title = context
+        .required_name
+        .as_deref()
+        .unwrap_or("the selected sets");
+    refusal(
+        tile_key,
+        format!(
+            "{consumer} cannot start because the important requirements in {title} exceed 24 KiB. They were not shortened. Choose fewer topics or split the set."
+        ),
+    )
 }
 
 fn push_within(target: &mut String, text: &str, room: usize) {

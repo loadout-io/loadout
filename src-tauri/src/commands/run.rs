@@ -4309,8 +4309,9 @@ struct AgentJob {
     /// nikt, więc indeksu nie ma tu z czego zbudować. Jedno i drugie jedzie do sterownika jako
     /// **dane** i wychodzi stdinem (niezmiennik 9).
     prompt: String,
-    /// Osobny blok danych referencyjnych. Nie trafia do instrukcji systemowych agenta.
-    reference_materials: String,
+    /// Wymagania i indeks danych referencyjnych, rozdzielone przed wspólnym rachunkiem promptu.
+    /// Nie trafiają do instrukcji systemowych agenta.
+    reference_materials: super::context_inputs::ContextBlock,
     /// O co poproszono TEN kafelek — dosłownie z pliku workflow, bez ani jednego naszego bajtu.
     ///
     /// Jedyne zdanie o tym kroku, które napisał człowiek, więc jedyne, które nadaje się na tytuł
@@ -4771,9 +4772,7 @@ fn freeze_context_inputs(
         })?;
     for step in steps {
         if let Job::Agent(job) = &mut step.job {
-            prepared
-                .prompt_for(&step.node_key)
-                .clone_into(&mut job.reference_materials);
+            job.reference_materials = prepared.prompt_for(&step.node_key);
             job.context.extend(
                 prepared
                     .evidence_for(&step.node_key)
@@ -6498,7 +6497,7 @@ fn plan_agent(
         // stojącym nad wszystkim, zadanie biegu jest polem pracy, a prompt kroku jest robotą
         // w tym polu — od najogólniejszego do najkonkretniejszego, czyli tak, jak to czyta model.
         prompt: with_what_we_know(&knows, &with_the_task(task, &instructions)),
-        reference_materials: String::new(),
+        reference_materials: super::context_inputs::ContextBlock::default(),
         asked: instructions,
         context,
         memory,
@@ -16363,6 +16362,14 @@ impl Live {
                 };
                 next
             };
+            let next = match self.next_turn_with_plan_core(id, next) {
+                Ok(next) => next,
+                Err(why) => {
+                    self.update(|book| book.steps[id].error = Some(why.clone()));
+                    finished = Ended::Turn(Err(anyhow::Error::new(WorkPlanRefused(why))));
+                    break;
+                }
+            };
             if voice.send(ToAgent::Turn(next)).await.is_err() {
                 // Transport padł między przyjęciem a podaniem. Krok kończy się na tym, co ma;
                 // nieoddane zdania rozliczy `step_session_finished`.
@@ -16399,6 +16406,31 @@ impl Live {
         report
     }
 
+    fn next_turn_with_plan_core(&self, id: StepId, mut next: String) -> Result<String, String> {
+        let Job::Agent(job) = &self.plan.steps[id].job else {
+            return Ok(next);
+        };
+        let plan = self
+            .prepared_work_plan(id, job)?
+            .as_ref()
+            .and_then(crate::work_plan::Prepared::core_for_prompt);
+        let composed = super::context_inputs::compose(
+            &self.plan.steps[id].name,
+            &self.plan.steps[id].tile_key,
+            plan.as_ref(),
+            &super::context_inputs::ContextBlock::default(),
+            "",
+        )
+        .map_err(|refusal| refusal.message)?;
+        if !composed.prompt.is_empty() {
+            // 2026-09-08 (WP-04b) — nowa tura nie może polegać na pamięci procesu vendora.
+            // Loadout kontroluje tę granicę sesji, więc ponownie podaje przypięty rdzeń tutaj.
+            next.push_str("\n\n");
+            next.push_str(&composed.prompt);
+        }
+        Ok(next)
+    }
+
     /// Prompt kroku: jego **własna instrukcja**, indeks przekazań poprzedników i umowa o tym,
     /// jak odpowiedzieć.
     ///
@@ -16430,37 +16462,56 @@ impl Live {
         minutes: u32,
     ) -> anyhow::Result<Told> {
         let handed = self.handed_before(id);
-        let mut told = Told {
-            prompt: instructions.to_owned(),
+        let mut handoff = Told {
+            prompt: String::new(),
             reads: Vec::with_capacity(handed.len()),
             context: planned_context.to_vec(),
             extra_dirs: Vec::new(),
         };
-        if let Job::Agent(job) = &self.plan.steps[id].job
-            && !job.reference_materials.is_empty()
-        {
-            // 2026-09-08 (CT-06) — materiały są osobnym blokiem danych przed przekazaniami;
-            // kontrakt odpowiedzi zostaje na końcu i `system_append` pozostaje nietknięty.
-            told.prompt.push_str("\n\n");
-            told.prompt.push_str(&job.reference_materials);
-        }
         if !handed.is_empty() {
-            self.index_of_what_came_before(&handed, &mut told)?;
+            self.index_of_what_came_before(&handed, &mut handoff)?;
             if let Job::Agent(job) = &self.plan.steps[id].job
                 && !job.driver.carries_extra_dirs()
             {
-                told.prompt.push_str("\n\n");
-                told.prompt.push_str(HANDOFF_PATHS_ARE_OUTSIDE);
+                handoff.prompt.push_str("\n\n");
+                handoff.prompt.push_str(HANDOFF_PATHS_ARE_OUTSIDE);
             }
+        }
+        let empty_context = super::context_inputs::ContextBlock::default();
+        let (prepared, context_block) = match &self.plan.steps[id].job {
+            Job::Agent(job) => (
+                self.prepared_work_plan(id, job)
+                    .map_err(|why| anyhow::Error::new(WorkPlanRefused(why)))?,
+                &job.reference_materials,
+            ),
+            Job::Ask { .. } | Job::Check(_) | Job::Serve(_) => (None, &empty_context),
+        };
+        let core = prepared
+            .as_ref()
+            .and_then(crate::work_plan::Prepared::core_for_prompt);
+        let composed = super::context_inputs::compose(
+            &self.plan.steps[id].name,
+            &self.plan.steps[id].tile_key,
+            core.as_ref(),
+            context_block,
+            &handoff.prompt,
+        )
+        .map_err(|refusal| anyhow::Error::new(WorkPlanRefused(refusal.message)))?;
+        let mut told = Told {
+            prompt: instructions.to_owned(),
+            reads: handoff.reads,
+            context: handoff.context,
+            extra_dirs: handoff.extra_dirs,
+        };
+        if !composed.prompt.is_empty() {
+            // 2026-09-08 (WP-04b) — jeden blok niesie Plan, Context i przekazania. Trzy
+            // doklejenia z własnymi limitami pozwalały sumie przekroczyć wspólny przydział.
+            told.prompt.push_str("\n\n");
+            told.prompt.push_str(&composed.prompt);
         }
         told.prompt.push_str("\n\n");
         told.prompt.push_str(HOW_TO_ANSWER);
-        if let Job::Agent(job) = &self.plan.steps[id].job
-            && let Some(instruction) = self
-                .prepared_work_plan(id, job)
-                .map_err(|why| anyhow::Error::new(WorkPlanRefused(why)))?
-                .and_then(|prepared| prepared.instruction())
-        {
+        if let Some(instruction) = prepared.and_then(|prepared| prepared.instruction()) {
             // 2026-09-08 — stoi po zakazie zapisu zwykłego wyniku, aby kandydat był jawnie
             // nazwanym wyjątkiem i nie zastąpił przekazania, które Loadout nadal zapisuje sam.
             told.prompt.push_str(&instruction);
