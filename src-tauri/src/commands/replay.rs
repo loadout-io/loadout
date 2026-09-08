@@ -327,6 +327,13 @@ fn recorded_context_sources(
         .ok_or_else(|| unavailable("the saved reference materials disappeared while held"))?;
     // 2026-09-08 (CT-08): pakiet bez kontekstu jest poprawnym historycznym wejściem, ale
     // istniejący pakiet nie może zniknąć ani zmienić się w oknie między odczytem i blokadą.
+    //
+    // BEZ ŚWIADKA I ŚWIADOMIE. To jest wyścig między dwoma odczytami w jednej synchronicznej
+    // funkcji, więc test nie ma jak wejść pomiędzy nie bez szwu wstawionego wyłącznie dla
+    // niego. Mutacja zamieniająca to `Err` na `Ok(None)` przechodzi całą suitę — sprawdzone
+    // 2026-09-08. Sąsiednie okno, między podglądem a potwierdzeniem, JEST pokryte
+    // (`package_changes_after_preview_or_confirmation_refuse_before_a_process`), a podmiana
+    // całego cudzego pakietu też (`a_whole_foreign_package_refuses_even_though_every_digest_matches`).
     if snapshot
         .binding()
         .map_err(|error| unavailable(&error.to_string()))?

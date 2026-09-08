@@ -834,6 +834,46 @@ async fn authorize(
     Ok(request_id)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_whole_foreign_package_refuses_even_though_every_digest_matches()
+-> Result<(), Box<dyn Error>> {
+    let swapped = package_fixture().await?;
+
+    // Przesłanka: zanim cokolwiek podmienimy, TEN SAM wywołanie musi się udać. Bez tego
+    // asercja przechodzi także dla `prepare_replay_inner`, które odmawia zawsze.
+    let honest = swapped
+        .state
+        .prepare_replay_inner(
+            swapped.folder()?,
+            &swapped.source.id,
+            json!({"kind":"all"}),
+            "recorded",
+        )
+        .await;
+    assert!(
+        honest.is_ok(),
+        "the fixture cannot preview its own untouched package: {honest:?}"
+    );
+
+    swap_in_a_foreign_package(&swapped.source.dir)?;
+    let answer = swapped
+        .state
+        .prepare_replay_inner(
+            swapped.folder()?,
+            &swapped.source.id,
+            json!({"kind":"all"}),
+            "recorded",
+        )
+        .await;
+    assert_recorded_refusal(
+        answer,
+        "a package belonging to another run produced a preview",
+    )?;
+    assert!(swapped.starts()?.is_empty());
+    swapped.state.close_everything_down().await;
+    Ok(())
+}
+
 fn flip_manifest_byte(run_dir: &Path) -> Result<(), Box<dyn Error>> {
     let path = run_dir.join("context-sources/manifest.json");
     let mut bytes = fs::read(&path)?;
@@ -843,6 +883,24 @@ fn flip_manifest_byte(run_dir: &Path) -> Result<(), Box<dyn Error>> {
         .ok_or("the manifest has no stable text to change")?;
     bytes[at] = b'X';
     fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Podmienia manifest na WEWNĘTRZNIE POPRAWNY, ale należący do innego pakietu.
+///
+/// 2026-09-08 (CT-08, luka wyroczni) — `flip_manifest_byte` i przepisanie pliku pakietu psują
+/// ODCISKI, więc obie te drogi wpadają w kontrolę sum kontrolnych wewnątrz `read_package`.
+/// Wiązanie z `run.json` — czyli jedyna kontrola, która odróżnia „to jest CUDZY pakiet" od
+/// „ten pakiet jest uszkodzony" — nie miała ani jednego świadka: mutacja zamieniająca jej
+/// `Err` na `Ok(None)` przechodziła całą suitę na zielono. Tu zmienia się wyłącznie
+/// identyfikator manifestu, a wszystkie odciski plików zostają zgodne.
+fn swap_in_a_foreign_package(run_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let path = run_dir.join("context-sources/manifest.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    manifest["id"] = json!(uuid::Uuid::now_v7().to_string());
+    let bytes = serde_json::to_vec(&manifest)?;
+    fs::write(&path, bytes)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
