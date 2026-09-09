@@ -435,6 +435,52 @@ okno, między podglądem a potwierdzeniem, **jest** pokryte
 biegnie jego test. Trzy z sześciu kryteriów tego etapu mają po jednym teście — te warto sprawdzić
 mutacją, zanim wpiszę im `passed`.
 
+### 1h. Natywne QA: pięć wad, których nie widziały żadne testy
+
+Właściciel przeszedł ścieżkę w **prawdziwym oknie** na izolowanym `HOME`. Bramka była wtedy
+zielona na 412 plikach testowych. Wyszło pięć rzeczy — **cztery poprawione, jedna okazała się
+poprawnym zachowaniem**.
+
+| Co | Rozstrzygnięcie |
+|---|---|
+| `Save` udawał się w milczeniu (`draftRevision` doszedł do 8, zero odmów) | naprawione: zdanie mówi, **co jest następne**, nie „Saved" |
+| Katalog projektu, który aplikacja wybrała sama, **nie istniał** | naprawione: `project_dir_ready` zakłada go na starcie |
+| `No such file or directory (os error 2)` jako zdanie dla człowieka | naprawione: sprawdzenie tam, gdzie znane są **nazwy**; granica dalej odmawia |
+| `Rebuild context` po **nieudanej** pierwszej próbie | naprawione: trzy stany, trzy zdania (`Build` / `Try building again` / `Rebuild`) |
+| Zestaw bez gotowej wersji **nie da się zaznaczyć** w panelu kroku | **poprawne zachowanie** — i ekran mówi dlaczego |
+
+Dwie rzeczy z tej listy zasługują na osobne zdanie.
+
+**Pliki są prawdą, baza jest indeksem — dowiedzione na żywej instancji, nie w teście.**
+Korzystając z okazji usunąłem `loadout.db` przy zamkniętej aplikacji. Wstała, **odtworzyła
+indeks z plików**, a zestaw i wklejony obraz były na miejscu, bajt w bajt (SHA-256 przed
+i po zamknięciu identyczny). To niezmiennik 4 sprawdzony na produkcie.
+
+**Wklejony obraz to zrzut ekranu właściciela i nie oglądałem go ani razu** — tożsamość
+sprawdzona po odcisku i wymiarach (2588×1458 RGBA), pochodne czytelnika powstały
+(`for-the-agent.png` 1568×883, `thumbnail.png`). Kryterium §14 mówi wprost „wklejenie tekstu
+i **screenshotu**", więc prawdziwy zrzut jest tu właściwym materiałem, lepszym od mojego
+obrazu kontrolnego.
+
+### 1i. Trzy uwagi właściciela o UI, wszystkie wykonane
+
+| Uwaga | Co zrobione |
+|---|---|
+| „kontekst jest w chuj schowany w opcjach a powinien być na wierzchu, tak samo plan" | **UX-1**: piątka zostaje piątką — Context i Plan weszły, `Ile naraz` i `Gdy się nie uda` zeszły. Wyrocznia pięciu pól dostała **nową listę, nie zniesienie** |
+| „mega chujowe checkboxy, trzeba je przepisać i podmienić wszędzie" | **UX-2**: jedna kontrolka w `src/ui/primitives/tick.tsx`; **jeden** `type="checkbox"` w całym kodzie produktu, asercji na roli z 14 do 19 |
+| „UX tworzenia kontekstu jest jakiś zjebany, uprość go" | **UX-3**: trzy stany przycisku, placeholder modelu zależny od vendora, jedno zdanie prowadzące od materiału do gotowej wersji |
+
+Osobno, z tego samego zgłoszenia: **`Use` dziedziczy się po krokach potomnych** (WP-08),
+materializowane do pliku, żeby build nieznający dziedziczenia nie wykonał go po cichu jako
+`Off`. Ręczne `Off` jest chronione — „nie ustawione" i „ustawione na `Off`" to **dwa różne
+stany**.
+
+**Regresja złapana dopiero pełnym CI po scaleniu UX-2:** `position: relative` na nowej
+kontrolce sprawiało, że próbne kliknięcie Playwrighta przewijało listę importu o 41 px, mimo
+że pole było w całości widoczne. Znalezione bisekcją; ptaszek jest teraz elementem siatki bez
+żadnego `position`. Komentarz pierwszego podejścia obwiniał `inline-grid` — mylnie, bo stało
+ono tam **razem** z `position: relative`.
+
 ## 2. Kryteria odbioru (plan §14)
 
 Status jest **per ścieżka dowodu**, nie per wrażenie. `passed` znaczy: istnieje test na
