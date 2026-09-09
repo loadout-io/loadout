@@ -722,10 +722,18 @@
    * pseudoelementem, żeby kontrolka nie dokładała tekstu ani drugiego węzła do gęstości. */
   .tick {
     appearance: none;
-    /* 2026-09-09 (UX-2) — `inline-grid` dawał ptaszkowi udział w geometrii kontrolki, przez co
-     * próbne kliknięcie Playwrighta przewijało listę importu o 9,3 px. Ptaszek biegnie poza układem. */
-    position: relative;
-    display: inline-block;
+    /* 2026-09-09 (UX-2, druga poprawka) — BEZ `position`, i to jest wymaganie, nie estetyka.
+     * Zmierzone bisekcją: `position: relative` na tym polu sprawiało, że próbne kliknięcie
+     * Playwrighta przewijało listę importu o 41 px, mimo że pole było w CAŁOŚCI widoczne
+     * (344–358 w liście 302–607). Natywny input w tym samym miejscu nie przewijał nic.
+     * Pozycjonowany element zmienia łańcuch, po którym Chromium liczy „czy trzeba przewinąć",
+     * i wywraca `import-list-stays-visible`.
+     *
+     * Ptaszek jest więc ELEMENTEM SIATKI, nie warstwą absolutną: `inline-grid` plus
+     * `place-content: center` ustawia go w środku bez żadnego `position`. Pierwsze podejście
+     * miało `inline-grid` RAZEM z `position: relative` i dlatego wyglądało na winę siatki. */
+    display: inline-grid;
+    place-content: center;
     width: 13px;
     height: 13px;
     flex: none;
@@ -740,15 +748,14 @@
   }
 
   .tick::after {
-    position: absolute;
-    top: 50%;
-    left: 50%;
     width: 3px;
     height: 6px;
     border-right: 1px solid var(--color-bg);
     border-bottom: 1px solid var(--color-bg);
     content: "";
-    transform: translate(-50%, -50%) rotate(45deg) scale(0);
+    /* Bez `translate`, bo środek daje `place-content` rodzica. `scale(0)` zostaje: ptaszek
+       ma zniknąć bez zmiany pudełka, żeby zaznaczenie nie ruszało układu wiersza. */
+    transform: rotate(45deg) scale(0);
     transform-origin: center;
   }
 
