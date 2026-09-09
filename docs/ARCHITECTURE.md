@@ -545,6 +545,12 @@ usunięcia którejś z tych dwóch.
   memory/notes/<slug>.md             # jedna notatka, jeden plik; ZAKRES JEST WE FRONT-MATTERZE,
                                      # nie w katalogu (`memory/notes.rs`)
   memory/discarded/<slug>.md         # odrzucona ręką człowieka; nic nie ginie twardo (T-92)
+  contexts/<slug>-<id>/              # BIBLIOTEKA KONTEKSTU (CT-01…CT-08)
+    manifest.json                    # tytuł, opis, `latestReadyRevision`, `draftRevision`
+    draft.json                       # SZKIC: to, co człowiek napisał i wkleił, słowo w słowo
+    sources/<id>/<rev>/original.png  # oryginał, nietknięty
+    sources/<id>/<rev>/for-the-agent.png   # pochodna czytelnika; miniatura obok
+    revisions/<rev>/                 # OPUBLIKOWANA, niezmienna wersja — to dostaje krok
 
 <repo>/.loadout/                     # projektowe, bezpieczne do commitowania
   memory/…                            # wyłącznie zakres ThisProject
@@ -559,6 +565,10 @@ usunięcia którejś z tych dwóch.
     claude-settings-<work-key>.json  # prywatna pamięć i deny dla jednego fizycznego spawnu
     work/<krok>/                     # kopia plików kroku — ZNIKA po biegu, praca zostaje
                                      # na gałęzi `loadout/<bieg>/<kafelek>` (T-95)
+    context-sources/manifest.json    # PRYWATNY PAKIET TEGO BIEGU: zamrożone materiały (CT-06)
+    context-sources/reads/<krok>.jsonl     # rachunek odczytów; `Opened` dopiero po zwróceniu treści
+    plans/workflow-plan/versions/    # WERSJE WSPÓLNEGO PLANU (WP-01…WP-08), niezmienne
+    plans/workflow-plan/current.json # wskaźnik aktualnej wersji; nadaje go aplikacja, nie agent
   loadout.db                         # indeks SQLite — DO SKASOWANIA BEZ STRATY
 ```
 
@@ -577,6 +587,63 @@ położona notatka legacy pozostaje widoczna do ręcznego Move, ale nie wchodzi 
 wiedza z innego zakresu. Prywatny stan Claude'a nie dziedziczy `CLAUDE_CONFIG_DIR`: każda
 fizyczna kopia dostaje `<run>/claude/<work-key>`, własny plik settings, a refleksja osobny klucz
 `_reflection`.
+
+---
+
+## 8a. Materiały referencyjne i wspólny plan
+
+Dwie funkcje dostarczone we wrześniu 2026. Obie odpowiadają na to samo pytanie — **skąd agent
+wie, co ma wiedzieć** — i obie rozwiązują je tak samo: **człowiek wybiera, aplikacja zamraża,
+agent czyta przez ograniczony czytelnik.**
+
+### Biblioteka kontekstu
+
+Nazwany zestaw tekstów, dokumentów i obrazów. **Szkic** to, co człowiek napisał; **wersja** to
+opublikowany, niezmienny wynik przygotowania. Krok dostaje **wersję**, nigdy szkic — i to jest
+cała gwarancja, że materiał nie zmieni się w trakcie biegu.
+
+Przed pierwszym procesem bieg dostaje **własną kopię** potrzebnych materiałów
+(`<run>/context-sources/`). Edycja albo usunięcie zestawu w bibliotece **nie zmienia ani jednego
+odczytu** rozpoczętego biegu.
+
+Agent nie dostaje materiału wklejonego do promptu. Dostaje **cel zestawu, wiążące wymagania,
+krótki indeks** i **cztery czasowniki tylko do odczytu** — `list_context`, `search_context`,
+`read_context`, `view_context_image` — którymi doczytuje resztę sam. Limit `STEP_PROMPT_BYTES`
+(24 KiB) ogranicza **dodatek do promptu**, nie ilość materiału.
+
+### Wspólny plan
+
+Jedno ustawienie kroku: `Off` / `Create` / `Update` / `Use`. Pierwszy agent pisze plan, kolejne
+go rozszerzają, implementer i QA pracują na **jawnie nazwanej wersji**. Nie ma rodzaju węzła
+Plan, nie ma obowiązkowego planowania, nie ma etapu w schedulerze (niezmiennik 27).
+
+**Plan pisze agent, nie człowiek** — nie ma edytora dokumentu. Wymagania człowieka są przy tym
+chronione **strukturalnie**: typ, którym model zgłasza propozycję, nie ma pól „pochodzenie" ani
+„status", a `deny_unknown_fields` zamyka obejście. Model nie może nadać sobie autorytetu, bo nie
+ma go gdzie wpisać.
+
+`Use` **dziedziczy się** po krokach osiągalnych z autora planu i jest przy zapisie
+**materializowane do pliku**. Wyliczanie go przy Starcie byłoby cichą różnicą: build znający
+Plan, ale nie znający dziedziczenia, wykonałby te kroki jako `Off`.
+
+### Jeden rachunek na oba
+
+Plan, wymagania kontekstu, indeks kontekstu i indeks przekazań mieszczą się w **jednym**
+przydziale `STEP_PROMPT_BYTES`. Trzy osobne limity po 24 KiB pozwalałyby Loadoutowi dołożyć
+72 KiB przed instrukcjami i historią vendora. Rdzeń, który się nie mieści, **zatrzymuje
+konsumenta nazwanym zdaniem** — nie jest obcinany ani zastępowany odsyłaczem.
+
+### Format pliku workflow jest WYPROWADZONY, nie wybrany
+
+```
+CURRENT = 1           // co zachowuje ZWYKŁY dokument
+CONTEXT_FORMAT = 2    // czego wymaga dokument z Context
+PLAN_FORMAT = 3       // czego wymaga dokument z Planem
+```
+
+Dokument dostaje **najwyższy format, którego naprawdę potrzebuje**. Gdyby Plan wymagał dwójki,
+build znający Context, ale nie Plan, przyjąłby taki dokument i wykonał go **ignorując Plan** —
+po cichu inaczej, niż chciał człowiek.
 
 ---
 

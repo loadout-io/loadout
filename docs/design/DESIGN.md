@@ -918,6 +918,32 @@ czynności — i to jest decyzja, nie przeoczenie.
 
 ---
 
+### Pole zaznaczenia (`.tick`) — jedna kontrolka, trzydzieści jeden miejsc
+
+**Zmierzone 2026-09-09:** w `src/` stały **32 gołe `<input type="checkbox">` w 20 plikach**,
+każdy z klasami ułożonymi na miejscu. Właściciel zgłosił to jednym zdaniem po pierwszym
+prawdziwym użyciu. Dziś jest **jedna** kontrolka (`src/ui/primitives/tick.tsx`) i **jeden**
+`type="checkbox"` w całym kodzie produktu — w niej samej.
+
+**Pod spodem zostaje natywny `<input>`**, wizualnie zastąpiony przez `appearance: none`. To nie
+jest wygoda, tylko warunek: **czternaście asercji dostępności kotwiczy na roli `checkbox`**
+(dziś dziewiętnaście), a `<div role="checkbox">` kazałby dowieźć ręcznie `Space`, `aria-checked`,
+ognisko i stan wyłączony — gorzej, niż daje przeglądarka za darmo.
+
+**Etykieta i opis są osobne.** Tekst w `<label>` staje się **nazwą dostępną** kontrolki; opis
+wciągnięty tam razem z etykietą przewrócił kiedyś w tym repo **siedem** przypadków e2e, bo
+nazwa urosła o całe zdanie. Kontrolka ma więc osobny prop na etykietę i osobny na opis
+(`aria-describedby`). Nazwa dostępna ma brzmieć **tak samo, jak to, co widać** — skracanie jej
+„dla czytnika" znaczy, że czytnik ogłasza coś innego niż ekran.
+
+**Ptaszek nie jest warstwą absolutną.** `inline-grid` plus `place-content: center` stawia go
+w środku bez `position`. Powód jest zmierzony, nie estetyczny: `position: relative` na tym polu
+sprawiało, że próbne kliknięcie Playwrighta **przewijało listę importu o 41 px**, mimo że pole
+było w całości widoczne — pozycjonowany element zmienia łańcuch, po którym Chromium liczy
+„czy trzeba przewinąć". Widać to wyłącznie w prawdziwej przeglądarce.
+
+---
+
 ## 7. Ruch
 
 Ruch odpowiada tu na trzy pytania i na żadne inne: **czy to zadziałało** (mikrointerakcja),

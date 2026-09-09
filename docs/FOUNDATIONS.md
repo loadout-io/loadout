@@ -356,3 +356,28 @@ actually shipped somewhere, in this repository or in one it learned from.
       wholesale and nothing will notice.
 - [ ] Is policy reimplemented in a per-vendor adapter, rather than one core with thin adapters?
       That is how a scanner silently dies in one vendor and stays green in the other.
+
+**Green criteria that prove nothing** *(measured across CT-01…CT-09 and WP-01…WP-08, 2026-09)*
+
+- [ ] Does a criterion that names **two states** have a witness for **each**? „Damaged or swapped",
+      „missing or changed", „unset or set to off" are pairs. A test that corrupts *bytes* trips the
+      digest check and never reaches the consistency check, so an internally valid copy belonging
+      to another run walks straight through. Found twice: CT-08 and WP-06, both after a green gate.
+- [ ] Does the test have its **own premise**? An untouched input must pass, or the assertion also
+      passes for a function that refuses everything.
+- [ ] Do **two independent guards mask each other**? If a bad state is prevented by both a handler
+      and a render condition, each mutation alone leaves the suite green and neither is proven.
+      Mutate both at once, or the belt-and-braces is untested by construction.
+- [ ] Does a **comment claim a check that does not exist**? „the test compares both places" next to
+      a test that hardcodes the string for the third time is worse than no comment: it tells the
+      next reader the fact is pinned when it is loose.
+- [ ] Is a sentence the human reads **duplicated across the Rust and the TypeScript side** with
+      nothing binding them? Two copies drift at the first rewording, and both look right in review.
+      Read the other file's bytes in the test; a regex that matches nothing is a **failure**, not a
+      skip — zero matches is usually a bad regex, not a vanished fact.
+- [ ] Is an assertion **unsatisfiable regardless of the product**? Indexing an already-unwrapped
+      helper result, or matching prose the product never emits, produces a red that looks like a
+      product defect and costs a repair round. Print the real value before believing the red.
+- [ ] Does a layout oracle exist for anything a **trial click** can move? A positioned control made
+      Playwright scroll a list by 41 px while the element was fully visible; only the browser
+      oracle saw it.
