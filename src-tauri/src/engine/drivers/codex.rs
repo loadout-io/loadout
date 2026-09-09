@@ -65,7 +65,7 @@ use super::prices::Prices;
 use super::{
     AgentDriver, AgentEvent, AgentHandle, ConversationSkill, DecodedEvent, DidNotLetGo,
     DriverConfiguration, FinishReason, Outcome, Policy, Probe, RunSpec, SessionRef, Tokens,
-    ValidatedImages, unknown_price_notice,
+    ValidatedImages, unknown_price_notice, what_the_complaint_means,
 };
 use crate::engine::line::{Action, Tool};
 use crate::engine::stream;
@@ -94,6 +94,9 @@ const NOT_CANCELLED: u64 = 0;
 /// Ile bajtów skargi trzymamy. **Pierwsze, nie ostatnie**: pierwsza linia mówi, co się stało
 /// („command not found", „not logged in"), ostatnia jest zwykle ogonem śladu stosu. Bufor bez
 /// limitu byłby za to miejscem, w którym gadatliwy agent zjada pamięć okna.
+///
+/// 2026-09-09 — znany powód z dalszej linii jest jedynym wyjątkiem: `shell-init` potrafi
+/// poprzedzić prawdziwą informację o logowaniu. Pierwsza linia nadal wygrywa dla nieznanej skargi.
 const COMPLAINT_KEPT: usize = 4 * 1024;
 
 /// App Server gets one chance to acknowledge an in-band interrupt before the supervisor takes
@@ -2879,9 +2882,9 @@ impl CodexDecoder {
     /// połączenie".
     ///
     /// Kodu wyjścia tu nie ma i nie da się go tu mieć: uchwyt procesu został przy sterowniku,
-    /// a ta ścieżka biegnie na EOF wyjścia, czyli ZANIM proces zdąży zostać zebrany. Zdanie niesie
-    /// więc pierwszą linię skargi — i to ona odpowiada na „dlaczego" w praktycznie każdym realnym
-    /// przypadku.
+    /// a ta ścieżka biegnie na EOF wyjścia, czyli ZANIM proces zdąży zostać zebrany. Dla nieznanej
+    /// skargi zdanie niesie więc pierwszą linię — to ona odpowiada na „dlaczego" w praktycznie
+    /// każdym realnym przypadku; znany powód z dalszej linii jest wyjątkiem opisanym w rdzeniu.
     pub fn end_of_stream(&mut self, cancelled: bool, complaint: &str) -> Vec<AgentEvent> {
         if self.ended {
             return Vec::new();
@@ -2892,13 +2895,18 @@ impl CodexDecoder {
             FinishReason::Cancelled
         } else {
             let mut why = "The agent stopped without ever finishing its turn.".to_owned();
-            if let Some(first) = complaint
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
+            if let Some(reason) = what_the_complaint_means(complaint)
+                .map(str::to_owned)
+                .or_else(|| {
+                    complaint
+                        .lines()
+                        .map(str::trim)
+                        .find(|line| !line.is_empty())
+                        .map(first_line)
+                })
             {
                 why.push(' ');
-                why.push_str(&first_line(first));
+                why.push_str(&reason);
             }
             FinishReason::Failed(why)
         };

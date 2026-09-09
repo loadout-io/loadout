@@ -40,6 +40,7 @@ mod a_closed_terminal_lets_its_pump_finish;
 mod a_connection_secret_comes_from_the_carrier;
 mod a_copy_does_not_outlive_its_run;
 mod a_done_step_proves_its_group_is_dead;
+mod a_failure_says_what_to_do_not_what_came_first;
 mod a_fix_may_not_move_what_it_is_measured_by;
 mod a_folder_from_before_the_marker_is_named;
 mod a_folder_inside_a_repo_says_so_at_the_start;

@@ -68,6 +68,51 @@ mod protected_state;
 /// o wersję wyłącznie sterowniki, a granicę IPC obsługuje `commands::agent_apps`.
 mod probe;
 
+const SIGN_IN_AGAIN: &str =
+    "The agent app is not signed in. Sign in to it outside Loadout, then try again.";
+const CHECK_INSTALLATION: &str =
+    "Loadout could not start the agent app. Check that it is installed, then try again.";
+const AUTHENTICATION_SIGNS: [&str; 6] = [
+    "failed to authenticate",
+    "oauth session expired",
+    "not logged in",
+    "please run /login",
+    "access token has been revoked",
+    "401",
+];
+const MISSING_BINARY_SIGNS: [&str; 2] = ["command not found", "cannot execute binary file"];
+
+/// Tłumaczy znaną, wykonalną przyczynę z całej zachowanej skargi na zdanie dla człowieka.
+///
+/// 2026-09-09 — `shell-init: ... getcwd ...` przyszło przed informacją o wygasłej sesji
+/// Claude Code i pierwsza linia wysłała właściciela w stronę katalogów. Pierwsza linia nadal
+/// wygrywa dla nieznanej skargi; wyjątkiem jest tylko powód, dla którego znamy następny ruch.
+pub(crate) fn what_the_complaint_means(complaint: &str) -> Option<&'static str> {
+    complaint.lines().find_map(what_one_line_means)
+}
+
+fn what_one_line_means(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    if AUTHENTICATION_SIGNS
+        .iter()
+        .any(|sign| line_contains_sign(&lower, sign))
+    {
+        return Some(SIGN_IN_AGAIN);
+    }
+    MISSING_BINARY_SIGNS
+        .iter()
+        .any(|sign| lower.contains(sign))
+        .then_some(CHECK_INSTALLATION)
+}
+
+fn line_contains_sign(line: &str, sign: &str) -> bool {
+    if sign != "401" {
+        return line.contains(sign);
+    }
+    line.split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|word| word == sign)
+}
+
 /// Wszystko, czego sterownik potrzebuje, żeby uruchomić jeden krok [T1 §8.2].
 ///
 /// **Czego tu nie ma i dlaczego.** `max_turns` i `budget_usd` z T1 §8.2 **nie wchodzą**,
