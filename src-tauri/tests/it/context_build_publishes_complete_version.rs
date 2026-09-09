@@ -990,6 +990,104 @@ async fn not_logged_in_is_a_named_agent_result_not_an_empty_revision() -> Result
     Ok(())
 }
 
+/// Prawdziwy Codex naprawdę buduje wersję z prawdziwego materiału.
+///
+/// 2026-09-09 (CT-09) — w repo NIE BYŁO żywej wyroczni dla budowania kontekstu, i to jest cała
+/// odpowiedź na pytanie, jak wada granicy plików przeżyła zieloną bramkę na 415 plikach.
+/// Wszystkie testy budowania używały atrap sterownika, a atrapa nigdy nie pyta powłoki
+/// o katalog roboczy. Prawdziwy CLI robi to przy każdym starcie i umierał.
+///
+/// Ten test woła PRAWDZIWY `codex`, więc kosztuje pieniądze i wymaga zalogowania. Dlatego jest
+/// `#[ignore]` i biega z `--ignored`, tak samo jak
+/// `context_image_reaches_vendor::both_clis_name_the_detail_that_exists_only_in_pixels`.
+///
+/// SŁABA WERSJA TEGO KRYTERIUM: sprawdzić, że budowanie się nie wywaliło. Przechodzi ją
+/// budowanie, które nie odpaliło ani jednego procesu. Dlatego asercje są o WYNIKU: partia ma
+/// zejść z sukcesem i ma powstać gotowa wersja.
+///
+/// # CZERWONA W CHWILI DOPISANIA, I TO NIE JEST REGRESJA
+///
+/// 2026-09-09 — pada na `The Codex App Server stopped before its initialize request completed`.
+/// Zmierzone poza aplikacją: `codex` 0.153.4 zapisuje przy starcie do KORZENIA `CODEX_HOME`
+/// — `installation_id`, `models_cache.json` i całe drzewo `plugins/` (z cache zdalnie
+/// instalowanych wtyczek). Sterownik trzyma ten korzeń niezapisywalny **celowo**: powód stoi
+/// przy `prepare_protected_step` w `drivers/codex.rs` i dotyczy `auth.json.tmp`. Lista
+/// zapisywalnych podkatalogów powstała, zanim vendor zaczął tego potrzebować.
+///
+/// Dopuszczenie zapisu w `plugins/` POSZERZA GRANICĘ BEZPIECZEŃSTWA — agent w piaskownicy
+/// mógłby wtedy pobierać i cache'ować cudzy kod — więc to jest decyzja właściciela, nie
+/// sterownika. Test zostaje `#[ignore]`, żeby bramka go nie wołała, i stoi tu jako zapisany
+/// stan rzeczy.
+///
+/// PIERWSZA WARTOŚĆ TEGO TESTU JUŻ ZAPŁACIŁA: to on pokazał, że poprawka czytelnego katalogu
+/// roboczego działa na ŻYWYM vendorze — build przeszedł barierę `getcwd` i zatrzymał się dopiero
+/// tutaj. Bez niego te dwie wady byłyby jedną nierozróżnialną.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "asks the real codex CLI to build a context version: costs money and needs a sign-in"]
+async fn the_real_codex_builds_a_version_from_real_material() -> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let project = tempfile::tempdir()?;
+    let made = create_context_set_inner(home.path(), "Live build")?;
+    let saved = save_context_draft_inner(
+        home.path(),
+        &made.set.id,
+        &made.set.title,
+        &made.set.description,
+        ContextDraft {
+            schema: 1,
+            sources: vec![ContextSource {
+                id: "typed".to_owned(),
+                kind: SourceKind::Text,
+                name: "Checkout brief".to_owned(),
+                text: "The checkout drops the promo code when the cart is edited. \
+                       The fix must keep the code until the person removes it."
+                    .to_owned(),
+                ..ContextSource::default()
+            }],
+            ..ContextDraft::default()
+        },
+        Some(made.revision),
+    )?;
+    let concrete: Arc<dyn AgentDriver> = Arc::new(CodexDriver::new());
+    let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&concrete));
+
+    let built = build_context_inner(
+        home.path(),
+        project.path(),
+        &drivers,
+        &Limiter::new(1),
+        &BuildContextRequest {
+            set_id: saved.set.id,
+            operation_id: "live-codex".to_owned(),
+            app: Some(Vendor::Codex),
+            model: None,
+            generation: 1,
+            deadline: Duration::from_mins(4),
+            budget_usd: None,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+
+    let state = built.build.ok_or("missing build state")?;
+    assert!(
+        !state.said.contains("getcwd") && !state.said.contains("shell-init"),
+        "the real vendor could not stand in the folder it was given: {}",
+        state.said
+    );
+    assert_eq!(
+        state.end,
+        BuildEnd::Ready,
+        "the real build did not finish: {}",
+        state.said
+    );
+    assert!(
+        built.revision.is_some(),
+        "a finished build has to leave a version a step can be given"
+    );
+    Ok(())
+}
+
 /// Partia biegnie w katalogu, który jej granica plików POZWALA PRZECZYTAĆ.
 ///
 /// 2026-09-09 (CT-09, znalezisko właściciela w prawdziwym oknie) — sterowniki rezerwują tylko
