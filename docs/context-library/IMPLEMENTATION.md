@@ -481,6 +481,25 @@ kontrolce sprawiało, że próbne kliknięcie Playwrighta przewijało listę imp
 żadnego `position`. Komentarz pierwszego podejścia obwiniał `inline-grid` — mylnie, bo stało
 ono tam **razem** z `position: relative`.
 
+### 1j. Dokumentacja: trzy pliki uzupełnione, makieta sprawdzona i nietknięta
+
+CT-09 wymienia cztery dokumenty, które mają opisywać **rzeczywiście dostarczony** produkt.
+
+- **`docs/ARCHITECTURE.md`** — drzewo plików dostało bibliotekę kontekstu, prywatny pakiet biegu
+  i wersje planu; nowa sekcja 8a opisuje obie funkcje, **jeden** wspólny rachunek 24 KiB
+  i wyprowadzony numer formatu.
+- **`docs/FOUNDATIONS.md`** — siedem pozycji listy kontrolnej o zielonych kryteriach, które
+  niczego nie dowodzą. Każda zmierzona w tej dostawie, każda znaleziona **po** zielonej bramce.
+- **`docs/design/DESIGN.md`** — pole zaznaczenia jako prymityw, z powodami, które są pomiarami:
+  rola `checkbox` trzyma 19 asercji, opis stoi poza etykietą, bo etykieta jest nazwą dostępną,
+  a ptaszek nie ma `position`, bo próbne kliknięcie przewijało listę o 41 px.
+- **`docs/mockup/index.html`** — **sprawdzona, bez zmian, i to jest wniosek, nie przeoczenie.**
+  Makieta rysuje powłokę i pasek; `Context` stoi w nim jako ⌘6 od CT-01. Panelu kroku **nie
+  rysuje w ogóle**, więc nie niesie ani jednego zdania o Planie, które byłoby dziś nieprawdą.
+  Planu nie ma tam też słusznie: zlecenie zabrania biblioteki Plan w nawigacji. Makieta jest
+  przypięta dziesięcioma wyroczniami powłoki — zmiana „dla porządku" kosztowałaby je wszystkie
+  i nie dodałaby ani jednego prawdziwego zdania.
+
 ## 2. Kryteria odbioru (plan §14)
 
 Status jest **per ścieżka dowodu**, nie per wrażenie. `passed` znaczy: istnieje test na
