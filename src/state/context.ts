@@ -487,6 +487,23 @@ export function matching<T extends Pick<ContextSet, 'title'>>(
   return sets.filter((set) => set.title.toLowerCase().includes(wanted));
 }
 
+/** Zdanie, którym panel kroku odmawia wybrania niezbudowanego zestawu.
+ *
+ * 2026-09-09 (UX-3) — TO SAMO ZDANIE MIESZKA W RUŚCIE, w `catalog_choice`
+ * (`src-tauri/src/commands/workflow_context.rs`). Nie ma jak podać go tu drutem, bo sekcja
+ * Context nie pyta panelu kroku o nic — więc jest kopią i **jedynym**, co ją trzyma, jest test
+ * porównujący oba pliki bajt w bajt (`build-controls.test.tsx`). Bez tego testu dwa napisy
+ * rozjeżdżają się przy pierwszej korekcie brzmienia i człowiek czyta dwa różne zdania o jednym
+ * fakcie (niezmiennik 13). Nazwana stała, żeby test miał co porównać. */
+export const BUILD_BEFORE_ADDING = 'Build this context before adding it to a workflow.';
+
+/** Jedno zdanie prowadzące od materiału do wersji, którą można wybrać w workflow. */
+export function whatIsNextForTheSet(set: ContextSet, draft: ContextDraft): string {
+  if (draft.sources.length === 0) return 'Add material to this set before it can be built.';
+  if (set.latestReadyRevision === null) return BUILD_BEFORE_ADDING;
+  return 'This context is built, so a workflow step can add it.';
+}
+
 /** Pusty szkic — kształt, który dostaje zestaw, zanim człowiek cokolwiek w nim napisze. */
 export function emptyDraft(): ContextDraft {
   return { schema: 1, sources: [], excluded: [], howToPrepare: '', requirements: [] };
