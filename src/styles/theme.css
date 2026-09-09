@@ -717,6 +717,59 @@
     cursor: not-allowed;
   }
 
+  /* 2026-09-09 (UX-2) — wygląd jest wspólny, ale zachowanie zostaje natywnemu inputowi:
+   * przeglądarka nadal niesie rolę, Space, fokus, disabled i stan nieokreślony. Ptaszek jest
+   * pseudoelementem, żeby kontrolka nie dokładała tekstu ani drugiego węzła do gęstości. */
+  .tick {
+    appearance: none;
+    /* 2026-09-09 (UX-2) — `inline-grid` dawał ptaszkowi udział w geometrii kontrolki, przez co
+     * próbne kliknięcie Playwrighta przewijało listę importu o 9,3 px. Ptaszek biegnie poza układem. */
+    position: relative;
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    flex: none;
+    /* 2026-09-09 (UX-2) — pionowy ślad natywnego pola trzyma pudełko po bezpiecznej stronie
+     * granicy `scrollIntoViewIfNeeded`; poziome marginesy nie uczestniczą w tym pomiarze. */
+    margin-block: 3px;
+    margin-inline: 0;
+    border: 1px solid var(--color-line-strong);
+    border-radius: calc(var(--radius-sm) / 2);
+    background: var(--color-well);
+    cursor: pointer;
+  }
+
+  .tick::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 3px;
+    height: 6px;
+    border-right: 1px solid var(--color-bg);
+    border-bottom: 1px solid var(--color-bg);
+    content: "";
+    transform: translate(-50%, -50%) rotate(45deg) scale(0);
+    transform-origin: center;
+  }
+
+  .tick:hover:not(:disabled) {
+    border-color: var(--color-accent-ring);
+  }
+
+  .tick:checked {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+  }
+
+  .tick:checked::after {
+    transform: translate(-50%, -50%) rotate(45deg) scale(1);
+  }
+
+  .tick:disabled {
+    cursor: not-allowed;
+    opacity: var(--disabled-opacity);
+  }
+
   /* ══ PRYMITYWY ═════════════════════════════════════════════════════════════════════════════
    *
    * PO CO. Zmierzone 2026-08-31 na tej galezi: w 59 nietestowych plikach `.tsx` stoi 641

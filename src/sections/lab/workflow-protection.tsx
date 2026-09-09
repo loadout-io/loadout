@@ -2,6 +2,7 @@ import type { ReactElement } from 'react';
 import { useState } from 'react';
 
 import type { LabState, useLab } from '../../state/lab';
+import { Tick } from '../../ui/primitives/tick';
 import { count } from './model';
 
 /** Zmiana ustawienia nie jest ani zgodą na nowy kod sprawdzenia, ani poleceniem Start. */
@@ -67,17 +68,15 @@ export function WorkflowProtection({
           </div>
         </div>
       )}
-      <label className="flex items-center gap-2 text-ui text-ink">
-        <input
-          type="checkbox"
-          checked={chosen}
-          disabled={state.busy !== 'idle'}
-          onChange={(event) => {
-            setChosen(event.target.checked);
-          }}
-        />
-        Restrict file access
-      </label>
+      <Tick
+        className="flex items-center gap-2 text-ui text-ink"
+        label="Restrict file access"
+        checked={chosen}
+        disabled={state.busy !== 'idle'}
+        onChange={(event) => {
+          setChosen(event.target.checked);
+        }}
+      />
       <p className="max-w-160 text-note text-muted">
         Restricted comparisons require trusted checker code accepted separately for each case. If
         this setup cannot enforce file access restrictions, Start refuses; it does not switch to a

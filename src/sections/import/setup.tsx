@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { why } from '../../ipc/why';
 import type { Reviewed } from '../../state/skills';
 import { activeWorkspace } from '../../state/workspaces';
+import { Tick } from '../../ui/primitives/tick';
 /* Lista znalezisk przyjeżdża z sekcji Umiejętności, bo to jest ta sama lista dla tego samego
  * człowieka — powód stoi w nagłówku tamtego pliku (niezmiennik 23). */
 import { Findings } from '../skills/findings';
@@ -1029,37 +1030,33 @@ export function ImportSetup({
                               {ITEM_STATUS[item.status]}
                             </td>
                             <td className="px-3 py-2">
-                              <label className="flex items-center gap-2 text-body text-ink">
-                                <input
-                                  type="checkbox"
-                                  aria-label="Import this item"
-                                  checked={!excludedItems.includes(item.id)}
+                              <Tick
+                                className="flex items-center gap-2 text-body text-ink"
+                                label="Import"
+                                name="Import this item"
+                                checked={!excludedItems.includes(item.id)}
+                                onChange={(event) => {
+                                  setExcludedItems((now) =>
+                                    event.target.checked
+                                      ? now.filter((id) => id !== item.id)
+                                      : [...now, item.id],
+                                  );
+                                }}
+                              />
+                              {item.status !== 'needs_choice' ? null : (
+                                <Tick
+                                  className="mt-2 flex items-start gap-2 text-note text-ink"
+                                  label="Without behavior"
+                                  name="Import without this behavior"
+                                  checked={withoutBehavior.includes(item.id)}
                                   onChange={(event) => {
-                                    setExcludedItems((now) =>
+                                    setWithoutBehavior((now) =>
                                       event.target.checked
-                                        ? now.filter((id) => id !== item.id)
-                                        : [...now, item.id],
+                                        ? [...now, item.id]
+                                        : now.filter((id) => id !== item.id),
                                     );
                                   }}
                                 />
-                                Import
-                              </label>
-                              {item.status !== 'needs_choice' ? null : (
-                                <label className="mt-2 flex items-start gap-2 text-note text-ink">
-                                  <input
-                                    type="checkbox"
-                                    aria-label="Import without this behavior"
-                                    checked={withoutBehavior.includes(item.id)}
-                                    onChange={(event) => {
-                                      setWithoutBehavior((now) =>
-                                        event.target.checked
-                                          ? [...now, item.id]
-                                          : now.filter((id) => id !== item.id),
-                                      );
-                                    }}
-                                  />
-                                  Without behavior
-                                </label>
                               )}
                             </td>
                           </tr>
@@ -1090,25 +1087,23 @@ export function ImportSetup({
                             </td>
                             <td className="px-3 py-2">
                               {unresolvedItem ? (
-                                <label className="flex items-center gap-2 text-body text-ink">
-                                  <input
-                                    type="checkbox"
-                                    aria-label={
-                                      mapping.compatibility === 'unsupported'
-                                        ? 'Leave this item out of the import'
-                                        : 'Import without this behavior'
-                                    }
-                                    checked={leaveOut.includes(item.id)}
-                                    onChange={(event) => {
-                                      setLeaveOut((now) =>
-                                        event.target.checked
-                                          ? [...now, item.id]
-                                          : now.filter((id) => id !== item.id),
-                                      );
-                                    }}
-                                  />
-                                  Skip
-                                </label>
+                                <Tick
+                                  className="flex items-center gap-2 text-body text-ink"
+                                  label="Skip"
+                                  name={
+                                    mapping.compatibility === 'unsupported'
+                                      ? 'Leave this item out of the import'
+                                      : 'Import without this behavior'
+                                  }
+                                  checked={leaveOut.includes(item.id)}
+                                  onChange={(event) => {
+                                    setLeaveOut((now) =>
+                                      event.target.checked
+                                        ? [...now, item.id]
+                                        : now.filter((id) => id !== item.id),
+                                    );
+                                  }}
+                                />
                               ) : (
                                 <span className="text-body text-muted">Yes</span>
                               )}
@@ -1164,25 +1159,25 @@ export function ImportSetup({
                   </button>
                 </legend>
                 {preview.draft.connections.map((connection) => (
-                  <label key={connection.id} className="flex items-center gap-2 text-body text-ink">
-                    <input
-                      type="checkbox"
-                      checked={enabled.includes(connection.id)}
-                      onChange={(event) => {
-                        setEnabled((now) =>
-                          event.target.checked
-                            ? [...now, connection.id]
-                            : now.filter((id) => id !== connection.id),
-                        );
-                      }}
-                    />
-                    {connection.name}
+                  <Tick
+                    key={connection.id}
+                    className="flex items-center gap-2 text-body text-ink"
+                    label={connection.name}
+                    checked={enabled.includes(connection.id)}
+                    onChange={(event) => {
+                      setEnabled((now) =>
+                        event.target.checked
+                          ? [...now, connection.id]
+                          : now.filter((id) => id !== connection.id),
+                      );
+                    }}
+                  >
                     {/* SKĄD TO JEST, przy nazwie i po cichu. Człowiek stojący nad tą listą pyta
                         o jedno: czy to ustawienie zespołu, czy moje własne — a od 2026-08-22 na
                         liście stoją obie rodzaje naraz. Bez tego zdania `linear-server` z twojej
                         prywatnej konfiguracji wygląda identycznie jak `context7` z repo. */}
                     <span className="label">{whereFrom(connection.origin)}</span>
-                  </label>
+                  </Tick>
                 ))}
               </fieldset>
             )}

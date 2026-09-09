@@ -6,6 +6,7 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 
 import { matching } from '../../../state/context';
+import { Tick } from '../../../ui/primitives/tick';
 import type {
   ContextChoice,
   ContextPin,
@@ -105,19 +106,18 @@ function TopicChoices({
           All topics
         </label>
         {topics.map((topic) => (
-          <label key={topic.id} className="flex items-baseline gap-2 text-body text-ink">
-            <input
-              type="checkbox"
-              checked={picked.has(topic.id)}
-              onChange={() => {
-                const next = topics
-                  .map((one) => one.id)
-                  .filter((id) => (id === topic.id ? !picked.has(id) : picked.has(id)));
-                if (next.length > 0) onChoose(next);
-              }}
-            />
-            {topic.title}
-          </label>
+          <Tick
+            key={topic.id}
+            className="flex items-baseline gap-2 text-body text-ink"
+            label={topic.title}
+            checked={picked.has(topic.id)}
+            onChange={() => {
+              const next = topics
+                .map((one) => one.id)
+                .filter((id) => (id === topic.id ? !picked.has(id) : picked.has(id)));
+              if (next.length > 0) onChoose(next);
+            }}
+          />
         ))}
       </div>
     </details>
@@ -236,21 +236,19 @@ function Catalog({
         const selected = resolved.find((one) => one.id === set.id);
         return (
           <div key={set.id} className="stack rounded-sm border border-line p-2" data-gap="2">
-            <label className="flex items-baseline gap-2 text-body text-ink">
-              <input
-                type="checkbox"
-                checked={pin !== undefined}
-                disabled={pin === undefined && set.revision === null}
-                onChange={(event) => {
-                  if (!event.target.checked) {
-                    onChoose(withoutPin(pins, set.id));
-                  } else if (set.revision !== null) {
-                    onChoose(withPin(pins, { id: set.id, revision: set.revision, topics: 'all' }));
-                  }
-                }}
-              />
-              {set.title}
-            </label>
+            <Tick
+              className="flex items-baseline gap-2 text-body text-ink"
+              label={set.title}
+              checked={pin !== undefined}
+              disabled={pin === undefined && set.revision === null}
+              onChange={(event) => {
+                if (!event.target.checked) {
+                  onChoose(withoutPin(pins, set.id));
+                } else if (set.revision !== null) {
+                  onChoose(withPin(pins, { id: set.id, revision: set.revision, topics: 'all' }));
+                }
+              }}
+            />
             {set.description === '' ? null : <p className="caption">{set.description}</p>}
             {set.said === null ? null : <p className="text-body text-warn">{set.said}</p>}
             {pin === undefined || selected === undefined ? null : (
@@ -473,30 +471,27 @@ export function ContextRow({
       <details data-step-context-picker className="rounded-sm border border-line p-2">
         <summary className="caption cursor-pointer">Choose context</summary>
         <div className="stack pt-2" data-gap="2">
-          <label className="flex items-baseline gap-2 text-body text-ink">
-            <input
-              type="checkbox"
-              checked={view?.inheritsWorkflow ?? value?.inheritWorkflow !== false}
+          <Tick
+            className="flex items-baseline gap-2 text-body text-ink"
+            label="Use workflow context"
+            checked={view?.inheritsWorkflow ?? value?.inheritWorkflow !== false}
+            onChange={(event) => {
+              onChoose(stepChoice(value, { inheritWorkflow: event.target.checked }));
+            }}
+          />
+          {inheritedChoices.map((set) => (
+            <Tick
+              key={set.id}
+              className="flex items-baseline gap-2 text-body text-ink"
+              label={`Use ${set.title} from workflow`}
+              checked={!excluded.has(set.id)}
               onChange={(event) => {
-                onChoose(stepChoice(value, { inheritWorkflow: event.target.checked }));
+                const next = event.target.checked
+                  ? [...excluded].filter((id) => id !== set.id)
+                  : [...excluded, set.id];
+                onChoose(stepChoice(value, { exclude: next }));
               }}
             />
-            Use workflow context
-          </label>
-          {inheritedChoices.map((set) => (
-            <label key={set.id} className="flex items-baseline gap-2 text-body text-ink">
-              <input
-                type="checkbox"
-                checked={!excluded.has(set.id)}
-                onChange={(event) => {
-                  const next = event.target.checked
-                    ? [...excluded].filter((id) => id !== set.id)
-                    : [...excluded, set.id];
-                  onChoose(stepChoice(value, { exclude: next }));
-                }}
-              />
-              Use {set.title} from workflow
-            </label>
           ))}
           <ContextPickerBox
             searchLabel="Search step context"

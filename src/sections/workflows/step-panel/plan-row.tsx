@@ -8,6 +8,7 @@
 import type { ReactElement } from 'react';
 
 import type { StepPlan, StepPlanMode, StepPlanView } from '../../../state/workflows';
+import { Tick } from '../../../ui/primitives/tick';
 
 const MODES: ReadonlyArray<{ value: StepPlanMode; label: string }> = [
   { value: 'off', label: 'Off' },
@@ -101,21 +102,20 @@ export function PlanRow({ value, view, refusal, onChoose }: PlanRowProps): React
           <summary className="caption cursor-pointer">Can update</summary>
           <div className="stack pt-2" data-gap="2">
             {SECTIONS.map((section) => (
-              <label key={section} className="flex items-baseline gap-2 text-body text-ink">
-                <input
-                  type="checkbox"
-                  checked={canUpdate.includes(section)}
-                  onChange={() => {
-                    const next = toggled(canUpdate, section);
-                    onChoose({
-                      mode: 'update',
-                      canUpdate: next.length === SECTIONS.length ? [] : next,
-                      samePlanAs: value?.samePlanAs,
-                    });
-                  }}
-                />
-                {section}
-              </label>
+              <Tick
+                key={section}
+                className="flex items-baseline gap-2 text-body text-ink"
+                label={section}
+                checked={canUpdate.includes(section)}
+                onChange={() => {
+                  const next = toggled(canUpdate, section);
+                  onChoose({
+                    mode: 'update',
+                    canUpdate: next.length === SECTIONS.length ? [] : next,
+                    samePlanAs: value?.samePlanAs,
+                  });
+                }}
+              />
             ))}
           </div>
         </details>
@@ -126,20 +126,19 @@ export function PlanRow({ value, view, refusal, onChoose }: PlanRowProps): React
           <summary className="caption cursor-pointer">Focus on (optional)</summary>
           <div className="stack pt-2" data-gap="2">
             {SECTIONS.map((section) => (
-              <label key={section} className="flex items-baseline gap-2 text-body text-ink">
-                <input
-                  type="checkbox"
-                  checked={focusOn.includes(section)}
-                  onChange={() => {
-                    onChoose({
-                      mode: 'use',
-                      focusOn: toggled(focusOn, section),
-                      samePlanAs: value?.samePlanAs,
-                    });
-                  }}
-                />
-                {section}
-              </label>
+              <Tick
+                key={section}
+                className="flex items-baseline gap-2 text-body text-ink"
+                label={section}
+                checked={focusOn.includes(section)}
+                onChange={() => {
+                  onChoose({
+                    mode: 'use',
+                    focusOn: toggled(focusOn, section),
+                    samePlanAs: value?.samePlanAs,
+                  });
+                }}
+              />
             ))}
             <p className="caption">
               Focus changes emphasis only. The complete shared core and all human requirements still

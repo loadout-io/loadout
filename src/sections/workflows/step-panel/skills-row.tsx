@@ -15,6 +15,7 @@
 import type { ReactElement } from 'react';
 import type { Vendor } from '../../../state/agents';
 import type { SkillChoice, Skills } from '../../../state/workflows';
+import { Tick } from '../../../ui/primitives/tick';
 import type { SkillMode } from './capabilities';
 
 export interface SkillsRowProps {
@@ -115,16 +116,15 @@ export function SkillsRow({
             <summary className="label cursor-pointer">{saysWhenShut(available, picked)}</summary>
             <div className="stack pt-2">
               {available.map((skill) => (
-                <label key={skill} className={CHOICE}>
-                  <input
-                    type="checkbox"
-                    checked={picked.has(skill)}
-                    onChange={() => {
-                      toggle(skill);
-                    }}
-                  />
-                  {skill}
-                </label>
+                <Tick
+                  key={skill}
+                  className={CHOICE}
+                  label={skill}
+                  checked={picked.has(skill)}
+                  onChange={() => {
+                    toggle(skill);
+                  }}
+                />
               ))}
 
               {/* Zmierzone w S-1: szesnastu umiejętności wbudowanych w Claude Code nie da się

@@ -29,6 +29,7 @@
 import type { ReactElement } from 'react';
 
 import type { Handover, HandoverField } from '../../../state/workflows';
+import { Tick } from '../../../ui/primitives/tick';
 
 export interface HandoverRowProps {
   /** Co ten krok oddaje dzisiaj. */
@@ -134,16 +135,14 @@ export function HandoverRow({ value, onEditStep }: HandoverRowProps): ReactEleme
                 }}
               />
               <div className="flex items-baseline gap-3">
-                <label className={CHOICE}>
-                  <input
-                    type="checkbox"
-                    checked={field.required === true}
-                    onChange={(event) => {
-                      edit(at, { required: event.target.checked });
-                    }}
-                  />
-                  Needed
-                </label>
+                <Tick
+                  className={CHOICE}
+                  label="Needed"
+                  checked={field.required === true}
+                  onChange={(event) => {
+                    edit(at, { required: event.target.checked });
+                  }}
+                />
                 <button
                   type="button"
                   className={ADD}

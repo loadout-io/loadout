@@ -30,6 +30,7 @@ import type { ReactElement } from 'react';
 
 import { activeWorkspace } from '../../../state/workspaces';
 import type { Borrow, HostMaterial } from '../../../state/workflows';
+import { Tick } from '../../../ui/primitives/tick';
 import { listHostMaterial } from '../io';
 
 /** Trzy półki gospodarza, po nazwach z drutu (`inherit::Lendable`). */
@@ -159,21 +160,21 @@ export function BorrowRow({ material, value, onChoose }: BorrowRowProps): ReactE
               <div key={shelf.kind} className="stack">
                 <span className={SHELF}>{shelf.label}</span>
                 {[...shelf.found, ...stale].map((name) => (
-                  <label key={name} className={CHOICE}>
-                    <input
-                      type="checkbox"
-                      checked={picked.includes(name)}
-                      onChange={() => {
-                        onChoose(ticked(value, shelf.kind, name));
-                      }}
-                    />
-                    {name}
+                  <Tick
+                    key={name}
+                    className={CHOICE}
+                    label={name}
+                    checked={picked.includes(name)}
+                    onChange={() => {
+                      onChoose(ticked(value, shelf.kind, name));
+                    }}
+                  >
                     {/* Etykieta dopiero wtedy, gdy WIEMY, czego w folderze nie ma. Przed odpowiedzią
                     z Rusta zdanie „not in this folder" byłoby zgadywaniem o cudzym katalogu. */}
                     {material !== null && stale.includes(name) ? (
                       <span className="lead">not in this folder</span>
                     ) : null}
-                  </label>
+                  </Tick>
                 ))}
               </div>
             );

@@ -24,6 +24,7 @@
 import type { ReactElement } from 'react';
 
 import type { Criterion, CriterionMethod, StepPlan } from '../../../state/workflows';
+import { Tick } from '../../../ui/primitives/tick';
 
 export interface CriteriaRowProps {
   /** Co ten krok musi dziś potwierdzić. Brak znaczy „nic nie zatwierdzono". */
@@ -81,22 +82,20 @@ export function CriteriaRow({
       </span>
 
       {plan?.mode === 'use' ? (
-        <label className={CHOICE}>
-          <input
-            data-field="check-plan"
-            type="checkbox"
-            checked={plan.checkPlan === true}
-            onChange={(event) => {
-              /* 2026-09-08 (WP-05) — Use podaje plan każdemu agentowi; ten jawny bit
-                 dopiero nadaje krokowi rolę sprawdzającego jego wymagania. */
-              onChoosePlan({
-                ...plan,
-                checkPlan: event.target.checked ? true : undefined,
-              });
-            }}
-          />
-          Also check the plan&apos;s requirements
-        </label>
+        <Tick
+          className={CHOICE}
+          label={<>Also check the plan&apos;s requirements</>}
+          data-field="check-plan"
+          checked={plan.checkPlan === true}
+          onChange={(event) => {
+            /* 2026-09-08 (WP-05) — Use podaje plan każdemu agentowi; ten jawny bit
+               dopiero nadaje krokowi rolę sprawdzającego jego wymagania. */
+            onChoosePlan({
+              ...plan,
+              checkPlan: event.target.checked ? true : undefined,
+            });
+          }}
+        />
       ) : null}
 
       {list.map((one, at) => (
@@ -134,16 +133,14 @@ export function CriteriaRow({
             ))}
           </select>
           <div className="flex items-baseline gap-3">
-            <label className={CHOICE}>
-              <input
-                type="checkbox"
-                checked={one.required !== false}
-                onChange={(event) => {
-                  edit(at, { required: event.target.checked });
-                }}
-              />
-              Needed
-            </label>
+            <Tick
+              className={CHOICE}
+              label="Needed"
+              checked={one.required !== false}
+              onChange={(event) => {
+                edit(at, { required: event.target.checked });
+              }}
+            />
             <button
               type="button"
               className={ADD}

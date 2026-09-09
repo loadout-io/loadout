@@ -17,6 +17,7 @@ import { fieldNameFor } from './hands-over-the-command';
 import type { CommandProducer } from './hands-over-the-command';
 import { WhereItWorks } from './where-it-works';
 import type { ServeStep } from '../../../state/workflows';
+import { Tick } from '../../../ui/primitives/tick';
 
 export interface ServePanelProps {
   step: ServeStep;
@@ -200,22 +201,20 @@ export function ServePanel({
             tym jest proszony w swoim „What it hands over", a dwie nazwy do uzgodnienia w dwóch
             miejscach są pierwszą rzeczą, która się rozjedzie — i rozjazd widać dopiero jako bieg,
             który dochodzi do tego kafelka po to, żeby odmówić. */}
-        <label className="flex items-baseline gap-2 text-body text-ink">
-          <input
-            type="checkbox"
-            data-field="commandFrom"
-            checked={step.commandFrom !== undefined}
-            onChange={(event) => {
-              onEditStep({
-                /* NAZWA LICZONA RAZ, PRZY ZAZNACZENIU, i od tej chwili zapisana. Przeliczana
-                   przy każdym renderze znaczyłaby, że przemianowanie kafelka po cichu rozłącza
-                   graf — powód w całości stoi przy `fieldNameFor`. */
-                commandFrom: event.target.checked ? { field: fieldNameFor(step) } : undefined,
-              });
-            }}
-          />
-          Let the step before this one work out the command
-        </label>
+        <Tick
+          className="flex items-baseline gap-2 text-body text-ink"
+          label="Let the step before this one work out the command"
+          field="commandFrom"
+          checked={step.commandFrom !== undefined}
+          onChange={(event) => {
+            onEditStep({
+              /* NAZWA LICZONA RAZ, PRZY ZAZNACZENIU, i od tej chwili zapisana. Przeliczana
+                 przy każdym renderze znaczyłaby, że przemianowanie kafelka po cichu rozłącza
+                 graf — powód w całości stoi przy `fieldNameFor`. */
+              commandFrom: event.target.checked ? { field: fieldNameFor(step) } : undefined,
+            });
+          }}
+        />
         {step.commandFrom === undefined ? null : (
           <>
             <label className="label" htmlFor="serve-command-format">

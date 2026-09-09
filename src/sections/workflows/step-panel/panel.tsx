@@ -72,6 +72,7 @@ import { useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import type { Agent, FileAccess } from '../../../state/agents';
 import type { WorkflowContextView } from '../../../state/context';
+import { Tick } from '../../../ui/primitives/tick';
 import { PlacesField } from '../../paths/places-field';
 import type {
   AgentStep,
@@ -751,19 +752,18 @@ function HeavyRow({
   onEditStep: (fields: AgentStepFields) => void;
 }): ReactElement {
   return (
-    <label data-row="heavy" className="flex items-baseline gap-2 text-body text-ink">
-      <input
-        type="checkbox"
-        aria-label="Takes the heavy seat"
-        checked={value === 'heavy'}
-        onChange={(event) => {
-          // 2026-09 (Z-45) — odznaczenie usuwa klucz. `ordinary` zapisane jawnie
-          // przepisałoby istniejący workflow mimo zachowania identycznego jak przed zmianą.
-          onEditStep({ weight: event.target.checked ? 'heavy' : undefined });
-        }}
-      />
-      Takes the heavy seat — builds, full test suites, browsers
-    </label>
+    <Tick
+      data-row="heavy"
+      className="flex items-baseline gap-2 text-body text-ink"
+      label="Takes the heavy seat — builds, full test suites, browsers"
+      name="Takes the heavy seat"
+      checked={value === 'heavy'}
+      onChange={(event) => {
+        // 2026-09 (Z-45) — odznaczenie usuwa klucz. `ordinary` zapisane jawnie
+        // przepisałoby istniejący workflow mimo zachowania identycznego jak przed zmianą.
+        onEditStep({ weight: event.target.checked ? 'heavy' : undefined });
+      }}
+    />
   );
 }
 
@@ -983,15 +983,13 @@ export function StepPanel({
           </div>
         ) : null}
         <div className="stack" data-row="agentMessages">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              aria-label="Allow messages between steps"
-              checked={effective.agentMessages ?? false}
-              onChange={(event) => onEdit({ agentMessages: event.target.checked })}
-            />
-            Allow messages between steps
-          </label>
+          <Tick
+            className="flex items-center gap-2"
+            label="Allow messages between steps"
+            name="Allow messages between steps"
+            checked={effective.agentMessages ?? false}
+            onChange={(event) => onEdit({ agentMessages: event.target.checked })}
+          />
           {mark('agentMessages')}
           {wasUsing('agentMessages')}
         </div>

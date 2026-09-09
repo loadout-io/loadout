@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 import type { ServiceGrant, ServiceOperation } from '../../../state/agents';
+import { Tick } from '../../../ui/primitives/tick';
 
 const LABELS: Record<ServiceOperation, string> = {
   read: 'Read',
@@ -28,35 +29,34 @@ export function StepAppPermissions({
           <p>{grant.service}</p>
           <div className="flex flex-wrap gap-3">
             {grant.operations.map((operation) => (
-              <label className="flex items-center gap-1" key={operation}>
-                <input
-                  type="checkbox"
-                  aria-label={`${LABELS[operation]} ${grant.service}`}
-                  checked={value.some(
-                    (current) =>
-                      current.service === grant.service && current.operations.includes(operation),
-                  )}
-                  onChange={(event) =>
-                    onChange(
-                      ceiling
-                        .map((allowed) => ({
-                          service: allowed.service,
-                          operations: allowed.operations.filter((choice) =>
-                            allowed.service === grant.service && choice === operation
-                              ? event.target.checked
-                              : value.some(
-                                  (current) =>
-                                    current.service === allowed.service &&
-                                    current.operations.includes(choice),
-                                ),
-                          ),
-                        }))
-                        .filter((current) => current.operations.length > 0),
-                    )
-                  }
-                />
-                {LABELS[operation]}
-              </label>
+              <Tick
+                className="flex items-center gap-1"
+                key={operation}
+                label={LABELS[operation]}
+                name={`${LABELS[operation]} ${grant.service}`}
+                checked={value.some(
+                  (current) =>
+                    current.service === grant.service && current.operations.includes(operation),
+                )}
+                onChange={(event) =>
+                  onChange(
+                    ceiling
+                      .map((allowed) => ({
+                        service: allowed.service,
+                        operations: allowed.operations.filter((choice) =>
+                          allowed.service === grant.service && choice === operation
+                            ? event.target.checked
+                            : value.some(
+                                (current) =>
+                                  current.service === allowed.service &&
+                                  current.operations.includes(choice),
+                              ),
+                        ),
+                      }))
+                      .filter((current) => current.operations.length > 0),
+                  )
+                }
+              />
             ))}
           </div>
         </div>
