@@ -367,8 +367,16 @@ fn your_home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-fn loadout_dir() -> PathBuf {
-    // HOME zamiast osobnej zależności na katalogi: to jedyne miejsce w repo, które o to pyta.
+/// Dane tej instancji okna. Osobny katalog nie zmienia kont ani konfiguracji agentów.
+///
+/// 2026-09-09: QA podmieniało HOME, aby zachować osobną bibliotekę. Claude widział wtedy
+/// `Not logged in`, mimo że zwykłe CLI było zalogowane. Przenosimy wyłącznie dane Loadouta;
+/// `your_home()` i środowisko procesów agentów nadal wskazują dom człowieka.
+#[must_use]
+pub fn loadout_dir() -> PathBuf {
+    if let Some(folder) = std::env::var_os("LOADOUT_DATA_DIR").filter(|value| !value.is_empty()) {
+        return PathBuf::from(folder);
+    }
     std::env::var_os("HOME").map_or_else(
         || PathBuf::from(".loadout"),
         |home| PathBuf::from(home).join(".loadout"),

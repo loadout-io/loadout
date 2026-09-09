@@ -466,6 +466,86 @@ async fn a_session_that_gave_its_endings_to_the_stream_says_so_instead_of_waitin
 
 // ── Żywa wyrocznia ────────────────────────────────────────────────────────────────────────
 
+/// 2026-09-09: odpięcie `wait()` nie wystarcza, gdy czytnik stanął na PEŁNEJ kolejce
+/// zdarzeń. Śmierć procesu musi pozwolić zebrać cały zapis, także bez odbiorcy ekranu.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_event_queue_cannot_hold_close_or_stop_hostage() -> Result<(), Box<dyn Error>> {
+    use loadout_lib::evidence::{EvidenceTarget, SafeInputManifest};
+
+    for stream_only in [false, true] {
+        for stop in [false, true] {
+            let fixture = tempfile::tempdir()?;
+            let workspace = tempfile::tempdir()?;
+            let body = FAKE_CLI.replace("[\"interrupt_receipt_v1\"]", "[]");
+            let binary = executable(fixture.path(), "claude", &body)?;
+            let target = EvidenceTarget::workflow_step(
+                workspace.path().to_path_buf(),
+                "full-events".to_owned(),
+                SafeInputManifest {
+                    prompt_bytes: 8,
+                    context: Vec::new(),
+                    images: Vec::new(),
+                },
+            );
+            let driver = ClaudeDriver::with_binary(binary)
+                .with_evidence(target.clone())
+                .ok_or("Claude has no evidence seam")?;
+            let (events, inbox) = mpsc::channel::<DecodedEvent>(1);
+            let mut handle = driver
+                .start(
+                    step_spec(Uuid::now_v7(), workspace.path(), "question"),
+                    events,
+                )
+                .await?;
+            if stream_only {
+                handle.turn_endings_are_read_from_the_stream();
+            }
+            let began = Instant::now();
+            while !fs::read_to_string(target.stdout_path()).is_ok_and(|raw| raw.contains("REPLY_1"))
+            {
+                if began.elapsed() > PATIENCE {
+                    return Err("the fixture never filled the event queue".into());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            // `init` zajmuje jedyne miejsce. Odpowiedź czeka w send(), a wynik jest jeszcze
+            // w potoku systemowym. Nikt w teście nie opróżnia kanału, aby naprawić sterownik.
+            let finished = tokio::time::timeout(CLEANUP, async {
+                if stop {
+                    assert!(matches!(handle.cancel().await, GroupProof::Dead { .. }));
+                } else {
+                    assert_eq!(handle.close().await?, Some(0));
+                }
+                Ok::<(), Box<dyn Error>>(())
+            })
+            .await;
+            // Nawet stary kod ma po czerwieni odzyskać ujście i posprzątać proces testu.
+            drop(inbox);
+            let _ = tokio::time::timeout(CLEANUP, handle.close()).await;
+            finished.map_err(|_| {
+                format!("full event queue blocked cleanup (stop={stop}, stream_only={stream_only})")
+            })??;
+            let raw = fs::read_to_string(target.stdout_path())?;
+            assert!(
+                raw.contains("\"type\":\"result\""),
+                "cleanup lost the unread final result: {raw}"
+            );
+            assert!(
+                target.is_healthy(),
+                "the evidence reader did not flush cleanly"
+            );
+            if !stream_only {
+                let result = tokio::time::timeout(CLEANUP, handle.wait()).await??;
+                assert_eq!(
+                    result.text, "REPLY_1",
+                    "cleanup must preserve the ordinary step's outcome"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Ile tur prowadzi żywa rozmowa. Przekracza dawny próg, i to jest cały jej zakres — nie ma
 /// generować pracy u modelu.
 const LIVE_TURNS: usize = 12;

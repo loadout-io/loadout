@@ -535,6 +535,12 @@ usunięcia którejś z tych dwóch.
 
 ## 8. Warstwa plików
 
+Domyślny katalog to `~/.loadout`. Izolowane okno QA można uruchomić z
+`LOADOUT_DATA_DIR=/absolutna/sciezka/do/biblioteki`. Zmienna przenosi wyłącznie dane Loadouta
+(także indeks i dziennik), a brak lub pusta wartość zachowuje domyślny katalog. `HOME` zostaje
+bez zmian, żeby Claude Code i Codex nadal widziały konto człowieka. Podmiana `HOME` do izolacji
+QA powodowała fałszywe `Not logged in` przy budowaniu kontekstu (incydent 2026-09-09).
+
 ```
 ~/.loadout/                          # globalne, między projektami
   agents/<slug>.md                   # definicja agenta — front-matter + proza [T4 §3]

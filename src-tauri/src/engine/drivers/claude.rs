@@ -87,6 +87,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{
@@ -2685,6 +2686,7 @@ async fn pump(
     outcomes: mpsc::Sender<Outcome>,
     mut transcript: Option<Recorder>,
     evidence: PumpEvidence,
+    finishing: CancellationToken,
 ) {
     let PumpEvidence {
         writer: mut evidence,
@@ -2781,7 +2783,7 @@ async fn pump(
             // czynności, więc `Curator::tool_start` oddawał `Vec::new()` i wiersze `read`,
             // `search`, `edit`, `ran` nie powstawały nigdy (powód w całości przy
             // [`DecodedEvent`]).
-            emit(DecodedEvent { event, tool }, &events, &outcomes).await;
+            emit(DecodedEvent { event, tool }, &events, &outcomes, &finishing).await;
         }
     }
 
@@ -2818,7 +2820,7 @@ async fn pump(
         if let Some(recorder) = transcript.as_mut() {
             recorder.curate(&event, None).await;
         }
-        emit(event.into(), &events, &outcomes).await;
+        emit(event.into(), &events, &outcomes, &finishing).await;
     }
 
     // Kodu wyjścia tu nie ma i nie da się go tu mieć: uchwyt procesu został przy wołającym,
@@ -2831,7 +2833,7 @@ async fn pump(
         if let Some(recorder) = transcript.as_mut() {
             recorder.curate(&event, None).await;
         }
-        emit(event.into(), &events, &outcomes).await;
+        emit(event.into(), &events, &outcomes, &finishing).await;
     }
 
     if let Some(recorder) = transcript.take()
@@ -3038,13 +3040,22 @@ async fn emit(
     decoded: DecodedEvent,
     events: &mpsc::Sender<DecodedEvent>,
     outcomes: &mpsc::Sender<Outcome>,
+    finishing: &CancellationToken,
 ) {
     if let AgentEvent::Finished(outcome) = &decoded.event {
         let _ = outcomes.send(outcome.clone()).await;
     }
     // Zamknięty kanał zdarzeń nie kończy pętli: nikt już nie patrzy na ekran, ale wynik tury
     // nadal ma dojść tam, gdzie ktoś na niego czeka.
-    let _ = events.send(decoded).await;
+    // 2026-09-09: martwy proces może nadal mieć wynik w potoku. Pełny kanał ekranu
+    // zatrzymywał zebranie czytnika w close/cancel już PO śmierci grupy. Przy sprzątaniu
+    // gotowy odbiorca nadal dostaje zdarzenia, ale brak miejsca nie blokuje zapisu na dysk.
+    // Wynik dla wait() powyżej zostaje zachowany; podczas zwykłej pracy nic nie pomijamy.
+    tokio::select! {
+        biased;
+        _ = events.send(decoded) => {}
+        () = finishing.cancelled() => {}
+    }
 }
 
 /// Żywa sesja `claude` — jeden proces, wiele tur.
@@ -3100,6 +3111,8 @@ pub struct ClaudeHandle {
     /// nie przy zamykaniu: anulowanie jest wartością, nie błędem (niezmiennik 7), i przychodzi
     /// tędy PO `cancel()`.
     outcomes: Option<mpsc::Receiver<Outcome>>,
+    /// Tylko ta sesja: po zejściu procesu czytnik ma opróżnić potoki bez czekania na ekran.
+    finishing: CancellationToken,
     /// Czytniki sa polami uchwytu, nie odczepionymi zadaniami: `Dead` nie znaczy jeszcze EOF,
     /// flush ani `sync_all`, dopoki obu nie zbierzemy.
     reader: Option<tokio::task::JoinHandle<()>>,
@@ -3140,19 +3153,15 @@ impl ClaudeHandle {
 
     /// Zbiera czytniki dowodów po dowiedzionym zejściu procesu.
     ///
-    /// # Dlaczego to czekanie nie ma już jak zawisnąć (2026-09-07)
-    ///
-    /// Bo pętla czytająca stdout mogła stanąć tylko w jednym miejscu: na wysyłce wyniku tury do
-    /// kolejki [`AgentHandle::wait`]. Zdarza się to wyłącznie wtedy, gdy odbiornik tej kolejki
-    /// żyje i nikt z niego nie wyjmuje — czyli w rozmowie prowadzonej głosem, a ta odbiornik
-    /// porzuca przy starcie ([`AgentHandle::turn_endings_are_read_from_the_stream`]). Właściciel,
-    /// który `wait()` woła, ma naraz jedną turę, więc nie ma jak zapełnić ośmiu miejsc.
+    /// 2026-09-09: pętla może czekać także na miejsce w kanale zdarzeń. Dopiero zejście
+    /// procesu pozwala odpuścić to oczekiwanie, przeczytać resztę stdout i domknąć zapis.
     ///
     /// **Odbiornika NIE porzucamy tutaj** i to jest treść, nie przeoczenie: anulowanie jest
     /// wartością, nie błędem (niezmiennik 7), a `commands::run` odbiera je właśnie przez `wait()`
     /// PO `cancel()`. Porzucony tutaj odbiornik zamieniałby „człowiek nacisnął Stop" w „sesja
     /// nie ma komu odpowiedzieć".
     async fn finish_evidence(&mut self) {
+        self.finishing.cancel();
         for task in [&mut self.reader, &mut self.complaints] {
             if let Some(task) = task.take()
                 && let Err(error) = task.await
@@ -3708,6 +3717,7 @@ impl ClaudeDriver {
         // także wtedy, gdy nikt nie woła `wait()`. Startuje PRZED odebraniem stdinu, bo
         // odebranie stdinu czeka na koniec pierwszego zapisu — a agent, który zaczyna mówić
         // w trakcie, ma mieć kto czytać.
+        let finishing = CancellationToken::new();
         let reader = tokio::spawn(pump(
             stdout,
             Arc::clone(&capabilities),
@@ -3720,6 +3730,7 @@ impl ClaudeDriver {
                 private: Arc::clone(&private),
                 complaint,
             },
+            finishing.clone(),
         ));
 
         // Ten potok zostaje otwarty aż do `close()`. Bez niego sesja ma dokładnie jedną turę
@@ -3749,6 +3760,7 @@ impl ClaudeDriver {
             hush: Some(hush),
             capabilities,
             outcomes: Some(outcomes),
+            finishing,
             reader: Some(reader),
             complaints,
             evidence: self.evidence.clone(),
