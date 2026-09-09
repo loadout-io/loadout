@@ -184,9 +184,17 @@ async fn readiness_timeout_ends_the_group_before_reporting_failure() -> Result<(
 async fn assert_not_ready(name: &str, delay: u64, sentence: &str) -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
     let processes = Arc::new(Processes::new());
-    let ran = bench
-        .run(&processes, &[(name, vacant_port()?, delay)], false)
-        .await;
+    /* 2026-09-09 — PORT PRZYDZIELA APLIKACJA, NIE TEST. `vacant_port()` wiąże port zero,
+    odczytuje numer i PUSZCZA nasłuch, więc między tym a chwilą, w której dziecko go zajmie,
+    stoi okno. Dla tych dwóch przypadków dziecko nie zajmuje go nigdy — „timeout" śpi 60 s,
+    a „exit" kończy się od razu — więc okno trwa całą próbę. W pełnej suicie, gdzie porty
+    bierze ~1900 testów, trafiło to raz: krok skończył się `Connection reset by peer` od
+    CUDZEGO serwera zamiast rezygnacją z czekania, a to jest inne zdarzenie i ma w tym module
+    własny test.
+
+    Ani jedna asercja tego nie potrzebuje: `assert_not_ready` nie czyta numeru portu.
+    Zero znaczy „przydziel sam", czyli dokładnie tę drogę, którą idzie produkt. */
+    let ran = bench.run(&processes, &[(name, 0, delay)], false).await;
     let groups = processes.list();
     let alive_after_run = groups
         .iter()
