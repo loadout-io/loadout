@@ -69,6 +69,7 @@ it.each([
     });
     try {
       await app.page.locator(SWITCH).click();
+      await app.page.getByText('Create from description', { exact: true }).click();
       const described = app.page.locator('#agent-description');
       await expect.poll(async () => described.count()).toBe(1);
       await described.fill(DESCRIBED);

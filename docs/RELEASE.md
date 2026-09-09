@@ -60,8 +60,8 @@ Komendy bezpieczne do skopiowania:
 ```bash
 test "$(git rev-parse --verify HEAD^{commit})" = "$RELEASE_SHA"
 npm run app:build
-APP="src-tauri/target/release/bundle/macos/Loadout.app"
-DMG="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name 'Loadout_*.dmg' -print -quit)"
+APP="target/release/bundle/macos/Loadout.app"
+DMG="$(find target/release/bundle/dmg -maxdepth 1 -type f -name 'Loadout_*.dmg' -print -quit)"
 test -d "$APP"
 test -f "$DMG"
 ```
@@ -76,18 +76,38 @@ Placeholder operatora — uzupełnij lokalnie, nie kopiuj wprost:
 ```text
 <podpisz wszystkie zagnieżdżone pliki wykonywalne w "$APP" certyfikatem Developer ID Application, od środka na zewnątrz>
 <podpisz "$APP" jako ostatni element aplikacji; nie używaj --deep>
-<utwórz DMG ponownie z podpisanej aplikacji i podpisz "$DMG" certyfikatem Developer ID Application>
+<spakuj podpisaną aplikację do ZIP, wyślij ZIP przez xcrun notarytool submit --wait, używając lokalnie wybranego profilu uwierzytelnienia, i wymagaj statusu Accepted>
 ```
 
 Komendy bezpieczne do skopiowania:
 
 ```bash
 codesign --verify --strict --verbose=4 "$APP"
+xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"
+```
+
+Placeholder operatora — uzupełnij lokalnie, nie kopiuj wprost:
+
+```text
+<utwórz DMG ponownie z podpisanej aplikacji z dołączonym poświadczeniem i podpisz "$DMG" certyfikatem Developer ID Application>
+```
+
+Komendy bezpieczne do skopiowania:
+
+```bash
 codesign --verify --strict --verbose=4 "$DMG"
 ```
 
 - Stan wymagany: oba artefakty przechodzą weryfikację, a szczegóły podpisu wskazują Developer ID
-  Application, hardened runtime i bezpieczny znacznik czasu. Podpis ad hoc nie dopuszcza wydania.
+  Application, hardened runtime i bezpieczny znacznik czasu. Aplikacja ma własne, poprawnie
+  zweryfikowane poświadczenie notaryzacji, zanim zostanie spakowana do końcowego DMG.
+  Podpis ad hoc nie dopuszcza wydania.
+
+Powód tej kolejności: wydanie 0.3.0 miało poświadczenie wyłącznie w DMG (D-2 w
+`docs/KNOWN-DEFECTS.md`). Po skopiowaniu aplikacji z obrazu nie było czego sprawdzić lokalnie
+przy pierwszym uruchomieniu bez sieci. Poświadczenie należy do obu artefaktów; doklejenie go
+tylko do aplikacji po zbudowaniu DMG nie zmieni zawartości gotowego obrazu.
 
 ## 6. Wyślij DMG do notaryzacji
 
@@ -124,12 +144,14 @@ GATEKEEPER_MOUNT="$(mktemp -d)"
 hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$GATEKEEPER_MOUNT"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
 spctl --assess --type execute --verbose=4 "$GATEKEEPER_MOUNT/Loadout.app"
+xcrun stapler validate "$GATEKEEPER_MOUNT/Loadout.app"
 hdiutil detach "$GATEKEEPER_MOUNT"
 rmdir "$GATEKEEPER_MOUNT"
 ```
 
 - Stan wymagany: niezależna weryfikacja Gatekeepera zwraca `accepted` dla DMG i aplikacji oraz
-  wskazuje `Notarized Developer ID`. Każda odmowa przerywa wydanie.
+  wskazuje `Notarized Developer ID`. Aplikacja wewnątrz DMG ma ważne poświadczenie staplera.
+  Każda odmowa przerywa wydanie.
 
 ## 9. Policz SHA-256 DMG
 
@@ -190,6 +212,7 @@ hdiutil attach "$DOWNLOADED_DMG" -nobrowse -readonly -mountpoint "$SMOKE_MOUNT"
 ditto "$SMOKE_MOUNT/Loadout.app" "$SMOKE_APPS/Loadout.app"
 hdiutil detach "$SMOKE_MOUNT"
 spctl --assess --type execute --verbose=4 "$SMOKE_APPS/Loadout.app"
+xcrun stapler validate "$SMOKE_APPS/Loadout.app"
 open "$SMOKE_APPS/Loadout.app"
 ```
 
