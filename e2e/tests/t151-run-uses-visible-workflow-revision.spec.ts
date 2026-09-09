@@ -178,6 +178,7 @@ describe('Run never starts from a workflow revision older than the visible edit'
   it('keeps a refused Run in the editor and a later successful save unlocks it', async () => {
     const replies = baseScene();
     replies['save_workflow'] = [
+      { error: 'T151 injected autosave refusal' },
       { error: 'T151 injected save refusal' },
       { value: 'r-after-retry' },
     ];
@@ -185,9 +186,21 @@ describe('Run never starts from a workflow revision older than the visible edit'
     const app = await openEditor(replies);
     try {
       await app.page.locator(NAME).fill('T151 refused revision');
+      /* 2026-09-09: najpierw rozliczamy autosave. Na wolnym runnerze jego timer
+       * konsumował odpowiedź przeznaczoną dla ręcznej naprawy i kasował odmowę Run,
+       * zanim test ją przeczytał. Oba zapisy muszą odmówić aż do następnej edycji. */
+      expect((await waitForCalls(app, 'save_workflow')).length).toBe(1);
+      await expect
+        .poll(() => app.page.locator('[data-could-not-save]').allInnerTexts(), { timeout: APPEARS })
+        .toEqual([expect.stringContaining('T151 injected autosave refusal')]);
       await app.page.locator(RUN_HOME).getByRole('button', { name: 'Run', exact: true }).click();
-      await waitForCalls(app, 'save_workflow');
-      await app.page.waitForTimeout(100);
+      expect((await waitForCalls(app, 'save_workflow', 2)).length).toBe(2);
+      await expect
+        .poll(() => app.page.locator('[data-could-not-save]').allInnerTexts(), { timeout: APPEARS })
+        .toEqual([expect.stringContaining('T151 injected save refusal')]);
+      /* Celowo czytamy po dłuższej przerwie niż debounce: ten sam odstęp odtwarzał
+       * czerwony wynik GitHuba na poprzedniej, ścigającej się tabeli odpowiedzi. */
+      await app.page.waitForTimeout(550);
 
       const stayedInEditor = await app.page.locator(NAME).count();
       const refusal = await app.page.locator('[data-could-not-save]').allInnerTexts();
@@ -206,8 +219,10 @@ describe('Run never starts from a workflow revision older than the visible edit'
       expect(stayedInEditor, 'a refused save navigated away from the visible unsaved edit').toBe(1);
       expect(refusal.join(' ').toLowerCase()).toContain('not saved');
       expect(runsAfterRefusal, 'Run started even though its captured revision was refused').toBe(0);
-      expect(saves.length, 'the successful retry never crossed production workflow IO').toBe(2);
-      expect(sentWorkflow(saves[1])['name']).toBe('T151 recovered revision');
+      expect(saves.length, 'the successful retry never crossed production workflow IO').toBe(3);
+      expect(sentWorkflow(saves[0])['name']).toBe('T151 refused revision');
+      expect(sentWorkflow(saves[1])['name']).toBe('T151 refused revision');
+      expect(sentWorkflow(saves[2])['name']).toBe('T151 recovered revision');
       expect(runs.length, 'the successful retry did not unlock Run without a restart').toBe(1);
     } finally {
       await app.close();

@@ -146,7 +146,10 @@ async function enter(replies: Record<string, readonly TauriReply[]> = {}) {
   return app;
 }
 
-describe('a context takes one build action after adding material', () => {
+/* 2026-09-09: przeglądarka i worker PDF potrzebują na wspólnym runnerze więcej niż
+ * domyślne 5 s. Sufit dotyczy całego scenariusza; asercja przygotowania stron nadal
+ * ma własne 30 s, a pozostałe asercje i ich wymagania pozostają takie same. */
+describe('a context takes one build action', { timeout: 60_000 }, () => {
   it('offers Build beside the material with optional settings folded away', async () => {
     const app = await enter();
     try {
