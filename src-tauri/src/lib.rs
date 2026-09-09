@@ -393,6 +393,35 @@ fn project_dir(home: &Path) -> PathBuf {
     std::env::var_os("LOADOUT_PROJECT").map_or_else(|| home.join("workspace"), PathBuf::from)
 }
 
+/// Zakłada katalog projektu, jeżeli jeszcze go nie ma, i oddaje go dalej.
+///
+/// 2026-09-09 (CT-09, znalezisko z natywnego QA) — KATALOG, KTÓRY APLIKACJA SAMA WYBRAŁA, MUSI
+/// ISTNIEĆ. `project_dir` celowo wskazuje dedykowane miejsce w bibliotece (powód stoi wyżej),
+/// ale nikt go nie tworzył. Na świeżej instalacji pierwsze budowanie kontekstu przewracało się
+/// więc zdaniem `Loadout could not protect this batch's files: No such file or directory
+/// (os error 2). No agent was started.` — i to jest podwójnie złe: surowy `errno` zamiast zdania
+/// dla człowieka ORAZ awaria czegoś, co nie jest awarią. Ten katalog jest podawany granicy plików
+/// jako korzeń UKRYTY, czyli miejsce, którego agent widzieć NIE MA; jego brak nie psuje ochrony,
+/// tylko `FenceRoot::open` nie ma czego otworzyć.
+///
+/// Zakładamy go tu, a nie w granicy plików, i to jest wybór: granica ma **odmawiać**, kiedy
+/// czegoś nie może ochronić, a nie dorabiać katalogi w tle. Naprawa należy do miejsca, które tę
+/// ścieżkę WYBRAŁO. `LOADOUT_PROJECT` wskazany przez człowieka jest objęty tak samo, bo literówka
+/// w zmiennej środowiskowej daje dziś dokładnie tę samą, nieczytelną porażkę.
+fn project_dir_ready(home: &Path) -> PathBuf {
+    let project = project_dir(home);
+    if let Err(error) = std::fs::create_dir_all(&project) {
+        // Nie przewracamy startu: aplikacja bez katalogu projektu nadal otwiera bibliotekę,
+        // Ustawienia i karty. Zdanie w dzienniku jest tu jedynym miejscem, w którym da się to
+        // powiedzieć — okna jeszcze nie ma (niezmiennik 5).
+        tracing::warn!(
+            "the project folder {} could not be made: {error}",
+            project.display()
+        );
+    }
+    project
+}
+
 /// Domyka biegi, które zginęły razem z poprzednim uruchomieniem aplikacji.
 ///
 /// Trzy kroki, w tej kolejności i nie w innej: przeczytaj, ROZSTRZYGNIJ, dopiero potem działaj.
@@ -607,7 +636,7 @@ pub fn run() {
      * ale ta droga jeszcze nie dochodzi do stanu; do tego czasu jedno okno pracuje nad jednym
      * katalogiem i mówi o tym wprost w dzienniku, zamiast po cichu pisać nie tam, gdzie myślisz. */
     let home = loadout_dir();
-    let project = project_dir(&home);
+    let project = project_dir_ready(&home);
     tracing::info!(
         "library at {}, project at {}",
         home.display(),

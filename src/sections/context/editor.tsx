@@ -123,6 +123,21 @@ function draftFrom(
   };
 }
 
+/** Co powiedzieć po UDANYM zapisie szkicu.
+ *
+ * 2026-09-09 (CT-09, znalezisko natywne) — właściciel kliknął `Save` osiem razy i za każdym
+ * razem zapis SIĘ UDAŁ (`draftRevision` doszedł do 8), a ekran nie powiedział ani słowa: handler
+ * ustawiał zdanie tylko przy PORAŻCE. Zapis, który udaje się bez śladu, jest nieodróżnialny od
+ * zapisu, który nic nie zrobił — i wniosek „Save nie działa" był racjonalny.
+ *
+ * Zdanie nie brzmi „Saved", bo to nie jest pytanie, które człowiek naprawdę zadaje. Zadaje
+ * „czy mogę tego już użyć", a odpowiedź zależy od tego, czy zestaw ma gotową wersję. */
+export function whatTheSaveChanged(hasReadyRevision: boolean): string {
+  return hasReadyRevision
+    ? 'Saved. Prepare this set again so steps receive the change.'
+    : 'Saved. This set needs preparing before a step can use it.';
+}
+
 export default function ContextEditor({
   open,
   refusal,
@@ -155,6 +170,8 @@ export default function ContextEditor({
   const [howToPrepare, setHowToPrepare] = useState(open.draft.howToPrepare);
   const [requirements, setRequirements] = useState(open.draft.requirements.join('\n'));
 
+  const [said, setSaid] = useState<string | null>(null);
+
   const save = (): void => {
     void onSave({
       id: open.set.id,
@@ -164,6 +181,10 @@ export default function ContextEditor({
       /* Rewizja, którą to okno PRZECZYTAŁO. Bez niej zapis z okna otwartego pięć minut temu
          kasuje pracę zapisaną minutę temu i wygląda przy tym na udany. */
       expectedRevision: open.revision,
+    }).then((saved) => {
+      // Odmowę pokazuje `refusal`; tutaj mówimy WYŁĄCZNIE o udanym zapisie, żeby dwa zdania
+      // o dwóch różnych wynikach nie stały nigdy obok siebie.
+      setSaid(saved ? whatTheSaveChanged(open.set.latestReadyRevision !== null) : null);
     });
   };
 
@@ -370,6 +391,13 @@ export default function ContextEditor({
                  żadnej z tych ról nie nosi. */
               <p data-refusal role="alert" className="text-fail">
                 {refusal}
+              </p>
+            )}
+            {refusal !== null || said === null ? null : (
+              /* STOI POZA WIDOKIEM DOMYŚLNYM: powstaje dopiero po zapisie, więc nie wchodzi do
+                 pomiaru gęstości i nie zajmuje miejsca komuś, kto jeszcze nic nie zrobił. */
+              <p data-saved role="status" className="caption">
+                {said}
               </p>
             )}
           </div>

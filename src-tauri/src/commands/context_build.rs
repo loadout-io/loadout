@@ -650,6 +650,27 @@ async fn prepare_turn(
     };
     let mut readable_files = prepared.readable_files;
     readable_files.extend(turn.batch.readable_files.clone());
+    /* 2026-09-09 (CT-09, znalezisko z natywnego QA) — BRAKUJĄCY KATALOG DOSTAJE ZDANIE, NIE
+     * `errno`. Właściciel zobaczył „Loadout could not protect this batch's files: No such file
+     * or directory (os error 2). No agent was started." przy każdym z trzech źródeł i nie miał
+     * z tego jak wywnioskować, czego brakuje. `os error 2` jest żargonem (niezmiennik 14),
+     * a `FilesystemFence::new` nie niesie ścieżki, na której się przewrócił.
+     *
+     * Sprawdzamy TU, bo tutaj znamy nazwy. Granica dalej ODMAWIA — nie dorabiamy katalogu
+     * w tle, bo ochrona miejsca, którego nie ma, to nie to samo, co ochrona miejsca, które
+     * powstanie w trakcie biegu. Przyczynę usuwa `lib.rs::project_dir_ready`, które zakłada
+     * katalog projektu na starcie; to jest siatka na resztę przypadków, w tym literówkę
+     * w `LOADOUT_PROJECT`. */
+    if let Some(missing) = [turn.home, turn.project]
+        .into_iter()
+        .find(|path| !path.is_dir())
+    {
+        return Err(TurnEnd::Failed(format!(
+            "Loadout keeps this folder away from the agent, but it is not there: {}. Make it, or \
+             pick a different project folder, and start the build again.",
+            missing.display()
+        )));
+    }
     let fence = match FilesystemFence::new(
         prepared.writable_roots,
         prepared.readable_roots,

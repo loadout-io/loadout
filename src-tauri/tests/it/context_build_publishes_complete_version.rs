@@ -971,6 +971,97 @@ async fn not_logged_in_is_a_named_agent_result_not_an_empty_revision() -> Result
     Ok(())
 }
 
+/// Brakujący katalog projektu daje ZDANIE, nie `errno`, i nie odpala agenta.
+///
+/// 2026-09-09 (CT-09, znalezisko z natywnego QA) — właściciel nacisnął `Rebuild context`
+/// i dostał przy każdym z trzech źródeł: „Loadout could not protect this batch's files: No such
+/// file or directory (os error 2). No agent was started." Katalog projektu, który aplikacja
+/// wybrała sama (`lib.rs::project_dir`), nigdy nie został założony, a jest podawany granicy
+/// plików jako korzeń UKRYTY — więc `FenceRoot::open` nie miał czego otworzyć.
+///
+/// SŁABA WERSJA TEGO KRYTERIUM: `assert!(said.contains("could not"))`. Przechodzi ją dokładnie
+/// to zdanie z `os error 2`, które właściciela zablokowało. Dlatego asercje są dwie i obie są
+/// o treści: nazwa brakującego katalogu MUSI być w zdaniu, a `os error` NIE MOŻE.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_folder_that_is_not_there_is_named_and_no_agent_starts()
+-> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let fixture = tempfile::tempdir()?;
+    let made = create_context_set_inner(home.path(), "Missing project")?;
+    let saved = save_context_draft_inner(
+        home.path(),
+        &made.set.id,
+        &made.set.title,
+        &made.set.description,
+        ContextDraft {
+            schema: 1,
+            sources: vec![ContextSource {
+                id: "typed".to_owned(),
+                kind: SourceKind::Text,
+                name: "Notes".to_owned(),
+                text: "This build never reaches a vendor.".to_owned(),
+                ..ContextSource::default()
+            }],
+            ..ContextDraft::default()
+        },
+        Some(made.revision),
+    )?;
+    let library = library_root(home.path());
+    let folder = folder_of(&library, &saved.set.id)?;
+    let operation = "no-project-folder";
+    let concrete: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::with_binary(blocking_executable(
+        fixture.path(),
+    )?));
+    let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&concrete));
+
+    // Katalog projektu, którego NIE MA. `tempdir` daje istniejącą ścieżkę, więc dokładamy do
+    // niej nazwę, której nikt nie utworzył — inaczej ten test nie miałby o czym być.
+    let nowhere = tempfile::tempdir()?;
+    let project = nowhere.path().join("never-made");
+    assert!(
+        !project.is_dir(),
+        "the fixture project folder must be absent"
+    );
+
+    let built = build_context_inner(
+        home.path(),
+        &project,
+        &drivers,
+        &Limiter::new(1),
+        &BuildContextRequest {
+            set_id: saved.set.id,
+            operation_id: operation.to_owned(),
+            app: Some(Vendor::ClaudeCode),
+            model: None,
+            generation: 1,
+            deadline: Duration::from_secs(20),
+            budget_usd: None,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+
+    let state = built.build.ok_or("missing build state")?;
+    assert_eq!(state.end, BuildEnd::Failed);
+    assert!(
+        state.said.contains(&project.display().to_string()),
+        "the sentence has to name the folder that is missing, or nobody can act on it: {}",
+        state.said
+    );
+    assert!(
+        !state.said.contains("os error"),
+        "a raw errno is not a sentence for a person (invariant 14): {}",
+        state.said
+    );
+    assert!(built.revision.is_none());
+    let private = folder.join("builds").join(operation).join("private");
+    assert!(
+        find_named(&private, "context.pid")?.is_none(),
+        "no agent may start when Loadout cannot protect the folders it promised to hide"
+    );
+    Ok(())
+}
+
 /// Stop złapany W OCZEKIWANIU NA SLOT nie zostawia po sobie ani jednego procesu vendora.
 ///
 /// 2026-09-08 (CT-09) — `prepare_turn` wybiera `tokio::select!` między `cancel.cancelled()`
