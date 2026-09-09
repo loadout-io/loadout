@@ -922,7 +922,7 @@ export default function AgentsScreen({
               {/* NAZWA NIE USTĘPUJE NIKOMU. Do 2026-08-31 to metadana miała `shrink-0`, więc
                   ucinana była nazwa, żeby zmieścił się model, którego nikt nie wybierał. Treść
                   pisana przez człowieka ustępuje tylko treści pisanej przez człowieka. */}
-              <h2 className="min-w-0 break-words text-title text-ink">
+              <h2 className="min-w-0 max-w-full shrink-0 break-words text-heading text-ink">
                 {standing.id === '' ? 'New agent' : standing.name}
               </h2>
 
@@ -936,9 +936,10 @@ export default function AgentsScreen({
                   nieprawdziwym, a nie ostrożnym (niezmiennik 17). Nowa rola nie ma jeszcze
                   identyfikatora, więc nie ma jej też kto liczyć.
 
-                  2026-09-09: nagłówek zawija metadane przy wąskim oknie. */}
+                  2026-09-09: metadane przechodzą do kolejnego wiersza przy wąskim oknie,
+                  a gdy nadal brakuje miejsca, ustępują nazwie przez przycięcie. */}
               {usage === null || standing.id === '' ? null : (
-                <span data-facts className="min-w-0 text-meta text-muted">
+                <span data-facts className="min-w-0 truncate text-meta text-muted">
                   {usageSays(usedIn(usage, standing.id))}
                 </span>
               )}
