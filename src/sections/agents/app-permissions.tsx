@@ -1,6 +1,7 @@
 /* WF-28: wybór praw jest osobny od Internetu i zapisu plików. */
 import type { ReactElement } from 'react';
 import type { Agent, ServiceGrant, ServiceOperation } from '../../state/agents';
+import { Tick } from '../../ui/primitives/tick';
 
 const OPERATIONS: readonly { value: ServiceOperation; label: string }[] = [
   { value: 'read', label: 'Read' },
@@ -39,24 +40,23 @@ export function AppPermissions({
           />
           <div className="flex flex-wrap gap-3">
             {OPERATIONS.map((operation) => (
-              <label key={operation.value} className="flex items-center gap-1">
-                <input
-                  type="checkbox"
-                  aria-label={`${operation.label} app ${index + 1}`}
-                  checked={grant.operations.includes(operation.value)}
-                  onChange={(event) =>
-                    edit(index, {
-                      ...grant,
-                      operations: OPERATIONS.filter((choice) =>
-                        choice.value === operation.value
-                          ? event.target.checked
-                          : grant.operations.includes(choice.value),
-                      ).map((choice) => choice.value),
-                    })
-                  }
-                />
-                {operation.label}
-              </label>
+              <Tick
+                key={operation.value}
+                className="flex items-center gap-1"
+                label={operation.label}
+                name={`${operation.label} app ${index + 1}`}
+                checked={grant.operations.includes(operation.value)}
+                onChange={(event) =>
+                  edit(index, {
+                    ...grant,
+                    operations: OPERATIONS.filter((choice) =>
+                      choice.value === operation.value
+                        ? event.target.checked
+                        : grant.operations.includes(choice.value),
+                    ).map((choice) => choice.value),
+                  })
+                }
+              />
             ))}
           </div>
           <button

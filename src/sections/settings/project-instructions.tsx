@@ -26,6 +26,7 @@ import { useEffect, useRef, useState } from 'react';
 import { why } from '../../ipc/why';
 import { readProjectSettings, saveProjectSettings } from '../../state/settings-io';
 import type { ProjectSettings, ProjectSettingsPatch } from '../../state/settings-io';
+import { Tick } from '../../ui/primitives/tick';
 import { useWorkspaces } from '../../state/workspaces';
 
 /**
@@ -248,18 +249,16 @@ function ChoiceFromTheFile({
   return (
     <>
       <div className="flex items-center gap-2">
-        <input
+        <Tick
           id="project-instructions-enabled"
-          type="checkbox"
+          className="label"
+          label="Use project instructions"
           checked={settings.instructions.enabled}
           disabled={saving}
           onChange={(event) => {
             asked({ instructions: { enabled: event.target.checked } });
           }}
         />
-        <label htmlFor="project-instructions-enabled" className="label">
-          Use project instructions
-        </label>
       </div>
       <p className="lead">
         Applies to new workflows. Each workflow keeps its original instructions; the lead reads the
@@ -296,18 +295,16 @@ function ChoiceFromTheFile({
           <p className="caption">No project instruction sources found.</p>
         ) : null}
         <div className="flex items-center gap-2 mt-3">
-          <input
+          <Tick
             id="project-instructions-local"
-            type="checkbox"
+            className="label"
+            label="Include private CLAUDE.local.md files"
             checked={settings.instructions.includeLocal}
             disabled={saving}
             onChange={(event) => {
               asked({ instructions: { includeLocal: event.target.checked } });
             }}
           />
-          <label htmlFor="project-instructions-local" className="label">
-            Include private CLAUDE.local.md files
-          </label>
         </div>
         <p className="caption">
           Local files may contain private instructions. Enabling this sends their selected text to

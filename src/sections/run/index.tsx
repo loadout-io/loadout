@@ -58,6 +58,7 @@ import type { MouseEvent, ReactElement, ReactNode } from 'react';
 
 import { why } from '../../ipc/why';
 import type { RunRequested } from '../../ipc/types';
+import { Tick } from '../../ui/primitives/tick';
 import { sectionEntry } from '../../ui/sections';
 import type { ContextPin } from '../../state/context';
 import type { FeedLine, Step } from '../../state/run';
@@ -728,22 +729,21 @@ function LeadContextPreview({
       </label>
       {place === 'steps'
         ? agents.map((step) => (
-            <label key={step.id} className="ml-5 flex items-baseline gap-2 text-body text-ink">
-              <input
-                type="checkbox"
-                checked={steps.includes(step.id)}
-                onChange={(event) => {
-                  setSteps((known) => {
-                    const next = event.target.checked
-                      ? [...known, step.id]
-                      : known.filter((id) => id !== step.id);
-                    rememberLeadContextChoice(terminal, { place: 'steps', stepIds: next });
-                    return next;
-                  });
-                }}
-              />
-              {step.name}
-            </label>
+            <Tick
+              key={step.id}
+              className="ml-5 flex items-baseline gap-2 text-body text-ink"
+              label={step.name}
+              checked={steps.includes(step.id)}
+              onChange={(event) => {
+                setSteps((known) => {
+                  const next = event.target.checked
+                    ? [...known, step.id]
+                    : known.filter((id) => id !== step.id);
+                  rememberLeadContextChoice(terminal, { place: 'steps', stepIds: next });
+                  return next;
+                });
+              }}
+            />
           ))
         : null}
       {changed ? <p className="text-body text-warn">Context changed since this plan</p> : null}

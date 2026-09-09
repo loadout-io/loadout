@@ -1,5 +1,7 @@
 import type { ReactElement } from 'react';
 
+import { Tick } from '../../../ui/primitives/tick';
+
 export const REFLECTION_LABEL = 'Learn from this run';
 
 /**
@@ -117,29 +119,20 @@ export function ReflectionToggle({
          kolumnę od strumienia. */
       className="shrink-0 border-t border-line px-[14px] py-3"
     >
-      {/* PTASZEK ZOSTAJE W ETYKIECIE, nie przy `htmlFor`: cudze kryterium sięga po niego
-          selektorem `label:has-text(…) input[type="checkbox"]`
-          (`e2e/tests/t161-long-workflow-stays-inside-run.spec.ts`), a poza tym kliknięcie
-          w napis ma przełączać ptaszek i tak robi to samo zawinięcie.
-
-          ANI JEDNEGO `truncate` I ANI JEDNEGO `shrink` w tej kontrolce — to nie jest
-          przeoczenie, tylko cała różnica względem wersji z paska. Tam obie te klasy stały na
-          obu napisach i to one zamieniły zdanie w zero pikseli. */}
-      <label className="flex items-start gap-2 text-ui text-ink">
-        {/* `mt-[3px]`: kwadrat ptaszka ma 13 px, wiersz napisu więcej, więc bez tego pole
-            wisiałoby nad pierwszą literą zamiast stać w jej linii. */}
-        <input
-          type="checkbox"
-          className="mt-[3px] shrink-0"
-          checked={enabled}
-          disabled={disabled}
-          aria-describedby={EXPLAINED_ID}
-          onChange={(event) => {
-            onChange(event.target.checked);
-          }}
-        />
-        <span>{REFLECTION_LABEL}</span>
-      </label>
+      {/* PTASZEK ZOSTAJE W ETYKIECIE: cudze kryterium sięga po `label:has-text(…) input`,
+          a kliknięcie w napis ma przełączać pole. ANI JEDNEGO `truncate` ani `shrink` na
+          napisie — to one wcześniej zamieniły opis w zero pikseli. */}
+      <Tick
+        className="flex items-start gap-2 text-ui text-ink"
+        boxClass="mt-[3px] shrink-0"
+        label={REFLECTION_LABEL}
+        describedBy={EXPLAINED_ID}
+        checked={enabled}
+        disabled={disabled}
+        onChange={(event) => {
+          onChange(event.target.checked);
+        }}
+      />
 
       {/* ZDANIE POD NAZWĄ, WCIĘTE POD JEJ PIERWSZĄ LITERĘ (13 px ptaszka + 8 px odstępu), żeby
           było widać, do czego należy. Stopień `label`, bo to jest opis kontrolki, a nie druga

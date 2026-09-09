@@ -47,6 +47,7 @@ import {
   subscribeToLearnFromRuns,
 } from '../../state/settings';
 import { useSectionStore } from '../../ui/shell/section-store';
+import { Tick } from '../../ui/primitives/tick';
 import { list as savedAgents } from '../agents/io';
 import { BUDGET_HELP } from '../run/limits/budget';
 import { ProjectInstructions } from './project-instructions';
@@ -85,7 +86,7 @@ export const KEEP_EVERYTHING_SAID =
   'Zero keeps every run. Any other number clears the older ones out of the project folder the ' +
   'next time Loadout opens it.';
 
-/** Nazwa piątego wyboru pliku i czwartego wiersza tego ekranu. */
+/** Widoczny napis piątego wyboru pliku i czwartego wiersza tego ekranu. */
 export const LEARN_FROM_RUNS_LABEL = 'Learn from runs by default';
 
 /** Co ten wybór robi; osobny opis kontrolki, nie część jej dostępnej nazwy. */
@@ -525,18 +526,16 @@ export default function SettingsScreen(): ReactElement {
             `aria-describedby`; tekst opisu wewnątrz `<label>` stałby się nazwą kontrolki. */}
         <div className="card mt-3 grid max-w-200 gap-4 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] lg:items-center">
           <div className="flex items-center gap-2">
-            <input
+            <Tick
               id="learn-from-runs"
-              type="checkbox"
+              className="label"
+              label={LEARN_FROM_RUNS_LABEL}
               checked={learns}
-              aria-describedby={WHAT_LEARNING_DOES}
+              describedBy={WHAT_LEARNING_DOES}
               onChange={(event) => {
                 void chooseLearning(event.target.checked);
               }}
             />
-            <label className="label" htmlFor="learn-from-runs">
-              {LEARN_FROM_RUNS_LABEL}
-            </label>
           </div>
           <p id={WHAT_LEARNING_DOES} data-learn-help className="lead">
             {LEARN_FROM_RUNS_SAID}

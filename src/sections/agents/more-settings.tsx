@@ -45,6 +45,7 @@
  */
 import type { ReactElement } from 'react';
 import type { Agent, Tools } from '../../state/agents';
+import { Tick } from '../../ui/primitives/tick';
 import { capability } from './capabilities';
 import { SkillSourcePicker } from '../skills/source-picker';
 import { AppPermissions } from './app-permissions';
@@ -153,14 +154,12 @@ export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactEleme
         />
       </div>
       <AppPermissions value={value} onChange={onChange} />
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={value.agentMessages ?? false}
-          onChange={(event) => onChange({ ...value, agentMessages: event.target.checked })}
-        />
-        Allow messages between steps
-      </label>
+      <Tick
+        className="flex items-center gap-2"
+        label="Allow messages between steps"
+        checked={value.agentMessages ?? false}
+        onChange={(event) => onChange({ ...value, agentMessages: event.target.checked })}
+      />
     </div>
   );
 }
