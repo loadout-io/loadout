@@ -15,13 +15,13 @@ const MODES: ReadonlyArray<{ value: StepPlanMode; label: string }> = [
 
 const SECTIONS = ['Implementation', 'Design', 'Validation'] as const;
 
-function modeOf(value: StepPlan | undefined): StepPlanMode | null {
-  if (value === undefined) return 'off';
+function modeOf(value: StepPlan | undefined, view: StepPlanView | null): StepPlanMode | null {
+  if (value === undefined) return view?.mode === 'use' ? 'use' : 'off';
   return MODES.find((mode) => mode.value === value.mode)?.value ?? null;
 }
 
 function withMode(value: StepPlan | undefined, mode: StepPlanMode): StepPlan | undefined {
-  if (mode === 'off') return undefined;
+  if (mode === 'off') return { mode };
   if (mode === 'create') return { mode };
   if (mode === 'update') {
     return {
@@ -60,7 +60,7 @@ export interface PlanRowProps {
 }
 
 export function PlanRow({ value, view, refusal, onChoose }: PlanRowProps): ReactElement {
-  const mode = modeOf(value);
+  const mode = modeOf(value, view);
   const label = MODES.find((one) => one.value === mode)?.label ?? 'Needs attention';
   const canUpdate =
     mode === 'update' && (value?.canUpdate?.length ?? 0) > 0 ? (value?.canUpdate ?? []) : SECTIONS;

@@ -82,6 +82,7 @@ import type {
   ServeStep,
   SkillChoice,
   Step,
+  StepPlanMode,
   WhenItFails,
   Weight,
   WorkflowPlanView,
@@ -121,8 +122,9 @@ export type AgentStepFields = Partial<
   >
 >;
 
-function planSummary(step: AgentStep): string | undefined {
-  switch (step.plan?.mode) {
+function planSummary(step: AgentStep, resolvedMode: StepPlanMode | undefined): string | undefined {
+  const mode = step.plan?.mode ?? (resolvedMode === 'use' ? 'use' : undefined);
+  switch (mode) {
     case undefined:
     case 'off':
       return undefined;
@@ -184,6 +186,8 @@ export interface StepPanelProps {
   onEditStep: (fields: AgentStepFields) => void;
   /** `Reset` przy jednym wierszu. */
   onReset: (field: OverridableField) => void;
+  /** 2026-09-09 (WP-08): tryb resolvera, zanim zapis zdąży go zmaterializować. */
+  planMode?: StepPlanMode | undefined;
   /**
    * Wiersze, które wołający dokłada DO ŚRODKA ujawnienia — te, których ten panel sam nie zna,
    * bo są osobnymi komponentami (przekazanie, Skills, Borrow, liczba rund).
@@ -844,6 +848,7 @@ export function StepPanel({
   onEdit,
   onEditStep,
   onReset,
+  planMode,
   more,
 }: StepPanelProps): ReactElement {
   /* Wartości EFEKTYWNE do pokazania i lista zmienionych pól — jedno wywołanie, jeden fakt.
@@ -905,7 +910,7 @@ export function StepPanel({
       <MoreSettings
         inside={3 + grey.length + brought.length + (apps ? 1 : 0)}
         changed={changed.length}
-        plan={planSummary(step)}
+        plan={planSummary(step, planMode)}
       >
         <div data-row="can-it-change-files" className="stack">
           <div className="flex items-baseline gap-2">
@@ -1456,6 +1461,7 @@ function AgentPanel({
       }}
       onEditStep={onEditStep}
       onReset={onReset}
+      planMode={plan?.steps.find((one) => one.stepId === step.id)?.mode}
       more={more}
     />
   );
