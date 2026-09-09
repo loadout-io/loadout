@@ -401,6 +401,75 @@ async fn a_half_published_version_does_not_take_the_ready_one() -> Result<(), Bo
     Ok(())
 }
 
+/// ZMIERZONE NA ŻYWYM CLI, 2026-09-09: `claude 2.1.266` (sonnet) owinął odpowiedź w ```json
+/// w OŚMIU turach z ośmiu — cztery pierwsze podejścia i cztery korekty formatu. Wcześniej
+/// `read_findings` wołało `serde_json` na surowych bajtach, więc budowanie kontekstu padało
+/// na prawdziwym vendorze z „expected value at line 1 column 1", a jedyna korekta formatu
+/// niczego nie zmieniała: model uważa opłotkowany blok za JSON i oddaje go drugi raz.
+///
+/// SŁABA WERSJA TEGO KRYTERIUM: sprawdzić, że opłotkowana odpowiedź przechodzi. Przechodzi ją
+/// parser, który przyjmuje COKOLWIEK — dlatego drugie zdanie tego testu mówi, że proza bez
+/// JSON-a nadal ma być odrzucona NAZWANYM zdaniem.
+#[test]
+fn an_answer_the_real_agent_wraps_in_a_code_fence_is_read_but_prose_is_still_refused()
+-> Result<(), Box<dyn Error>> {
+    let allowed = BTreeSet::from([SourceReference {
+        source_id: "typed".to_owned(),
+        part: "fragment 1".to_owned(),
+    }]);
+    let inside = r#"{
+      "topics":[{"id":"checkout","title":"Checkout"}],
+      "findings":[
+        {"kind":"requirement","text":"Keep the promo code when the cart is edited.","condition":"","sources":[{"sourceId":"typed","part":"fragment 1"}],"topic":"checkout","conflictsWith":[]}
+      ],
+      "questions":[]
+    }"#;
+    for wrapped in [
+        format!("```json\n{inside}\n```"),
+        format!("```JSON\n{inside}\n```"),
+        format!("```\n{inside}\n```"),
+        format!("  ```json\n{inside}\n```  \n"),
+    ] {
+        let found = findings::read_findings(wrapped.as_bytes(), &allowed);
+        let found = match found {
+            Ok(found) => found,
+            Err(why) => panic!("a fenced answer was refused: {why}\n{wrapped}"),
+        };
+        assert_eq!(
+            found.findings.len(),
+            1,
+            "a fenced answer lost its finding: {wrapped}"
+        );
+        assert_eq!(
+            found.findings[0].text,
+            "Keep the promo code when the cart is edited."
+        );
+        assert!(
+            found.missing.is_empty(),
+            "nothing was rejected: {:?}",
+            found.missing
+        );
+    }
+
+    for prose in [
+        "I need more information before I can answer.",
+        "```json\nI need more information before I can answer.\n```",
+        "```json\n{\"topics\": [\n```",
+    ] {
+        let refused = findings::read_findings(prose.as_bytes(), &allowed);
+        assert!(
+            refused.is_err(),
+            "an answer that is not the contract was accepted: {prose}"
+        );
+        let said = refused.err().map(|why| why.said()).unwrap_or_default();
+        assert!(
+            said.contains("was not the required findings JSON"),
+            "the refusal did not name what is wrong: {said}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn conditions_are_part_of_finding_identity_and_exact_duplicates_are_not()
 -> Result<(), Box<dyn Error>> {
@@ -1486,7 +1555,13 @@ async fn timeout_returns_only_after_the_real_driver_group_is_dead() -> Result<()
             app: Some(Vendor::ClaudeCode),
             model: None,
             generation: 1,
-            deadline: Duration::from_millis(300),
+            // 2026-09-09 — ZMIERZONE: przy 300 ms ta partia padała 2/2 w trzech przebiegach
+            // z rzędu zdaniem „the timed build saved no pid". Limit czasu ścigał się z fork+exec
+            // atrapy vendora, więc na obciążonej maszynie budowanie kończyło się ZANIM proces
+            // w ogóle powstał — i asercja o śmierci grupy nie biegła ani razu. Test o tym, że
+            // limit czasu wraca dopiero po śmierci grupy, nie jest testem o tym, czy 300 ms
+            // wystarczy na start procesu. Atrapa blokuje się na zawsze, więc limit i tak padnie.
+            deadline: Duration::from_secs(5),
             budget_usd: None,
         },
         &CancellationToken::new(),

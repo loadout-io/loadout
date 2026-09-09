@@ -697,7 +697,10 @@ export default function AgentsScreen({
             z sześcioma nazwami rozciągniętą na 735 px obok arkusza, który miał się rozciągnąć.
             Zmierzone na zrzucie, nie wydedukowane. */}
         {shows !== 'library' ? null : (
-          <div data-agent-index className="screen-body w-64 flex-none border-r border-line">
+          <div
+            data-agent-index
+            className="screen-body w-64 shrink-0 flex-none border-r border-line"
+          >
             {/* JEDYNA DROGA DO NOWEJ ROLI, i stoi tam, gdzie stało `All agents`. Tamten przycisk
                 wracał DO ŚCIANY KAFELKÓW — do widoku, którego już nie ma — więc zniknął razem
                 z nią, a nie zamiast niego. Cichy, bo czynnością główną tego ekranu jest `Save`
@@ -712,16 +715,21 @@ export default function AgentsScreen({
             </button>
             {/* OPIS I DWA PRZYCISKI OBOK ręcznego tworzenia, nie zamiast niego. Powód, dla
                 którego ten wiersz w ogóle powstał, stoi w całości w `./generate-agent.tsx`. */}
-            <div className="mb-3">
-              <GenerateAgent
-                onGenerate={generating.generate}
-                onStop={(operation) => {
-                  void generating.stopGenerating(operation);
-                }}
-                onDraft={takeDraft}
-                freshOperation={() => crypto.randomUUID()}
-              />
-            </div>
+            <details className="mb-4 rounded-md border border-line p-3">
+              <summary className="cursor-pointer text-label text-body">
+                Create from description
+              </summary>
+              <div className="pt-3">
+                <GenerateAgent
+                  onGenerate={generating.generate}
+                  onStop={(operation) => {
+                    void generating.stopGenerating(operation);
+                  }}
+                  onDraft={takeDraft}
+                  freshOperation={() => crypto.randomUUID()}
+                />
+              </div>
+            </details>
             <ul className="stack" data-gap="1">
               {state.agents.map((agent) => (
                 /* `relative`, bo kwadrat tożsamości stoi OBOK przycisku otwierającego, a nie
@@ -888,9 +896,7 @@ export default function AgentsScreen({
              czyli formularz, który pamięta cudze rozwinięcia. Przy okazji `.fade-in` odgrywa
              się przy każdym przełączeniu i mówi oku, że treść pod spodem jest już inna.
 
-             `.glass` zamiast `bg-panel`: arkusz jest chrome, a nie kartką z treścią. Obrys lewej
-             krawędzi zostaje klejem układu — arkusz przylega do krawędzi okna, więc `.pane`
-             z obrysem dookoła i promieniem rysowałby ramkę wiszącą w powietrzu.
+             2026-09-09: pełne tło pod formularzem, zgodnie z D1: treść jest papierem.
 
              KLAMRY WOKÓŁ TEGO KOMENTARZA BYŁYBY BŁĘDEM SKŁADNI, 2026-08-31. Komentarz owinięty
              w klamry jest komentarzem JSX i działa wyłącznie tam, gdzie stoją DZIECI elementu.
@@ -906,19 +912,17 @@ export default function AgentsScreen({
                a pole instrukcji — jedyna rzecz, która JEST rolą — dostawało w tej rurze 150 px
                przy 546 px niewykorzystanej wysokości obok.
 
-               `flex flex-col` plus `min-h-0`, bo to jest połowa, która wpuszcza wysokość do
-               środka: formularz niżej rozciąga swój wiersz instrukcji dokładnie o tyle, ile tu
-               zostanie. Bez kolumny elastycznej `flex-1` w formularzu nie miałoby czego dzielić. */
-            className="fade-in glass flex min-h-0 flex-1 flex-col overflow-auto border-l border-line p-4"
+               2026-09-09: panel przewija treść, ale formularz nie rozciąga pustych wierszy. */
+            className="fade-in flex min-h-0 min-w-0 flex-1 flex-col overflow-auto bg-solid p-6"
           >
             {/* Nagłówek arkusza trzyma SIĘ TEJ SAMEJ kolumny, co pola pod nim: `Cancel` odbity
                 do krawędzi powierzchni stałby 240 px za ostatnim polem i nie należałby wzrokiem
                 do niczego (2026-08-31, zmierzone na zrzucie). */}
-            <div className="flex w-full max-w-192 shrink-0 items-baseline gap-3 pb-3">
+            <div className="mx-auto flex w-full max-w-240 shrink-0 flex-wrap items-baseline gap-3 border-b border-line pb-4 mb-5">
               {/* NAZWA NIE USTĘPUJE NIKOMU. Do 2026-08-31 to metadana miała `shrink-0`, więc
                   ucinana była nazwa, żeby zmieścił się model, którego nikt nie wybierał. Treść
                   pisana przez człowieka ustępuje tylko treści pisanej przez człowieka. */}
-              <h2 className="shrink-0 text-heading text-ink">
+              <h2 className="min-w-0 break-words text-title text-ink">
                 {standing.id === '' ? 'New agent' : standing.name}
               </h2>
 
@@ -932,9 +936,9 @@ export default function AgentsScreen({
                   nieprawdziwym, a nie ostrożnym (niezmiennik 17). Nowa rola nie ma jeszcze
                   identyfikatora, więc nie ma jej też kto liczyć.
 
-                  `min-w-0 truncate` bez `shrink-0`: to metadana skraca się pierwsza. */}
+                  2026-09-09: nagłówek zawija metadane przy wąskim oknie. */}
               {usage === null || standing.id === '' ? null : (
-                <span data-facts className="min-w-0 truncate font-mono text-meta text-muted">
+                <span data-facts className="min-w-0 text-meta text-muted">
                   {usageSays(usedIn(usage, standing.id))}
                 </span>
               )}
@@ -967,13 +971,9 @@ export default function AgentsScreen({
               )}
             </div>
 
-            {/* KOLUMNA CZYTANIA WEWNĄTRZ SZEROKIEJ POWIERZCHNI — 2026-08-31.
-                Arkusz bierze całą pozostałą szerokość ciała ekranu, ale formularz jest listą
-                wierszy, a jednowierszowe pole `Name` na tysiąc pikseli nie jest ani czytelne,
-                ani szybsze do wypełnienia. Szerokość dostaje więc TREŚĆ arkusza, a nie każde
-                pole z osobna: 768 px to ta sama miara, którą ma kolumna czytania w Knowledge.
-                `flex-1 min-h-0` przewleka wysokość dalej, do wiersza instrukcji. */}
-            <div className="flex min-h-0 w-full max-w-192 flex-1 flex-col">
+            {/* 2026-09-09: wspólna, wyśrodkowana kolumna nagłówka i formularza.
+                Pola dzielą wiersz tylko wtedy, gdy szerokość samego formularza na to pozwala. */}
+            <div className="mx-auto flex w-full max-w-240 flex-col">
               {/* CO SZKIC POWIEDZIAŁ O SOBIE — nad formularzem, bo to jest pytanie WCZEŚNIEJSZE
                   niż którekolwiek pole: czy ta rola w ogóle może robić to, o co poproszono.
                   Rola stworzona ręcznie nie ma tu nic i wiersz nie powstaje. */}

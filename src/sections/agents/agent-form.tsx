@@ -174,13 +174,9 @@ const FIELD = 'field';
  * naprawdę ma. Arkusz zostaje nietknięty (i musi: `src/styles/theme.css` leży poza zakresem
  * tej zmiany), a `resize: vertical` z tej samej reguły dalej pozwala pociągnąć róg.
  *
- * `flex-1` DOSZŁO 2026-08-31, kiedy arkusz roli przestał być kolumną 332 px i wziął całą
- * wysokość ciała ekranu. Wtedy `rows` przestaje być wysokością i staje się WYSOKOŚCIĄ
- * MINIMALNĄ: w kolumnie elastycznej to pole rośnie o całą wysokość, której nie zabrały
- * pozostałe sześć wierszy, a poniżej ośmiu wierszy nie zejdzie, bo minimum elementu
- * elastycznego liczy się z jego treści. `Taller` dalej robi dokładnie to, co mówi — podnosi
- * to minimum ponad to, co zostało, i wtedy arkusz się przewija. */
-const AREA = 'field h-auto flex-1';
+ * 2026-09-09: wysokość wynika z rows. Rozciąganie rodzica PlacesField zostawiało
+ * pustkę pod jego wewnętrznym textarea zamiast powiększać pole. */
+const AREA = 'field h-auto';
 
 /* Ile wierszy widać, zanim ktokolwiek o coś poprosi, i ile po naciśnięciu `Taller`.
  *
@@ -261,11 +257,9 @@ export function AgentForm({
   return (
     <form
       data-agent-form
-      /* `flex-1`, bo od 2026-08-31 formularz stoi w kolumnie o wysokości ciała ekranu, a nie
-         w rurze 332 px: bez tego wiersz instrukcji nie miałby czego dzielić i pole wracałoby
-         do ośmiu wierszy pod półmetrem pustki. `.stack` jest już kolumną elastyczną. */
-      className="stack flex-1"
-      data-gap="3"
+      /* 2026-09-09: PlacesField opakowuje textarea. Rozciąganie jego rodzica dawało
+         pustkę POD polem, więc wysokość formularza wynika teraz wyłącznie z treści. */
+      className="@container flex flex-col gap-5"
       onSubmit={(event) => {
         event.preventDefault();
         /* Wygaszony przycisk NIE JEST całą obroną. Formularz z jednym polem tekstowym wysyła
@@ -276,42 +270,41 @@ export function AgentForm({
         onSave();
       }}
     >
-      <div className="stack">
-        <label htmlFor="agent-name" className="label">
-          Name
-        </label>
-        <input
-          id="agent-name"
-          data-field="name"
-          className={FIELD}
-          /* `aria-required`, a nie `required`: walidacja HTML-a wyświetla własny balonik
-           * przeglądarki, którego brzmienia nie kontrolujemy i który mówi „Please fill out
-           * this field" obok naszego zdania. Powód stoi pod przyciskiem, jeden raz. */
-          aria-required="true"
-          value={value.name}
-          onChange={(event) => onChange({ ...value, name: event.target.value })}
-        />
-      </div>
+      <div className="grid gap-4 @xl:grid-cols-2">
+        <div className="stack">
+          <label htmlFor="agent-name" className="label">
+            Name
+          </label>
+          <input
+            id="agent-name"
+            data-field="name"
+            className={FIELD}
+            /* `aria-required`, a nie `required`: walidacja HTML-a wyświetla własny balonik
+             * przeglądarki, którego brzmienia nie kontrolujemy i który mówi „Please fill out
+             * this field" obok naszego zdania. Powód stoi pod przyciskiem, jeden raz. */
+            aria-required="true"
+            value={value.name}
+            onChange={(event) => onChange({ ...value, name: event.target.value })}
+          />
+        </div>
 
-      <div className="stack">
-        <label htmlFor="agent-summary" className="label">
-          What it does
-        </label>
-        <input
-          id="agent-summary"
-          data-field="summary"
-          className={FIELD}
-          value={value.summary}
-          onChange={(event) => onChange({ ...value, summary: event.target.value })}
-        />
+        <div className="stack">
+          <label htmlFor="agent-summary" className="label">
+            What it does
+          </label>
+          <input
+            id="agent-summary"
+            data-field="summary"
+            className={FIELD}
+            value={value.summary}
+            onChange={(event) => onChange({ ...value, summary: event.target.value })}
+          />
+        </div>
       </div>
 
       {/* INSTRUKCJE STOJĄ TRZECIE I DOSTAJĄ NAJWIĘCEJ MIEJSCA W CAŁYM FORMULARZU, bo są całą
           treścią agenta. Do 2026-08-31 stały czwarte, pod `Colour`. */}
-      {/* `flex-1` NA WIERSZU INSTRUKCJI — 2026-08-31. To jest ten jeden wiersz formularza,
-          któremu wolno urosnąć o całą wolną wysokość arkusza: instrukcje są całą treścią roli,
-          a pozostałych sześć wierszy to jedna kontrolka każdy i wyższe być nie mają jak. */}
-      <div className="stack flex-1">
+      <div className="stack">
         <div className="flex items-center gap-2">
           <label htmlFor="agent-instructions" className="label">
             Instructions
@@ -321,6 +314,8 @@ export function AgentForm({
           <button
             type="button"
             data-taller
+            aria-expanded={tall}
+            aria-controls="agent-instructions"
             className="btn-bare ml-auto"
             onClick={() => {
               setTall((was) => !was);
@@ -340,201 +335,210 @@ export function AgentForm({
         />
       </div>
 
-      {/* JEDNO PYTANIE, NIE TRZY — 2026-08-31.
-       *
-       * `Runs with`, `Model` i `Thinking` to trzy kontrolki na jedno pytanie („czym ten agent
-       * myśli"), wszystkie trzy z działającą domyślną. Zwinięty wiersz czyta całą odpowiedź
-       * naraz, więc człowiek widzi, co dostanie, i nie musi jej podawać. */}
-      {brain ? (
-        <>
-          <div className="stack">
-            <div className="flex items-center gap-2">
-              <label htmlFor="agent-runs-with" className="label">
-                Runs with
-              </label>
-              <button
-                type="button"
-                data-brain
-                aria-expanded="true"
-                className="btn-bare ml-auto"
-                onClick={() => {
-                  setBrain(false);
-                }}
+      <section
+        aria-label="Run settings"
+        className="stack rounded-md border border-line bg-panel p-4"
+        data-gap="3"
+      >
+        <h3 className="text-subhead text-ink">Run settings</h3>
+        {/* JEDNO PYTANIE, NIE TRZY — 2026-08-31.
+         *
+         * `Runs with`, `Model` i `Thinking` to trzy kontrolki na jedno pytanie („czym ten agent
+         * myśli"), wszystkie trzy z działającą domyślną. Zwinięty wiersz czyta całą odpowiedź
+         * naraz, więc człowiek widzi, co dostanie, i nie musi jej podawać. */}
+        {brain ? (
+          <>
+            <div className="stack">
+              <div className="flex items-center gap-2">
+                <label htmlFor="agent-runs-with" className="label">
+                  Runs with
+                </label>
+                <button
+                  type="button"
+                  data-brain
+                  aria-expanded="true"
+                  className="btn-bare ml-auto"
+                  onClick={() => {
+                    setBrain(false);
+                  }}
+                >
+                  Done
+                </button>
+              </div>
+              <select
+                id="agent-runs-with"
+                data-field="runsWith"
+                className={FIELD}
+                value={value.runsWith}
+                onChange={(event) =>
+                  onChange({
+                    ...value,
+                    runsWith: chosen(VENDORS, event.target.value, value.runsWith),
+                  })
+                }
               >
-                Done
-              </button>
+                {VENDORS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
-            <select
-              id="agent-runs-with"
-              data-field="runsWith"
-              className={FIELD}
-              value={value.runsWith}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  runsWith: chosen(VENDORS, event.target.value, value.runsWith),
-                })
-              }
-            >
-              {VENDORS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
 
-          <div className="stack">
-            <label htmlFor="agent-model" className="label">
-              Model
-            </label>
-            <input
-              id="agent-model"
-              data-field="model"
-              className={FIELD}
-              list="agent-model-choices"
-              value={value.model}
-              onChange={(event) => onChange({ ...value, model: event.target.value })}
-            />
-            <datalist id="agent-model-choices">
-              {MODELS[value.runsWith].map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-            {ownModel ? (
-              <p data-own-model className="lead">
-                {`${typedModel} is your own — ${appName(value.runsWith)} gets it exactly as typed.`}
-              </p>
-            ) : null}
-          </div>
+            <div className="stack">
+              <label htmlFor="agent-model" className="label">
+                Model
+              </label>
+              <input
+                id="agent-model"
+                data-field="model"
+                className={FIELD}
+                list="agent-model-choices"
+                value={value.model}
+                onChange={(event) => onChange({ ...value, model: event.target.value })}
+              />
+              <datalist id="agent-model-choices">
+                {MODELS[value.runsWith].map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
+              {ownModel ? (
+                <p data-own-model className="lead">
+                  {`${typedModel} is your own — ${appName(value.runsWith)} gets it exactly as typed.`}
+                </p>
+              ) : null}
+            </div>
 
+            <div className="stack">
+              <label htmlFor="agent-thinking" className="label">
+                Thinking
+              </label>
+              <select
+                id="agent-thinking"
+                data-field="thinking"
+                className={FIELD}
+                value={value.thinking}
+                onChange={(event) =>
+                  onChange({
+                    ...value,
+                    thinking: chosen(THINKING, event.target.value, value.thinking),
+                  })
+                }
+              >
+                {THINKING.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </>
+        ) : (
           <div className="stack">
-            <label htmlFor="agent-thinking" className="label">
-              Thinking
-            </label>
-            <select
-              id="agent-thinking"
-              data-field="thinking"
-              className={FIELD}
-              value={value.thinking}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  thinking: chosen(THINKING, event.target.value, value.thinking),
-                })
-              }
-            >
-              {THINKING.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </>
-      ) : (
-        <div className="stack">
-          {/* NAZWA WIERSZA W `<span>`, NIE W `<label>`, i to jest wymuszone, nie wybrane:
+            {/* NAZWA WIERSZA W `<span>`, NIE W `<label>`, i to jest wymuszone, nie wybrane:
               zwinięty wiersz nie ma kontrolki formularza, tylko przycisk, a `<label for>`
               wskazujący na przycisk jest etykietą wskazującą na coś, co etykiety nie przyjmuje.
               Ranga napisu zostaje ta sama, bo niesie ją klasa. */}
-          <span className="label">Runs with</span>
-          <button
-            type="button"
-            data-brain
-            aria-expanded="false"
-            className="row"
-            onClick={() => {
-              setBrain(true);
-            }}
-          >
-            <span data-brain-says>
-              {`${appName(value.runsWith)} · ${value.model} · ${
-                THINKING.find((one) => one.value === value.thinking)?.label ?? value.thinking
-              }`}
-            </span>
-            <span className="value ml-auto">Change</span>
-          </button>
-        </div>
-      )}
+            <span className="label">Runs with</span>
+            <button
+              type="button"
+              data-brain
+              aria-expanded="false"
+              className="row w-full flex-wrap gap-2 border border-line"
+              onClick={() => {
+                setBrain(true);
+              }}
+            >
+              <span data-brain-says className="min-w-0 break-words text-left">
+                {`${appName(value.runsWith)} · ${value.model} · ${
+                  THINKING.find((one) => one.value === value.thinking)?.label ?? value.thinking
+                }`}
+              </span>
+              <span className="value ml-auto">Change</span>
+            </button>
+          </div>
+        )}
 
-      <div className="stack">
-        <label htmlFor="agent-file-access" className="label">
-          Can it change files
-        </label>
-        <select
-          id="agent-file-access"
-          data-field="fileAccess"
-          className={FIELD}
-          value={value.fileAccess}
-          onChange={(event) =>
-            onChange({
-              ...value,
-              fileAccess: chosen(FILE_ACCESS, event.target.value, value.fileAccess),
-            })
-          }
-        >
-          {FILE_ACCESS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
+        <div className="grid items-start gap-4 @2xl:grid-cols-3">
+          <div className="stack">
+            <label htmlFor="agent-file-access" className="label">
+              Can it change files
+            </label>
+            <select
+              id="agent-file-access"
+              data-field="fileAccess"
+              className={FIELD}
+              value={value.fileAccess}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  fileAccess: chosen(FILE_ACCESS, event.target.value, value.fileAccess),
+                })
+              }
+            >
+              {FILE_ACCESS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      <div className="stack">
-        <label htmlFor="agent-web" className="label">
-          Can it reach the web
-        </label>
-        {/* LISTA WYBORU, nie przełącznik, i nie z upodobania: wiersz obok — dial dostępu do
+          <div className="stack">
+            <label htmlFor="agent-web" className="label">
+              Can it reach the web
+            </label>
+            {/* LISTA WYBORU, nie przełącznik, i nie z upodobania: wiersz obok — dial dostępu do
             plików — jest `<select>` z klasą domu, a dwa pytania o uprawnienia, zadane dwiema
             różnymi kontrolkami, czytają się jak dwie różne rangi decyzji. Jeden kształt na
             jedną robotę, we wszystkich pięciu sekcjach. */}
-        <select
-          id="agent-web"
-          data-field="reachesTheWeb"
-          className={FIELD}
-          value={value.reachesTheWeb ? 'yes' : 'no'}
-          onChange={(event) => {
-            onChange({ ...value, reachesTheWeb: event.target.value === 'yes' });
-          }}
-        >
-          <option value="no">No</option>
-          <option value="yes">Read and search the web</option>
-        </select>
-        <p className="lead">{WEB_IS_NOT_ABOUT_FILES}</p>
-        {webWontReach ? <p className="lead">{WEB_NEEDS_WRITE_ACCESS}</p> : null}
-      </div>
+            <select
+              id="agent-web"
+              data-field="reachesTheWeb"
+              className={FIELD}
+              value={value.reachesTheWeb ? 'yes' : 'no'}
+              onChange={(event) => {
+                onChange({ ...value, reachesTheWeb: event.target.value === 'yes' });
+              }}
+            >
+              <option value="no">No</option>
+              <option value="yes">Read and search the web</option>
+            </select>
+            <p className="lead">{WEB_IS_NOT_ABOUT_FILES}</p>
+            {webWontReach ? <p className="lead">{WEB_NEEDS_WRITE_ACCESS}</p> : null}
+          </div>
 
-      <div className="stack">
-        <label htmlFor="agent-give-up-after" className="label">
-          Give up after
-        </label>
-        <select
-          id="agent-give-up-after"
-          data-field="giveUpAfterMinutes"
-          className={FIELD}
-          value={String(value.giveUpAfterMinutes)}
-          onChange={(event) =>
-            onChange({
-              ...value,
-              giveUpAfterMinutes: minutesFrom(event.target.value, value.giveUpAfterMinutes),
-            })
-          }
-        >
-          {giveUpChoices(value.giveUpAfterMinutes).map((minutes) => (
-            <option key={minutes} value={String(minutes)}>
-              {giveUpSays(minutes)}
-            </option>
-          ))}
-        </select>
-      </div>
+          <div className="stack">
+            <label htmlFor="agent-give-up-after" className="label">
+              Give up after
+            </label>
+            <select
+              id="agent-give-up-after"
+              data-field="giveUpAfterMinutes"
+              className={FIELD}
+              value={String(value.giveUpAfterMinutes)}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  giveUpAfterMinutes: minutesFrom(event.target.value, value.giveUpAfterMinutes),
+                })
+              }
+            >
+              {giveUpChoices(value.giveUpAfterMinutes).map((minutes) => (
+                <option key={minutes} value={String(minutes)}>
+                  {giveUpSays(minutes)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </section>
 
       {expanded ? <MoreSettings value={value} onChange={onChange} /> : null}
       {advanced ? <Advanced value={value} onChange={onChange} /> : null}
 
-      <div className="stack border-t border-line pt-3" data-gap="2">
-        <div className="flex items-center gap-2">
+      <div className="stack sticky bottom-0 z-10 border-t border-line bg-solid py-3" data-gap="2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             data-more

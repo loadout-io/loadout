@@ -134,6 +134,39 @@ impl fmt::Display for NotFindings {
 
 impl std::error::Error for NotFindings {}
 
+/// Zdejmuje płot markdownu, w który prawdziwy agent owija kontrakt.
+///
+/// 2026-09-09 — ZMIERZONE, NIE ZAŁOŻONE: `claude 2.1.266` (sonnet) oddał odpowiedź w bloku
+/// ```json w OŚMIU turach z ośmiu. Wcześniej szło to prosto do `serde_json`, więc budowanie
+/// kontekstu padało na żywym CLI zdaniem „expected value at line 1 column 1", a jedyna korekta
+/// formatu niczego nie ratowała: model uważa opłotkowany blok za poprawny JSON i oddaje ten sam
+/// kształt drugi raz. Wyłapała to dopiero żywa wyrocznia — 415 plików testów z atrapami
+/// przechodziło, bo atrapa oddaje dokładnie to, czego się po niej spodziewamy.
+///
+/// Zdejmujemy WYŁĄCZNIE płot. Co jest w środku, dalej sądzi `serde_json`, więc proza owinięta
+/// w płot zostaje odrzucona tak samo jak proza goła.
+fn without_the_code_fence(answered: &[u8]) -> &[u8] {
+    let Ok(text) = std::str::from_utf8(answered) else {
+        return answered;
+    };
+    let trimmed = text.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return answered;
+    };
+    let Some(body) = after_open.strip_suffix("```") else {
+        return answered;
+    };
+    let Some((tag, inside)) = body.split_once('\n') else {
+        return answered;
+    };
+    // Po otwarciu płotu stoi najwyżej znacznik języka. Cokolwiek innego znaczy, że to nie jest
+    // płot wokół całej odpowiedzi, i wtedy nie ruszamy bajtów.
+    if !tag.trim().chars().all(char::is_alphanumeric) {
+        return answered;
+    }
+    inside.as_bytes()
+}
+
 /// Czyta odpowiedź, zachowując poprawne wpisy i nazywając każdy odrzucony.
 pub fn read_findings(
     answered: &[u8],
@@ -142,7 +175,7 @@ pub fn read_findings(
     if answered.len() > ANSWER_BYTES {
         return Err(NotFindings::TooLong);
     }
-    let answered: Answered = serde_json::from_slice(answered)
+    let answered: Answered = serde_json::from_slice(without_the_code_fence(answered))
         .map_err(|error| NotFindings::NotTheContract(error.to_string()))?;
 
     let mut missing = Vec::new();
