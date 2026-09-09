@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it, vi } from 'vitest';
 
-import { whatIsNextForTheSet } from '../../state/context';
+import { BUILD_BEFORE_ADDING, whatIsNextForTheSet } from '../../state/context';
 import type {
   ContextApp,
   ContextBuild,
@@ -126,9 +128,26 @@ describe('context build controls', () => {
     expect(whatIsNextForTheSet(set, draft)).toBe(
       'Add material to this set before it can be built.',
     );
-    expect(whatIsNextForTheSet(set, withMaterial)).toBe(
-      'Build this context before adding it to a workflow.',
+    /* PORÓWNANIE DWÓCH PLIKÓW, NIE TRZECI EGZEMPLARZ NAPISU. To zdanie mieszka w Ruście
+       (`catalog_choice`) i tu; wpisane trzeci raz w teście przechodziłoby także wtedy, gdy
+       Rust mówi już co innego — czyli dokładnie w awarii, którą ma wykluczyć (niezmiennik 13).
+       Czytamy więc bajty z pliku Rusta. Brak trafienia jest PORAŻKĄ, nie pominięciem: zero
+       dopasowań z regexa to zwykle zły regex, nie zniknięcie faktu. */
+    const rust = readFileSync(
+      new URL('../../../src-tauri/src/commands/workflow_context.rs', import.meta.url),
+      'utf8',
     );
+    const said = /Some\("([^"]*before adding it to a workflow[^"]*)"\.to_owned\(\)\)/.exec(rust);
+    expect(
+      said?.[1],
+      'the Rust side no longer carries a sentence about building before adding; if the wording ' +
+        'moved, this comparison has to follow it, not be deleted',
+    ).toBeDefined();
+    expect(
+      whatIsNextForTheSet(set, withMaterial),
+      'the set screen and the step panel must say the same thing about the same fact',
+    ).toBe(said?.[1]);
+    expect(whatIsNextForTheSet(set, withMaterial)).toBe(BUILD_BEFORE_ADDING);
     expect(whatIsNextForTheSet({ ...set, latestReadyRevision: 'revision-1' }, withMaterial)).toBe(
       'This context is built, so a workflow step can add it.',
     );
