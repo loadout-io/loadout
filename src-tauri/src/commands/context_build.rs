@@ -650,6 +650,27 @@ async fn prepare_turn(
     };
     let mut readable_files = prepared.readable_files;
     readable_files.extend(turn.batch.readable_files.clone());
+    /* 2026-09-09 — KATALOG ROBOCZY MUSI BYĆ CZYTELNY DLA PROCESU, KTÓRY W NIM STOI.
+     *
+     * Sterowniki rezerwują wyłącznie swój prywatny PODKATALOG (`<scratch>/claude`,
+     * `CODEX_HOME`) i dwa pojedyncze pliki, a `RunSpec.cwd` wskazuje sam `scratch` — który leży
+     * wewnątrz ukrytego `home` i nie miał ani jednego wyjątku. Powłoka startująca w takim
+     * miejscu nie umie przejść w górę i umiera na:
+     *
+     *     shell-init: error retrieving current directory: getcwd: cannot access parent
+     *     directories: Operation not permitted
+     *
+     * Właściciel zobaczył to przy każdym źródle, a `Try building again` nie miało jak pomóc.
+     * Dotyczyło OBU vendorów, więc przełączenie na drugiego niczego nie zmieniało.
+     *
+     * Przeżyło, bo żaden test nie uruchamiał prawdziwej powłoki w tym katalogu: atrapy
+     * sterowników nie wołają `getcwd`. Świadek stoi teraz w
+     * `a_batch_runs_where_its_working_directory_is_readable`.
+     *
+     * Czytelny, nie zapisywalny: pisać wolno dalej tylko w prywatnym podkatalogu sterownika.
+     * `scratch` niesie wyłącznie pliki TEJ partii, więc to nie jest poszerzenie zakresu. */
+    let mut readable_roots = prepared.readable_roots;
+    readable_roots.push(scratch.clone());
     /* 2026-09-09 (CT-09, znalezisko z natywnego QA) — BRAKUJĄCY KATALOG DOSTAJE ZDANIE, NIE
      * `errno`. Właściciel zobaczył „Loadout could not protect this batch's files: No such file
      * or directory (os error 2). No agent was started." przy każdym z trzech źródeł i nie miał
@@ -673,7 +694,7 @@ async fn prepare_turn(
     }
     let fence = match FilesystemFence::new(
         prepared.writable_roots,
-        prepared.readable_roots,
+        readable_roots,
         vec![turn.home.to_path_buf(), turn.project.to_path_buf()],
     )
     .and_then(|fence| fence.reading_files(readable_files))

@@ -167,6 +167,25 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"terminal_re
     Ok(path)
 }
 
+/// Vendor, który robi to, co robi prawdziwy CLI na starcie: pyta powłokę o katalog roboczy.
+///
+/// 2026-09-09 (CT-09) — `blocking_executable` obok nigdy nie woła `getcwd`, i to jest cały
+/// powód, dla którego ta wada przeżyła zieloną bramkę. Prawdziwy Claude Code i prawdziwy Codex
+/// robią to przy każdym starcie, i oba umierały na tym w budowaniu kontekstu.
+fn asks_for_its_working_directory(dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let path = dir.join("claude-asks-cwd");
+    fs::write(
+        &path,
+        r#"#!/bin/sh
+if [ "${1-}" = "--version" ]; then printf '%s\n' '2.1.263 (Claude Code)'; exit 0; fi
+/bin/bash -lc 'pwd' >&2
+exit 1
+"#,
+    )?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+    Ok(path)
+}
+
 fn blocking_executable(dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let path = dir.join("claude-blocking");
     fs::write(
@@ -967,6 +986,81 @@ async fn not_logged_in_is_a_named_agent_result_not_an_empty_revision() -> Result
             .sources
             .iter()
             .all(|source| { source.outcome == loadout_lib::context::SourceOutcome::Failed })
+    );
+    Ok(())
+}
+
+/// Partia biegnie w katalogu, który jej granica plików POZWALA PRZECZYTAĆ.
+///
+/// 2026-09-09 (CT-09, znalezisko właściciela w prawdziwym oknie) — sterowniki rezerwują tylko
+/// swój prywatny PODKATALOG (`<scratch>/claude`, `CODEX_HOME`) i dwa pojedyncze pliki, a
+/// `RunSpec.cwd` wskazuje sam `scratch`, leżący wewnątrz ukrytego `home`. Powłoka startująca
+/// w takim miejscu nie umie przejść w górę i umiera zdaniem
+/// `shell-init: error retrieving current directory: getcwd: cannot access parent directories`.
+/// Właściciel dostawał je przy KAŻDYM źródle, a przełączenie vendora nie pomagało, bo oba mają
+/// ten sam kształt.
+///
+/// SŁABA WERSJA TEGO KRYTERIUM: sprawdzić, że budowanie się nie udało. Ono i tak się nie uda —
+/// ten vendor kończy kodem 1 bez wyniku. Kryterium jest o TREŚCI skargi: ma w niej NIE BYĆ
+/// zdania o katalogu, którego proces nie umie odczytać.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_runs_where_its_working_directory_is_readable() -> Result<(), Box<dyn Error>> {
+    let home = tempfile::tempdir()?;
+    let fixture = tempfile::tempdir()?;
+    let project = tempfile::tempdir()?;
+    let made = create_context_set_inner(home.path(), "Readable cwd")?;
+    let saved = save_context_draft_inner(
+        home.path(),
+        &made.set.id,
+        &made.set.title,
+        &made.set.description,
+        ContextDraft {
+            schema: 1,
+            sources: vec![ContextSource {
+                id: "typed".to_owned(),
+                kind: SourceKind::Text,
+                name: "Notes".to_owned(),
+                text: "The agent has to be able to ask where it stands.".to_owned(),
+                ..ContextSource::default()
+            }],
+            ..ContextDraft::default()
+        },
+        Some(made.revision),
+    )?;
+    let concrete: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::with_binary(
+        asks_for_its_working_directory(fixture.path())?,
+    ));
+    let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&concrete));
+
+    let built = build_context_inner(
+        home.path(),
+        project.path(),
+        &drivers,
+        &Limiter::new(1),
+        &BuildContextRequest {
+            set_id: saved.set.id,
+            operation_id: "readable-cwd".to_owned(),
+            app: Some(Vendor::ClaudeCode),
+            model: None,
+            generation: 1,
+            deadline: Duration::from_secs(20),
+            budget_usd: None,
+        },
+        &CancellationToken::new(),
+    )
+    .await?;
+
+    let state = built.build.ok_or("missing build state")?;
+    assert!(
+        !state.said.contains("getcwd"),
+        "the batch ran in a folder its own file boundary hides, so the vendor died before doing \
+         anything: {}",
+        state.said
+    );
+    assert!(
+        !state.said.contains("shell-init"),
+        "the vendor could not start its shell in the working directory it was given: {}",
+        state.said
     );
     Ok(())
 }
