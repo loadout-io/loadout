@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::json;
+
 use crate::work_plan::{Configuration, Mode};
 
 use super::check::{Level, Note, node_key_for};
@@ -23,6 +25,7 @@ pub(crate) enum When {
 pub struct StepResolution {
     pub step_id: String,
     pub mode: Mode,
+    pub inherited: bool,
     pub source_step_ids: Vec<String>,
     pub earlier_step_ids: Vec<String>,
 }
@@ -115,7 +118,9 @@ pub fn authors(file: &WorkflowFile) -> Result<AuthorMap, Note> {
 
 #[must_use]
 pub(crate) fn resolution_for_panel(file: &WorkflowFile) -> Resolution {
-    resolve(file, When::Running)
+    let mut visible = file.clone();
+    materialize(&mut visible);
+    resolve(&visible, When::Running)
 }
 
 fn resolve(file: &WorkflowFile, when: When) -> Resolution {
@@ -149,6 +154,7 @@ fn resolve(file: &WorkflowFile, when: When) -> Resolution {
             .map(|(at, configuration)| StepResolution {
                 step_id: file.steps[at].id().to_owned(),
                 mode: configuration.mode(),
+                inherited: configuration.inherited,
                 source_step_ids: Vec::new(),
                 earlier_step_ids: Vec::new(),
             })
@@ -353,6 +359,7 @@ fn resolve_dependencies(
         .map(|(at, configuration)| StepResolution {
             step_id: file.steps[at].id().to_owned(),
             mode: configuration.mode(),
+            inherited: configuration.inherited,
             source_step_ids: step_sources[at].iter().cloned().collect(),
             earlier_step_ids: earlier[at].iter().cloned().collect(),
         })
@@ -599,6 +606,50 @@ fn logical_before(from: usize, to: usize, graph: &Unrolled) -> bool {
     })
 }
 
+/// Materializuje intencję autora w pliku, bez zmiany semantyki resolvera używanego przy Starcie.
+pub(super) fn materialize(file: &mut WorkflowFile) {
+    let graph = unroll(file);
+    let authors = file
+        .steps
+        .iter()
+        .enumerate()
+        .filter_map(|(at, step)| match step {
+            Step::Agent(agent) => configuration_for(agent)
+                .ok()
+                .is_some_and(|configuration| configuration.writes_candidate())
+                .then_some(at),
+            Step::Checkpoint(_) | Step::Check(_) | Step::Serve(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let inheriting = file
+        .steps
+        .iter()
+        .enumerate()
+        .filter_map(|(at, step)| match step {
+            Step::Agent(agent)
+                if !agent.extra.contains_key("plan")
+                    && authors
+                        .iter()
+                        .any(|&author| logical_before(author, at, &graph)) =>
+            {
+                Some(at)
+            }
+            Step::Agent(_) | Step::Checkpoint(_) | Step::Check(_) | Step::Serve(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    for at in inheriting {
+        if let Step::Agent(agent) = &mut file.steps[at] {
+            // 2026-09-09 (WP-08): bajty muszą odróżniać automat od wyboru człowieka, bo panel
+            // nazywa źródło, a ręczne Off nie może wrócić do Use przy kolejnym zapisie.
+            agent.extra.insert(
+                "plan".to_owned(),
+                json!({ "mode": "use", "inherited": true }),
+            );
+        }
+    }
+}
+
 fn comes_before(from: usize, to: usize, arrows: &[(usize, usize)]) -> bool {
     let mut seen = BTreeSet::new();
     let mut pending = vec![from];
@@ -649,8 +700,17 @@ pub fn format_needed_by(file: &WorkflowFile) -> u32 {
     }
 }
 
-/// Pusty `Off` znika, żeby samo otwarcie starego dokumentu nie podniosło jego formatu.
+/// Pusty `Off` znika tylko tam, gdzie nie może oznaczać odmowy dziedziczenia od autora.
 pub(super) fn remove_empty(file: &mut WorkflowFile) {
+    let has_author = file.steps.iter().any(|step| match step {
+        Step::Agent(agent) => configuration_for(agent)
+            .ok()
+            .is_some_and(|configuration| configuration.writes_candidate()),
+        Step::Checkpoint(_) | Step::Check(_) | Step::Serve(_) => false,
+    });
+    if has_author {
+        return;
+    }
     for step in &mut file.steps {
         let Step::Agent(agent) = step else {
             continue;

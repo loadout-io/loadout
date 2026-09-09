@@ -315,6 +315,7 @@ pub fn save(
     let mut written = workflow.clone();
     super::context::remove_empty(&mut written);
     super::work_plan::remove_empty(&mut written);
+    super::work_plan::materialize(&mut written);
     written.format = super::context::format_needed_by(&written)
         .max(super::work_plan::format_needed_by(&written));
     let mut text = serde_json::to_string_pretty(&written).map_err(SaveError::Malformed)?;

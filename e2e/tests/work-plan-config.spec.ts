@@ -51,6 +51,27 @@ function workflow(plan?: { mode: 'create' | 'use' }) {
   };
 }
 
+function inheritedWorkflow() {
+  return {
+    format: 3 as const,
+    id: 'wf-work-plan-config',
+    name: 'Work plan config',
+    steps: [
+      {
+        ...workflow({ mode: 'create' }).steps[0],
+      },
+      {
+        ...workflow().steps[0],
+        id: 'worker',
+        name: 'Worker',
+        instructions: 'Build the feature.',
+        at: { x: 24, y: 168 },
+      },
+    ],
+    links: [{ from: 'planner', to: 'worker' }],
+  };
+}
+
 function copies<T>(value: T, count = 20): readonly { readonly value: T }[] {
   return Array.from({ length: count }, () => ({ value }));
 }
@@ -64,6 +85,26 @@ function view(mode: 'create' | 'use', said: string | null = null) {
         source: null,
         earlier: [],
         said,
+      },
+    ],
+    warnings: [],
+  };
+}
+
+function inheritedView() {
+  return {
+    steps: [
+      ...view('create').steps,
+      {
+        stepId: 'worker',
+        mode: 'use' as const,
+        source: {
+          stepId: 'planner',
+          name: 'Planner',
+          said: 'Inherited from Planner.',
+        },
+        earlier: [{ stepId: 'planner', name: 'Planner', said: 'Take the same plan as Planner.' }],
+        said: null,
       },
     ],
     warnings: [],
@@ -86,9 +127,9 @@ function scene(
   };
 }
 
-async function openPlanPanel(app: RunningApp): Promise<void> {
+async function openPlanPanel(app: RunningApp, stepId = 'planner'): Promise<void> {
   await app.page.locator('main [data-tile]').first().click();
-  await app.page.locator('main [data-step="planner"]').click();
+  await app.page.locator(`main [data-step="${stepId}"]`).click();
   const panel = app.page.locator('main [data-step-panel]');
   await panel.waitFor({ state: 'visible', timeout: APPEARS });
   await panel.locator('[data-more-settings] > summary').click();
@@ -161,6 +202,28 @@ describe('Plan in the real workflow editor', () => {
       await expect
         .poll(() => app.page.locator('[data-row="plan"]').innerText(), { timeout: APPEARS })
         .toContain(refusal);
+    } finally {
+      await app.close();
+    }
+  }, 90_000);
+
+  it('shows inherited Use and names the step that supplied it', async () => {
+    const inherited = inheritedWorkflow();
+    const app = await openApp({
+      replies: scene(
+        copies({ workflow: inherited, revision: 'workflow-r1' }),
+        copies(inheritedView()),
+      ),
+    });
+    try {
+      await app.page.locator('[data-section-switch="workflows"]').click();
+      await openPlanPanel(app, 'worker');
+      await expect
+        .poll(() => app.page.locator('[data-row="plan"]').innerText(), { timeout: APPEARS })
+        .toContain('Inherited from Planner.');
+      await expect
+        .poll(() => app.page.locator('[data-more-settings] > summary').innerText())
+        .toContain('Plan: Use');
     } finally {
       await app.close();
     }

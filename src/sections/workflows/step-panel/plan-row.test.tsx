@@ -1,9 +1,12 @@
+import { Children, isValidElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import type { Agent } from '../../../state/agents';
 import type { AgentStep, StepPlan, WorkflowPlanView } from '../../../state/workflows';
 import { PanelForStep } from './panel';
+import { PlanRow } from './plan-row';
 
 const AGENT: Agent = {
   schema: 1,
@@ -49,7 +52,7 @@ const VIEW: WorkflowPlanView = {
       source: {
         stepId: 'planner',
         name: 'Planner',
-        said: 'Takes the plan from Planner.',
+        said: 'Inherited from Planner.',
       },
       earlier: [{ stepId: 'planner', name: 'Planner', said: 'Take the same plan as Planner.' }],
       said: null,
@@ -88,6 +91,19 @@ function panel(
   );
 }
 
+interface RadioProps {
+  name?: string | undefined;
+  onChange?: (() => void) | undefined;
+  children?: ReactNode;
+}
+
+function radios(node: ReactNode): ReactElement<RadioProps>[] {
+  if (!isValidElement(node)) return [];
+  const element = node as ReactElement<RadioProps>;
+  const here = element.props.name === 'step-plan-mode' ? [element] : [];
+  return [...here, ...Children.toArray(element.props.children).flatMap(radios)];
+}
+
 describe('Plan in the actual step panel', () => {
   it('keeps all four modes behind More settings and names a changed mode in its summary', () => {
     const html = panel({ mode: 'create' });
@@ -112,9 +128,36 @@ describe('Plan in the actual step panel', () => {
   it('names the real source step without inventing a future version', () => {
     const html = panel({ mode: 'use' });
 
-    expect(html).toContain('Takes the plan from Planner.');
+    expect(html).toContain('Inherited from Planner.');
     expect(html).toContain('Same plan as');
     expect(html).not.toMatch(/version\s+\d/i);
+  });
+
+  it('says an unset step uses the plan and where it came from', () => {
+    const html = panel(undefined, VIEW);
+
+    expect(html).toContain('Plan · Use');
+    expect(html).toContain('Plan: Use');
+    expect(html).toContain('Inherited from Planner.');
+  });
+
+  it('keeps a step the person switched off on Off', () => {
+    const choices: Array<StepPlan | undefined> = [];
+    const row = PlanRow({
+      value: undefined,
+      view: VIEW.steps[0] ?? null,
+      refusal: null,
+      onChoose: (choice) => choices.push(choice),
+    });
+    const off = radios(row)[0];
+    if (off === undefined) throw new Error('the Plan row lost its Off choice');
+
+    off.props.onChange?.();
+
+    expect(choices).toEqual([{ mode: 'off' }]);
+    const html = panel({ mode: 'off' }, VIEW);
+    expect(html).toContain('Plan · Off');
+    expect(html).not.toContain('Plan · Use');
   });
 
   it('puts the resolver refusal beside the Plan control', () => {

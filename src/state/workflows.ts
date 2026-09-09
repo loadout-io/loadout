@@ -194,6 +194,8 @@ export interface StepPlan {
   samePlanAs?: string | undefined;
   /** Jawny wybór QA; samo `use` nadal wyłącznie podaje agentowi plan. */
   checkPlan?: boolean | undefined;
+  /** 2026-09-09 (WP-08): ten znacznik zapisuje Loadout, nigdy człowiek. */
+  inherited?: boolean | undefined;
 }
 
 export interface WorkflowPlanSource {

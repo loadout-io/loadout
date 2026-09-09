@@ -56,7 +56,11 @@ pub fn resolve_workflow_plan_inner(file: &WorkflowFile) -> WorkflowPlanView {
                 names.get(id.as_str()).map(|name| PlanSource {
                     step_id: id.clone(),
                     name: (*name).to_owned(),
-                    said: format!("Takes the plan from {name}."),
+                    said: if step.inherited {
+                        format!("Inherited from {name}.")
+                    } else {
+                        format!("Takes the plan from {name}.")
+                    },
                 })
             });
             let earlier = step

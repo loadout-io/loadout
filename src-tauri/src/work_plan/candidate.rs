@@ -38,6 +38,8 @@ pub struct Configuration {
     pub same_plan_as: Option<String>,
     /// 2026-09-08 (WP-05) — jawny wybór; samo Use tylko podaje agentowi plan.
     pub check_plan: bool,
+    /// 2026-09-09 (WP-08) — znacznik zapisuje Loadout; człowiek wybiera tryb, nie pochodzenie.
+    pub inherited: bool,
 }
 
 impl Configuration {
@@ -49,6 +51,11 @@ impl Configuration {
         if configuration.mode == Mode::Unknown {
             return Err(Error::Malformed(
                 "this build does not know that Plan setting".to_owned(),
+            ));
+        }
+        if configuration.mode != Mode::Use && configuration.inherited {
+            return Err(Error::Malformed(
+                "only a Plan Use step may inherit its setting".to_owned(),
             ));
         }
         if configuration.mode != Mode::Update && !configuration.can_update.is_empty() {
