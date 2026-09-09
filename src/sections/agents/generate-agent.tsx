@@ -102,7 +102,7 @@ export function GenerateAgent({
       </label>
       <textarea
         id="agent-description"
-        className={FIELD}
+        className={`${FIELD} h-auto`}
         rows={3}
         placeholder="Checks that a recording survives Stop then Later, on the running app"
         value={described}
@@ -118,7 +118,8 @@ export function GenerateAgent({
         agent, and nothing is saved until you press Save.
       </span>
 
-      <div className="flex items-baseline gap-3">
+      {/* 2026-09-09: dwie pełne etykiety nie mieszczą się obok siebie w spisie agentów. */}
+      <div className="grid gap-2">
         <button
           type="button"
           className={BUTTON}
