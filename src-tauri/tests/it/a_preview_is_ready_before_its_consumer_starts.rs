@@ -356,6 +356,17 @@ impl Bench {
         Ok(bench)
     }
 
+    /* 2026-09-09 — SUFIT GOTOWOŚCI 1 s NALEŻY DO TESTU, KTÓRY MIERZY PRZEKROCZENIE CZASU,
+    a nie do tych, które mierzą sukces. Zmierzone: ten moduł padał **raz na trzy** przebiegi
+    w izolacji, na wolnej maszynie (load 3 na 16 rdzeniach), raz jako „the consumer did not
+    execute", raz jako `ready: false` mimo przekazania niosącego `"state":"ready"` i właściwy
+       port. Przyczyna nie jest losowa: przypadek `a` ma 600 ms opóźnienia serwera, a w tej samej
+       sekundzie musi się zmieścić uruchomienie procesu potomnego — którym jest CAŁA binarka
+       testowa, ~100 MB w profilu debug, z kontrolą podpisu przy pierwszym starcie.
+
+       Osiem sekund nie osłabia ani jednej asercji: testy sukcesu dalej sądzą, że QA nie rusza,
+       zanim prawdziwy serwer odpowie 200. Ścieżkę przekroczenia czasu dowodzi przypadek
+       `timeout`, który ma 60 s opóźnienia przy 1 s sufitu — i dla niego sufit zostaje. */
     fn workflow(&self, services: &[(&str, u16, u64)]) -> Result<Value, Box<dyn Error>> {
         let binary = std::env::current_exe()?;
         let mut steps = Vec::new();
@@ -372,7 +383,7 @@ impl Bench {
             steps.push(json!({"kind":"serve", "id":service, "name":format!("Preview {name}"), "command":command,
                 "folder":{"use":"fresh-copy"}, "lifetime":"window", "at":{"x":0,"y":0},
                 "endpoints":[{"name":"web","host":"127.0.0.1","port":port,"portEnv":"LOADOUT_WEB_PORT"}],
-                "readiness":{"kind":"http","endpoint":"web","path":"/health","timeoutSeconds":if *name == "stop" { 5 } else { 1 },"expectedStatus":200}}));
+                "readiness":{"kind":"http","endpoint":"web","path":"/health","timeoutSeconds":if *name == "timeout" { 1 } else { 8 },"expectedStatus":200}}));
             steps.push(json!({"kind":"agent","id":qa,"name":format!("Consumer {name}"),"agent":"01990000-0000-7000-8000-000000002626", "overrides":{}, "instructions":format!("wf26-consumer:{name}"), "folder":{"use":"fresh-copy"}, "at":{"x":0,"y":200}}));
             links.push(json!({"from":service,"to":qa}));
         }
