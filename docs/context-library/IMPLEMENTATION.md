@@ -509,7 +509,7 @@ kryterium ma pokrycie **częściowe albo żadne** — i wtedy kolumna mówi dok�
 | Scenariusz | Status | Dowód / czego brakuje |
 |---|---|---|
 | Trwały paste | `not-tested` | Deterministycznie pokryte: `context_source_import::a_mixed_paste_keeps_the_text_the_image_and_what_joins_them`, `::the_same_picture_pasted_twice_keeps_a_link_for_each_caption`, `context_library_survives_restart` (4/4). **Brakuje wyłącznie prawdziwego schowka macOS** — patrz D-5. |
-| Wiele źródeł | `not-tested` | Kontrakt pokryty na **pięciu** plikach (`five_files_give_five_named_results_and_one_refusal_keeps_the_rest`). Skala **≥50 mieszanych z dużym tekstem** nie ma świadka; fikstura 56 źródeł czeka w `scratchpad/ct09/sources`. |
+| Wiele źródeł | `passed` | **Świadek skali dopisany w CT-09:** `context_source_import::fifty_six_mixed_sources_each_get_a_named_result_and_the_big_one_keeps_its_tail` — 56 pozycji (51 tekstów, w tym jeden o 207 KB, plus trzy PDF-y, obraz i jeden plik, który MA odmówić). Asercje na **bajtach z dysku**, nie na strukturze: duży plik niesie sentinel na początku i na końcu, oba muszą być w `original.md`. Mutacja obcinająca import po 50 pozycjach przewraca **tylko ten** test — sąsiedni, pięciopikowy, przechodzi, co dowodzi, że skala nie miała pokrycia. **Czego nie dowodzi:** natywnego okna wyboru plików; ono oddaje ścieżki, a Rust sam je otwiera, więc ta droga kończy się tu. |
 | PDF | `passed` | `context_source_import` (10/10), `context_reader_is_scoped::one_selected_pdf_page_has_no_road_to_the_whole_original`, e2e: wszystkie strony, dokument padający na drugiej stronie, wznowienie od brakującej strony. Fikstura `three-pages.pdf` jest w całości ASCII i recenzowalna okiem. |
 | Obaj vendorzy | `passed` | **Żywe CLI, 2026-09-08:** `context_image_reaches_vendor::both_clis_name_the_detail_that_exists_only_in_pixels`. `claude 2.1.263` i `codex-cli 0.153.4` **same wywołały** `view_context_image` i oddały „Q-6284, teal, hexagon" — kolor i kształt nie stoją ani w nazwie pliku, ani w podpisie. 29 s. |
 | Dobór per krok | `passed` | `step_receives_selected_context` (4/4); asercje na **bajtach w kopercie stdin** za prawdziwym `ClaudeDriver`, nie na wyniku resolvera. |
@@ -521,10 +521,16 @@ kryterium ma pokrycie **częściowe albo żadne** — i wtedy kolumna mówi dok�
 | Uczciwy ekran | `not-tested` | Siedem stanów jest osiągalnych w e2e, ale **przez atrapę IPC**, nie po prawdziwej akcji. §14 wymaga „osiągalne po prawdziwej akcji", więc przeglądarka tego nie zamyka. |
 | Prywatność danych | `passed` | `support_report_excludes_private_content` (4/4) z **zamkniętą** listą 43 kluczy plus sentinele `PRIVATE_*`, oraz `context_history_reports_delivery::available_stays_available_and_diagnostics_keep_only_counts`. Mutacja dokładająca pole `String` do raportu przewraca test. |
 
-**Bilans: 9 z 12 `passed`, 3 `not-tested`.** Trzy niezamknięte to dokładnie to, czego nie da się
-dowieść bez prawdziwego okna albo bez skali: **paste**, **50+ źródeł** i **siedem stanów ekranu
-po prawdziwej akcji**. Każde z nich blokuje deklarację gotowości i żadnego nie przepiszę na
-`passed` bez próby.
+**Bilans: 10 z 12 `passed`, 2 `not-tested`.** Dwa niezamknięte to **paste** i **siedem stanów
+ekranu po prawdziwej akcji**. Oba wymagają naciśnięcia w prawdziwym oknie, a tego nie da się
+zrobić bez uprawnienia Accessibility przypiętego do binarki. Sprawdzone i **wykluczone** jako
+droga obejścia: WKWebView na macOS nie wystawia ani CDP, ani WebDrivera, więc okna Tauri nie
+poprowadzi ani Playwright, ani `tauri-driver`. Oba kryteria blokują deklarację gotowości
+i żadnego nie przepiszę na `passed` bez próby.
+
+**„Wiele źródeł" przeszło z `not-tested` na `passed`** i nie przez rozluźnienie: doszedł świadek
+na 56 pozycjach, a mutacja obcinająca import po 50 przewraca **tylko jego**. Kryterium mówi
+o skali, a skala nie miała ani jednego świadka — pięć plików nie dowodzi pięćdziesięciu.
 
 **Anulowanie przeszło z `not-tested` na `passed` w CT-09**, i to nie przez rozluźnienie
 kryterium: doszedł świadek dla oczekiwania na slot, a dla importu wykazałem, że nie ma tam

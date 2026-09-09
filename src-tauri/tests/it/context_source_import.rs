@@ -21,6 +21,7 @@
 //! `loadout.db` nie jest tu otwierany ani razu i nie ma jak być: biblioteka Context nie zna
 //! `store::` (niezmiennik 4).
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -415,6 +416,136 @@ fn a_document_imported_before_reader_derivatives_still_opens()
     assert!(
         !reader.exists(),
         "previewing an older document silently wrote a derivative without adding it to the saved budget"
+    );
+    Ok(())
+}
+
+/// PIĘĆDZIESIĄT SZEŚĆ mieszanych źródeł, w tym duży tekst, i ani jednej cichej końcówki.
+///
+/// 2026-09-09 (CT-09) — kryterium §14 „Wiele źródeł" mówi **minimum 50 mieszanych, w tym duży
+/// tekst; każde ma wynik przetwarzania, nie ma cichej końcówki poza limitem**. Sąsiedni test
+/// dowodzi kontraktu na **pięciu** plikach: że każdy dostaje nazwany wynik i że jeden zły nie
+/// unieważnia reszty. Pięć nie dowodzi pięćdziesięciu — długość raportu, sufit ścieżki i limit
+/// bajtów zaczynają się liczyć dopiero przy skali, a właśnie tam „cicha końcówka" jest tania.
+///
+/// CZEGO TO NIE DOWODZI: natywnego okna wyboru plików. Ono oddaje ŚCIEŻKI, a Rust sam je
+/// otwiera i kopiuje, więc ta droga kończy się dokładnie tutaj; dialogu macOS nie da się
+/// wywołać z testu i to zostaje w §4 dziennika jako próba ręczna.
+///
+/// SŁABA WERSJA TEGO KRYTERIUM: policzyć długość raportu. Przechodzi ją import, który przyjął
+/// 56 nazw i zgubił treść największego pliku — a to jest właśnie ta awaria, o którą chodzi.
+/// Dlatego duży tekst niesie sentinel na POCZĄTKU i na KOŃCU, i sprawdzane są oba.
+#[test]
+fn fifty_six_mixed_sources_each_get_a_named_result_and_the_big_one_keeps_its_tail()
+-> Result<(), Box<dyn std::error::Error>> {
+    let library = Library::fresh()?;
+    let downloads = tempfile::tempdir()?;
+
+    // Duży tekst: sentinel na obu końcach, bo cicha końcówka zabiera właśnie ogon.
+    let mut big = String::from("HEAD-SENTINEL is the first fact of the large source.\n");
+    for line in 0..4_000 {
+        let _ = writeln!(big, "paragraph {line}: filler that carries no fact at all.");
+    }
+    big.push_str("TAIL-SENTINEL is the last fact, and it must not be silently dropped.\n");
+
+    let mut chosen = vec![put(downloads.path(), "large-source.md", big.as_bytes())?];
+    for at in 0..50 {
+        let body = format!("# Note {at:02}\n\nSENTINEL-{at:02} is the only fact here.\n");
+        chosen.push(put(
+            downloads.path(),
+            &format!("source-{at:02}.md"),
+            body.as_bytes(),
+        )?);
+    }
+    for name in [
+        "notes.md",
+        "three-pages.pdf",
+        "paper.pdf",
+        "visual-reference.png",
+        "not-really.png",
+    ] {
+        chosen.push(put(
+            downloads.path(),
+            name,
+            &fs::read(Path::new(FIXTURES).join(name))?,
+        )?);
+    }
+
+    // Przesłanka kryterium: to MUSI być co najmniej pięćdziesiąt jeden, inaczej ten test
+    // nie mówi nic o skali i jest drugą kopią sąsiada.
+    assert!(
+        chosen.len() >= 51,
+        "the fixture stopped being about scale: {} files",
+        chosen.len()
+    );
+
+    let report = library.import(
+        "op-fifty-six",
+        chosen
+            .iter()
+            .map(|path| from_disk(path.as_path()))
+            .collect(),
+    )?;
+
+    assert_eq!(
+        report.results.len(),
+        chosen.len(),
+        "a report shorter than the request IS the silent tail this feature exists to end"
+    );
+    let unnamed = report
+        .results
+        .iter()
+        .filter(|one| one.name.trim().is_empty())
+        .count();
+    assert_eq!(
+        unnamed, 0,
+        "every result has to name its file, or a person reading fifty-six lines cannot tell \
+         which one was turned down"
+    );
+    let refused = report
+        .results
+        .iter()
+        .filter(|one| one.refused.is_some())
+        .map(|one| one.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        refused,
+        vec!["not-really.png".to_owned()],
+        "exactly one of these is unreadable, and it may not take the other fifty-five with it"
+    );
+
+    let sources = library.sources()?;
+    assert_eq!(
+        sources.len(),
+        chosen.len() - refused.len(),
+        "every accepted file has to stand in the draft, not only in the report"
+    );
+    let large = sources
+        .iter()
+        .find(|source| source.name == "large-source.md")
+        .ok_or("the large source is not in the draft at all")?;
+    /* BAJTY Z DYSKU, NIE POLE `text`. 2026-09-09 — pierwsza wersja tej asercji patrzyła
+    w `source.text` i padała zdaniem „lost its head". To był defekt TEJ fikstury, nie
+       importu: `text` niesie materiał WPISANY ręcznie, a plik wybrany z dysku ląduje w `file`
+       i jest kopiowany do zestawu. Sonda pokazała `text=""` i `original.md` o 207 012 bajtach,
+       czyli dokładnie tyle, ile miał plik wejściowy. Czytanie dysku jest przy tym mocniejsze
+       od czytania struktury: dowodzi, że treść naprawdę tam jest. */
+    let stored = large
+        .file
+        .as_ref()
+        .ok_or("the large source has no file behind it")?;
+    let kept = fs::read_to_string(folder_of(&library.root, &library.set)?.join(&stored.path))?;
+    assert!(
+        kept.contains("HEAD-SENTINEL"),
+        "the large source lost its head: {} bytes on disk",
+        kept.len()
+    );
+    assert!(
+        kept.contains("TAIL-SENTINEL"),
+        "THE LARGE SOURCE LOST ITS TAIL: {} bytes on disk out of {} imported. A silent end past \
+         a limit is exactly what this criterion forbids",
+        kept.len(),
+        big.len()
     );
     Ok(())
 }
