@@ -459,7 +459,7 @@ export interface ContextState {
   /** Kładzie w otwartym zestawie wszystko, co człowiek wybrał albo wkleił. */
   addSources: (items: ImportItem[]) => Promise<void>;
   /** Przygotowuje dokument od pierwszej brakującej strony, jedną stroną naraz. */
-  prepareSource: (sourceId: string, open: PageMaker) => Promise<void>;
+  prepareSource: (sourceId: string, open: PageMaker, signal?: AbortSignal) => Promise<void>;
   showSource: (sourceId: string, page: number | null) => Promise<void>;
   hidePreview: () => void;
   dropSource: (sourceId: string) => Promise<void>;
@@ -688,12 +688,14 @@ export function createContextStore(io: ContextIo) {
       }
     },
 
-    prepareSource: async (sourceId: string, openDocument: PageMaker) => {
+    prepareSource: async (sourceId: string, openDocument: PageMaker, signal?: AbortSignal) => {
       const open = get().open;
-      if (open === null) return;
+      if (open === null || signal?.aborted === true) return;
+      const stopped = (): boolean => signal?.aborted === true || get().open?.set.id !== open.set.id;
       set({ refusal: null, preparing: sourceId });
       try {
         const whole = await io.readSource(open.set.id, sourceId, null);
+        if (stopped()) return;
         if (whole.kind !== 'whole') {
           throw new Error('Loadout could not read that file to prepare it.');
         }
@@ -703,22 +705,22 @@ export function createContextStore(io: ContextIo) {
            człowiek klikałby Prepare bez końca i nigdy nie dowiedziałby się, czemu. Zdanie pisze
            Rust, bo to on je pokaże następnym razem (PLAN §5). */
         const givingUp = async (failed: Unopenable): Promise<void> => {
-          set({
-            open: await io.completePreparation(
-              open.set.id,
-              sourceId,
-              {
-                operationId: whole.operationId,
-                fingerprint: whole.fingerprint,
-                pagesTotal: 0,
-                number: 0,
-                text: '',
-                image: null,
-                failed,
-              },
-              get().open?.revision ?? null,
-            ),
-          });
+          if (stopped()) return;
+          const saved = await io.completePreparation(
+            open.set.id,
+            sourceId,
+            {
+              operationId: whole.operationId,
+              fingerprint: whole.fingerprint,
+              pagesTotal: 0,
+              number: 0,
+              text: '',
+              image: null,
+              failed,
+            },
+            get().open?.revision ?? null,
+          );
+          if (!stopped()) set({ open: saved });
         };
 
         const answer = await openDocument({ mime: whole.mime, base64: whole.base64 });
@@ -732,7 +734,9 @@ export function createContextStore(io: ContextIo) {
            * zostały na dysku, a przygotowanie ich drugi raz jest czekaniem bez powodu. */
           const from = pagesDone(open.draft.sources.find((source) => source.id === sourceId)) + 1;
           for (let number = from; number <= document.pages; number += 1) {
+            if (stopped()) return;
             const page = await document.page(number);
+            if (stopped()) return;
             if ('failed' in page) {
               /* Strony gotowe przed tą ZOSTAJĄ na dysku: są prawdziwe i przygotowane raz.
                  Stan mówi o pliku, a nie o nich. */
@@ -752,15 +756,16 @@ export function createContextStore(io: ContextIo) {
               },
               get().open?.revision ?? null,
             );
-            set({ open: saved });
+            if (!stopped()) set({ open: saved });
           }
         } finally {
           document.close();
         }
       } catch (error) {
-        set({ refusal: why(error, 'Loadout could not prepare that file.') });
+        if (!stopped()) set({ refusal: why(error, 'Loadout could not prepare that file.') });
       } finally {
-        set({ preparing: null });
+        if (get().open?.set.id === open.set.id && get().preparing === sourceId)
+          set({ preparing: null });
       }
     },
 
@@ -841,7 +846,12 @@ export function createContextStore(io: ContextIo) {
         void io
           .readBuild(open.set.id)
           .then((view) => {
-            if (get().build?.operationId === operationId) {
+            // 2026-09-09: podczas rozruchu dysk może jeszcze oddać poprzedni build.
+            // Nie wolno nim cofnąć żywego przycisku Stop ani zgubić właściciela kolejnych odczytów.
+            if (
+              get().build?.operationId === operationId &&
+              view.build?.operationId === operationId
+            ) {
               set({ build: view.build, version: view.revision, buildWith: view.buildWith });
             }
           })

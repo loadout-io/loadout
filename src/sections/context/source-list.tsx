@@ -17,6 +17,7 @@ export interface SourceListProps {
   readonly onPreview: (sourceId: string) => void;
   readonly onPrepare: (sourceId: string) => void;
   readonly onRemove: (sourceId: string) => void;
+  readonly disabled?: boolean;
 }
 
 /** Ile znaków cytatu wystarczy, żeby człowiek rozpoznał SWÓJ tekst i nie zgubił wiersza. */
@@ -44,8 +45,8 @@ export function pastedWith(
 /** Jedno zdanie o stanie tego źródła — to samo, które czyta człowiek. */
 export function stateOf(source: ContextSource): string {
   const preparation = source.preparation;
-  if (preparation === undefined || preparation.state === 'notNeeded') return 'Ready';
-  if (preparation.state === 'ready') return 'Ready';
+  if (preparation === undefined || preparation.state === 'notNeeded') return 'Added';
+  if (preparation.state === 'ready') return 'Added';
   if (preparation.state === 'failed') return preparation.said;
   if (preparation.state === 'needs') {
     const total = source.file?.pages ?? null;
@@ -65,6 +66,7 @@ export default function SourceList({
   onPreview,
   onPrepare,
   onRemove,
+  disabled = false,
 }: SourceListProps): ReactElement {
   if (sources.length === 0) {
     return <p className="lead">Nothing has been added to this set yet.</p>;
@@ -96,6 +98,7 @@ export default function SourceList({
                 data-preview={source.id}
                 type="button"
                 className="btn"
+                disabled={disabled}
                 onClick={() => {
                   onPreview(source.id);
                 }}
@@ -107,7 +110,7 @@ export default function SourceList({
                   data-prepare={source.id}
                   type="button"
                   className="btn"
-                  disabled={preparing !== null}
+                  disabled={disabled || preparing !== null}
                   onClick={() => {
                     onPrepare(source.id);
                   }}
@@ -119,6 +122,7 @@ export default function SourceList({
                 data-remove={source.id}
                 type="button"
                 className="btn-quiet"
+                disabled={disabled}
                 onClick={() => {
                   onRemove(source.id);
                 }}

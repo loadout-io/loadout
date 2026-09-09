@@ -519,7 +519,9 @@ describe('files picked from disk reach the library one named result at a time', 
         .waitFor({ state: 'visible', timeout: APPEARS })
         .catch(() => undefined);
 
-      const rows = await page.locator(RESULT_ROW).allInnerTexts();
+      // 2026-09-09: sukces stoi raz, przy źródle; osobny wynik zostaje dla odmowy.
+      const rows = await page.locator(`${RESULT_ROW}, ${SOURCE_ROW}`).allInnerTexts();
+      expect(await page.locator(RESULT_ROW).count()).toBe(2);
       const said = rows.join(' | ').replace(/\s+/g, ' ');
       expect(
         rows.length,

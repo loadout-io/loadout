@@ -16,7 +16,7 @@
  * w `src/sections/workflows/index.tsx`.
  */
 import type { ReactElement } from 'react';
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { PageMaker } from '../../state/context';
 import { useAgentApps } from '../../state/agent-apps';
@@ -64,6 +64,63 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
     useAgentApps.getState,
   );
   const [typed, setTyped] = useState('');
+  const preparation = useRef<AbortController | null>(null);
+  useEffect(() => () => preparation.current?.abort(), []);
+
+  const prepare = async (sourceId: string): Promise<void> => {
+    if (preparation.current !== null) return;
+    const operation = new AbortController();
+    preparation.current = operation;
+    try {
+      await store.getState().prepareSource(sourceId, readTheDocument, operation.signal);
+    } finally {
+      if (preparation.current === operation) preparation.current = null;
+    }
+  };
+
+  const buildSavedMaterial = async (): Promise<void> => {
+    if (preparation.current !== null) return;
+    const opened = store.getState().open;
+    if (opened === null) return;
+    const operation = new AbortController();
+    preparation.current = operation;
+    try {
+      // 2026-09-09: przygotowanie PDF należy do tego samego kliknięcia co build.
+      // Kolejny dokument startuje dopiero po zapisaniu stron poprzedniego.
+      for (const source of opened.draft.sources) {
+        if (
+          opened.draft.excluded.includes(source.id) ||
+          source.kind !== 'pdf' ||
+          source.preparation?.state !== 'needs'
+        )
+          continue;
+        await store.getState().prepareSource(source.id, readTheDocument, operation.signal);
+        if (
+          operation.signal.aborted ||
+          store.getState().refusal !== null ||
+          store.getState().open?.set.id !== opened.set.id
+        )
+          return;
+        const prepared = store
+          .getState()
+          .open?.draft.sources.find((one) => one.id === source.id)?.preparation;
+        if (prepared?.state !== 'ready') {
+          store.setState({
+            refusal:
+              prepared?.state === 'failed'
+                ? prepared.said
+                : 'This document needs preparing before the context can be built.',
+          });
+          return;
+        }
+      }
+      if (!operation.signal.aborted && store.getState().open?.set.id === opened.set.id) {
+        await store.getState().startBuild();
+      }
+    } finally {
+      if (preparation.current === operation) preparation.current = null;
+    }
+  };
 
   /* Biblioteka leży pod `home`, nie w projekcie, więc ten odczyt nie zależy od otwartego
    * zakresu i biegnie RAZ na zamontowanie. `void`, bo odmowa jest obsłużona w magazynie
@@ -100,25 +157,18 @@ export default function ContextScreen({ store = useContext }: ContextScreenProps
           claudeCode={apps.claudeCode}
           codex={apps.codex}
           onSave={store.getState().save}
-          onAdd={(items) => {
-            void store.getState().addSources(items);
-          }}
-          onPrepare={(sourceId) => {
-            void store.getState().prepareSource(sourceId, readTheDocument);
-          }}
+          onAdd={store.getState().addSources}
+          onPrepare={prepare}
           onPreview={(sourceId, page) => {
             void store.getState().showSource(sourceId, page);
           }}
           onHidePreview={store.getState().hidePreview}
-          onRemove={(sourceId) => {
-            void store.getState().dropSource(sourceId);
-          }}
+          onRemove={store.getState().dropSource}
           onChooseBuildWith={store.getState().chooseBuildWith}
           onBuildModel={store.getState().chooseBuildModel}
-          onBuild={() => {
-            void store.getState().startBuild();
-          }}
+          onBuild={buildSavedMaterial}
           onStopBuild={() => {
+            preparation.current?.abort();
             void store.getState().stopBuild();
           }}
           onSaveRevision={(edit) => {

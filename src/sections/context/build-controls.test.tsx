@@ -83,14 +83,14 @@ describe('context build controls', () => {
     }
   });
 
-  it('shows a valid model example for either app while an empty value keeps its meaning', () => {
+  it('names the default model honestly instead of making an example look selected', () => {
     expect(markup(null)).toMatch(
-      /<input(?=[^>]*id="context-build-model")(?=[^>]*placeholder="sonnet")[^>]*>/,
+      /<input(?=[^>]*id="context-build-model")(?=[^>]*placeholder="Default model")(?=[^>]*value="")[^>]*>/,
     );
     expect(markup(null, false, 'codex')).toMatch(
-      /<input(?=[^>]*id="context-build-model")(?=[^>]*placeholder="gpt-5\.6-sol")[^>]*>/,
+      /<input(?=[^>]*id="context-build-model")(?=[^>]*placeholder="Default model")(?=[^>]*value="")[^>]*>/,
     );
-    expect(markup(null)).toContain('Model (empty means this app&#x27;s own model)');
+    expect(markup(null)).toContain('Leave blank to use this app&#x27;s default model.');
   });
 
   it('says what comes next for an empty draft, material, and a ready version', () => {
@@ -157,7 +157,8 @@ describe('context build controls', () => {
     const html = markup(RUNNING);
     expect(html).toContain('1 of 2 batches');
     expect(html).toContain('Project notes · fragment 1');
-    expect(html).toContain('processed');
+    expect(html).toContain('Read');
+    expect(html).toContain('Waiting');
     expect(html).toContain('Checkout screen · whole');
   });
 

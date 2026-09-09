@@ -44,7 +44,7 @@ const READ = {
   revision: 'draft-2',
 };
 const BUILD = {
-  operationId: 'build-1',
+  operationId: '11111111-1111-4111-8111-111111111111',
   setId: SET.id,
   generation: 7,
   draftRevision: 2,
@@ -127,7 +127,7 @@ afterAll(async () => {
   await closeEverything();
 }, 30_000);
 
-describe('building a context from Overview', () => {
+describe('building a context beside its material', () => {
   it('shows the one route from an empty set through a build to a ready version', async () => {
     /* 2026-09-09 (UX-3) — the middle sentence must be the bytes that disable this set in the
      * workflow picker; a second test literal would let the two screens drift together unnoticed. */
@@ -186,7 +186,7 @@ describe('building a context from Overview', () => {
       await failed.page.locator('[data-context-set]').first().click();
       await failed.page.locator('[data-set-next]').waitFor({ state: 'visible' });
       expect(await failed.page.locator('[data-set-next]').innerText()).toBe(cannotAdd);
-      await failed.page.locator('[data-tab="overview"]').click();
+      expect(await failed.page.locator('[data-tab="overview"]').count()).toBe(0);
       expect(await failed.page.locator('[data-set-next]').innerText()).toBe(cannotAdd);
       expect(await failed.page.locator('[data-set-next]').count()).toBe(1);
       expect(await failed.page.locator('[data-build-action]').innerText()).toBe(
@@ -218,7 +218,7 @@ describe('building a context from Overview', () => {
       expect(await ready.page.locator('[data-set-next]').innerText()).toBe(
         'This context is built, so a workflow step can add it.',
       );
-      await ready.page.locator('[data-tab="overview"]').click();
+      expect(await ready.page.locator('[data-tab="overview"]').count()).toBe(0);
       expect(await ready.page.locator('[data-set-next]').count()).toBe(1);
       expect(await ready.page.locator('[data-build-action]').innerText()).toBe('Rebuild context');
     } finally {
@@ -246,22 +246,25 @@ describe('building a context from Overview', () => {
     });
     try {
       const page = app.page;
+      await page.evaluate(() => {
+        crypto.randomUUID = () => '11111111-1111-4111-8111-111111111111';
+      });
       await page.locator('[data-section-switch="context"]').click();
       await page.locator('[data-context-set]').first().click();
-      await page.locator('[data-tab="overview"]').click();
       await page.locator('[data-build-action]').waitFor({ state: 'visible' });
       expect(await page.locator('[data-context-build-controls]').innerText()).toContain(
         'Claude Code',
       );
       await page.locator('[data-build-action]').click();
       await expect.poll(() => page.locator('[data-build-action]').innerText()).toBe('Stop');
+      await page.locator('[data-build-details] > summary').click();
       await expect
         .poll(() => page.locator('[data-build-progress]').innerText())
         .toContain('1 of 2');
 
       await page.locator('[data-section-switch="knowledge"]').click();
       await page.locator('[data-section-switch="context"]').click();
-      await page.locator('[data-tab="overview"]').click();
+      await page.locator('[data-build-details] > summary').click();
       await expect
         .poll(() => page.locator('[data-build-progress]').innerText())
         .toContain('1 of 2');
@@ -311,7 +314,6 @@ describe('building a context from Overview', () => {
       const page = app.page;
       await page.locator('[data-section-switch="context"]').click();
       await page.locator('[data-context-set]').first().click();
-      await page.locator('[data-tab="overview"]').click();
       await page.locator('#context-correction').fill('Keep both totals when the sources disagree.');
       await page.locator('[data-save-correction]').click();
       await expect

@@ -14,7 +14,8 @@
  * odmową, której nikt nie zauważy.
  */
 import type { ReactElement } from 'react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { why } from '../../ipc/why';
 
 import type {
   ContextApp,
@@ -63,14 +64,14 @@ export interface ContextEditorProps {
   /** `true`, kiedy zapis naprawdę wszedł. Ekran zostaje otwarty, cokolwiek wróci. */
   onSave: (edit: DraftEdit) => Promise<boolean>;
   /** Kładzie w zestawie to, co człowiek wybrał albo wkleił. */
-  onAdd: (items: ImportItem[]) => void;
-  onPrepare: (sourceId: string) => void;
+  onAdd: (items: ImportItem[]) => Promise<void> | void;
+  onPrepare: (sourceId: string) => Promise<void> | void;
   onPreview: (sourceId: string, page: number | null) => void;
   onHidePreview: () => void;
-  onRemove: (sourceId: string) => void;
+  onRemove: (sourceId: string) => Promise<void> | void;
   onChooseBuildWith: (app: ContextApp) => void;
   onBuildModel: (model: string) => void;
-  onBuild: () => void;
+  onBuild: () => Promise<void> | void;
   onStopBuild: () => void;
   onSaveRevision: (edit: RevisionEdit) => void;
   onClose: () => void;
@@ -164,294 +165,275 @@ export default function ContextEditor({
   onSaveRevision,
   onClose,
 }: ContextEditorProps): ReactElement {
-  const [tab, setTab] = useState<'sources' | 'overview'>('sources');
   const [title, setTitle] = useState(open.set.title);
   const [description, setDescription] = useState(open.set.description);
   const [text, setText] = useState(typedText(open.draft));
   const [howToPrepare, setHowToPrepare] = useState(open.draft.howToPrepare);
   const [requirements, setRequirements] = useState(open.draft.requirements.join('\n'));
-
+  const [editing, setEditing] = useState(false);
+  const [working, setWorking] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
+  const [localRefusal, setLocalRefusal] = useState<string | null>(null);
+  // 2026-09-09: dwa kliknięcia przed następnym renderem też są jednym zleceniem.
+  const occupied = useRef(false);
+  const running = build?.end === 'running' || build?.end === 'stillRunning';
+  const busy = working !== null || running || preparing !== null;
+  const draft = draftFrom(open.draft, text, howToPrepare, requirements);
+  const dirty =
+    title.trim() !== open.set.title ||
+    description !== open.set.description ||
+    text !== typedText(open.draft) ||
+    howToPrepare !== open.draft.howToPrepare ||
+    JSON.stringify(draft.requirements) !== JSON.stringify(open.draft.requirements);
+  const needsRebuild =
+    version !== null && (dirty || version.draftRevision !== open.set.draftRevision);
+  const showMaterials = version === null || editing || needsRebuild;
 
-  const save = (): void => {
-    void onSave({
+  const perform = async (label: string, task: () => Promise<void>): Promise<void> => {
+    if (occupied.current || running || preparing !== null) return;
+    occupied.current = true;
+    setWorking(label);
+    setSaid(null);
+    setLocalRefusal(null);
+    try {
+      await task();
+    } catch (error) {
+      setLocalRefusal(why(error, 'Loadout could not finish that action. Try again.'));
+    } finally {
+      occupied.current = false;
+      setWorking(null);
+    }
+  };
+  const save = async (): Promise<boolean> =>
+    onSave({
       id: open.set.id,
       title: title.trim(),
       description,
-      draft: draftFrom(open.draft, text, howToPrepare, requirements),
-      /* Rewizja, którą to okno PRZECZYTAŁO. Bez niej zapis z okna otwartego pięć minut temu
-         kasuje pracę zapisaną minutę temu i wygląda przy tym na udany. */
+      draft,
       expectedRevision: open.revision,
-    }).then((saved) => {
-      // Odmowę pokazuje `refusal`; tutaj mówimy WYŁĄCZNIE o udanym zapisie, żeby dwa zdania
-      // o dwóch różnych wynikach nie stały nigdy obok siebie.
-      setSaid(saved ? whatTheSaveChanged(open.set.latestReadyRevision !== null) : null);
+    });
+  const buildCurrent = (): void => {
+    void perform('Saving…', async () => {
+      // Build czyta dysk. Klik ma najpierw zapisać widoczne pola, a odmowa nie może
+      // uruchomić agenta na starym materiale. Niezmienionego szkicu nie wersjonujemy ponownie.
+      if (dirty && !(await save())) return;
+      setWorking('Building…');
+      setEditing(false);
+      await onBuild();
     });
   };
-
-  /* Okno wyboru pliku oddaje ŚCIEŻKI, a Rust sam je otwiera i kopiuje. Anulowanie jest pustą
-     listą, czyli wartością, nie błędem (niezmiennik 7) — i wtedy nie ma czego wysyłać. */
   const addFiles = (): void => {
-    void chooseFilesToAdd().then((paths) => {
-      onAdd(paths.map((path) => ({ name: '', path, text: null, image: null })));
+    void perform('Adding files…', async () => {
+      const paths = await chooseFilesToAdd();
+      if (paths.length > 0)
+        await onAdd(paths.map((path) => ({ name: '', path, text: null, image: null })));
     });
   };
+  const options = (
+    <>
+      <label className="flex flex-col gap-1" htmlFor="context-title">
+        <span className="label">Name</span>
+        <input
+          id="context-title"
+          className="field"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </label>
+      <label className="flex flex-col gap-1" htmlFor="context-description">
+        <span className="label">What is this context for? (optional)</span>
+        <input
+          id="context-description"
+          className="field"
+          value={description}
+          placeholder="e.g. Designing screens for Murmur"
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <label className="flex flex-col gap-1" htmlFor="context-preparation">
+        <span className="label">How should the agent organize it? (optional)</span>
+        <textarea
+          id="context-preparation"
+          className="field"
+          value={howToPrepare}
+          placeholder="e.g. Group by screen and separate inspiration from requirements"
+          onChange={(e) => setHowToPrepare(e.target.value)}
+        />
+      </label>
+      <label className="flex flex-col gap-1" htmlFor="context-requirements">
+        <span className="label">Rules to keep exactly (optional, one per line)</span>
+        <textarea
+          id="context-requirements"
+          className="field"
+          value={requirements}
+          placeholder="e.g. All interface text must be in English"
+          onChange={(e) => setRequirements(e.target.value)}
+        />
+      </label>
+    </>
+  );
 
   return (
-    <div data-context-editor={open.set.id} className="flex flex-col gap-4">
+    <div data-context-editor={open.set.id} className="mx-auto flex w-full max-w-240 flex-col gap-4">
       <div className="flex items-center gap-2">
-        <button data-back type="button" className="btn-quiet" onClick={onClose}>
+        <button data-back type="button" className="btn-quiet" disabled={busy} onClick={onClose}>
           ← All sets
         </button>
-        {/* Nazwa zestawu, tak jak człowiek ją widzi na liście. Stopień nagłówka, nie tytułu:
-            tytułem tego ekranu jest `Context` w pasku nagłówka (niezmiennik 13). */}
         <h2 className="text-heading text-ink">{title === '' ? open.set.title : title}</h2>
+        {version !== null && !needsRebuild ? (
+          <button
+            data-edit-material
+            type="button"
+            className="btn-quiet ml-auto"
+            disabled={busy}
+            onClick={() => setEditing(!editing)}
+          >
+            {showMaterials ? 'View context' : 'Edit material'}
+          </button>
+        ) : null}
       </div>
       <p data-set-next className="lead">
-        {whatIsNextForTheSet(open.set, open.draft)}
+        {needsRebuild
+          ? 'Build again to include your changes. Workflows keep the previous version until you update them.'
+          : whatIsNextForTheSet(open.set, draft)}
       </p>
 
-      {/* DWIE ZAKŁADKI Z PLAN §12. `aria-pressed` mówi czytnikowi ekranu, która jest wybrana —
-          drugi napis o tym samym byłby drugim miejscem na jeden fakt. */}
-      <div className="flex gap-2">
-        <button
-          data-tab="sources"
-          type="button"
-          className="btn"
-          aria-pressed={tab === 'sources'}
-          onClick={() => {
-            setTab('sources');
-          }}
-        >
-          Sources
-        </button>
-        <button
-          data-tab="overview"
-          type="button"
-          className="btn"
-          aria-pressed={tab === 'overview'}
-          onClick={() => {
-            setTab('overview');
-          }}
-        >
-          Overview
-        </button>
-      </div>
-
-      {tab === 'sources' ? (
-        <div className="card flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="label" htmlFor="context-title">
-              Name
+      <div className="card flex flex-col gap-4">
+        {showMaterials ? (
+          <fieldset disabled={busy} className="flex flex-col gap-3">
+            <label className="flex flex-col gap-2" htmlFor="context-material">
+              <span className="label">Material</span>
+              <textarea
+                id="context-material"
+                className="field min-h-40"
+                value={text}
+                placeholder="Paste notes, describe what matters, or paste a screenshot here."
+                onChange={(e) => setText(e.target.value)}
+                onPaste={(event) => {
+                  if (!carriesAPicture(event.clipboardData)) return;
+                  event.preventDefault();
+                  const clipboard = event.clipboardData;
+                  void perform('Adding files…', async () => {
+                    const item = await pastedIntoMaterial(clipboard);
+                    if (item !== null) await onAdd([item]);
+                  });
+                }}
+              />
             </label>
-            <input
-              id="context-title"
-              className="field"
-              value={title}
-              onChange={(event) => {
-                setTitle(event.target.value);
-              }}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="label" htmlFor="context-description">
-              What this set is for
-            </label>
-            <input
-              id="context-description"
-              className="field"
-              value={description}
-              onChange={(event) => {
-                setDescription(event.target.value);
-              }}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="label" htmlFor="context-material">
-              Material
-            </label>
-            <textarea
-              id="context-material"
-              className="field"
-              value={text}
-              onChange={(event) => {
-                setText(event.target.value);
-              }}
-              onPaste={(event) => {
-                /* PRZEJMUJEMY WYŁĄCZNIE WKLEJENIE Z OBRAZEM. Sprawdzenie musi być tutaj
-                   i synchronicznie: po pierwszym `await` jest już za późno na `preventDefault`,
-                   a pole, w którym Cmd+V przestaje wstawiać zdanie, jest polem zepsutym. */
-                if (!carriesAPicture(event.clipboardData)) return;
-                event.preventDefault();
-                void pastedIntoMaterial(event.clipboardData).then((item) => {
-                  if (item !== null) onAdd([item]);
-                });
-              }}
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button data-add-files type="button" className="btn" onClick={addFiles}>
-              Add files
-            </button>
-            <span className="lead">
-              Pictures, PDF files, Markdown and plain text. Paste a screenshot into Material to keep
-              it here too.
-            </span>
-          </div>
-
-          {imported.length === 0 ? null : (
-            /* JEDEN WIERSZ NA KAŻDY WYBRANY PLIK (PLAN §5). Jedno zdanie „część plików nie
-               weszła" jest odpowiedzią, po której człowiek musi zgadywać, które to były. */
-            <ul data-import-results className="flex flex-col gap-2">
-              {imported.map((one, at) => (
-                <li
-                  key={one.name + String(at)}
-                  data-import-result
-                  className="card flex flex-col gap-1"
-                >
-                  <span className="text-ink">{one.name}</span>
-                  {one.refused === null ? (
-                    <span className="value">Added</span>
-                  ) : (
-                    <span role="alert" className="text-fail">
-                      {one.refused}
-                    </span>
-                  )}
-                  {one.notes.map((note) => (
-                    <span key={note} className="lead">
-                      {note}
-                    </span>
+            <div className="flex items-center gap-3">
+              <button data-add-files type="button" className="btn" onClick={addFiles}>
+                Add files
+              </button>
+              <span className="caption">Images, PDFs and text files</span>
+            </div>
+            {imported.some((one) => one.refused !== null || one.added.length === 0) ? (
+              <ul data-import-results className="flex flex-col gap-2">
+                {imported
+                  .filter((one) => one.refused !== null || one.added.length === 0)
+                  .map((one, at) => (
+                    <li
+                      key={one.name + String(at)}
+                      data-import-result
+                      className="card flex flex-col gap-1"
+                    >
+                      <span className="text-ink">{one.name}</span>
+                      {one.refused !== null ? (
+                        <span role="alert" className="text-fail">
+                          {one.refused}
+                        </span>
+                      ) : null}
+                      {one.notes.map((note) => (
+                        <span key={note} className="lead">
+                          {note}
+                        </span>
+                      ))}
+                    </li>
                   ))}
-                </li>
-              ))}
-            </ul>
+              </ul>
+            ) : null}
+            {open.draft.sources.some((source) => source.id !== TYPED) ? (
+              <SourceList
+                sources={open.draft.sources.filter((source) => source.id !== TYPED)}
+                preparing={preparing}
+                disabled={busy}
+                onPreview={(sourceId) => {
+                  const source = open.draft.sources.find((one) => one.id === sourceId);
+                  onPreview(sourceId, source?.kind === 'pdf' ? 1 : null);
+                }}
+                onPrepare={(sourceId) => {
+                  void perform('Preparing…', async () => {
+                    await onPrepare(sourceId);
+                  });
+                }}
+                onRemove={(sourceId) => {
+                  void perform('Removing…', async () => {
+                    await onRemove(sourceId);
+                  });
+                }}
+              />
+            ) : null}
+            {preview !== null ? (
+              <SourcePreview
+                part={preview.part}
+                name={
+                  open.draft.sources.find((source) => source.id === preview.sourceId)?.name ?? ''
+                }
+                onPage={(number) => onPreview(preview.sourceId, number)}
+                onClose={onHidePreview}
+              />
+            ) : null}
+          </fieldset>
+        ) : null}
+        <BuildControls
+          build={build}
+          app={buildWith}
+          model={buildModel}
+          claudeCode={claudeCode}
+          codex={codex}
+          hasVersion={version !== null}
+          sourceNames={Object.fromEntries(
+            open.draft.sources.map((source) => [source.id, source.name]),
           )}
-
-          <SourceList
-            sources={open.draft.sources.filter((source) => source.id !== TYPED)}
-            preparing={preparing}
-            onPreview={(sourceId) => {
-              /* Dokument otwiera się na PIERWSZEJ stronie; obraz i tekst numeru strony nie mają,
-                 więc idą bez niego. Strona, której jeszcze nie przygotowano, wraca z własnym
-                 zdaniem — i tak ma być, bo to jest prawda o tym pliku. */
-              const source = open.draft.sources.find((one) => one.id === sourceId);
-              onPreview(sourceId, source?.kind === 'pdf' ? 1 : null);
-            }}
-            onPrepare={onPrepare}
-            onRemove={onRemove}
-          />
-
-          {preview === null ? null : (
-            <SourcePreview
-              part={preview.part}
-              name={open.draft.sources.find((source) => source.id === preview.sourceId)?.name ?? ''}
-              onPage={(number) => {
-                onPreview(preview.sourceId, number);
-              }}
-              onClose={onHidePreview}
-            />
-          )}
-
-          <div className="flex flex-col gap-1">
-            <label className="label" htmlFor="context-preparation">
-              How should this context be prepared?
-            </label>
-            <textarea
-              id="context-preparation"
-              className="field"
-              value={howToPrepare}
-              onChange={(event) => {
-                setHowToPrepare(event.target.value);
-              }}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="label" htmlFor="context-requirements">
-              Requirements
-            </label>
-            {/* Jedno wymaganie w wierszu, i tak wracają na ekran. Brzmienie zostaje słowo
-                w słowo: wymaganie skrócone albo sparafrazowane przestaje być tym, co człowiek
-                napisał (PLAN §4). */}
-            <textarea
-              id="context-requirements"
-              className="field"
-              value={requirements}
-              onChange={(event) => {
-                setRequirements(event.target.value);
-              }}
-            />
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button data-save type="button" className="btn-primary mr-auto" onClick={save}>
-              Save
-            </button>
-            {refusal === null ? null : (
-              /* `text-fail` klasą, nie `data-tone`: ton maluje `.lead` i `.value`, a to zdanie
-                 żadnej z tych ról nie nosi. */
-              <p data-refusal role="alert" className="text-fail">
-                {refusal}
-              </p>
-            )}
-            {refusal !== null || said === null ? null : (
-              /* STOI POZA WIDOKIEM DOMYŚLNYM: powstaje dopiero po zapisie, więc nie wchodzi do
-                 pomiaru gęstości i nie zajmuje miejsca komuś, kto jeszcze nic nie zrobił. */
-              <p data-saved role="status" className="caption">
-                {said}
-              </p>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-4">
-          <BuildControls
-            build={build}
-            app={buildWith}
-            model={buildModel}
-            claudeCode={claudeCode}
-            codex={codex}
-            hasVersion={version !== null}
-            sourceNames={Object.fromEntries(
-              open.draft.sources.map((source) => [source.id, source.name]),
-            )}
-            onChooseApp={onChooseBuildWith}
-            onModel={onBuildModel}
-            onBuild={onBuild}
-            onStop={onStopBuild}
-          />
-          {refusal === null ? null : (
-            <p data-refusal role="alert" className="text-fail">
-              {refusal}
-            </p>
-          )}
-          {version === null ? (
-            <div className="card flex flex-col items-center gap-3 text-center">
-              <span aria-hidden className="mark">
-                ◇
-              </span>
-              <p className="lead max-w-160">
-                Everything you write under Sources is kept exactly as you wrote it, and stays yours
-                to edit.
-              </p>
+          onChooseApp={onChooseBuildWith}
+          onModel={onBuildModel}
+          onBuild={buildCurrent}
+          onStop={onStopBuild}
+          options={options}
+          preparing={preparing}
+          pending={working === 'Building…' ? null : working}
+          disabled={busy || title.trim() === '' || draft.sources.length === 0}
+          secondaryAction={
+            showMaterials ? (
               <button
+                data-save
                 type="button"
-                className="btn"
+                className="btn-quiet"
+                disabled={busy}
                 onClick={() => {
-                  setTab('sources');
+                  void perform('Saving…', async () => {
+                    if (await save())
+                      setSaid(whatTheSaveChanged(open.set.latestReadyRevision !== null));
+                  });
                 }}
               >
-                Go to Sources
+                Save draft
               </button>
-            </div>
-          ) : (
-            <ContextOverview revision={version} onSave={onSaveRevision} />
-          )}
-        </div>
-      )}
+            ) : null
+          }
+        />
+        {refusal !== null || localRefusal !== null ? (
+          <p data-refusal role="alert" className="text-fail">
+            {refusal ?? localRefusal}
+          </p>
+        ) : said !== null ? (
+          <p data-saved role="status" className="caption">
+            {said}
+          </p>
+        ) : null}
+      </div>
+      {version !== null ? (
+        <ContextOverview key={version.id} revision={version} onSave={onSaveRevision} />
+      ) : null}
     </div>
   );
 }

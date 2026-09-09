@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 import type { AgentAppStatus } from '../../state/agent-apps';
 import type { ContextApp, ContextBuild } from '../../state/context';
@@ -15,6 +15,11 @@ export interface BuildControlsProps {
   onModel: (model: string) => void;
   onBuild: () => void;
   onStop: () => void;
+  options?: ReactNode;
+  secondaryAction?: ReactNode;
+  disabled?: boolean;
+  pending?: string | null;
+  preparing?: string | null;
 }
 
 export default function BuildControls({
@@ -29,8 +34,13 @@ export default function BuildControls({
   onModel,
   onBuild,
   onStop,
+  options,
+  secondaryAction,
+  disabled = false,
+  pending = null,
+  preparing = null,
 }: BuildControlsProps): ReactElement {
-  const stopping = build?.end === 'running' || build?.end === 'stillRunning';
+  const stopping = preparing !== null || build?.end === 'running' || build?.end === 'stillRunning';
   const action = stopping
     ? 'Stop'
     : hasVersion
@@ -40,73 +50,112 @@ export default function BuildControls({
         : 'Try building again';
 
   return (
-    <div data-context-build-controls className="card flex flex-col gap-3">
-      <div className="flex flex-wrap gap-3">
-        <AppChoice
-          name="Claude Code"
-          value="claude-code"
-          selected={app === 'claude-code'}
-          status={claudeCode}
-          onChoose={onChooseApp}
-        />
-        <AppChoice
-          name="Codex"
-          value="codex"
-          selected={app === 'codex'}
-          status={codex}
-          onChoose={onChooseApp}
-        />
-      </div>
+    <div data-context-build-controls className="flex flex-col gap-3">
+      <details data-context-options>
+        <summary className="caption cursor-pointer">Options</summary>
+        <fieldset disabled={pending !== null || stopping} className="mt-3 flex flex-col gap-3">
+          {options}
+          <div className="flex flex-wrap gap-3">
+            <AppChoice
+              name="Claude Code"
+              value="claude-code"
+              selected={app === 'claude-code'}
+              status={claudeCode}
+              onChoose={onChooseApp}
+            />
+            <AppChoice
+              name="Codex"
+              value="codex"
+              selected={app === 'codex'}
+              status={codex}
+              onChoose={onChooseApp}
+            />
+          </div>
 
-      <label className="flex flex-col gap-1" htmlFor="context-build-model">
-        <span className="label">Model (empty means this app's own model)</span>
-        <input
-          id="context-build-model"
-          className="field"
-          value={model}
-          placeholder={app === 'claude-code' ? 'sonnet' : 'gpt-5.6-sol'}
-          onChange={(event) => {
-            onModel(event.target.value);
-          }}
-        />
-      </label>
+          <label className="flex flex-col gap-1" htmlFor="context-build-model">
+            <span className="label">Model (optional)</span>
+            <input
+              id="context-build-model"
+              className="field"
+              value={model}
+              placeholder="Default model"
+              onChange={(event) => {
+                onModel(event.target.value);
+              }}
+            />
+            <span className="caption">Leave blank to use this app's default model.</span>
+          </label>
+        </fieldset>
+      </details>
 
       <div className="flex items-center gap-3">
         <button
           data-build-action
           type="button"
           className="btn-primary"
+          disabled={!stopping && disabled}
           onClick={stopping ? onStop : onBuild}
         >
-          {action}
+          {pending !== null && !stopping ? pending : action}
         </button>
-        {build === null ? null : (
-          <span data-build-progress className="value">
-            {build.batchesDone} of {build.batchesTotal} batches
-          </span>
-        )}
+        {secondaryAction}
+        <span className="caption ml-auto">
+          Using {app === 'claude-code' ? 'Claude Code' : 'Codex'} ·{' '}
+          {model.trim() || 'Default model'}
+        </span>
       </div>
 
-      {build === null ? null : (
+      {preparing !== null ? (
+        <p role="status" className="lead">
+          Preparing your document…
+        </p>
+      ) : build === null || pending !== null ? null : (
         <>
-          <p data-build-said role={build.end === 'failed' ? 'alert' : undefined} className="lead">
-            {build.said}
-          </p>
-          <ul data-source-progress className="flex flex-col gap-1">
-            {build.sources.map((source) => (
-              <li key={`${source.sourceId}:${source.part}`} className="flex gap-2">
-                <span className="text-ink">
-                  {sourceNames[source.sourceId] ?? source.sourceId} · {source.part}
-                </span>
-                <span className="value">{source.outcome}</span>
-                {source.said === '' ? null : <span className="lead">{source.said}</span>}
-              </li>
-            ))}
-          </ul>
+          {build.end === 'ready' ? null : (
+            <p data-build-said role={build.end === 'failed' ? 'alert' : undefined} className="lead">
+              {build.end === 'running' ? progressSaid(build) : build.said}
+            </p>
+          )}
+          <details data-build-details>
+            <summary className="caption cursor-pointer">Details</summary>
+            <div className="mt-2 flex flex-col gap-2">
+              <span data-build-progress className="value">
+                {build.batchesDone} of {build.batchesTotal} batches
+              </span>
+              {build.end === 'running' ? <p className="lead">{build.said}</p> : null}
+              <ul data-source-progress className="flex flex-col gap-1">
+                {build.sources.map((source) => (
+                  <li key={`${source.sourceId}:${source.part}`} className="flex gap-2">
+                    <span className="text-ink">
+                      {sourceNames[source.sourceId] ?? source.sourceId} · {source.part}
+                    </span>
+                    <span className="value">
+                      {
+                        {
+                          processed: 'Read',
+                          excluded: 'Left out',
+                          failed: 'Needs attention',
+                          unknown: 'Waiting',
+                        }[source.outcome]
+                      }
+                    </span>
+                    {source.said === '' ? null : <span className="lead">{source.said}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </details>
         </>
       )}
     </div>
   );
+}
+
+function progressSaid(build: ContextBuild): string {
+  if (build.stage === 'grouping') return 'Organizing what matters…';
+  if (build.stage === 'publishing') return 'Saving your context…';
+  if (build.stage === 'extracting') return 'Reading your material…';
+  return 'Preparing your material…';
 }
 
 function AppChoice({
