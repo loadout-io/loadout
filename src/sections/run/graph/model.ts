@@ -53,6 +53,7 @@ export interface GraphStep {
    * z żywego stanu potomka: oba mogą opisywać równoległą pracę, nie decyzję o tej porażce.
    */
   readonly carriedOn?: boolean;
+  readonly notRun?: boolean;
   /** Jawny fakt planu: ten gotowy krok stoi po jedyne miejsce ciężkie. */
   readonly waitingForHeavy?: true;
   /**

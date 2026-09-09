@@ -75,6 +75,7 @@ const AUTHOR: Readonly<Record<Kind, Who>> = {
   questionAnswered: 'you',
   /* Tak samo rozstrzygnięcie „jedź dalej”: ogłasza je scheduler po wyniku kroku. */
   stepCarriedOn: 'loadout',
+  runProgress: 'loadout',
 };
 
 /** Kto powiedział to, co niesie wiersz tego rodzaju. */

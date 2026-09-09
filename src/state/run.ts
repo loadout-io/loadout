@@ -23,7 +23,7 @@
  */
 import { create, useStore } from 'zustand';
 import type { StoreApi, UseBoundStore } from 'zustand';
-import type { Line, StepSession } from '../ipc/types';
+import type { Line, RunProgress, StepSession } from '../ipc/types';
 /* WYŁĄCZNIE TYP, i to jest cała treść tego importu. Rodzajów kafelka jest cztery i mieszkają
  * w `./workflows` (niezmiennik 13); druga ich lista, wpisana tutaj, rozjechałaby się przy piątym.
  * `import type` znika w kompilacji (`verbatimModuleSyntax`), więc magazyn biegu nie zyskuje ani
@@ -115,6 +115,9 @@ export type StepState =
 /** Krok biegu w kolejności grafu — jeden do jednego z blokiem paska loadoutu. */
 export interface Step {
   readonly id: string;
+  readonly tileId?: string;
+  readonly error?: string;
+  readonly processStarted?: boolean;
   readonly name: string;
   readonly state: StepState;
   /**
@@ -174,6 +177,8 @@ export interface Step {
 /** Bieg, który już zszedł, ale nadal jest obrazem tej sesji. */
 export interface EndedRun {
   readonly name: string;
+  readonly status?: string;
+  readonly endedAt?: number | null;
   /** Milisekundy z żywej sesji albo zapis historii gotowy do przeczytania po restarcie. */
   readonly startedAt: number | string | null;
 }
@@ -192,6 +197,9 @@ export interface Answer {
 export const LINE_LIMIT = 2000;
 
 export interface RunState {
+  readonly generation: number;
+  readonly firstLineId: number;
+  readonly progress: RunProgress | null;
   /** WF-08: kanały rzeczywiście utworzonych sesji, nigdy inferencja ze stanu kroku. */
   readonly messageSessions: readonly StepSession[];
   rememberStepRecipients(recipients: readonly StepSession[]): void;
@@ -323,6 +331,7 @@ export interface RunState {
     fileName: string,
     links: readonly Link[] | null,
     startedAt: string,
+    status?: string,
   ) => void;
 
   /** Zdejmuje skończony obraz, kiedy człowiek wskazał inny workflow. */
@@ -465,6 +474,9 @@ function withStepStates(steps: readonly Step[], batch: readonly FeedLine[]): rea
  */
 export function createRunStore(): RunStore {
   return create<RunState>()((set) => ({
+    generation: 0,
+    firstLineId: 0,
+    progress: null,
     messageSessions: [],
     rememberStepRecipients(recipients): void {
       set({ messageSessions: recipients });
@@ -495,7 +507,49 @@ export function createRunStore(): RunStore {
         const dropped = Math.max(0, lines.length - LINE_LIMIT);
         if (dropped > 0) lines.splice(0, dropped);
 
+        const progress =
+          batch.findLast((line): line is RunProgress & Stamped => line.kind === 'runProgress') ??
+          state.progress;
+        const steps =
+          progress === null
+            ? withStepStates(state.steps, batch)
+            : progress.steps.flatMap((one): Step[] => {
+                const status = stepStateOf(one.state);
+                if (status === null) return [];
+                const original = state.steps.find(
+                  (step) => step.id === one.id || step.id === one.tileId,
+                );
+                const kind =
+                  one.kind === 'agent' ||
+                  one.kind === 'check' ||
+                  one.kind === 'checkpoint' ||
+                  one.kind === 'serve'
+                    ? one.kind
+                    : undefined;
+                return [
+                  {
+                    ...original,
+                    id: one.id,
+                    tileId: one.tileId,
+                    name: one.name,
+                    state: status,
+                    carriedOn: one.carriedOn,
+                    processStarted: one.processStarted,
+                    error: one.error,
+                    ...(kind === undefined ? {} : { kind }),
+                  },
+                ];
+              });
+
         return {
+          progress,
+          ...(progress === null
+            ? {}
+            : {
+                links: progress.steps.flatMap((step) =>
+                  step.dependsOn.map((from) => ({ from, to: step.id })),
+                ),
+              }),
           /* `lines` niesie TE SAME obiekty, które przyszły — `[...]` i `splice` przepisują
            * tablicę, nie wiersze. Kopia wiersza jest poprawna co do wartości i katastrofalna
            * dla Reacta: każdy widoczny wiersz dostaje nową tożsamość na każdą paczkę. */
@@ -504,11 +558,16 @@ export function createRunStore(): RunStore {
           /* Dwa pola, dwa różne pytania: ile wypadło (czy „Load earlier" ma po co istnieć)
            * i od czego zacząć prośbę wstecz. */
           earliestKnownId: lines[0]?.id ?? null,
-          agents: withAgents(state.agents, batch),
+          agents:
+            progress === null
+              ? withAgents(state.agents, batch)
+              : progress.steps
+                  .filter((step) => step.kind === 'agent' && step.processStarted)
+                  .map((step) => step.id),
           /* Fakty kroku wjeżdżają TĄ SAMĄ paczką, co linie: stan i jawne rozstrzygnięcie
            * „jedź dalej” mają po jednym konsumencie, w tym samym momencie, bez inferencji
            * z sąsiednich kroków (niezmienniki 13 i 17). */
-          steps: withStepStates(state.steps, batch),
+          steps,
           messageSessions: withMessageSessions(state.messageSessions, batch),
         };
       });
@@ -531,7 +590,22 @@ export function createRunStore(): RunStore {
        * zaczyna się od swojego planu, nie od sumy z poprzednim. `steps` bierzemy dokładnie
        * takie, jakie przyszły — kopia dawałaby paskowi loadoutu nową tożsamość każdego bloku
        * przy każdym wywołaniu, a `stripFor` liczy się z `useMemo` po tej właśnie tożsamości. */
-      set({ workflow, steps, folder, fileName, links, ended: null, messageSessions: [] });
+      set((state) => ({
+        workflow,
+        steps,
+        folder,
+        fileName,
+        links,
+        ended: null,
+        messageSessions: [],
+        generation: state.generation + 1,
+        firstLineId: nextStamp(),
+        progress: null,
+        lines: [],
+        agents: [],
+        droppedBefore: 0,
+        earliestKnownId: null,
+      }));
     },
 
     runEnded(): void {
@@ -540,8 +614,12 @@ export function createRunStore(): RunStore {
          * linii. Puste jest uczciwsze od godziny późniejszej niż prawdziwa (niezmiennik 17). */
         ended: {
           name: state.workflow,
+          ...(state.progress === null
+            ? {}
+            : { status: state.progress.status, endedAt: state.progress.endedAt }),
           startedAt:
-            state.droppedBefore > 0 || state.lines[0] === undefined ? null : state.lines[0].at,
+            state.progress?.startedAt ??
+            (state.droppedBefore > 0 || state.lines[0] === undefined ? null : state.lines[0].at),
         },
         /* TYLKO żywość schodzi. Kroki, strzałki i adres pliku są paragonem właśnie
          * zakończonego biegu; ich wyzerowanie stworzyło wadę Z-37. */
@@ -557,6 +635,7 @@ export function createRunStore(): RunStore {
       fileName: string,
       links: readonly Link[] | null,
       startedAt: string,
+      status?: string,
     ): void {
       /* JEDEN zapis z rozmysłem: dwa wywołania dałyby render z niepustym `workflow`, czyli Stop
        * nad biegiem sprzed restartu. To kontrolka bez procesu do zatrzymania (niezmiennik 16). */
@@ -566,14 +645,25 @@ export function createRunStore(): RunStore {
         folder,
         fileName,
         links,
-        ended: { name, startedAt },
+        progress: null,
+        ended: { name, startedAt, ...(status === undefined ? {} : { status }) },
       });
     },
 
     forgetTheLastRun(): void {
       /* Linie zostają historią sesji. Schodzi tylko obraz biegu, żeby plan z nowo wskazanego
        * pliku mógł wejść jako `waiting` zamiast mieszać się z poprzednimi rozstrzygnięciami. */
-      set({ steps: [], folder: null, fileName: '', links: null, ended: null });
+      set((state) => ({
+        generation: state.generation + 1,
+        firstLineId: nextStamp(),
+        progress: null,
+        agents: [],
+        steps: [],
+        folder: null,
+        fileName: '',
+        links: null,
+        ended: null,
+      }));
     },
 
     answer(questionId: number, option: string): void {

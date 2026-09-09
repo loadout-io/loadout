@@ -120,7 +120,9 @@ const SPEND_WIDTH = 186;
 /** Barwa nadoczka dla trzech stanów biegu — nośnik, nie drugi napis. */
 const INK: Readonly<Record<Headline['tone'], string>> = {
   live: 'var(--color-live)',
-  ended: 'var(--color-ok)',
+  ended: 'var(--color-muted)',
+  succeeded: 'var(--color-ok)',
+  failed: 'var(--color-fail)',
   idle: 'var(--color-muted)',
 };
 

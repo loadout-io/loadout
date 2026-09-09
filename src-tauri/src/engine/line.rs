@@ -94,6 +94,7 @@ pub struct RequestedContext {
 /// nieosiągalnych (`docs/ARCHITECTURE.md` §5, §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
+    RunProgress,
     /// Nagłówek całego biegu.
     Run,
     /// Przerwa sekcyjna z etykietą; zaczepienie paska planu.
@@ -167,6 +168,16 @@ pub enum LineKind {
     rename_all_fields = "camelCase"
 )]
 pub enum Line {
+    /// Migawka księgi biegu. Nie jest wierszem transkryptu ani wynikiem tury vendora.
+    RunProgress {
+        agent: String,
+        run_id: String,
+        name: String,
+        status: String,
+        started_at: Option<i64>,
+        ended_at: Option<i64>,
+        steps: Vec<RunProgressStep>,
+    },
     MessageStored {
         agent: String,
         text: String,
@@ -607,11 +618,27 @@ pub enum Ended {
     Stopped,
 }
 
+/// Fizyczna próba ma własny klucz; kafelek workflow służy osobno do poleceń powtórzenia.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunProgressStep {
+    pub id: String,
+    pub tile_id: String,
+    pub name: String,
+    pub kind: String,
+    pub state: String,
+    pub carried_on: bool,
+    pub process_started: bool,
+    pub error: String,
+    pub depends_on: Vec<String>,
+}
+
 impl Line {
     /// Rodzaj wiersza.
     #[must_use]
     pub fn kind(&self) -> LineKind {
         match self {
+            Self::RunProgress { .. } => LineKind::RunProgress,
             Self::Run { .. } => LineKind::Run,
             Self::Step { .. } => LineKind::Step,
             Self::StepState { .. } => LineKind::StepState,
@@ -643,7 +670,8 @@ impl Line {
     #[must_use]
     pub fn agent(&self) -> &str {
         match self {
-            Self::Run { agent, .. }
+            Self::RunProgress { agent, .. }
+            | Self::Run { agent, .. }
             | Self::Step { agent, .. }
             | Self::StepState { agent, .. }
             | Self::StepSession { agent, .. }
@@ -677,7 +705,8 @@ impl Line {
             // Trzy rodzaje spoza historii mówią stanem lub faktem, nie zdaniem: „Thinking…”
             // rysuje stały slot, a dwa rodzaje kroku przestawiają kafelek. Tekst dorobiony tutaj
             // byłby drugim brzmieniem tego samego faktu, i to tym, którego nikt nie tłumaczy.
-            Self::Thinking { .. }
+            Self::RunProgress { .. }
+            | Self::Thinking { .. }
             | Self::StepState { .. }
             | Self::StepCarriedOn { .. }
             | Self::QuestionAnswered { .. }
@@ -745,7 +774,7 @@ impl Line {
             // `thinking` jest po tej stronie, bo stały slot na dole ekranu jest widoczny —
             // ale to jedyny rodzaj, którego kurator nigdy nie dokłada do historii (reguła 5),
             // więc ta odpowiedź nie dotyczy żadnego wiersza, który ktokolwiek przewinie.
-            Self::Read { .. } | Self::Search { .. } | Self::Edit { .. } | Self::Memory { .. } | Self::MessageStored { .. } => {
+            Self::RunProgress { .. } | Self::Read { .. } | Self::Search { .. } | Self::Edit { .. } | Self::Memory { .. } | Self::MessageStored { .. } => {
                 false
             }
             Self::Run { .. }

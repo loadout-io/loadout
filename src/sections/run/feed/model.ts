@@ -918,7 +918,7 @@ export function createFeed(scroller: Scroller): Feed {
       // `stepCarriedOn` jest pełnym faktem schedulera o zakończonym kroku, nie nową pracą
       // agenta. Sam zdejmuje go ze strefy TERAZ niżej; dodanie tutaj zostawiałoby go jako
       // pracującego już po końcu kroku.
-      if (line.kind === 'stepSession') continue;
+      if (line.kind === 'stepSession' || line.kind === 'runProgress') continue;
       if (line.kind === 'questionAnswered') {
         const question = waiting.find(
           (one) =>

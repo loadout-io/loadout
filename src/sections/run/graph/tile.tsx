@@ -154,9 +154,11 @@ const GLYPH: Readonly<Record<AgentStatus, string>> = {
 function StateChip({
   status,
   carriedOn,
+  notRun,
 }: {
   status: AgentStatus;
   carriedOn: boolean;
+  notRun: boolean;
 }): ReactElement {
   const glyph = GLYPH[status];
   return (
@@ -165,7 +167,7 @@ function StateChip({
         <i aria-hidden className="block size-2 shrink-0 animate-blip rounded-pill bg-live" />
       ) : null}
       {glyph === '' ? null : <span aria-hidden>{glyph}</span>}
-      {status}
+      {notRun ? 'not run' : status}
       {carriedOn ? ' — carried on' : ''}
     </span>
   );
@@ -266,6 +268,7 @@ export function RunTile({ step, plan, onOpen, style }: RunTileProps): ReactEleme
           className="min-w-0 flex-1 truncate text-heading text-ink"
         />
         <StateChip
+          notRun={step.notRun === true}
           status={step.status}
           carriedOn={step.status === 'failed' && step.carriedOn === true}
         />

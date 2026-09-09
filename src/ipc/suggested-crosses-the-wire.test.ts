@@ -101,12 +101,14 @@ function goldenRow(kind: string): Record<string, unknown> {
  *   runSource         `src-tauri/src/bridge/library.rs`
  *   runRequested      `src-tauri/src/bridge/library.rs`, `bridge/library/replay.rs`
  *   questionAnswered  `src-tauri/src/commands/run.rs`
+ *   runProgress       `src-tauri/src/commands/run.rs` (księga, także wynik końcowy)
  *
  * Dwa z nich — `stepSession` i `questionAnswered` — nie mają WIERSZA w widoku i to jest
  * poprawne: model konsumuje je efektem ubocznym i przerywa przed trasowaniem. Wpis w rejestrze
  * jest im potrzebny wyłącznie po to, żeby przejść przez drzwi `known()`.
  */
 const SINCE: readonly string[] = [
+  'runProgress',
   'suggested',
   'stepCarriedOn',
   'messageStored',

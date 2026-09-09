@@ -39,7 +39,8 @@ use serde_json::Value;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Wszystkie osiemnaście rodzajów wiersza, w kolejności deklaracji.
-const KINDS: [LineKind; 23] = [
+const KINDS: [LineKind; 24] = [
+    LineKind::RunProgress,
     LineKind::Run,
     LineKind::Step,
     LineKind::Agent,
@@ -81,6 +82,21 @@ const GOLDEN: &str = include_str!(concat!(
     "/../src/ipc/line-wire.golden.json"
 ));
 
+#[tokio::test]
+async fn the_final_run_result_survives_a_full_queue() -> Result<()> {
+    let (sink, mut source) = line_channel(1);
+    assert_eq!(sink.send(sample(LineKind::Note)), Sent::Queued);
+    let sending =
+        tokio::spawn(async move { sink.send_required(sample(LineKind::RunProgress)).await });
+    tokio::task::yield_now().await;
+    assert!(source.try_next().is_some());
+    assert_eq!(sending.await?, Sent::Queued);
+    assert!(
+        matches!(source.try_next(), Some(Line::RunProgress { status, .. }) if status == "failed")
+    );
+    Ok(())
+}
+
 /// Jeden przykład danego rodzaju wiersza.
 ///
 /// **Wyczerpujący `match` bez gałęzi domyślnej i to jest jego jedyne zadanie**: piętnasty
@@ -99,6 +115,25 @@ const GOLDEN: &str = include_str!(concat!(
 #[allow(clippy::too_many_lines)]
 fn sample(kind: LineKind) -> Line {
     match kind {
+        LineKind::RunProgress => Line::RunProgress {
+            agent: "Loadout".to_owned(),
+            run_id: "run-1".to_owned(),
+            name: "Build".to_owned(),
+            status: "failed".to_owned(),
+            started_at: Some(1000),
+            ended_at: Some(2000),
+            steps: vec![loadout_lib::engine::line::RunProgressStep {
+                id: "plan".to_owned(),
+                tile_id: "plan".to_owned(),
+                name: "Plan".to_owned(),
+                kind: "agent".to_owned(),
+                state: "failed".to_owned(),
+                carried_on: false,
+                process_started: true,
+                error: "No plan was published.".to_owned(),
+                depends_on: vec![],
+            }],
+        },
         LineKind::Run => Line::Run {
             agent: "lead".to_owned(),
             text: "Fix the login bug · Research → Plan → Build".to_owned(),

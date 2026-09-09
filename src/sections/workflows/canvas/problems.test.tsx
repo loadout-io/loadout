@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import type { Note } from '../../../state/workflows';
 import type { NoteFocus } from './problems';
 import { RunButton, ThingsToFix, focusNote } from './problems';
+import planProblem from '../plan-preflight.golden.json';
 
 /** Zdanie z `workflow::check`, słowo w słowo. Ono ląduje na ekranie i w podpowiedzi Run. */
 const CIRCLE = 'These steps point back at each other in a circle. Work would never finish.';
@@ -112,6 +113,19 @@ function first(notes: Note[]): Note {
 }
 
 describe('a problem stops Run and says which one; a warning stops nothing', () => {
+  it('shows the native plan refusal and offers a change for that step before Run', () => {
+    const notes = [planProblem as Note];
+    const html = renderToStaticMarkup(
+      <>
+        <ThingsToFix notes={notes} onFocusNote={noop} onApplyFix={noop} />
+        <RunButton notes={notes} onRun={noop} />
+      </>,
+    );
+    expect(plain(html)).toContain(planProblem.message);
+    expect(plain(html)).toContain('Set this step to Ask first');
+    expect(buttonAttributes(html, 'Run')).toMatch(/\bdisabled\b/u);
+    expect(titleOf(buttonAttributes(html, 'Run'))).toBe(planProblem.message);
+  });
   it('shows max_turns 300 and takes the person to the tile that owns it', () => {
     const note: Note = { level: 'problem', stepId: 's_review', message: TOO_MANY_TURNS };
     const html = markup([note]);

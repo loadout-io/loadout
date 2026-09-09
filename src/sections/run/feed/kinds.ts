@@ -84,6 +84,7 @@ const REGISTRY: Registry = Object.freeze({
    * („ready", „running", „succeeded", i to samo dla kopii), czyli ścianą, którą teza z DESIGN §1
    * istnieje żeby skasować: „widok pracy nie przyrasta, aktualizuje się w miejscu". */
   stepState: { route: 'now', expanded: false },
+  runProgress: { route: 'now', expanded: false },
   stepSession: { route: 'now', expanded: false },
   questionAnswered: { route: 'now', expanded: false },
   /* Samowystarczalne „failed i jedź dalej” przestawia oba fakty kroku w magazynie. Nie jest

@@ -191,6 +191,17 @@ impl LineSource {
 }
 
 impl LineSink {
+    /// Wynik całego biegu nie jest stratnym logiem. Wołane dopiero po zejściu producentów
+    /// stdout, bez zamka księgi; zamknięte okno odmawia od razu (2026-09-10).
+    pub async fn send_required(&self, line: Line) -> Sent {
+        if self.tx.send(line).await.is_err() {
+            self.dropped.fetch_add(1, Ordering::Release);
+            Sent::Dropped
+        } else {
+            Sent::Queued
+        }
+    }
+
     /// Oddaje linię pompie i mówi, czy została przyjęta.
     ///
     /// Synchroniczna i bez `await` z rozmysłem: `try_send` albo ma miejsce, albo nie ma —

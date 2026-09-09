@@ -1,0 +1,6 @@
+{
+  "level": "problem",
+  "stepId": "s_check",
+  "message": "\"Plan implementation\" must save a plan, but its file access is Look only. Choose Ask first or Work freely for this step, or change its Plan setting to Use or Off.",
+  "fix": { "kind": "widenFileAccess", "step": "s_check", "to": "ask-first", "from": "look-only" }
+}

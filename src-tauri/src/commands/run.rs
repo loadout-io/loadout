@@ -1995,6 +1995,7 @@ async fn the_planned_run_with_prestart(
         start.prepared(deps.project, &live.plan.id);
     }
     let cancel = deps.control.cancel_token();
+    live.announce_progress();
     let outcome = run_planned_graph(Arc::clone(&live), &dag, cancel.clone()).await;
     finish_planned_run(deps, live, isolated, outcome, cancel, reflection_enabled).await
 }
@@ -2422,6 +2423,15 @@ async fn finish_planned_run(
         })
     };
     deps.control.record_stop_proof(groups_proved && proved);
+    let final_progress = {
+        let carried = live
+            .did_not_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        live.progress_line(&live.book(), &carried)
+    };
+    let _ = live.lines.send_required(final_progress).await;
 
     Ok(RunReport {
         id: live.plan.id.clone(),
@@ -6924,6 +6934,9 @@ fn what_this_step_may_use(
     step: &AgentStep,
     driver: &Arc<dyn AgentDriver>,
 ) -> Result<Option<Vec<String>>, RunError> {
+    if let Some(note) = crate::workflow::roster::plan_can_be_delivered(step, agent) {
+        return Err(RunError::Refused(note));
+    }
     // PYTANIE PADA PRZED WSZYSTKIM INNYM, także przed pustą listą: „wyczyszczona lista jest
     // odmową" jest zdaniem o `--tools`, a vendor bez tej flagi nie ma czego wyczyścić.
     if !driver.narrows_its_tools() {
@@ -12361,7 +12374,20 @@ impl Live {
     /// wlasciciel patrzyl przez cale wczoraj. `get_or_insert` nie nadpisuje powodu, ktory ktos
     /// zapisal wczesniej i wie wiecej — na przyklad o niekompletnym dowodzie.
     async fn when_this_one_fails(&self, id: StepId, why: &str) -> StepReport {
-        let chosen = self.plan.steps[id].when_it_fails;
+        // 2026-09-10: proza po porażce nie zastępuje wymaganego dokumentu. Carry on
+        // uruchamiało 13 kolejnych odmów bez procesu, choć brak planu był już znany.
+        let missing_plan = matches!(&self.plan.steps[id].job, Job::Agent(job)
+            if job.work_plan.writes_candidate())
+            && self
+                .plan_outputs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)[id]
+                .is_none();
+        let chosen = if missing_plan {
+            WhenItFails::Stop
+        } else {
+            self.plan.steps[id].when_it_fails
+        };
         let said = match chosen {
             WhenItFails::Stop => why.to_owned(),
             WhenItFails::CarryOn => {
@@ -12371,6 +12397,11 @@ impl Live {
         };
         self.update(|book| {
             let _ = book.steps[id].error.get_or_insert(said);
+            if missing_plan
+                && book.steps[id].end_cause == Some(super::run_inputs::EndCause::Completed)
+            {
+                book.steps[id].end_cause = Some(super::run_inputs::EndCause::TaskFailed);
+            }
         });
 
         match chosen {
@@ -13174,6 +13205,81 @@ impl Live {
             step_id: self.plan.steps[id].tile_key.clone(),
             state: state.name().to_owned(),
         });
+        self.announce_progress();
+    }
+
+    /// 2026-09-10: resolve IPC znaczy koniec pracy, nie sukces. Migawka pochodzi z tej
+    /// samej księgi co run.json i naprawia również zgubione wcześniejsze linie stanu.
+    fn announce_progress(&self) {
+        let carried = self
+            .did_not_pass
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let book = self.book();
+        // Wysyłka bez await pod zamkiem księgi: równoległe kroki nie odwrócą migawek.
+        let _ = self.lines.send(self.progress_line(&book, &carried));
+    }
+
+    fn progress_line(&self, book: &Book, carried: &[Option<String>]) -> Line {
+        let steps = self
+            .plan
+            .steps
+            .iter()
+            .zip(&book.steps)
+            .enumerate()
+            .map(
+                |(at, (planned, step))| crate::engine::line::RunProgressStep {
+                    id: planned.node_key.clone(),
+                    tile_id: planned.tile_key.clone(),
+                    name: planned.name.clone(),
+                    kind: match &planned.job {
+                        Job::Agent(_) => "agent",
+                        Job::Check(_) => "check",
+                        Job::Ask { .. } => "checkpoint",
+                        Job::Serve(_) => "serve",
+                    }
+                    .to_owned(),
+                    state: if step.not_run_because.is_some() {
+                        "skipped"
+                    } else {
+                        step.status.name()
+                    }
+                    .to_owned(),
+                    carried_on: carried.get(at).is_some_and(Option::is_some),
+                    process_started: step.execution.process_started,
+                    error: step
+                        .error
+                        .as_ref()
+                        .or(step.not_run_because.as_ref())
+                        .cloned()
+                        .unwrap_or_default(),
+                    depends_on: self
+                        .plan
+                        .arrows
+                        .iter()
+                        .filter(|(_, to)| *to == at)
+                        .map(|(from, _)| self.plan.steps[*from].node_key.clone())
+                        .collect(),
+                },
+            )
+            .collect();
+        Line::RunProgress {
+            agent: "Loadout".to_owned(),
+            run_id: self.plan.id.clone(),
+            name: self.plan.title.clone(),
+            status: match book.status {
+                RunState::Running => "running",
+                RunState::Paused => "paused",
+                RunState::Succeeded => "succeeded",
+                RunState::Failed => "failed",
+                RunState::Cancelled => "cancelled",
+            }
+            .to_owned(),
+            started_at: book.started_at,
+            ended_at: book.ended_at,
+            steps,
+        }
     }
 
     fn update(&self, edit: impl FnOnce(&mut Book)) {
@@ -13990,6 +14096,7 @@ impl Live {
                 // w księdze osobne `node_key`, ale okno zna wyłącznie klucz kafelka.
                 step_id: self.plan.steps[id].tile_key.clone(),
             });
+            self.announce_progress();
         } else {
             self.announce(id, ended);
         }
@@ -15463,6 +15570,7 @@ impl Live {
                 // Uchwyt znaczy, że proces wstał i prompt dojechał przez stdin. Zapisujemy
                 // odbiorcę przed `wait`: późniejsza porażka tury nie cofa prawdziwej dostawy.
                 self.update(|book| book.steps[id].execution.process_started = true);
+                self.announce_progress();
                 self.record_memory_for_started_step(id, &job.memory);
                 drop(ours);
                 self.one_turn(
@@ -18108,6 +18216,7 @@ impl Live {
             };
             book.ended_at = Some(at);
         });
+        self.announce_progress();
     }
 
     /// Dla kazdego pominietego kroku: zdanie o tym, KTORY krok go skasowal.
@@ -18139,8 +18248,7 @@ impl Live {
                             out.push((
                                 id,
                                 format!(
-                                    "Skipped: \"{}\" did not pass, and nothing after it was set \
-                                     to carry on.",
+                                    "Skipped: \"{}\" did not pass.",
                                     self.plan.steps[from].name,
                                 ),
                             ));

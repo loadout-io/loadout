@@ -63,7 +63,7 @@ import { sectionEntry } from '../../ui/sections';
 import type { ContextPin } from '../../state/context';
 import type { FeedLine, Step } from '../../state/run';
 import type { Link } from '../../state/workflows';
-import { runFor, stepIsOver, useRun } from '../../state/run';
+import { runFor, useRun } from '../../state/run';
 import { useSkills } from '../../state/skills';
 import { useWorkspaces } from '../../state/workspaces';
 import { sessionAddresseeOf } from './addressee';
@@ -295,7 +295,7 @@ function factsOf(steps: readonly Step[]): readonly AgentFacts[] {
     step: step.state,
     /* Identyfikator jedzie obok nazwy: po nazwie rozpoznaje agenta strumień, a po kluczu
      * kafelka powtarza się krok (`io.rerunStep`). */
-    stepId: step.id,
+    stepId: step.tileId || step.id,
   }));
 }
 
@@ -342,24 +342,23 @@ function planFor(
 
   return {
     steps: steps.map((step): GraphStep => {
-      const card = spoke.get(step.name);
+      const card = (names.get(step.name) ?? 0) > 1 ? undefined : spoke.get(step.name);
       /* Żywe zdanie bije ostatnie: strefa TERAZ mówi, co się dzieje, a `say.ts` — co ten agent
        * powiedział z autorytetem, kiedy już nic się nie dzieje. Dwa różne pytania, jedna linia
        * na kafelku, więc pierwszeństwo musi być zapisane, a nie przypadkowe. */
-      const says = doing.get(step.name) ?? card?.say.text ?? '';
+      const says =
+        step.error ||
+        (step.state === 'pending' || step.state === 'ready'
+          ? ''
+          : (doing.get(step.name) ?? card?.say.text ?? ''));
       const asked = pinned !== null && pinned.agent === step.name ? pinned : undefined;
       const stepStatus = agentStatusOf(step.state);
       return {
         id: step.id,
         name: step.name,
-        // `done` zamyka TURĘ vendora, a terminalny stan kroku powstaje później i może zmienić
-        // jej wynik. Przy dwóch legalnych nazwach `Build` wspólny strumień nie mówi, któremu
-        // krokowi należy przypisać koniec tury, więc KAŻDY z nich czyta własny stan po kluczu.
-        // Jedynie nazwa unikalna może bezpiecznie użyć dokładniejszego stanu z karty.
-        status:
-          stepIsOver(step.state) || (names.get(step.name) ?? 0) > 1
-            ? stepStatus
-            : (card?.status ?? stepStatus),
+        // Koniec tury vendora nie przesądza o wyniku kroku ani wymaganych plikach.
+        status: asked !== undefined && step.state === 'running' ? 'needs you' : stepStatus,
+        notRun: step.state === 'skipped',
         ...(card === undefined
           ? {}
           : { who: { name: card.name === step.name ? '' : card.name, square: card.square } }),
@@ -942,7 +941,14 @@ export default function Run(): ReactElement {
    */
   const nextUp = useMemo(() => willRun(choices, ready.chosen), [choices, ready.chosen]);
 
-  const cards = useMemo(() => roster({ view, agents: factsOf(run.steps) }), [view, run.steps]);
+  const cards = useMemo(
+    () =>
+      roster({
+        view: { ...view, history: view.history.filter((row) => row.id >= run.firstLineId) },
+        agents: factsOf(run.steps),
+      }),
+    [view, run.steps, run.firstLineId],
+  );
   /**
    * CO RYSUJE PRAWA KOLUMNA. Jedno wyrażenie, bo jeden obraz: kroki, kto na nich stoi i co robi
    * teraz. Do 2026-08-31 te trzy fakty stały na ekranie w trzech miejscach naraz.
@@ -1001,7 +1007,15 @@ export default function Run(): ReactElement {
     () =>
       headlineFor({
         workflow: run.workflow,
-        ...(run.ended === null ? {} : { finished: run.ended.name, startedAt: run.ended.startedAt }),
+        ...(run.progress === null ? {} : { startedAt: run.progress.startedAt }),
+        ...(run.ended === null
+          ? {}
+          : {
+              finished: run.ended.name,
+              startedAt: run.ended.startedAt,
+              ...(run.ended.status === undefined ? {} : { status: run.ended.status }),
+              ...(run.ended.endedAt === undefined ? {} : { endedAt: run.ended.endedAt }),
+            }),
         nextUp: nextUp?.name ?? '',
         steps: run.ended !== null || run.steps.length > 0 ? run.steps : (nextUp?.steps ?? []),
         lines: run.lines,
@@ -1013,6 +1027,7 @@ export default function Run(): ReactElement {
     [
       run.workflow,
       run.ended,
+      run.progress,
       run.steps,
       run.lines,
       run.droppedBefore,
@@ -1335,6 +1350,7 @@ export default function Run(): ReactElement {
             past.workflowFile,
             null,
             latest.when,
+            past.state,
           );
         });
       })
@@ -2049,6 +2065,7 @@ export default function Run(): ReactElement {
                   tutaj, pod obszarem wysokim na całą kolumnę, stało od ostatniego kroku o pół
                   ekranu pustki. Jedno miejsce w drzewie, jeden mount (niezmiennik 13). */}
                 <RunGraph
+                  key={run.progress?.runId ?? run.generation}
                   plan={plan}
                   onOpen={openTheWorker}
                   onAnswer={answerQuestion}

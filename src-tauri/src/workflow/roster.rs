@@ -35,7 +35,9 @@ use serde::Serialize;
 
 use crate::connections::Connection;
 use crate::engine::drivers::claude::{ToolsRefused, beyond, no_such_tools};
-use crate::library::agents::{Agent, FileAccess, Tools, policy_of, resolve};
+use crate::library::agents::{
+    Agent, Capability, Field, FileAccess, Tools, capability, policy_of, resolve,
+};
 
 use super::check::{Level, Note};
 use super::{AgentStep, WorkflowFile};
@@ -154,6 +156,7 @@ pub fn check_the_roster(
         };
         let effective = effective.agent;
 
+        notes.extend(plan_can_be_delivered(one, &effective));
         tools_fit_the_dial(&one.id, saved, &effective, &mut notes);
         named_things_exist(&one.id, &effective, connections, skills, &mut notes);
         a_skill_needs_a_copy(
@@ -175,6 +178,49 @@ fn note(step_id: &str, message: String, fix: Option<Fix>) -> Note {
         message,
         fix: fix.map(Box::new),
     }
+}
+
+/// 2026-09-10: autor planu musi zapisać kandydata. W biegu Murmur odczyt bez zapisu
+/// kosztował 19 minut, zanim odmowa sandboxa ujawniła sprzeczność widoczną przed startem.
+/// Ten sam warunek czyta płótno i rzeczywisty start; uprawnienia zmienia tylko człowiek.
+#[must_use]
+pub fn plan_can_be_delivered(step: &AgentStep, effective: &Agent) -> Option<Note> {
+    let configuration = crate::work_plan::Configuration::from_step(step.extra.get("plan")).ok()?;
+    if !configuration.writes_candidate() {
+        return None;
+    }
+    if effective.file_access == FileAccess::LookOnly {
+        return Some(note(
+            &step.id,
+            format!(
+                "\"{}\" must save a plan, but its file access is Look only. Choose Ask first \
+                 or Work freely for this step, or change its Plan setting to Use or Off.",
+                step.name
+            ),
+            Some(Fix::WidenFileAccess {
+                step: step.id.clone(),
+                to: FileAccess::AskFirst,
+                from: effective.file_access,
+            }),
+        ));
+    }
+    if let Tools::Only(tools) = &effective.tools
+        && capability(Field::Tools, effective.runs_with) != Some(Capability::Unavailable)
+        && !tools
+            .iter()
+            .any(|tool| matches!(tool.as_str(), "Write" | "Bash"))
+    {
+        return Some(note(
+            &step.id,
+            format!(
+                "\"{}\" must save a new plan file, but its chosen tools cannot create files. \
+                 Allow Write or Bash, or change its Plan setting to Use or Off.",
+                step.name
+            ),
+            None,
+        ));
+    }
+    None
 }
 
 /// Lista narzędzi kontra dial — dokładnie to pytanie, które zadaje sterownik przy składaniu argv.

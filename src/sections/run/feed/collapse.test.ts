@@ -61,6 +61,7 @@ const SHUT = [
   'questionAnswered',
   'ran',
   'read',
+  'runProgress',
   'runSource',
   'search',
   'stepCarriedOn',
@@ -112,7 +113,7 @@ function rowFor(feed: Feed, id: number) {
 }
 
 describe('collapsed by default; a failure opens itself and nothing else', () => {
-  it('opens exactly eleven kinds by default and shuts exactly twelve', () => {
+  it('opens exactly eleven kinds by default and shuts exactly thirteen', () => {
     const registry = kinds();
     const open = Object.entries(registry)
       .filter(([, entry]) => entry.expanded)
@@ -130,7 +131,7 @@ describe('collapsed by default; a failure opens itself and nothing else', () => 
         'still nine. Which kinds open is a design decision [T2 §7.3 rule 2], not something the ' +
         'wire can be asked about — unlike the SET of kinds, which kinds.test.ts reads from the mirror.',
     ).toEqual(OPEN);
-    expect(shut, 'and the other twelve stay shut until somebody asks').toEqual(SHUT);
+    expect(shut, 'and the other thirteen stay shut until somebody asks').toEqual(SHUT);
   });
 
   it('opens the failed line and leaves its neighbours alone', () => {

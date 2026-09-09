@@ -482,9 +482,11 @@ async fn a_failed_plan_author_is_not_bypassed_by_carry_on() -> Result<(), Box<dy
             "name":"Do not substitute a plan",
             "steps":[
                 {"kind":"agent","id":"create","name":"Create","agent":saved.id,"instructions":"Create it.","plan":{"mode":"create"},"overrides":{},"at":{"x":0,"y":0}},
-                {"kind":"agent","id":"use","name":"Use","agent":saved.id,"instructions":"Use it.","plan":{"mode":"use"},"overrides":{},"at":{"x":200,"y":0}}
+                {"kind":"agent","id":"use","name":"Use","agent":saved.id,"instructions":"Use it.","plan":{"mode":"use"},"overrides":{},"at":{"x":200,"y":0}},
+                {"kind":"serve","id":"preview","name":"Preview","command":"touch should-never-start","folder":{"use":"project"},"at":{"x":400,"y":0}},
+                {"kind":"agent","id":"independent","name":"Independent","agent":saved.id,"instructions":"Report independently.","folder":{"use":"fresh-copy"},"overrides":{"fileAccess":"look-only"},"at":{"x":0,"y":200}}
             ],
-            "links":[{"from":"create","to":"use"}]
+            "links":[{"from":"create","to":"use"},{"from":"use","to":"preview"}]
         }))?,
     )?;
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
@@ -496,7 +498,7 @@ async fn a_failed_plan_author_is_not_bypassed_by_carry_on() -> Result<(), Box<dy
         processes: Arc::new(Processes::new()),
         control: RunControl::new(),
     };
-    let (sink, _lines) = line_channel(1024);
+    let (sink, mut lines) = line_channel(1024);
     let report = run_workflow_with_reflection(
         &deps,
         &RunRequest {
@@ -511,29 +513,56 @@ async fn a_failed_plan_author_is_not_bypassed_by_carry_on() -> Result<(), Box<dy
         false,
     )
     .await?;
-    assert_eq!(report.steps, vec![StepState::Failed, StepState::Failed]);
+    assert_eq!(
+        report.steps,
+        vec![
+            StepState::Failed,
+            StepState::Skipped,
+            StepState::Skipped,
+            StepState::Succeeded
+        ]
+    );
+    assert!(!project.path().join("should-never-start").exists());
     let run_file = fs::read_to_string(report.dir.join("run.json"))?;
-    // 2026-09-08 — ASERCJA PRZESTAWIONA NA KONTRAKT, nie na dawne brzmienie. WP-02
-    // przeformułował oba zdania i stare („Create did not finish the plan version it was meant
-    // to provide") nie istnieje juz nigdzie w drzewie. ZACHOWANIE jest to samo i to ono jest
-    // kryterium: autor nazywa, ze nie opublikowal planu, a konsument NIE PODSTAWIA innego —
-    // odmawia, wskazujac wczesniejsza prace. Pytamy wiec o te dwa fakty, a nie o zdanie,
-    // ktore wolno poprawic bez zmiany umowy.
+    // 2026-09-10: potomkowie nie zaczynają nawet procesu; niezależna gałąź nadal działa.
     assert!(
         run_file.contains("No plan was published"),
         "the failing author has to say it published no plan: {run_file}"
     );
     assert!(
-        run_file.contains("did not provide a plan"),
+        run_file.contains("Skipped:"),
         "the Use step silently fell back to another plan: {run_file}"
     );
     assert_eq!(
         fs::read_to_string(fixtures.path().join("claude.stdin"))?
             .lines()
             .count(),
-        1,
+        2,
         "the Use process started even though its exact plan source failed"
     );
+    let value: serde_json::Value = serde_json::from_str(&run_file)?;
+    let rows = value["steps"].as_array().ok_or("missing steps")?;
+    assert_eq!(rows[0]["end_cause"], "task-failed");
+    assert_eq!(rows[1]["process_started"], false);
+    assert_eq!(rows[2]["process_started"], false);
+    let mut final_progress = None;
+    while let Some(line) = lines.try_next() {
+        if let loadout_lib::engine::line::Line::RunProgress { status, steps, .. } = line {
+            final_progress = Some((status, steps));
+        }
+    }
+    let (status, steps) = final_progress.ok_or("the window never received the run result")?;
+    assert_eq!(status, "failed");
+    assert_eq!(
+        steps
+            .iter()
+            .filter(|step| step.kind == "agent" && step.process_started)
+            .count(),
+        2
+    );
+    assert_eq!(steps[1].state, "skipped");
+    assert!(!steps[1].carried_on && !steps[1].process_started);
+    assert!(steps[1].error.contains("Create"));
     Ok(())
 }
 
@@ -965,5 +994,71 @@ async fn a_create_and_an_update_become_two_versions_through_both_vendors()
         vec![Some(1), Some(2), Some(2)],
         "the Use result did not retain the exact version it consumed"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_read_only_plan_writer_is_refused_before_any_process() -> Result<(), Box<dyn Error>> {
+    for vendor in [Vendor::ClaudeCode, Vendor::Codex] {
+        let project = tempfile::tempdir()?;
+        let home = tempfile::tempdir()?;
+        let fixtures = tempfile::tempdir()?;
+        fs::create_dir_all(project.path().join(".loadout"))?;
+        let mut saved = Agent::example();
+        saved.id = uuid::Uuid::now_v7();
+        saved.name = "Planner".to_owned();
+        saved.runs_with = vendor;
+        saved.write_results_to.clear();
+        saved.file_access = loadout_lib::library::agents::FileAccess::LookOnly;
+        write_agent_file(&home.path().join("agents"), &saved, None)?;
+        let workflow = one_step_workflow(home.path(), &saved, "invalid-access")?;
+        let binary = executable(
+            fixtures.path(),
+            "cli",
+            &shell_fixture(None, CLAUDE_STDOUT, "spawned", true),
+        )?;
+        let driver: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::with_binary(binary));
+        let drivers: Drivers = Arc::new(move |_| Arc::clone(&driver));
+        let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
+        let deps = RunDeps {
+            home: home.path(),
+            project: project.path(),
+            store: &store,
+            drivers,
+            processes: Arc::new(Processes::new()),
+            control: RunControl::new(),
+        };
+        let (sink, _lines) = line_channel(1024);
+        let result = run_workflow_with_reflection(
+            &deps,
+            &RunRequest {
+                workflow,
+                how_many_at_once: 1,
+                task: None,
+                part: None,
+                handoffs_from: None,
+            },
+            sink,
+            None,
+            false,
+        )
+        .await;
+        let refusal = result
+            .err()
+            .ok_or("the invalid workflow was accepted")?
+            .to_string();
+        assert!(
+            refusal.contains("Create") && refusal.contains("Look only"),
+            "{refusal}"
+        );
+        assert!(
+            !fixtures.path().join("spawned").exists(),
+            "validation must precede every process"
+        );
+        assert!(
+            !project.path().join(".loadout/runs").exists(),
+            "no run is created for this configuration"
+        );
+    }
     Ok(())
 }

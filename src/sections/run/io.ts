@@ -234,8 +234,10 @@ export function start(
    * konkretna sesja, a nie „żadna". Ten sam sentinel czyta rejestr strumienia. */
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
+  const generation = session.getState().generation + 1;
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
+    if (session.getState().generation !== generation) return;
     const at = Date.now();
     const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
     view.appendLines(stamped);
@@ -376,8 +378,10 @@ export function ask(
    * kopia, która z tej czwórki zniknęła. */
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
+  const generation = session.getState().generation + 1;
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
+    if (session.getState().generation !== generation) return;
     const at = Date.now();
     const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
     view.appendLines(stamped);
@@ -633,6 +637,13 @@ export function runEvalSet(
 function whatWasRunning(session: RunStore): () => void {
   const before = session.getState();
   const kept = {
+    generation: before.generation,
+    firstLineId: before.firstLineId,
+    progress: before.progress,
+    lines: before.lines,
+    agents: before.agents,
+    droppedBefore: before.droppedBefore,
+    earliestKnownId: before.earliestKnownId,
     workflow: before.workflow,
     steps: before.steps,
     folder: before.folder,
@@ -689,8 +700,10 @@ function asARun(
 
   const session = runFor(folder);
   const view = feedFor(folder ?? '');
+  const generation = session.getState().generation + 1;
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
+    if (session.getState().generation !== generation) return;
     const at = Date.now();
     /* JEDEN LICZNIK NA CAŁE OKNO, ten sam, co przy Starcie — powód stoi przy `nextStamp`
      * (`src/state/run.ts`): wznowienie i powtórzenie kroku wchodzą do historii, w której stoi
@@ -1045,8 +1058,10 @@ function acceptLeadRequest(
   if (existing !== undefined) return existing;
   const session = runFor(request.workspace);
   const view = feedFor(request.workspace);
+  const generation = session.getState().generation + 1;
   const lines = new Channel<unknown[]>();
   wireChannel(lines, (batch) => {
+    if (session.getState().generation !== generation) return;
     const at = Date.now();
     const stamped = batch.map((line) => ({ ...line, id: nextStamp(), at }));
     view.appendLines(stamped);

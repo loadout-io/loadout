@@ -161,6 +161,7 @@ export type Line =
    * zmienią się w tym samym commicie. Nowy rodzaj jest addytywny w obie strony: starszy front
    * porzuca go w ciszy (jedna linia mniej), starszy Rust go po prostu nie wysyła. */
   | { kind: 'stepState'; agent: string; stepId: string; state: string }
+  | RunProgress
   /* Cały wynik nieudanego kroku, po którym polityka kazała jechać dalej: odbiorca ustawia z
    * niego `failed` i kwalifikację jednym zapisem. Osobny addytywny rodzaj, nie pole `stepState`:
    * starsze lustro może porzucić jeden nieznany fakt, zamiast odrzucić każdą linię stanu o
@@ -304,7 +305,61 @@ const SAYS: Readonly<Record<string, Field>> = { agent: str, text: str };
  * funkcję z prototypu zamiast `undefined`, więc `{"kind":"constructor"}` z drutu przeszedłby
  * jako rodzaj, którego nikt nigdy nie zadeklarował.
  */
+export interface RunProgress {
+  readonly kind: 'runProgress';
+  readonly agent: string;
+  readonly runId: string;
+  readonly name: string;
+  readonly status: string;
+  readonly startedAt: number | null;
+  readonly endedAt: number | null;
+  readonly steps: readonly {
+    readonly id: string;
+    readonly tileId: string;
+    readonly name: string;
+    readonly kind: string;
+    readonly state: string;
+    readonly carriedOn: boolean;
+    readonly processStarted: boolean;
+    readonly error: string;
+    readonly dependsOn: readonly string[];
+  }[];
+}
+
+const progressSteps: Field = (value) => {
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  return value.every((entry: unknown) => {
+    if (typeof entry !== 'object' || entry === null) return false;
+    const one = entry as Record<string, unknown>;
+    if (typeof one['id'] !== 'string' || ids.has(one['id'])) return false;
+    ids.add(one['id']);
+    return (
+      str(one['tileId']) &&
+      str(one['name']) &&
+      str(one['kind']) &&
+      str(one['state']) &&
+      flag(one['carriedOn']) &&
+      flag(one['processStarted']) &&
+      str(one['error']) &&
+      strs(one['dependsOn'])
+    );
+  });
+};
+
 const SHAPES: ReadonlyMap<string, Readonly<Record<string, Field>>> = new Map([
+  [
+    'runProgress',
+    {
+      agent: str,
+      runId: str,
+      name: str,
+      status: str,
+      startedAt: maybeNum,
+      endedAt: maybeNum,
+      steps: progressSteps,
+    },
+  ],
   ['run', SAYS],
   ['runSource', { ...SAYS, workspace: str, runId: str, runFolder: str, observedAt: str }],
   ['messageStored', { ...SAYS, runId: str, sequence: num, fromNode: str, toNode: str, body: str }],

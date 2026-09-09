@@ -33,7 +33,7 @@ import { spendFor, stepPhrase, stripFor } from './model';
  * z tego BARWĘ, a nie tylko słowo: kropka pulsująca nad biegiem, który zszedł, jest zdaniem
  * o pracy, której nikt nie wykonuje.
  */
-export type RunTone = 'live' | 'ended' | 'idle';
+export type RunTone = 'live' | 'ended' | 'idle' | 'failed' | 'succeeded';
 
 export interface Headline {
   /** Stan biegu — nośnik barwy i pulsu, nie drugi napis. */
@@ -58,6 +58,8 @@ export interface RunFacts {
   readonly finished?: string;
   /** Początek skończonego biegu. Opcjonalny z tego samego powodu. */
   readonly startedAt?: number | string | null;
+  readonly endedAt?: number | null;
+  readonly status?: string;
   /** Nazwa workflow, który ruszy po naciśnięciu `Run`. Puste, kiedy nie ma czego uruchomić. */
   readonly nextUp: string;
   /** Kroki biegu w kolejności grafu — z magazynu biegu albo z pliku workflow. */
@@ -122,9 +124,9 @@ function wallClock(ms: number): string {
 /** Czas od pierwszej do ostatniej linii biegu; pusty, kiedy historia nie niesie jego końca. */
 function durationOf(facts: RunFacts): string {
   if ((facts.finished ?? '') === '' || typeof facts.startedAt !== 'number') return '';
-  const last = facts.lines.at(-1);
-  if (last === undefined || last.at < facts.startedAt) return '';
-  return wallClock(last.at - facts.startedAt);
+  const end = facts.endedAt ?? facts.lines.at(-1)?.at;
+  if (end === undefined || end < facts.startedAt) return '';
+  return wallClock(end - facts.startedAt);
 }
 
 /**
@@ -150,15 +152,34 @@ export function headlineFor(facts: RunFacts): Headline {
   }
 
   const { blocks } = stripFor(title, facts.steps, spend);
-  const running = finished === '' && blocks.some((block) => block.state === 'now');
+  const running = finished === '' && going;
   /* „Skończony" znaczy: ten bieg ma za sobą kroki, a żaden już nie idzie. Bieg, który jeszcze
    * nie ruszył, ma wszystkie kroki w `todo` i nie jest skończony — dlatego pytamy o ślad
    * pracy, a nie o „nic nie biegnie". */
   const ended =
     finished !== '' || (!running && blocks.some((block) => block.state === 'done' || block.ended));
 
-  const tone: RunTone = running ? 'live' : ended ? 'ended' : 'idle';
-  const state = running ? 'Running' : ended ? 'Finished' : 'Ready to run';
+  const outcome = facts.status;
+  const tone: RunTone = running
+    ? 'live'
+    : !ended
+      ? 'idle'
+      : outcome === 'failed'
+        ? 'failed'
+        : outcome === 'succeeded'
+          ? 'succeeded'
+          : 'ended';
+  const state = running
+    ? 'Running'
+    : !ended
+      ? 'Ready to run'
+      : outcome === 'failed'
+        ? 'Failed'
+        : outcome === 'cancelled'
+          ? 'Stopped'
+          : outcome === 'interrupted'
+            ? 'Interrupted'
+            : 'Finished';
   /* Podgląd następnego workflow nie „zaczął się" od starej linii sesji. To właśnie ten rozjazd
    * stawiał `STARTED 16:2x` obok `READY TO RUN` na zrzucie Z-37. */
   const when = going || ended ? startedAt(facts) : '';

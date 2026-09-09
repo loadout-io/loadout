@@ -21,10 +21,9 @@
  * Nie mierzy KOLORÓW z osobna. Pyta o coś innego: czy dwa różne fakty da się od siebie odróżnić
  * na ekranie w ogóle.
  *
- * Nie żąda też, żeby siedem stanów dało siedem wyglądów. Trzy pary znaczą to samo i mają
- * wyglądać tak samo: `pending` i `ready` to jeden fakt („czeka na swoją kolej"), a `cancelled`
- * i `skipped` to drugi („już się nie wydarzy i nikt nie zawinił"). Zrównanie ich jest treścią,
- * nie oszczędnością — dlatego stoi tu jako asercja, a nie jako milczenie.
+ * `pending` i `ready` to jeden fakt („czeka na swoją kolej"). Od 2026-09-10 pominięcie
+ * mówi „not run”, a anulowanie „stopped”: incydent Murmur pokazał, że człowiek musi odróżnić
+ * krok, który nie ruszył z powodu braku planu, od zatrzymanej pracy. Oba pozostają neutralne.
  *
  * # Dlaczego różnica ma być geometryczna
  *
@@ -123,7 +122,7 @@ describe('the picture of the plan shows which steps are which', () => {
     ).not.toBe(of('cancelled'));
   });
 
-  it('gives five looks to five facts, and the same look to the same fact twice', () => {
+  it('distinguishes outcomes and keeps waiting and unstarted states honest', () => {
     expect(
       new Set([of('succeeded'), of('running'), of('pending'), of('failed'), of('cancelled')]).size,
       'finished, working, waiting, broke and stopped are five different things to know, and ' +
@@ -135,11 +134,11 @@ describe('the picture of the plan shows which steps are which', () => {
       'ready and pending are one fact — this step waits its turn — so two looks for them would ' +
         'invent a difference the person cannot act on (invariant 17)',
     ).toBe(of('pending'));
-    expect(
-      of('skipped'),
-      'skipped and cancelled are one fact too: this step will not happen, and nobody did ' +
-        'anything wrong',
-    ).toBe(of('cancelled'));
+    expect(of('skipped')).toContain('not run');
+    expect(of('cancelled')).toContain('stopped');
+    expect(of('skipped')).not.toContain('data-tone="fail"');
+    expect(of('cancelled')).not.toContain('data-tone="fail"');
+    expect(of('skipped').replace('not run', 'stopped')).toBe(of('cancelled'));
   });
 
   it('tells the broken one from the working one with more than colour', () => {

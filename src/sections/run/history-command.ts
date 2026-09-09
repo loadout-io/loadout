@@ -106,10 +106,11 @@ export function planOfPastRun(run: PastRun): readonly Step[] {
     const state = past.state === 'not_run' ? 'skipped' : stepStateOf(past.state);
     if (state === null) continue;
     plan.push({
-      /* `tile` wskazuje kafelek; `id` jest tylko fizycznym UUID kroku tego biegu. Stary zapis
-       * bez `tile` nadal potrzebuje stabilnego klucza, więc wtedy zostaje jedyny dostępny. */
-      id: past.tile === '' ? past.id : past.tile,
+      // 2026-09-10: powtórzenia jednego kafelka nie mogą mieć tego samego klucza Reacta.
+      id: past.id,
+      tileId: past.tile,
       name: past.name,
+      error: past.error,
       state,
     });
   }

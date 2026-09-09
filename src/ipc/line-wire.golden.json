@@ -1,5 +1,27 @@
 [
   {
+    "kind": "runProgress",
+    "agent": "Loadout",
+    "runId": "run-1",
+    "name": "Build",
+    "status": "failed",
+    "startedAt": 1000,
+    "endedAt": 2000,
+    "steps": [
+      {
+        "id": "plan",
+        "tileId": "plan",
+        "name": "Plan",
+        "kind": "agent",
+        "state": "failed",
+        "carriedOn": false,
+        "processStarted": true,
+        "error": "No plan was published.",
+        "dependsOn": []
+      }
+    ]
+  },
+  {
     "kind": "run",
     "agent": "lead",
     "text": "Fix the login bug · Research → Plan → Build"
@@ -124,11 +146,20 @@
         "id": "a",
         "name": "Build",
         "kind": "agent",
-        "at": { "x": 0, "y": 0 },
+        "at": {
+          "x": 0,
+          "y": 0
+        },
         "weight": "ordinary"
       }
     ],
-    "links": [{ "from": "a", "to": "a", "maxTurns": 2 }],
+    "links": [
+      {
+        "from": "a",
+        "to": "a",
+        "maxTurns": 2
+      }
+    ],
     "context": [],
     "contextGeneration": 0
   },

@@ -32,7 +32,14 @@ const EXPECTED = [...WIRE_KINDS].sort();
  * Trzy i każdy odpowiada na inne pytanie: `thinking` mówi, co agent robi, `stepState` — na
  * czym stoi krok, a `stepCarriedOn` — czy scheduler wykonał dla jego porażki „jedź dalej”.
  */
-const LIVE = ['questionAnswered', 'stepCarriedOn', 'stepSession', 'stepState', 'thinking'];
+const LIVE = [
+  'questionAnswered',
+  'runProgress',
+  'stepCarriedOn',
+  'stepSession',
+  'stepState',
+  'thinking',
+];
 
 /** Enumy prosto z drutu — dokładnie to, co przyjdzie, gdy vendor doda typ zdarzenia. */
 const FOREIGN = ['tool_use', 'stream_event'];

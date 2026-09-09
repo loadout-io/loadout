@@ -220,3 +220,126 @@ fn a_connection_that_is_missing_and_one_that_is_off_are_two_different_sentences(
          repair that makes it for them is the opposite of the rule that connections stay off"
     );
 }
+
+#[test]
+fn plan_writers_require_effective_write_access_but_readers_do_not() {
+    for vendor in [Vendor::ClaudeCode, Vendor::Codex] {
+        for mode in ["create", "update"] {
+            let id = Uuid::now_v7();
+            let mut saved = agent(id, "Planner", FileAccess::LookOnly, Tools::Everything);
+            saved.runs_with = vendor;
+            let mut workflow = file(id, None);
+            let loadout_lib::workflow::Step::Agent(step) = &mut workflow.steps[0] else {
+                unreachable!()
+            };
+            step.name = "Plan implementation".to_owned();
+            step.extra.insert("plan".to_owned(), json!({"mode": mode}));
+            let notes = check_the_roster(&workflow, &[saved.clone()], &[], &[]);
+            let problem = notes
+                .iter()
+                .find(|note| note.level == Level::Problem)
+                .expect("a plan writer with Look only must be refused before paid work");
+            assert_eq!(problem.step_id.as_deref(), Some("s_check"));
+            assert!(
+                problem.message.contains("Plan implementation")
+                    && problem.message.contains("Look only"),
+                "{}",
+                problem.message
+            );
+            assert!(matches!(
+                problem.fix.as_deref(),
+                Some(Fix::WidenFileAccess {
+                    to: FileAccess::AskFirst,
+                    ..
+                })
+            ));
+            let loadout_lib::workflow::Step::Agent(step) = &mut workflow.steps[0] else {
+                unreachable!()
+            };
+            step.overrides
+                .insert("fileAccess".to_owned(), json!("ask-first"));
+            assert!(check_the_roster(&workflow, &[saved.clone()], &[], &[]).is_empty());
+            saved.file_access = FileAccess::WorkFreely;
+            let loadout_lib::workflow::Step::Agent(step) = &mut workflow.steps[0] else {
+                unreachable!()
+            };
+            step.overrides
+                .insert("fileAccess".to_owned(), json!("look-only"));
+            assert!(!check_the_roster(&workflow, &[saved.clone()], &[], &[]).is_empty());
+            step_plan_off_or_use(&mut workflow);
+            assert!(
+                check_the_roster(&workflow, &[saved], &[], &[]).is_empty(),
+                "reading a plan needs no project write permission"
+            );
+        }
+    }
+}
+
+#[test]
+fn plan_writers_need_a_file_creation_tool_only_when_the_vendor_honors_that_list() {
+    for vendor in [Vendor::ClaudeCode, Vendor::Codex] {
+        for tool in ["Read", "Edit", "Write", "Bash"] {
+            let id = Uuid::now_v7();
+            let mut saved = agent(
+                id,
+                "Planner",
+                FileAccess::AskFirst,
+                Tools::Only(vec![tool.to_owned()]),
+            );
+            saved.runs_with = vendor;
+            let mut workflow = file(id, None);
+            let loadout_lib::workflow::Step::Agent(step) = &mut workflow.steps[0] else {
+                unreachable!()
+            };
+            step.extra
+                .insert("plan".to_owned(), json!({"mode": "create"}));
+            let notes = check_the_roster(&workflow, &[saved], &[], &[]);
+            let can_write = vendor == Vendor::Codex || matches!(tool, "Write" | "Bash");
+            assert_eq!(
+                notes.is_empty(),
+                can_write,
+                "{vendor:?} with {tool}: {notes:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_saved_draft_exposes_its_plan_permission_problem_to_the_window() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let id = Uuid::now_v7();
+    let saved = agent(id, "Planner", FileAccess::LookOnly, Tools::Everything);
+    loadout_lib::library::agents::write_agent_file(&home.path().join("agents"), &saved, None)?;
+    let mut workflow = file(id, None);
+    let loadout_lib::workflow::Step::Agent(step) = &mut workflow.steps[0] else {
+        unreachable!()
+    };
+    step.name = "Plan implementation".to_owned();
+    step.extra
+        .insert("plan".to_owned(), json!({"mode":"create"}));
+    loadout_lib::commands::workflows::save_workflow_inner(
+        home.path(),
+        None,
+        "draft.json",
+        &workflow,
+        None,
+    )?;
+    let notes = loadout_lib::commands::workflows::check_workflow_inner(home.path(), &workflow);
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src/sections/workflows/plan-preflight.golden.json"
+    ))?;
+    assert!(
+        notes
+            .iter()
+            .any(|note| serde_json::to_value(note).ok().as_ref() == Some(&expected)),
+        "{notes:?}"
+    );
+    assert!(home.path().join("workflows/draft.json").exists());
+    Ok(())
+}
+
+fn step_plan_off_or_use(file: &mut WorkflowFile) {
+    if let loadout_lib::workflow::Step::Agent(step) = &mut file.steps[0] {
+        step.extra.insert("plan".to_owned(), json!({"mode":"use"}));
+    }
+}
