@@ -1,5 +1,5 @@
 import type { FormEvent, ReactElement } from 'react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { why } from '../../ipc/why';
 import type { Reviewed } from '../../state/skills';
 import { activeWorkspace } from '../../state/workspaces';
@@ -443,6 +443,8 @@ export function ImportSetup({
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saved, setSaved] = useState<ImportReceipt | null>(null);
   const [inventoryView, setInventoryView] = useState<InventoryView>('all');
+  /* 2026-09-09 — uchwyt do listy, zeby filtr mogl ja cofnac na gore. */
+  const listRef = useRef<HTMLDivElement>(null);
   /* Kogo pytamy o kopie. Pusty napis znaczy „człowiek jeszcze nie wybrał", a nie „nikogo":
    * lista agentów przyjeżdża propsem i bywa pusta w chwili pierwszego renderu, więc wybór
    * domyślny liczy się przy każdym renderze ([`whoCompares`] niżej), a nie raz w `useState`. */
@@ -757,6 +759,14 @@ export function ImportSetup({
                   data-tone={inventoryView === value ? 'accent' : undefined}
                   onClick={() => {
                     setInventoryView(value);
+                    /* 2026-09-09 — FILTR WRACA NA GÓRĘ LISTY. Bez tego lista zachowuje
+                       przewinięcie sprzed przełączenia, a po zawężeniu do kilku pozycji stoi
+                       przewinięta POZA pierwszą z nich: człowiek pyta „co wymaga uwagi"
+                       i dostaje pustą górę listy. Zmierzone w chromium — po kliknięciu
+                       w ptaszek lista stała na `scrollTop: 40`, a pierwszy wiersz lądował
+                       8 px nad własnym pojemnikiem. Wcześniej ukrywał to rozmiar pola
+                       zaznaczenia: mniejsze nie wyzwalało przewinięcia i wada spała. */
+                    listRef.current?.scrollTo({ top: 0 });
                   }}
                 >
                   {label}
@@ -807,6 +817,7 @@ export function ImportSetup({
                 znalazł. Jeden region na jedno zdarzenie: liczniki i pasek akcji przybywają
                 z nią razem, ale nie ruszają się (sufit z ARCHITECTURE §7 wynosi dwa). */}
             <div
+              ref={listRef}
               data-import-items
               className="enter min-h-40 flex-1 overflow-auto rounded-md border border-line"
             >

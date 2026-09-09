@@ -734,12 +734,16 @@
      * miało `inline-grid` RAZEM z `position: relative` i dlatego wyglądało na winę siatki. */
     display: inline-grid;
     place-content: center;
-    width: 13px;
-    height: 13px;
+    /* 2026-09-09 — 16 px pudełka przy ŚLADZIE 19 px, dokładnie takim, jaki miało pole 13 px
+       z marginesem 3 px. Rozmiar rośnie, rytm wiersza nie drgnie, a `import-list-stays-visible`
+       mierzy dalej to samo. Trzynastka to natywny rozmiar sprzed lat i przy tym stopniu pisma
+       wygląda na zgubioną. */
+    width: 16px;
+    height: 16px;
     flex: none;
     /* 2026-09-09 (UX-2) — pionowy ślad natywnego pola trzyma pudełko po bezpiecznej stronie
      * granicy `scrollIntoViewIfNeeded`; poziome marginesy nie uczestniczą w tym pomiarze. */
-    margin-block: 3px;
+    margin-block: 1.5px;
     margin-inline: 0;
     border: 1px solid var(--color-line-strong);
     border-radius: calc(var(--radius-sm) / 2);
@@ -748,14 +752,17 @@
   }
 
   .tick::after {
-    width: 3px;
-    height: 6px;
-    border-right: 1px solid var(--color-bg);
-    border-bottom: 1px solid var(--color-bg);
+    /* PTASZEK JAKO KSZTAŁT, NIE OBRÓCONY NAROŻNIK. Dwa boki prostokąta obrócone o 45° dają
+       znak, którego masa optyczna leży w rogu, więc w kwadracie wygląda na przesunięty nawet
+       wtedy, gdy geometrycznie jest w środku. `clip-path` rysuje prawdziwą odfajkowację —
+       środek pokrywa się ze środkiem pudełka i nie trzeba go niczym korygować. */
+    width: 10px;
+    height: 10px;
+    background: var(--color-bg);
+    clip-path: polygon(14% 44%, 0% 65%, 39% 100%, 100% 16%, 86% 0%, 39% 71%);
     content: "";
-    /* Bez `translate`, bo środek daje `place-content` rodzica. `scale(0)` zostaje: ptaszek
-       ma zniknąć bez zmiany pudełka, żeby zaznaczenie nie ruszało układu wiersza. */
-    transform: rotate(45deg) scale(0);
+    /* `scale(0)` zostaje: znak znika bez zmiany pudełka, więc zaznaczenie nie rusza wiersza. */
+    transform: scale(0);
     transform-origin: center;
   }
 
@@ -769,7 +776,10 @@
   }
 
   .tick:checked::after {
-    transform: translate(-50%, -50%) rotate(45deg) scale(1);
+    /* 2026-09-09 — BEZ `translate`. Zostało tu po wersji z `position: absolute`, a przy znaku
+       centrowanym przez `place-content` przesuwało go o połowę jego własnego rozmiaru: ptaszek
+       stał krzywo w każdym zaznaczonym polu w aplikacji. Zgłoszone przez właściciela. */
+    transform: scale(1);
   }
 
   .tick:disabled {
