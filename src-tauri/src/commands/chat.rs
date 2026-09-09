@@ -355,8 +355,26 @@ struct ReadySession {
 }
 
 impl ReadySession {
-    fn listen(self, lines: Arc<Mutex<LineSink>>) -> Session {
+    /// # Kto w tej rozmowie rozlicza zakończenia tur — jedno zdanie, jedno miejsce
+    ///
+    /// Tury z głosem jadą przez [`Voice`] i **nie przechodzą** przez `AgentHandle::wait()`:
+    /// rozgałęziają się na tym samym pytaniu [`await_next_delivery`] i [`next_turn`], a wynik
+    /// każdej z nich czyta wyłącznie [`read_along`], z kanału zdarzeń, do
+    /// [`ReaderProgress::finished`] i do prywatnego paragonu. Sterownik, który mimo to odkłada
+    /// drugą kopię wyniku dla `wait()`, odkłada ją więc do kolejki bez odbiorcy — a ta po ósmej
+    /// turze zatrzymuje odczyt wyjścia agenta i rozmowa milknie na dziewiątej (incydent
+    /// 2026-09-07, powód w całości przy
+    /// [`AgentHandle::turn_endings_are_read_from_the_stream`]).
+    ///
+    /// Mówimy to TUTAJ, bo tutaj powstaje jedyny czytelnik zdarzeń tej rozmowy — i tutaj obie
+    /// drogi startu ([`begin`] i [`begin_thread`]) schodzą się w jeden `Session`. Warunek jest
+    /// dosłownie tym samym warunkiem, na którym rozgałęzia się wysyłka tury; adapter bez głosu
+    /// (Codex) zostaje przy `wait()` i nie zmienia się o linię.
+    fn listen(mut self, lines: Arc<Mutex<LineSink>>) -> Session {
         let (progress, observed) = watch::channel(ReaderProgress::default());
+        if self.voice.is_some() {
+            self.handle.turn_endings_are_read_from_the_stream();
+        }
         let reader = tokio::spawn(read_along(
             self.inbox,
             lines,

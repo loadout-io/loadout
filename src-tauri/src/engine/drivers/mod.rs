@@ -1438,7 +1438,35 @@ pub trait AgentHandle: Send {
     }
 
     /// Czeka na koniec bieżącej tury.
+    ///
+    /// Wołający, który tego nie robi, ma to POWIEDZIEĆ przez
+    /// [`AgentHandle::turn_endings_are_read_from_the_stream`] — powód w całości stoi tam.
     async fn wait(&mut self) -> anyhow::Result<Outcome>;
+
+    /// Właściciel tej sesji rozlicza zakończenia tur z KANAŁU ZDARZEŃ, więc [`AgentHandle::wait`]
+    /// nie ma tu wołającego i druga kopia wyniku nie ma po co powstawać.
+    ///
+    /// # Incydent 2026-09-07 — dziewiąta tura rozmowy z liderem
+    ///
+    /// Sterownik Claude'a odkładał każdy [`AgentEvent::Finished`] w DWA miejsca: raz do kanału
+    /// zdarzeń wołającego, raz do ograniczonej kolejki, którą opróżnia wyłącznie `wait()`.
+    /// Rozmowa prowadzona [`Voice`] nie woła `wait()` ani razu — wyniki czyta jej pętla zdarzeń —
+    /// więc po ośmiu turach kolejka była pełna, a dziewiąte `send().await` zatrzymało pętlę
+    /// czytającą stdout PRZED wysłaniem dziewiątego zdarzenia. Z zewnątrz wyglądało to dokładnie
+    /// jak agent, który przestał odpowiadać: pisarz stdin działał dalej, proces żył, kolejne
+    /// polecenia człowieka nadal docierały do CLI, a na ekranie nie pojawiało się już nic.
+    ///
+    /// **Nieodebrany kanał nie ma prawa blokować odczytu stdoutu.** Sterownik, który tę drugą
+    /// kopię odkłada, ma tu porzucić jej odbiornik: porzucony odbiornik kończy każdą wysyłkę
+    /// natychmiast, także tę, która już czeka na miejsce — więc ta sama linia leczy zarówno
+    /// sesję, która dopiero ruszyła, jak i tę, która już stanęła. Po niej `wait()` w tej sesji
+    /// jest NAZWANYM błędem, nigdy wiecznie oczekującym future: cisza w tym miejscu byłaby tą
+    /// samą wadą, tylko przesuniętą o jedno wywołanie.
+    ///
+    /// Domyślnie nic nie robi i to nie jest przeoczenie: adapter, który drugiej kopii nie
+    /// odkłada, nie ma czego porzucić — a wtedy ani jeden dubel testowy nie zmienia się o linię
+    /// (niezmiennik 23). Wołać wolno **raz**, zanim ruszy druga tura.
+    fn turn_endings_are_read_from_the_stream(&mut self) {}
 
     /// Anuluje turę i **dowodzi**, że po grupie nic nie zostało.
     ///
