@@ -445,7 +445,7 @@ async fn a_session_that_gave_its_endings_to_the_stream_says_so_instead_of_waitin
     for _ in 0..(TURNS - 1) {
         tokio::time::timeout(PATIENCE, handle.send("next question".to_owned())).await??;
     }
-    let mut finished = 1_usize;
+    let mut finished = 0_usize;
     while finished < TURNS {
         wait_for_finished(&mut events).await?;
         finished += 1;

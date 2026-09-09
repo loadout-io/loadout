@@ -79,7 +79,7 @@ fn a_real_claude_builds_in_the_isolated_app_library() -> Result<(), Box<dyn Erro
             app: Some(Vendor::ClaudeCode),
             model: Some("sonnet".to_owned()),
             generation: 1,
-            deadline: Duration::from_secs(180),
+            deadline: Duration::from_mins(3),
             budget_usd: Some(1.0),
         },
         &CancellationToken::new(),

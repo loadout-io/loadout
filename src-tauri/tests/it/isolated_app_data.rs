@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Osobny proces chroni równoległe testy przed zmianą środowiska. Ten sam resolver jest
-/// wywoływany przez produkcyjny start okna dla biblioteki, SQLite oraz dziennika.
+/// wywoływany przez produkcyjny start okna dla biblioteki, `SQLite` oraz dziennika.
 #[test]
 fn an_isolated_library_keeps_the_agent_login_home() -> Result<(), Box<dyn Error>> {
     const CHILD: &str = "LOADOUT_DATA_TEST_CHILD";
