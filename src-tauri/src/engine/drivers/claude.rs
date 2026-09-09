@@ -93,6 +93,7 @@ use super::{
     AgentDriver, AgentEvent, AgentHandle, DecodedEvent, DidNotLetGo, DriverConfiguration,
     DriverSetupError, FinishReason, Interrupted, LoadedFromTheFolder, Outcome, Policy, Probe,
     RunSpec, SessionRef, StepSettings, ToAgent, Tokens, TurnBreak, ValidatedImages, Voice,
+    what_the_complaint_means,
 };
 use crate::engine::line::Line;
 use crate::engine::stream::{self, Recorder};
@@ -2098,16 +2099,21 @@ impl ClaudeDecoder {
         // wrapper, który przy braku binarki pisze na stderr i wychodzi 127; z okna wyglądało to
         // identycznie jak agent, który wystartował i zamilkł.
         //
-        // Jedna linia, nie cały potok: to jest zdanie na ekran, a nie dziennik. Pierwsza
-        // niepusta linia skargi odpowiada na pytanie „dlaczego" w praktycznie każdym realnym
-        // przypadku, a reszta jest już śladem stosu, który należy do pliku, nie do wiersza.
-        if let Some(first) = complaint
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
+        // Jedna linia, nie cały potok: to jest zdanie na ekran, a nie dziennik. Dla nieznanej
+        // skargi pierwsza niepusta linia odpowiada na pytanie „dlaczego" w praktycznie każdym
+        // realnym przypadku; znany powód z dalszej linii jest wyjątkiem opisanym w rdzeniu.
+        if let Some(reason) = what_the_complaint_means(complaint)
+            .map(str::to_owned)
+            .or_else(|| {
+                complaint
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(first_line)
+            })
         {
             why.push(' ');
-            why.push_str(&first_line(first));
+            why.push_str(&reason);
         }
 
         Some(AgentEvent::Finished(Outcome {
@@ -2502,6 +2508,9 @@ async fn talk(
 /// Pierwsza linia stderr jest tą, która mówi, co się stało („command not found", „not logged
 /// in", „permission denied"); ostatnia jest zwykle ogonem śladu stosu. Bufor bez limitu byłby
 /// za to trzecim miejscem, w którym gadatliwy agent może zjeść pamięć okna.
+///
+/// 2026-09-09 — znany powód z dalszej linii jest jedynym wyjątkiem: `shell-init` potrafi
+/// poprzedzić prawdziwą informację o logowaniu. Pierwsza linia nadal wygrywa dla nieznanej skargi.
 const COMPLAINT_KEPT: usize = 4 * 1024;
 
 /// Początek skargi razem z odpowiedzią na pytanie „czy to wszystko".

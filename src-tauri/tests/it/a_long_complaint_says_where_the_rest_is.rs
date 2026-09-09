@@ -65,7 +65,7 @@ const CUT: &str = "only the first";
 const FIRST_COMPLAINT: &str = "the agent is unhappy about something 0";
 
 /// Cała skarga agenta, który mieści się w limicie.
-const SHORT_COMPLAINT: &str = "not logged in";
+const SHORT_COMPLAINT: &str = "the agent stopped speaking";
 
 /// Atrapa `claude`, która wypisuje na strumień skarg ~180 KB — trzy razy pojemność potoku.
 ///
@@ -99,7 +99,7 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 
-printf 'not logged in\n' >&2
+printf 'the agent stopped speaking\n' >&2
 IFS= read -r envelope
 exit 3
 "#;
