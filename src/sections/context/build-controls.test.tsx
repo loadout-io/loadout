@@ -1,7 +1,14 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ContextBuild, ContextRevision } from '../../state/context';
+import { whatIsNextForTheSet } from '../../state/context';
+import type {
+  ContextApp,
+  ContextBuild,
+  ContextDraft,
+  ContextRevision,
+  ContextSet,
+} from '../../state/context';
 import BuildControls from './build-controls';
 import ContextOverview from './overview';
 
@@ -27,11 +34,15 @@ const RUNNING: ContextBuild = {
   changedAt: '2026-09-08T10:00:01Z',
 };
 
-function markup(build: ContextBuild | null, hasVersion = false): string {
+function markup(
+  build: ContextBuild | null,
+  hasVersion = false,
+  app: ContextApp = 'claude-code',
+): string {
   return renderToStaticMarkup(
     <BuildControls
       build={build}
-      app="claude-code"
+      app={app}
       model=""
       claudeCode={{ state: 'found', version: '2.1.263' }}
       codex={{ state: 'not-found' }}
@@ -55,17 +66,72 @@ describe('context build controls', () => {
     expect(html).toMatch(/<input(?=[^>]*value="codex")(?=[^>]*disabled="")[^>]*>/);
   });
 
-  it('has exactly one main action for the first build, a live build, and a later build', () => {
+  it('says try again after a build that produced nothing, and rebuild only when there is a version', () => {
     const cases = [
       [markup(null), 'Build context'],
       [markup(RUNNING), 'Stop'],
-      [markup({ ...RUNNING, end: 'failed' }), 'Rebuild context'],
+      [markup({ ...RUNNING, end: 'failed' }), 'Try building again'],
+      [markup({ ...RUNNING, end: 'cancelled' }), 'Try building again'],
+      [markup({ ...RUNNING, end: 'ready' }, true), 'Rebuild context'],
       [markup(null, true), 'Rebuild context'],
     ] as const;
     for (const [html, label] of cases) {
       expect(html.match(/data-build-action/g)).toHaveLength(1);
       expect(html).toContain(`>${label}</button>`);
     }
+  });
+
+  it('shows a valid model example for either app while an empty value keeps its meaning', () => {
+    expect(markup(null)).toMatch(
+      /<input(?=[^>]*id="context-build-model")(?=[^>]*placeholder="sonnet")[^>]*>/,
+    );
+    expect(markup(null, false, 'codex')).toMatch(
+      /<input(?=[^>]*id="context-build-model")(?=[^>]*placeholder="gpt-5\.6-sol")[^>]*>/,
+    );
+    expect(markup(null)).toContain('Model (empty means this app&#x27;s own model)');
+  });
+
+  it('says what comes next for an empty draft, material, and a ready version', () => {
+    const set: ContextSet = {
+      schema: 1,
+      id: 'set-1',
+      title: 'Checkout',
+      description: '',
+      archived: false,
+      draftRevision: 2,
+      latestReadyRevision: null,
+      createdAt: '2026-09-08T10:00:00Z',
+      changedAt: '2026-09-08T10:00:00Z',
+    };
+    const draft: ContextDraft = {
+      schema: 1,
+      sources: [],
+      excluded: [],
+      howToPrepare: '',
+      requirements: [],
+    };
+    const withMaterial: ContextDraft = {
+      ...draft,
+      sources: [
+        {
+          id: 'typed',
+          kind: 'text',
+          name: 'Typed material',
+          description: '',
+          text: 'Keep the total visible.',
+        },
+      ],
+    };
+
+    expect(whatIsNextForTheSet(set, draft)).toBe(
+      'Add material to this set before it can be built.',
+    );
+    expect(whatIsNextForTheSet(set, withMaterial)).toBe(
+      'Build this context before adding it to a workflow.',
+    );
+    expect(whatIsNextForTheSet({ ...set, latestReadyRevision: 'revision-1' }, withMaterial)).toBe(
+      'This context is built, so a workflow step can add it.',
+    );
   });
 
   it('renders saved progress and every source outcome', () => {

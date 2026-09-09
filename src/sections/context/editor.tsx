@@ -28,6 +28,7 @@ import type {
   RevisionEdit,
   SourcePart,
 } from '../../state/context';
+import { whatIsNextForTheSet } from '../../state/context';
 import type { AgentAppStatus } from '../../state/agent-apps';
 import BuildControls from './build-controls';
 import ContextOverview from './overview';
@@ -206,6 +207,9 @@ export default function ContextEditor({
             tytułem tego ekranu jest `Context` w pasku nagłówka (niezmiennik 13). */}
         <h2 className="text-heading text-ink">{title === '' ? open.set.title : title}</h2>
       </div>
+      <p data-set-next className="lead">
+        {whatIsNextForTheSet(open.set, open.draft)}
+      </p>
 
       {/* DWIE ZAKŁADKI Z PLAN §12. `aria-pressed` mówi czytnikowi ekranu, która jest wybrana —
           drugi napis o tym samym byłby drugim miejscem na jeden fakt. */}
@@ -429,9 +433,6 @@ export default function ContextEditor({
               <span aria-hidden className="mark">
                 ◇
               </span>
-              <p data-nothing-built className="text-ink">
-                Nothing has been prepared from this material yet.
-              </p>
               <p className="lead max-w-160">
                 Everything you write under Sources is kept exactly as you wrote it, and stays yours
                 to edit.

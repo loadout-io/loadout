@@ -33,9 +33,11 @@ export default function BuildControls({
   const stopping = build?.end === 'running' || build?.end === 'stillRunning';
   const action = stopping
     ? 'Stop'
-    : hasVersion || build !== null
+    : hasVersion
       ? 'Rebuild context'
-      : 'Build context';
+      : build === null
+        ? 'Build context'
+        : 'Try building again';
 
   return (
     <div data-context-build-controls className="card flex flex-col gap-3">
@@ -62,6 +64,7 @@ export default function BuildControls({
           id="context-build-model"
           className="field"
           value={model}
+          placeholder={app === 'claude-code' ? 'sonnet' : 'gpt-5.6-sol'}
           onChange={(event) => {
             onModel(event.target.value);
           }}

@@ -487,6 +487,16 @@ export function matching<T extends Pick<ContextSet, 'title'>>(
   return sets.filter((set) => set.title.toLowerCase().includes(wanted));
 }
 
+/** Jedno zdanie prowadzące od materiału do wersji, którą można wybrać w workflow.
+ *
+ * 2026-09-09 (UX-3) — środkowe zdanie jest bajt w bajt kopią z `catalog_choice` w
+ * `src-tauri/src/commands/workflow_context.rs`; test okna porównuje oba miejsca. */
+export function whatIsNextForTheSet(set: ContextSet, draft: ContextDraft): string {
+  if (draft.sources.length === 0) return 'Add material to this set before it can be built.';
+  if (set.latestReadyRevision === null) return 'Build this context before adding it to a workflow.';
+  return 'This context is built, so a workflow step can add it.';
+}
+
 /** Pusty szkic — kształt, który dostaje zestaw, zanim człowiek cokolwiek w nim napisze. */
 export function emptyDraft(): ContextDraft {
   return { schema: 1, sources: [], excluded: [], howToPrepare: '', requirements: [] };
