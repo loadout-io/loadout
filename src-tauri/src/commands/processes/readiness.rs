@@ -71,6 +71,23 @@ pub(super) fn resolve_endpoints(
         let host: IpAddr = spec.host.parse().map_err(io::Error::other)?;
         // Bind rezerwuje jedynie KANDYDAT; po spawnie sprawdzamy właściciela
         // listenera ponownie. Wolny port przed startem nie jest readiness.
+        //
+        // 2026-09-09 — NIEROZSTRZYGNIĘTE OKNO, opisane tu, bo tu się zaczyna. `ports` wyżej
+        // bierze porty z REJESTRU już zarejestrowanych usług, a usługa trafia do rejestru
+        // dopiero PO spawnie; rezerwujący listener jest przy tym puszczany kilka linii niżej.
+        // Dwie usługi startujące równolegle mają więc chwilę, w której druga nie widzi portu
+        // wybranego przez pierwszą.
+        //
+        // Objaw, zaobserwowany RAZ w pełnej suicie:
+        // `two_copies_receive_different_automatically_allocated_endpoints` skończył się jednym
+        // konsumentem jako `dependency-skipped`. Po dwóch naprawionych przyczynach flaka ten
+        // moduł pada 1 na 10 w izolacji.
+        //
+        // TO JEST HIPOTEZA, NIE ROZPOZNANIE. Nie udało się jej odtworzyć: 12 przebiegów samego
+        // testu i 8 pod sztucznym ruchem na portach dały zero czerwieni — sztuczny ruch nie
+        // odtwarza dwóch RÓWNOCZESNYCH przydziałów wewnątrz tej aplikacji. Dlatego kod zostaje
+        // nietknięty; zmiana rezerwacji na podstawie niepotwierdzonej teorii mogłaby zamienić
+        // rzadki wyścig na częstą regresję.
         let mut reserved = None;
         for _ in 0..32 {
             let listener =
