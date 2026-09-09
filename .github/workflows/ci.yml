@@ -177,6 +177,11 @@ jobs:
         with:
           node-version: '24'
 
+      # 2026-09-09: guard słownictwa uruchamia parser TypeScript. Sam setup-node
+      # zostawiał czysty runner z "Cannot find module 'typescript'" także po zdjęciu naruszenia.
+      - name: Install JS dependencies for the guards
+        run: npm ci
+
       - name: Run the guards lane
         run: bash scripts/ci.sh guards
 
