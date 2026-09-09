@@ -430,11 +430,7 @@ fn an_answer_the_real_agent_wraps_in_a_code_fence_is_read_but_prose_is_still_ref
         format!("```\n{inside}\n```"),
         format!("  ```json\n{inside}\n```  \n"),
     ] {
-        let found = findings::read_findings(wrapped.as_bytes(), &allowed);
-        let found = match found {
-            Ok(found) => found,
-            Err(why) => panic!("a fenced answer was refused: {why}\n{wrapped}"),
-        };
+        let found = findings::read_findings(wrapped.as_bytes(), &allowed)?;
         assert_eq!(
             found.findings.len(),
             1,
