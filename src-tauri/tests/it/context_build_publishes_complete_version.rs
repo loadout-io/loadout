@@ -401,7 +401,7 @@ async fn a_half_published_version_does_not_take_the_ready_one() -> Result<(), Bo
     Ok(())
 }
 
-/// ZMIERZONE NA ŻYWYM CLI, 2026-09-09: `claude 2.1.266` (sonnet) owinął odpowiedź w ```json
+/// ZMIERZONE NA ŻYWYM CLI, 2026-09-09: `claude 2.1.266` (sonnet) owinął odpowiedź w blok kodu JSON
 /// w OŚMIU turach z ośmiu — cztery pierwsze podejścia i cztery korekty formatu. Wcześniej
 /// `read_findings` wołało `serde_json` na surowych bajtach, więc budowanie kontekstu padało
 /// na prawdziwym vendorze z „expected value at line 1 column 1", a jedyna korekta formatu

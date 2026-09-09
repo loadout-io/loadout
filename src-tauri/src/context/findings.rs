@@ -137,7 +137,7 @@ impl std::error::Error for NotFindings {}
 /// Zdejmuje płot markdownu, w który prawdziwy agent owija kontrakt.
 ///
 /// 2026-09-09 — ZMIERZONE, NIE ZAŁOŻONE: `claude 2.1.266` (sonnet) oddał odpowiedź w bloku
-/// ```json w OŚMIU turach z ośmiu. Wcześniej szło to prosto do `serde_json`, więc budowanie
+/// kodu JSON w OŚMIU turach z ośmiu. Wcześniej szło to prosto do `serde_json`, więc budowanie
 /// kontekstu padało na żywym CLI zdaniem „expected value at line 1 column 1", a jedyna korekta
 /// formatu niczego nie ratowała: model uważa opłotkowany blok za poprawny JSON i oddaje ten sam
 /// kształt drugi raz. Wyłapała to dopiero żywa wyrocznia — 415 plików testów z atrapami
