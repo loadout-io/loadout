@@ -170,7 +170,7 @@ describe('Plan in the real workflow editor', () => {
         steps: [{ id: 'planner', plan: { mode: 'create' } }],
       });
       await expect
-        .poll(() => app.page.locator('[data-more-settings] > summary').innerText())
+        .poll(() => app.page.locator('[data-row="plan"]').innerText())
         .toContain('Plan: Create');
 
       await app.page.getByRole('button', { name: 'All workflows', exact: true }).click();
@@ -222,7 +222,7 @@ describe('Plan in the real workflow editor', () => {
         .poll(() => app.page.locator('[data-row="plan"]').innerText(), { timeout: APPEARS })
         .toContain('Inherited from Planner.');
       await expect
-        .poll(() => app.page.locator('[data-more-settings] > summary').innerText())
+        .poll(() => app.page.locator('[data-row="plan"]').innerText())
         .toContain('Plan: Use');
     } finally {
       await app.close();

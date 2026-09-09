@@ -9,13 +9,18 @@
  * ósmej" i był o sześć bloków nieaktualny, bo bloki przyrastały po jednym, a każdy z osobna
  * był do obrony.
  *
+ * 2026-09-09 — właściciel wyniósł Context i Plan na wierzch, a Where it works i How many at
+ * once schował. PIĄTKA ZOSTAŁA PIĄTKĄ: to budżet gęstości, nie przypadkowo zamrożona lista.
+ * Zmiana tego, które pięć wierszy go zużywa, nie rozluźnia zmierzonego sufitu ani nie zaprasza
+ * szóstej rzeczy na ten poziom.
+ *
  * # Czego to kryterium pilnuje
  *
  * 1. **Pięciu rzeczy w widoku**, w tej kolejności. To jest odpowiedź na pytanie „co ten krok
- *    robi": kto, co, gdzie, ile naraz. Szósta rzecz na tym poziomie jest tą samą ścianą, tylko
- *    o jeden dzień późniejszą.
+ *    robi" i jakie ma wejścia: kto, nazwa, co, Context, Plan. Szósta rzecz na tym poziomie jest
+ *    tą samą ścianą, tylko o jeden dzień późniejszą.
  * 2. **Reszta ISTNIEJE.** Kryterium liczące same etykiety przeszłoby dla implementacji, która
- *    osiem wierszy po prostu skasowała — a każdy z nich niesie wartość, którą krok naprawdę
+ *    pozostałe wiersze po prostu skasowała — a każdy z nich niesie wartość, którą krok naprawdę
  *    ma. Dlatego druga połowa pyta o to, czy stoją w ujawnieniu.
  * 3. **Ujawnienie jest ZAMKNIĘTE.** Otwarte od początku nie chowa niczego; przechodziłoby
  *    obie asercje wyżej i nie zmieniało ani jednego piksela pierwszego wrażenia.
@@ -33,18 +38,21 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
 import type { Agent } from '../../../state/agents';
-import type { AgentStep, Overrides } from '../../../state/workflows';
+import type { WorkflowContextView } from '../../../state/context';
+import type { AgentStep, Overrides, WorkflowPlanView } from '../../../state/workflows';
 import { PanelForStep } from './panel';
 
 /** Pięć rzeczy, które zostają w widoku — kontrakt tego kryterium, wpisany ręcznie. */
-const IN_VIEW = ['Name', 'Who does this', 'What to do', 'Where it works', 'How many at once'];
+const IN_VIEW = ['Who does this', 'Name', 'What to do', 'Context', 'Plan'];
 
 /** I te same pięć, po znacznikach wierszy, żeby kolejność nie zależała od brzmienia. */
-const IN_VIEW_ROWS = ['name', 'who-does-this', 'what-to-do', 'where', 'how-many-at-once'];
+const IN_VIEW_ROWS = ['who-does-this', 'name', 'what-to-do', 'context', 'plan'];
 
-/** Osiem rzeczy, które chowają się za ujawnieniem — wszystkie z działającą wartością
+/** Dziesięć rzeczy, które chowają się za ujawnieniem — wszystkie z działającą wartością
  * dziedziczoną z agenta. */
 const FOLDED_AWAY = [
+  'Where it works',
+  'How many at once',
   'Can it change files',
   'Give up after',
   'Write results to',
@@ -76,7 +84,10 @@ function jarvis(): Agent {
   };
 }
 
-function step(overrides: Overrides): AgentStep {
+function step(
+  overrides: Overrides,
+  fields: Partial<Pick<AgentStep, 'context' | 'plan'>> = {},
+): AgentStep {
   return {
     kind: 'agent',
     id: 's_build',
@@ -92,6 +103,7 @@ function step(overrides: Overrides): AgentStep {
        odpowiedział, czego ten folder może użyczyć. */
     borrow: { skills: ['code-review'] },
     at: { x: 24, y: 24 },
+    ...fields,
   };
 }
 
@@ -99,12 +111,20 @@ function noop(): void {
   /* panel sterowany: statyczny render nic z tego nie woła */
 }
 
-function markup(overrides: Overrides = {}, wayBack: number | null = 3): string {
+function markup(
+  overrides: Overrides = {},
+  wayBack: number | null = 3,
+  fields: Partial<Pick<AgentStep, 'context' | 'plan'>> = {},
+  context: WorkflowContextView | null = null,
+  plan: WorkflowPlanView | null = null,
+): string {
   return renderToStaticMarkup(
     <PanelForStep
-      step={step(overrides)}
+      step={step(overrides, fields)}
       agents={[jarvis()]}
       skills={['code-review', 'deep-research']}
+      context={context}
+      plan={plan}
       onChooseAgent={noop}
       onCreateAgent={noop}
       onEdit={noop}
@@ -177,14 +197,73 @@ function rows(html: string): string[] {
 }
 
 /** Napis, który niesie zwinięte ujawnienie panelu — czyli to jedno zdanie, które zostaje
- * z ośmiu wierszy. */
+ * z dziesięciu wierszy. */
 function saysWhenShut(html: string): string {
-  const hit = /<summary\b[^>]*>([\s\S]*?)<\/summary>/.exec(html);
+  const hit =
+    /<details\b(?=[^>]*\bdata-more-settings(?:=""|\b))[^>]*>\s*<summary\b[^>]*>([\s\S]*?)<\/summary>/.exec(
+      html,
+    );
   return (hit?.[1] ?? '').replace(/<[^>]*>/g, '').trim();
 }
 
+function contextWithTwoSets(): WorkflowContextView {
+  return {
+    catalog: [],
+    workflow: [],
+    steps: [
+      {
+        stepId: 's_build',
+        sets: [
+          {
+            id: 'rules',
+            title: 'Project rules',
+            revision: 'r1',
+            selectedTopics: 'all',
+            topics: [],
+            source: 'workflow',
+            update: null,
+            said: null,
+          },
+          {
+            id: 'brief',
+            title: 'Feature brief',
+            revision: 'r2',
+            selectedTopics: 'all',
+            topics: [],
+            source: 'step',
+            update: null,
+            said: null,
+          },
+        ],
+        omitted: [],
+        inheritsWorkflow: true,
+        protectedScope: false,
+        said: null,
+      },
+    ],
+    warnings: [],
+  };
+}
+
+function planView(mode: 'create' | 'use', inherited = false): WorkflowPlanView {
+  return {
+    steps: [
+      {
+        stepId: 's_build',
+        mode,
+        source: inherited
+          ? { stepId: 's_plan', name: 'Planner', said: 'Inherited from Planner.' }
+          : null,
+        earlier: [],
+        said: null,
+      },
+    ],
+    warnings: [],
+  };
+}
+
 describe('the panel of an agent step answers what the step does, and folds the rest away', () => {
-  it('keeps five things in view, in the order that answers the question', () => {
+  it('opens with who, name, what to do, Context and Plan — and nothing else', () => {
     const { inView } = cut(markup());
 
     expect(
@@ -196,11 +275,11 @@ describe('the panel of an agent step answers what the step does, and folds the r
     expect(
       rows(inView),
       'the five in view are not the five that answer the question, or they stand in an order ' +
-        'that does not: who does it, what it does, where, how many at once',
+        'that does not: who does it, its name, what it does, Context, Plan',
     ).toEqual(IN_VIEW_ROWS);
   });
 
-  it('still carries every one of the eight it folded away', () => {
+  it('still carries every one of the ten it folded away', () => {
     const { inView, folded } = cut(markup());
 
     for (const thing of FOLDED_AWAY) {
@@ -218,7 +297,8 @@ describe('the panel of an agent step answers what the step does, and folds the r
   });
 
   it('starts shut, or it folded nothing away', () => {
-    const opening = /<details\b[^>]*>/.exec(markup())?.[0] ?? '';
+    const opening =
+      /<details\b(?=[^>]*\bdata-more-settings(?:=""|\b))[^>]*>/.exec(markup())?.[0] ?? '';
 
     expect(opening, 'the panel has no fold at all').not.toBe('');
     expect(
@@ -229,19 +309,40 @@ describe('the panel of an agent step answers what the step does, and folds the r
   });
 
   it('says how many things are inside, counted off the panel and not written down', () => {
-    const html = markup();
-    const { folded } = cut(html);
-    const inside = rows(folded).length;
+    for (const wayBack of [3, null]) {
+      const html = markup({}, wayBack);
+      const { folded } = cut(html);
+      const inside = rows(folded).length;
 
-    expect(
-      inside,
-      'nothing at all is behind the fold, so the sentence below would be counting air',
-    ).toBeGreaterThan(0);
-    expect(
-      saysWhenShut(html),
-      'the shut fold does not name how many things it holds. A person who cannot see the count ' +
-        'has no way to tell an empty fold from one holding eight settings they inherited',
-    ).toBe(String(inside) + ' more settings');
+      expect(
+        inside,
+        'nothing at all is behind the fold, so the sentence below would be counting air',
+      ).toBeGreaterThan(0);
+      expect(
+        saysWhenShut(html),
+        'the shut fold does not name how many things it holds. A person who cannot see the count ' +
+          'has no way to tell an empty fold from one holding settings they inherited',
+      ).toBe(String(inside) + ' more settings');
+    }
+  });
+
+  it('shows the Context state while its picker stays folded away', () => {
+    const none = cut(markup());
+    const selected = cut(markup({}, 3, {}, contextWithTwoSets()));
+
+    expect(none.inView).toContain('No context');
+    expect(selected.inView).toContain('2 selected');
+    expect(selected.inView).not.toContain('Choose context');
+    expect(selected.folded).toContain('Choose context');
+  });
+
+  it('shows both explicit and inherited Plan modes where the person can see them', () => {
+    const create = cut(markup({}, 3, { plan: { mode: 'create' } }, null, planView('create')));
+    const inherited = cut(markup({}, 3, {}, null, planView('use', true)));
+
+    expect(create.inView).toContain('Plan: Create');
+    expect(inherited.inView).toContain('Plan: Use');
+    expect(inherited.inView).toContain('Inherited from Planner.');
   });
 
   it('also says how many of them differ from the agent, and says nothing when none do', () => {

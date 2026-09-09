@@ -122,6 +122,7 @@ async function openPanel(app: RunningApp): Promise<void> {
   await app.page.locator(LIST_TILE).first().click();
   await app.page.locator(STEP).click();
   await app.page.locator(PANEL).waitFor({ state: 'visible', timeout: APPEARS });
+  await app.page.locator(`${PANEL} [data-more-settings] > summary`).click();
 }
 
 async function assertExactlyOneChoice(app: RunningApp, expected: Use): Promise<void> {

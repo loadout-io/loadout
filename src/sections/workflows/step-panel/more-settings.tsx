@@ -25,8 +25,6 @@ export interface MoreSettingsProps {
   inside: number;
   /** Ile z nich różni się od agenta. Zero nie ma prawa być napisane. */
   changed: number;
-  /** Nie-Off jest jednym faktem widocznym także przy zwiniętej liście. */
-  plan?: string | undefined;
   children: ReactNode;
 }
 
@@ -35,18 +33,20 @@ export interface MoreSettingsProps {
  * Osobne i eksportowane, bo jest jedyną rzeczą, którą to ujawnienie mówi, kiedy jest zamknięte —
  * a wtedy jest zamknięte przy każdym pierwszym otwarciu panelu. „0 changed" nie powstaje: zdanie
  * o tym, że nic się nie zmieniło, stałoby przy każdym nietkniętym kroku w całym workflow. */
-export function moreSettingsSays(inside: number, changed: number, plan?: string): string {
+export function moreSettingsSays(inside: number, changed: number): string {
   const things = `${String(inside)} more setting${inside === 1 ? '' : 's'}`;
-  const edits = changed === 0 ? things : `${things}, ${String(changed)} changed`;
-  return plan === undefined ? edits : `${edits}, Plan: ${plan}`;
+  return changed === 0 ? things : `${things}, ${String(changed)} changed`;
 }
 
-export function MoreSettings({ inside, changed, plan, children }: MoreSettingsProps): ReactElement {
+export function MoreSettings({ inside, changed, children }: MoreSettingsProps): ReactElement {
   return (
     <details data-more-settings className="rounded-md border border-line p-2">
       {/* `.label` niesie stopień i barwę drugoplanową; kursor mówi, że to jest do kliknięcia,
-          bo `<summary>` sam z siebie zostaje strzałką z tekstem. */}
-      <summary className="label cursor-pointer">{moreSettingsSays(inside, changed, plan)}</summary>
+          bo `<summary>` sam z siebie zostaje strzałką z tekstem.
+
+          2026-09-09 — Plan wyszedł na wierzch, więc jego tryb nie może wisieć także na
+          uchwycie cudzej pokrywy: jeden fakt miałby dwa żywe miejsca (niezmiennik 13). */}
+      <summary className="label cursor-pointer">{moreSettingsSays(inside, changed)}</summary>
       <div className="stack pt-2" data-gap="3">
         {children}
       </div>

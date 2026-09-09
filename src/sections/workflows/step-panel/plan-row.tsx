@@ -1,4 +1,7 @@
-/* WP-02: Plan jest jednym zwijanym wierszem dodatkowych ustawień, opartym na resolverze Rusta.
+/* WP-02: Plan jest jednym wierszem opartym na resolverze Rusta, z wyborem za ujawnieniem.
+ *
+ * 2026-09-09 — tryb stoi nad pickerem, bo właściciel wyniósł stan Plan na wierzch panelu;
+ * człowiek ma go widzieć bez otwierania ani głównej pokrywy, ani samego pickera.
  *
  * 2026-09-08 — ten komponent pokazuje nazwę źródłowego kroku, nigdy przewidywany numer wersji.
  * Numer istnieje dopiero po publikacji; pokazany wcześniej byłby wiarygodnie wyglądającą fikcją. */
@@ -70,6 +73,7 @@ export function PlanRow({ value, view, refusal, onChoose }: PlanRowProps): React
   return (
     <div data-row="plan" className="stack">
       <span className="label">Plan</span>
+      <span className="lead">Plan: {label}</span>
       {view?.source === null || view?.source === undefined ? null : (
         <p className="lead">{view.source.said}</p>
       )}

@@ -442,7 +442,11 @@ export function ContextRow({
   return (
     <div data-row="context" className="stack">
       <span className="label">Context</span>
-      {chosen.length === 0 ? <span className="lead">No context</span> : null}
+      {/* 2026-09-09 — stan stoi przed pickerem, bo Context jest teraz jednym z pięciu faktów
+          widocznych bez otwierania ustawień; same wybory nadal należą do ujawnienia niżej. */}
+      <span className="lead">
+        {chosen.length === 0 ? 'No context' : `${String(chosen.length)} selected`}
+      </span>
       {chosen.map((set) => (
         <div key={set.id} className="stack rounded-sm border border-line p-2" data-gap="2">
           <div className="flex items-baseline justify-between gap-2">

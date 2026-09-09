@@ -1,14 +1,13 @@
 /* Panel kroku po prawej — PIĘĆ rzeczy w widoku, reszta za jedną linią.
  *
  * Pięć etykiet, w tej kolejności, i ani jednej szóstej:
- *   Name · Who does this · What to do · Where it works · How many at once
+ *   Who does this · Name · What to do · Context · Plan
  *
- * To jest odpowiedź na pytanie „co ten krok robi": kto, co, gdzie i ile naraz. Wszystko poza
- * tą piątką ma działającą wartość domyślną albo dziedziczoną z agenta, więc stoi za ujawnieniem
- * (`./more-settings.tsx`) i jest tam wymienione co do sztuki:
- *   Can it change files · Give up after · Write results to · Try again up to ·
- *   If this step does not pass · Takes the heavy seat · What it hands over · Skills ·
- *   Borrow from this project · Context
+ * 2026-09-09 — właściciel wyniósł Context i Plan, bo ich stan musi być widoczny bez szukania,
+ * a Where it works i How many at once schował. LICZBA ZOSTAŁA TA SAMA: piątka jest zmierzonym
+ * budżetem gęstości, nie listą raz wybranych tematów. Na wierzchu stoi stan obu nowych wierszy;
+ * ich wybory zostają za własnymi ujawnieniami. Wszystko poza piątką ma działającą wartość
+ * domyślną albo dziedziczoną z agenta, więc stoi za `./more-settings.tsx`.
  *
  * 2026-08-31 — POWÓD, ZMIERZONY. Ten nagłówek mówił „siedem etykiet, w tej kolejności, i ani
  * jednej ósmej" i był o SZEŚĆ bloków nieaktualny. Panel montował 21 kontrolek stałych,
@@ -82,7 +81,6 @@ import type {
   ServeStep,
   SkillChoice,
   Step,
-  StepPlanMode,
   WhenItFails,
   Weight,
   WorkflowPlanView,
@@ -121,25 +119,6 @@ export type AgentStepFields = Partial<
     | 'plan'
   >
 >;
-
-function planSummary(step: AgentStep, resolvedMode: StepPlanMode | undefined): string | undefined {
-  const mode = step.plan?.mode ?? (resolvedMode === 'use' ? 'use' : undefined);
-  switch (mode) {
-    case undefined:
-    case 'off':
-      return undefined;
-    case 'create':
-      return 'Create';
-    case 'update':
-      return 'Update';
-    case 'use':
-      return 'Use';
-    default:
-      // 2026-09-08 (WP-02): plik jest wejściem z dysku, więc przyszła wartość może ominąć
-      // typ TypeScriptu. Nazwanie jej `Off` ukryłoby intencję nowszego dokumentu.
-      return 'Needs attention';
-  }
-}
 
 /** Oba pola punktu kontrolnego. Punkt kontrolny nie dziedziczy niczego, więc to jest całość. */
 export type CheckpointFields = Partial<Pick<CheckpointStep, 'name' | 'question'>>;
@@ -186,8 +165,8 @@ export interface StepPanelProps {
   onEditStep: (fields: AgentStepFields) => void;
   /** `Reset` przy jednym wierszu. */
   onReset: (field: OverridableField) => void;
-  /** 2026-09-09 (WP-08): tryb resolvera, zanim zapis zdąży go zmaterializować. */
-  planMode?: StepPlanMode | undefined;
+  /** Wiersze widoczne zaraz po trzech podstawowych — dziś Context i Plan. */
+  top?: readonly ReactNode[];
   /**
    * Wiersze, które wołający dokłada DO ŚRODKA ujawnienia — te, których ten panel sam nie zna,
    * bo są osobnymi komponentami (przekazanie, Skills, Borrow, liczba rund).
@@ -848,7 +827,7 @@ export function StepPanel({
   onEdit,
   onEditStep,
   onReset,
-  planMode,
+  top,
   more,
 }: StepPanelProps): ReactElement {
   /* Wartości EFEKTYWNE do pokazania i lista zmienionych pól — jedno wywołanie, jeden fakt.
@@ -877,13 +856,12 @@ export function StepPanel({
    * do tego, co stoi w środku: bez nich zmiana `thinking` znikałaby z ekranu — licznik mówiłby
    * „1 changed", a człowiek nie miałby jak zobaczyć CZEGO ani jak to cofnąć. */
   const grey = noRowOfTheirOwn(changed);
+  const visible = top ?? [];
   const brought = more ?? [];
   const apps = (agent.serviceAccess?.length ?? 0) > 0 || changed.includes('serviceAccess');
 
   return (
     <>
-      <NameRow value={step.name} onEditStep={onEditStep} />
-
       <WhoDoesThis
         chosen={step.agent}
         agents={agents}
@@ -892,26 +870,29 @@ export function StepPanel({
         note="This comes from the agent. Changing it here does not change the agent."
       />
 
+      <NameRow value={step.name} onEditStep={onEditStep} />
+
       <WhatToDoRow value={step.instructions} onEditStep={onEditStep} />
 
-      <WhereItWorks
-        group="step-folder"
-        value={step.folder}
-        onChoose={(folder) => {
-          onEditStep({ folder });
-        }}
-      />
-
-      <CopiesRow value={step.copies} onEditStep={onEditStep} />
+      {visible}
 
       {/* WSZYSTKO PONIŻEJ MA DZIAŁAJĄCĄ WARTOŚĆ DOMYŚLNĄ ALBO DZIEDZICZONĄ Z AGENTA, więc krok,
           którego nikt tu nie tknął, biegnie poprawnie. To jest cały warunek, pod którym wolno
           to schować: za pokrywą nie stoi ani jedno pole, które trzeba wypełnić, żeby ruszyć. */}
       <MoreSettings
-        inside={3 + grey.length + brought.length + (apps ? 1 : 0)}
+        inside={5 + grey.length + brought.length + (apps ? 1 : 0)}
         changed={changed.length}
-        plan={planSummary(step, planMode)}
       >
+        <WhereItWorks
+          group="step-folder"
+          value={step.folder}
+          onChoose={(folder) => {
+            onEditStep({ folder });
+          }}
+        />
+
+        <CopiesRow value={step.copies} onEditStep={onEditStep} />
+
         <div data-row="can-it-change-files" className="stack">
           <div className="flex items-baseline gap-2">
             <label htmlFor="step-file-access" className="label">
@@ -1276,7 +1257,7 @@ export function PanelForStep({
   );
 }
 
-interface AgentPanelProps extends Omit<StepPanelProps, 'onEdit' | 'more'> {
+interface AgentPanelProps extends Omit<StepPanelProps, 'onEdit' | 'more' | 'top'> {
   skills: readonly string[];
   context: WorkflowContextView | null;
   contextRefusal: string | null;
@@ -1324,7 +1305,35 @@ function AgentPanel({
   const material = useHostMaterial();
   const borrows = step.borrow ?? {};
 
+  const top: ReactNode[] = [];
   const more: ReactNode[] = [];
+
+  if (contextRowStands()) {
+    top.push(
+      <ContextRow
+        key="context"
+        value={step.context}
+        view={context?.steps.find((one) => one.stepId === step.id) ?? null}
+        catalog={context?.catalog ?? []}
+        refusal={contextRefusal}
+        onChoose={(choice) => {
+          onEditStep({ context: choice });
+        }}
+      />,
+    );
+  }
+
+  top.push(
+    <PlanRow
+      key="plan"
+      value={step.plan}
+      view={plan?.steps.find((one) => one.stepId === step.id) ?? null}
+      refusal={planRefusal}
+      onChoose={(choice) => {
+        onEditStep({ plan: choice });
+      }}
+    />,
+  );
 
   /* Liczba rund powrotu — tylko na kroku, z którego powrót wychodzi. */
   if (wayBack !== null) {
@@ -1388,33 +1397,6 @@ function AgentPanel({
     />,
   );
 
-  if (contextRowStands()) {
-    more.push(
-      <ContextRow
-        key="context"
-        value={step.context}
-        view={context?.steps.find((one) => one.stepId === step.id) ?? null}
-        catalog={context?.catalog ?? []}
-        refusal={contextRefusal}
-        onChoose={(choice) => {
-          onEditStep({ context: choice });
-        }}
-      />,
-    );
-  }
-
-  more.push(
-    <PlanRow
-      key="plan"
-      value={step.plan}
-      view={plan?.steps.find((one) => one.stepId === step.id) ?? null}
-      refusal={planRefusal}
-      onChoose={(choice) => {
-        onEditStep({ plan: choice });
-      }}
-    />,
-  );
-
   /* Wiersza Skills nie ma przy agencie na Codeksie ani przy pustym katalogu umiejętności —
      powód w całości stoi przy `skillsRowStands`. */
   if (skillsRowStands(agent.runsWith, skills)) {
@@ -1461,7 +1443,7 @@ function AgentPanel({
       }}
       onEditStep={onEditStep}
       onReset={onReset}
-      planMode={plan?.steps.find((one) => one.stepId === step.id)?.mode}
+      top={top}
       more={more}
     />
   );
