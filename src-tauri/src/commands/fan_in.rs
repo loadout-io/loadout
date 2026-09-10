@@ -179,11 +179,21 @@ impl MergePlan {
         previous: &BTreeMap<PathBuf, Option<Entry>>,
         consumer: &Path,
         consumer_name: &str,
+        project: &Path,
     ) -> Result<Self, Trouble> {
         // 2026-09-06: reset do nowego wejścia niszczyłby pracę konsumenta, a zapadka po
         // folderze zostawiała w każdej rundzie wynik pierwszej. Pamiętamy tylko importowaną
         // deltę: trzy stany pozwalają odświeżyć wejście bez zgadywania właściciela zmian.
         let current = input_snapshot::inspect(consumer).map_err(Trouble::Reading)?;
+        // Runda też nie sądzi artefaktów builda — ta sama decyzja co w `plan_entries`,
+        // ten sam powód (2026-09-10). Bez tego cache TypeScriptu przewracałby drugą rundę
+        // pętli dokładnie tak, jak przewrócił scalanie.
+        let skip = not_work_in_this_project(
+            project,
+            disagreeing(origin.entries(), &current)
+                .into_iter()
+                .chain(self.changes.iter().map(|one| one.path.clone())),
+        )?;
         let new: BTreeMap<_, _> = self.changes.iter().map(|one| (&one.path, one)).collect();
         let paths: BTreeSet<_> = origin
             .entries()
@@ -195,6 +205,9 @@ impl MergePlan {
         let mut result = current.clone();
         let mut changed = BTreeMap::new();
         for path in paths {
+            if skip.contains(path) {
+                continue;
+            }
             let base = origin.entries().get(path);
             let old = previous.get(path).map_or(base, Option::as_ref);
             let incoming = new.get(path).map_or(base, |one| one.after.as_ref());
@@ -277,27 +290,48 @@ fn digest_of(value: &impl serde::Serialize) -> io::Result<String> {
 }
 
 /// Najpierw wszystkie konflikty, dopiero później [`apply_plan`].
-pub fn plan_frozen(parents: &[Parent<'_>], origin: &InputSnapshot) -> Result<MergePlan, Trouble> {
-    plan_entries(origin.entries(), parents)
+///
+/// `project` jest korzeniem repozytorium, którego reguły ignorowania rozstrzygają, co w tym
+/// drzewie w ogóle jest pracą — patrz [`not_work_in_this_project`].
+pub fn plan_frozen(
+    parents: &[Parent<'_>],
+    origin: &InputSnapshot,
+    project: &Path,
+) -> Result<MergePlan, Trouble> {
+    plan_entries(origin.entries(), parents, project)
 }
 
 fn plan_entries(
     origin: &BTreeMap<PathBuf, Entry>,
     parents: &[Parent<'_>],
+    project: &Path,
 ) -> Result<MergePlan, Trouble> {
     if let Some(trouble) = a_copy_from_another_try(parents) {
         return Err(trouble);
     }
+    // Drzewa wszystkich rodziców naraz, bo zbiór ścieżek spornych musi być znany ZANIM
+    // spytamy o reguły ignorowania — inaczej pytalibyśmy o całe drzewo zamiast o różnice.
+    // Pamięci to nie kosztuje: `sources` i tak trzyma je wszystkie do końca funkcji.
+    let mut trees = Vec::with_capacity(parents.len());
+    for parent in parents {
+        trees.push(input_snapshot::inspect(parent.cwd).map_err(Trouble::Reading)?);
+    }
+    let skip = not_work_in_this_project(
+        project,
+        trees.iter().flat_map(|tree| disagreeing(origin, tree)),
+    )?;
     let mut changed: BTreeMap<PathBuf, Change> = BTreeMap::new();
     let mut sources = Vec::with_capacity(parents.len());
-    for parent in parents {
-        let entries = input_snapshot::inspect(parent.cwd).map_err(Trouble::Reading)?;
+    for (parent, entries) in parents.iter().zip(trees) {
         let paths: BTreeSet<&PathBuf> = origin.keys().chain(entries.keys()).collect();
         for path in paths {
             let before = origin.get(path);
             let after = entries.get(path);
             if before == after {
                 // Niezmieniony rodzic nie głosuje przeciw zmianie drugiego.
+                continue;
+            }
+            if skip.contains(path) {
                 continue;
             }
             match changed.get_mut(path) {
@@ -328,6 +362,43 @@ fn plan_entries(
         changes: changed.into_values().collect(),
         sources,
     })
+}
+
+/// Ścieżki, na których ta kopia nie zgadza się z podstawą porównania.
+fn disagreeing(base: &BTreeMap<PathBuf, Entry>, tree: &BTreeMap<PathBuf, Entry>) -> Vec<PathBuf> {
+    base.keys()
+        .chain(tree.keys())
+        .filter(|path| base.get(*path) != tree.get(*path))
+        .cloned()
+        .collect()
+}
+
+/// Ścieżki, o których niezgodę nie ma po co pytać człowieka, bo projekt sam nazwał je nie-pracą.
+///
+/// 2026-09-10 — INCYDENT, który to zamówił. Bieg „Murmur-1" przepracował 1 h 26 min i osiem
+/// kroków agentowych, wszystkie zielone, po czym scalanie odmówiło startu na
+/// `.angular/cache/22.0.8/meetnotes/.tsbuildinfo`: dwa pasy odpaliły build, każdy zostawił
+/// swój cache kompilacji. Ten plik stoi w `.gitignore` projektu i nie ma ani jednej kopii
+/// w gicie — a mimo to zabrał całą bramkę QA i 32 USD.
+///
+/// Pytamy o IGNOROWANIE, nigdy o „śledzenie". To rozróżnienie jest treścią nagłówka tego
+/// modułu: plik, o którym git jeszcze nie wie, bywa CAŁĄ pracą kroku i musi być porównany;
+/// plik, który projekt kazał gitowi pomijać, nie jest pracą nikogo. Zaszyta lista
+/// `isolate::NOT_COPIED` zostaje tam, gdzie była — ona mówi, czego nie kopiujemy, a to jest
+/// inne pytanie niż „co jest wynikiem kroku".
+fn not_work_in_this_project(
+    project: &Path,
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<BTreeSet<PathBuf>, Trouble> {
+    let candidates: Vec<PathBuf> = paths
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if candidates.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    input_snapshot::ignored_selected_paths(project, &candidates).map_err(Trouble::Reading)
 }
 
 fn conflict(path: &Path, one: &str, other: &str) -> Trouble {

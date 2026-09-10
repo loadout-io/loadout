@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, error::Error, fs, path::PathBuf};
 struct Bench {
     _root: tempfile::TempDir,
     storage: PathBuf,
+    project: PathBuf,
     parent: PathBuf,
     consumer: PathBuf,
     origin: InputSnapshot,
@@ -29,6 +30,7 @@ impl Bench {
         Ok(Self {
             _root: root,
             storage,
+            project,
             parent,
             consumer,
             origin,
@@ -42,6 +44,7 @@ impl Bench {
                 born: None,
             }],
             &self.origin,
+            &self.project,
         )?)
     }
     fn apply(&self, plan: &MergePlan) -> Result<(), Box<dyn Error>> {
@@ -73,7 +76,7 @@ fn a_later_input_updates_parent_files_without_losing_the_consumers_own_work()
     fs::write(b.parent.join("value.txt"), "two")?;
     let refreshed = b
         .plan()?
-        .refresh(&b.origin, &previous, &b.consumer, "Consumer")?;
+        .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)?;
     b.apply(&refreshed)?;
     assert_eq!(fs::read_to_string(b.consumer.join("value.txt"))?, "two");
     assert_eq!(
@@ -93,7 +96,7 @@ fn a_conflicting_own_edit_refuses_before_any_write() -> Result<(), Box<dyn Error
     let before = input_snapshot::inspect(&b.consumer)?;
     let error = b
         .plan()?
-        .refresh(&b.origin, &previous, &b.consumer, "Consumer")
+        .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)
         .err()
         .ok_or("two different edits were silently resolved")?;
     assert!(error.to_string().contains("value.txt"));
@@ -112,7 +115,7 @@ fn returning_to_origin_reverts_a_previous_import_instead_of_keeping_it_forever()
     fs::remove_file(b.parent.join("added.txt"))?;
     let refreshed = b
         .plan()?
-        .refresh(&b.origin, &previous, &b.consumer, "Consumer")?;
+        .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)?;
     b.apply(&refreshed)?;
     assert_eq!(
         fs::read_to_string(b.consumer.join("value.txt"))?,
@@ -133,7 +136,7 @@ fn removing_a_parent_directory_does_not_remove_a_consumers_private_child()
     let before = input_snapshot::inspect(&b.consumer)?;
     assert!(
         b.plan()?
-            .refresh(&b.origin, &previous, &b.consumer, "Consumer")
+            .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)
             .is_err()
     );
     assert_eq!(input_snapshot::inspect(&b.consumer)?, before);
@@ -148,13 +151,13 @@ fn the_same_input_preserves_an_edit_and_equal_new_edits_agree() -> Result<(), Bo
     fs::write(b.consumer.join("value.txt"), "mine")?;
     let same = b
         .plan()?
-        .refresh(&b.origin, &previous, &b.consumer, "Consumer")?;
+        .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)?;
     b.apply(&same)?;
     assert_eq!(fs::read_to_string(b.consumer.join("value.txt"))?, "mine");
     fs::write(b.parent.join("value.txt"), "mine")?;
     let equal = b
         .plan()?
-        .refresh(&b.origin, &previous, &b.consumer, "Consumer")?;
+        .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)?;
     b.apply(&equal)?;
     assert_eq!(fs::read_to_string(b.consumer.join("value.txt"))?, "mine");
     Ok(())
@@ -168,7 +171,7 @@ fn a_consumer_changed_after_planning_refuses_publication() -> Result<(), Box<dyn
     fs::write(b.parent.join("value.txt"), "two")?;
     let refreshed = b
         .plan()?
-        .refresh(&b.origin, &previous, &b.consumer, "Consumer")?;
+        .refresh(&b.origin, &previous, &b.consumer, "Consumer", &b.project)?;
     fs::write(b.consumer.join("value.txt"), "changed during preparation")?;
     assert!(fan_in::stage_plan(&b.consumer, &b.storage, &refreshed).is_err());
     assert_eq!(

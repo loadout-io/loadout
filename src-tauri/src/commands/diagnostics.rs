@@ -613,7 +613,23 @@ fn step_metadata(
 ) -> (NormalizedStepUsage, bool, [usize; 3], [usize; 3]) {
     (
         normalized_step_usage(step),
-        step.not_run_because.is_some(),
+        /* 2026-09-10 — „NIE POBIEGŁ" WYNIKA Z BRAKU PROCESU, NIE Z OBECNOŚCI ZDANIA.
+         *
+         * Do tego dnia stało tu samo `not_run_because.is_some()`. To zdanie powstaje
+         * w `commands::run` WYŁĄCZNIE dla prób powtórzonych (warunek `step.turn > turn`),
+         * więc próba BAZOWA osiadłej pętli nie dostawała żadnego i wychodziła z paragonu
+         * ze swoim surowym `succeeded` przy `executed: false`.
+         *
+         * Zmierzone na biegu „Murmur-1" (2026-09-09, `run.json` właściciela): `s_8` — pierwszy
+         * wiersz bramki QA, ten, który człowiek czyta jako jej wynik — miał
+         * `status = succeeded`, `executed = false`, `not_run_because = null`, podczas gdy jego
+         * powtórki `s_8#1` i `s_8#2` uczciwie meldowały `notRun`. Bramka jakości nie uruchomiła
+         * ani jednego procesu i meldowała sukces (niezmiennik 19: kod wyjścia to nie dowód).
+         *
+         * Zawężone do `succeeded`, bo pozostałe stany bez procesu mówią prawdę same z siebie:
+         * `failed` niesie powód odmowy, `cancelled` niesie decyzję człowieka. Zamiana ich na
+         * „notRun" gubiłaby tę treść. */
+        step.not_run_because.is_some() || (!step.executed && step.status == "succeeded"),
         reference_material_counts(run_dir, step),
         work_plan_counts(run_dir, step),
     )
