@@ -8613,6 +8613,53 @@ fn native_marker_path(run_dir: &Path, cwd: &Path) -> io::Result<Option<PathBuf>>
     Ok(Some(run_dir.join(ISOLATION_MARKERS_DIR).join(relative)))
 }
 
+/// Dopisuje do odmowy scalania ADRES, pod którym praca każdej kopii zostanie.
+///
+/// # 2026-09-10 — zdanie było prawdziwe przez kilkanaście sekund
+///
+/// Odmowa obiecuje: „both of them still have their own copy, so you can open each one". W chwili
+/// jej powstania to prawda — scalanie właśnie te katalogi przeczytało. Zaraz potem bieg się
+/// kończy, [`close_the_trees`] commituje każde izolowane drzewo na jego gałąź i katalog znika.
+/// Człowiek zostaje ze zdaniem, którego nie da się wykonać.
+///
+/// Zmierzone na biegu „Murmur-1" (2026-09-09): scalanie odmówiło o 02:49:47, bieg skończył się
+/// o 02:49:47, a o 02:50 w `work/` nie było już ani jednej kopii. Właściciel poszedł ich szukać
+/// tam, gdzie kazało zdanie, i znalazł pusty katalog.
+///
+/// Gałąź jest adresem trwałym, więc to ona idzie do zdania. Kopia, która gałęzi nie ma, NIE
+/// dostaje wiersza: zmyślony adres jest gorszy niż jego brak (niezmiennik 21 czyta się tu
+/// od drugiej strony — nie obiecuj artefaktu, którego nikt nie znajdzie).
+/// Publiczna, bo zdanie dla człowieka sądzi wyrocznia z `tests/it`, a cała reszta tej ścieżki
+/// wymaga żywego biegu z dublerem vendora (niezmiennik 29 — kryterium stoi na zdaniu).
+#[must_use]
+pub fn and_where_each_copy_is_kept(
+    said: &str,
+    project: &Path,
+    run_dir: &Path,
+    parents: &[fan_in::Parent<'_>],
+) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for parent in parents {
+        let Ok(marker_path) = prove_generated_work_path(project, run_dir, parent.cwd) else {
+            continue;
+        };
+        let Ok(Some(marker)) = read_isolation_marker(&marker_path) else {
+            continue;
+        };
+        if let Some(branch) = marker.branch() {
+            kept.push(format!("\"{}\" on branch {branch}", parent.name));
+        }
+    }
+    if kept.is_empty() {
+        return said.to_owned();
+    }
+    format!(
+        "{said} When this run ends its folders are put away, so open the work on the branch it \
+         was saved to instead: {}.",
+        kept.join(", ")
+    )
+}
+
 fn native_cleanup_needed(run_dir: &Path, cwd: &Path) -> io::Result<bool> {
     let Some(path) = native_marker_path(run_dir, cwd)? else {
         return Ok(false);
@@ -13842,6 +13889,24 @@ impl Live {
         Ok(fan_in::ApplyOutcome::Ready)
     }
 
+    /// Odmowa scalania powiedziana człowiekowi — z adresem każdej kopii, kiedy on istnieje.
+    ///
+    /// Nieudany ODCZYT adresu nie dostaje: tam nie ma dwóch kopii do porównania, więc zdanie
+    /// o gałęziach byłoby odpowiedzią na pytanie, którego nikt nie zadał (2026-09-10).
+    fn and_the_address_of_each_copy(
+        &self,
+        trouble: &fan_in::Trouble,
+        parents: &[fan_in::Parent<'_>],
+    ) -> String {
+        let said = trouble.to_string();
+        match trouble {
+            fan_in::Trouble::Reading(_) => said,
+            fan_in::Trouble::TwoAnswers { .. } | fan_in::Trouble::MixedTries { .. } => {
+                and_where_each_copy_is_kept(&said, &self.plan.project, &self.plan.dir, parents)
+            }
+        }
+    }
+
     /// Znosi pracę rodziców tego kroku do JEDNEJ kopii — tej, w której zaraz stanie sterownik.
     ///
     /// `Ready` dla kroku, który niczego nie składa, i dla przygotowanego bieżącego wejścia;
@@ -13903,8 +13968,8 @@ impl Live {
             .collect();
         self.refuse_mixed_tries(step, &parents)?;
         let _parent_guards = self.stop_the_copies_before_folding(&parents, into)?;
-        let incoming =
-            fan_in::plan_frozen(&parents, snapshot).map_err(|trouble| trouble.to_string())?;
+        let incoming = fan_in::plan_frozen(&parents, snapshot, &self.plan.project)
+            .map_err(|trouble| self.and_the_address_of_each_copy(&trouble, &parents))?;
         let preparation = Self::the_fan_in_preparation(
             into,
             snapshot.id(),
@@ -13930,8 +13995,8 @@ impl Live {
             None => &empty,
         };
         let merge = incoming
-            .refresh(snapshot, previous, into, &step.name)
-            .map_err(|trouble| trouble.to_string())?;
+            .refresh(snapshot, previous, into, &step.name, &self.plan.project)
+            .map_err(|trouble| self.and_the_address_of_each_copy(&trouble, &parents))?;
         let marker = marker.get_or_insert_with(|| IsolationMarker::FileCopy {
             origin_snapshot: Some(snapshot.id().to_owned()),
             fan_in: None,

@@ -36,6 +36,7 @@ use serde_json::{Value, json};
 const RUN: &str = "20260830-000000__run-loop-tries";
 const RAN: &str = "step-that-ran";
 const NOT_NEEDED: &str = "step-that-was-not-needed";
+const REFUSED: &str = "step-that-was-refused";
 const AGENT_SENTENCE: &str = "Not needed: the work already passed in an earlier try.";
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) -> Result<(), Box<dyn Error>> {
@@ -75,6 +76,14 @@ fn seed(active: &Path) -> Result<(), Box<dyn Error>> {
                     "exit_code": null, "turns": null,
                     "started_at": null, "ended_at": null,
                     "summary": AGENT_SENTENCE
+                },
+                {
+                    "id": REFUSED, "node_key": "s_9", "name": "Combine", "agent": "codex",
+                    "depends_on": [], "status": "failed", "attempt": 0,
+                    "executed": false, "process_started": false, "death_proof": false,
+                    "exit_code": null, "turns": null,
+                    "started_at": null, "ended_at": null,
+                    "end_cause": "infrastructure-failed"
                 }
             ]
         }))?,
@@ -106,17 +115,36 @@ fn the_receipt_says_which_succeeded_step_actually_ran() -> Result<(), Box<dyn Er
     let ran = step_of(&document, RAN).ok_or("the step that ran left the receipt")?;
     let idle = step_of(&document, NOT_NEEDED).ok_or("the step that was not needed left it")?;
 
-    // Kontrola przeciw pustej asercji: oba kroki mówią o sobie to samo, więc `state` ich nie
-    // rozróżnia i całe pytanie zależy od pól niżej.
+    /* 2026-09-10 — TA KONTROLA ZMIENIŁA ZNACZENIE, więc należy się powód.
+     *
+     * Do dziś obie asercje wymagały `succeeded` po obu stronach: skoro `state` nie rozróżniał
+     * kroków, to całe rozróżnienie musiało zależeć od `executed` i `processStarted` niżej.
+     * Ten warunek pinował jednak także wadę. Na biegu „Murmur-1" (2026-09-09) `s_8` — pierwszy
+     * wiersz bramki QA — wyszedł z paragonu jako `succeeded`, nie uruchomiwszy ani jednego
+     * procesu, bo zdanie „loop settled at try N" powstaje wyłącznie dla prób POWTÓRZONYCH,
+     * a próba bazowa nie dostaje żadnego. Czytający widział bramkę jakości meldującą sukces.
+     *
+     * Dlatego `state` sam z siebie ma dziś nie kłamać. Kontrola przeciw pustej asercji NIE
+     * znika, tylko przenosi się niżej i robi się ostrzejsza: `executed` musi rozróżnić kroki
+     * niezależnie od `state`, a `REFUSED` dowodzi, że reguła jest WĄSKA — krok bez procesu,
+     * który padł, zachowuje `failed` razem ze swoim powodem, zamiast zostać przemalowany. */
     assert_eq!(
         ran.get("state").and_then(Value::as_str),
         Some("succeeded"),
-        "the scene needs both steps to carry the same state, or it proves nothing"
+        "a step with a transcript, an exit code and a death proof did succeed"
     );
     assert_eq!(
         idle.get("state").and_then(Value::as_str),
-        Some("succeeded"),
-        "the scene needs both steps to carry the same state, or it proves nothing"
+        Some("notRun"),
+        "a step that started no process must not report success: that is the shape this repo \
+         exists to catch (invariant 19)"
+    );
+    let refused = step_of(&document, REFUSED).ok_or("the refused step left the receipt")?;
+    assert_eq!(
+        refused.get("state").and_then(Value::as_str),
+        Some("failed"),
+        "a step that was refused before starting still failed. Repainting it as 'not run' \
+         would throw away the one thing the reader needs"
     );
 
     assert_eq!(

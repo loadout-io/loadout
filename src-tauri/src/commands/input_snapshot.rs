@@ -475,7 +475,17 @@ fn selected_link_is_contained(root: &PublicationRoot, path: &Path) -> io::Result
     Ok(())
 }
 
-fn ignored_selected_paths(project: &Path, paths: &[PathBuf]) -> io::Result<BTreeSet<PathBuf>> {
+/// Które z podanych ścieżek projekt kazał gitowi pomijać.
+///
+/// Pytanie brzmi „czy REGUŁA ignorowania to łapie", a nie „czy git to śledzi". Plik nowy
+/// i nieśledzony bywa całą pracą kroku; plik ignorowany nie jest pracą nikogo. Poza wyborem
+/// wejść czyta to [`super::fan_in`], żeby nie sądzić artefaktów builda (2026-09-10).
+///
+/// Projekt bez repozytorium nie ma reguł, więc oddaje pusty zbiór zamiast błędu.
+pub(super) fn ignored_selected_paths(
+    project: &Path,
+    paths: &[PathBuf],
+) -> io::Result<BTreeSet<PathBuf>> {
     if !isolate::is_a_repo(project) {
         return Ok(BTreeSet::new());
     }
