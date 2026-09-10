@@ -1002,7 +1002,7 @@ impl Bench {
                 .replace("skills: []", &format!("skills: [{SKILL}]")),
         )?;
         let binary = self.root.path().join("codex-exec-fixture");
-        fs::write(&binary, NATIVE_EXEC)?;
+        fs::write(&binary, super::model_catalog_fixture::shell(NATIVE_EXEC))?;
         supervisor::set_executable_file(&std::fs::File::open(&binary)?, true)?;
         Ok(Arc::new(
             loadout_lib::engine::drivers::codex::CodexDriver::with_binary(binary),

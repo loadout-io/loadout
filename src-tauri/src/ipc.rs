@@ -2426,6 +2426,20 @@ pub async fn check_agent_apps(
     Ok(commands::agent_apps::check_agent_apps_inner(&drivers).await)
 }
 
+/// Aktualne modele instalacji CLI, bez promptu ani uruchamiania kroku.
+#[tauri::command]
+pub async fn list_agent_models(
+    state: State<'_, AppState>,
+    vendor: crate::library::agents::Vendor,
+) -> Result<crate::engine::drivers::models::ModelCatalog, String> {
+    let driver = (state.drivers)(vendor);
+    driver
+        .model_catalog()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This app cannot list models. Update it and try again.".to_owned())
+}
+
 /// Nazwa pliku z okna → żądanie biegu, liczone tą samą regułą, którą liczy lista.
 ///
 /// 2026-08-17 — do 2026-08-29 stała tu **druga kopia** `commands::workflows::in_library`,
@@ -5899,6 +5913,7 @@ macro_rules! every_command_the_window_can_call {
             author_skill,
             build_context,
             check_agent_apps,
+            list_agent_models,
             check_trigger,
             check_workflow,
             close_terminal,

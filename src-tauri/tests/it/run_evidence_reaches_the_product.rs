@@ -167,7 +167,7 @@ exit 0
 
 fn executable(dir: &Path, name: &str, body: &str) -> Result<PathBuf, Box<dyn Error>> {
     let path = dir.join(name);
-    fs::write(&path, body)?;
+    fs::write(&path, super::model_catalog_fixture::shell(body))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     Ok(path)
 }

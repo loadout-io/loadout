@@ -273,7 +273,7 @@ describe('the agent form asks seven things, and everything else is behind a name
     ).not.toBeNull();
   });
 
-  it('offers the models it knows and says when the one typed is your own', () => {
+  it('offers a refreshable model list and explains validation before running', () => {
     const known = markupOf(FORGE, { brain: true });
     expect(
       known,
@@ -288,9 +288,9 @@ describe('the agent form asks seven things, and everything else is behind a name
     const typo = markupOf({ ...FORGE, model: 'opus4' }, { brain: true });
     expect(
       plain(typo),
-      'a model nobody named is passed through exactly as typed, and the form says so. Until ' +
-        'this line "opus4" saved without a murmur and fell over in the middle of a run',
-    ).toContain('opus4 is your own');
+      'before a catalog arrives, the form must not promise an arbitrary model will work',
+    ).toContain('Models are checked again before the workflow starts.');
+    expect(typo).toContain('value="opus4"');
   });
 
   it('makes giving up a choice, because ten minutes was a decision wearing a default', () => {

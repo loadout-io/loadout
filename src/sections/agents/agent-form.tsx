@@ -59,6 +59,7 @@ import { missingForSave } from '../../state/agents';
 import { Advanced } from './advanced';
 import { webIsOutOfReach } from './capabilities';
 import { MoreSettings } from './more-settings';
+import { ModelPicker } from '../../ui/model-picker';
 
 export interface AgentFormProps {
   value: Agent;
@@ -103,19 +104,6 @@ const FILE_ACCESS: ReadonlyArray<Choice<FileAccess>> = [
   { value: 'ask-first', label: 'Ask first' },
   { value: 'work-freely', label: 'Work freely' },
 ];
-
-/* Udokumentowane aliasy plus wolny tekst — dlatego `<input list>`, a nie `<select>`. Prawdziwą
- * listę modeli daje CLI (`codex debug models` zwraca katalog z `visibility`, T4 §6.4), a to
- * wchodzi razem ze sterownikami (T-04, T-10). Zaszyte slugi rdzewieją w tygodnie, więc ta lista
- * jest podpowiedzią, a nie zamknięciem: pole przyjmuje każdy napis.
- *
- * ALE MÓWI, ŻE PRZYJĘŁO WŁASNY — 2026-08-31. Do dziś „opus4" zapisywało się bez szemrania
- * i padało dopiero w biegu, w środku pracy, na którą ktoś czekał. Zdanie pod polem nie odbiera
- * możliwości wpisania swojego; mówi tylko, że to jest właśnie swoje. */
-const MODELS: Record<Vendor, readonly string[]> = {
-  'claude-code': ['opus', 'sonnet', 'haiku', 'fable'],
-  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-};
 
 /* WYBÓR, A NIE POLE LICZBOWE — 2026-08-31.
  *
@@ -238,17 +226,6 @@ export function AgentForm({
    * (niezmiennik 13). */
   const missing = missingForSave(value);
   const saveable = missing === null;
-
-  /* Model spoza listy jest DOZWOLONY i o tym się mówi — patrz komentarz przy `MODELS`. */
-  const typedModel = value.model.trim();
-  /* `?? []` — TRZECIA WADA TEJ SAMEJ RODZINY, znaleziona 2026-09-01 przy robieniu zrzutow
-       do README. `MODELS` jest `Record<Vendor, …>`, wiec TypeScript uwaza ten odczyt za pewny —
-       ale `runsWith` przychodzi Z PLIKU NA DYSKU i nie ma obowiazku byc jednym z dwoch vendorow,
-       ktore ta wersja zna. Plik zapisany przez starsza wersje albo poprawiony recznie daje
-       `undefined`, a `.includes` na nim przewracalo CALY ekran Agents — tak samo jak wczesniej
-       zrobily to `instructions` i `model`. Pusta lista mowi tu prawde: nie znamy modeli tego
-       vendora, wiec kazdy wpisany model jest „spoza listy". */
-  const ownModel = typedModel !== '' && !(MODELS[value.runsWith] ?? []).includes(typedModel);
 
   /* Tylko kiedy człowiek o sieć POPROSIŁ: zdanie odbierające coś, czego nikt nie chciał,
    * jest szumem, a szum uczy przewijać wzrokiem każdą uwagę w tym formularzu. */
@@ -385,29 +362,12 @@ export function AgentForm({
               </select>
             </div>
 
-            <div className="stack">
-              <label htmlFor="agent-model" className="label">
-                Model
-              </label>
-              <input
-                id="agent-model"
-                data-field="model"
-                className={FIELD}
-                list="agent-model-choices"
-                value={value.model}
-                onChange={(event) => onChange({ ...value, model: event.target.value })}
-              />
-              <datalist id="agent-model-choices">
-                {MODELS[value.runsWith].map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-              {ownModel ? (
-                <p data-own-model className="lead">
-                  {`${typedModel} is your own — ${appName(value.runsWith)} gets it exactly as typed.`}
-                </p>
-              ) : null}
-            </div>
+            <ModelPicker
+              id="agent-model"
+              vendor={value.runsWith}
+              value={value.model}
+              onChange={(model) => onChange({ ...value, model })}
+            />
 
             <div className="stack">
               <label htmlFor="agent-thinking" className="label">

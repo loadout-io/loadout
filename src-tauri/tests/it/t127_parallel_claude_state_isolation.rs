@@ -344,7 +344,7 @@ fn real_claude_factory(binary: PathBuf, fake_home: &Path, hostile: &Path) -> Dri
 
 fn executable(dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let path = dir.join("fake-claude");
-    fs::write(&path, FAKE_CLAUDE)?;
+    fs::write(&path, super::model_catalog_fixture::shell(FAKE_CLAUDE))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     Ok(path)
 }

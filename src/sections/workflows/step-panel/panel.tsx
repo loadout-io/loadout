@@ -91,6 +91,7 @@ import type { CheckFields } from './check-panel';
 import { CheckPanel } from './check-panel';
 import { CheckpointPanel } from './checkpoint-panel';
 import { MoreSettings } from './more-settings';
+import { ModelPicker } from '../../../ui/model-picker';
 import { PlanRow } from './plan-row';
 import { StepAppPermissions } from './step-app-permissions';
 import { ServePanel } from './serve-panel';
@@ -266,6 +267,7 @@ function agentUses(field: OverridableField, agent: Agent): string {
 /** Etykiety wierszy, które mają własną kontrolkę. Reszta zmienionych ustawień pokazuje się
  * szarym wierszem pod „Who does this" — patrz `noRowOfTheirOwn`. */
 const HAS_A_ROW: readonly OverridableField[] = [
+  'model',
   'fileAccess',
   'giveUpAfterMinutes',
   'writeResultsTo',
@@ -880,9 +882,20 @@ export function StepPanel({
           którego nikt tu nie tknął, biegnie poprawnie. To jest cały warunek, pod którym wolno
           to schować: za pokrywą nie stoi ani jedno pole, które trzeba wypełnić, żeby ruszyć. */}
       <MoreSettings
-        inside={5 + grey.length + brought.length + (apps ? 1 : 0)}
+        inside={6 + grey.length + brought.length + (apps ? 1 : 0)}
         changed={changed.length}
       >
+        <div data-row="model" className="stack">
+          <ModelPicker
+            id="step-model"
+            vendor={effective.runsWith}
+            value={effective.model}
+            onChange={(model) => onEdit({ model })}
+          />
+          {mark('model')}
+          {wasUsing('model')}
+        </div>
+
         <WhereItWorks
           group="step-folder"
           value={step.folder}

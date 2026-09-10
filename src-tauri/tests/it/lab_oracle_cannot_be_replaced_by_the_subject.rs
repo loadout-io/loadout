@@ -112,7 +112,9 @@ print('1 passed' if refused==7 else '0 passed')
         };
         fs::write(
             &cli,
-            format!("#!/bin/sh\n{read}\n{command} >/dev/null\n{reply}\n"),
+            super::model_catalog_fixture::shell(&format!(
+                "#!/bin/sh\n{read}\n{command} >/dev/null\n{reply}\n"
+            )),
         )?;
         loadout_lib::engine::supervisor::set_executable_file(&std::fs::File::open(&cli)?, true)?;
         let driver: Arc<dyn loadout_lib::engine::drivers::AgentDriver> = if vendor == "claude" {
