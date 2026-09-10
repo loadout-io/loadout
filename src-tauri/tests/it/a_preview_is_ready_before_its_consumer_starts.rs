@@ -616,9 +616,9 @@ fn readiness_probe_reads_the_complete_status_across_tcp_fragments() -> Result<()
             write!(stream, "{status}\r\nContent-Length: 0\r\n\r\n")
         });
         let ready = http_ready(port);
-        let served = server.join().map_err(|_| "fixture server panicked")?;
+        let response_result = server.join().map_err(|_| "fixture server panicked")?;
         assert_eq!(ready, expected, "fragmented HTTP status: {status}");
-        served?;
+        response_result?;
     }
     Ok(())
 }
