@@ -10,7 +10,7 @@
  * znaleźć tam, gdzie go widać. Sam zapis zostawiłby go na ekranie agenta z wrażeniem, że nic
  * się nie stało; samo przejście zostawiłoby go w Labie z pustą listą.
  */
-import { useLab } from '../../state/lab';
+import { labForProject } from '../../state/lab';
 import type { Section } from '../../ui/sections';
 import { useSectionStore } from '../../ui/shell/section-store';
 
@@ -19,7 +19,7 @@ export const LAB: Section = 'lab' as Section;
 
 /** Otwarcie porównania nie zamawia tury modelu; kolumny i kryteria wybiera człowiek. */
 export function evaluateWorkflow(id: string, name: string): Promise<void> {
-  const made = useLab.getState().create(name, { kind: 'workflow', id }, '');
+  const made = labForProject().getState().create(name, { kind: 'workflow', id }, '');
   useSectionStore.getState().go(LAB);
   return made;
 }
@@ -37,7 +37,7 @@ export function evaluateWorkflow(id: string, name: string): Promise<void> {
  * się potem, w Labie.
  */
 export function evaluateAgent(id: string, name: string): Promise<void> {
-  const made = useLab.getState().create(name, { kind: 'agent', id }, id);
+  const made = labForProject().getState().create(name, { kind: 'agent', id }, id);
   useSectionStore.getState().go(LAB);
   return made;
 }
@@ -58,15 +58,16 @@ export function evaluateAgent(id: string, name: string): Promise<void> {
  * Labu jest tym samym, co przycisk, który nie robi nic.
  */
 export async function evaluateSkill(name: string): Promise<void> {
-  const lab = useLab.getState();
+  const store = labForProject();
+  const lab = store.getState();
   if (lab.agents.length === 0) await lab.load();
-  const carrier = useLab.getState().agents[0];
+  const carrier = store.getState().agents[0];
   useSectionStore.getState().go(LAB);
   if (carrier === undefined) {
-    useLab.setState({
+    store.setState({
       said: 'A skill does not work on its own. Save an agent first, over in Agents.',
     });
     return;
   }
-  await useLab.getState().create(name, { kind: 'skill', name }, carrier.id);
+  await store.getState().create(name, { kind: 'skill', name }, carrier.id);
 }

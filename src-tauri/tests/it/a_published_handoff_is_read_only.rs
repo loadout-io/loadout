@@ -270,6 +270,7 @@ async fn run_on(
     let seen = Arc::new(Seen::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(tamper, Arc::clone(&seen)),

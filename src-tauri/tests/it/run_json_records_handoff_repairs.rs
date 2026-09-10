@@ -172,6 +172,7 @@ async fn the_run_file_says_what_loadout_had_to_do_with_each_answer() -> Result<(
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(),

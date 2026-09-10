@@ -162,6 +162,7 @@ async fn a_chain_of_three_steps_works_in_one_tree() -> Result<(), Box<dyn Error>
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: &project,
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

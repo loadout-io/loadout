@@ -176,15 +176,24 @@ function captionFor(workflow: string, blocks: readonly Block[], plan: readonly S
  * znaku, a nagłówek bierze ją samą.
  */
 export function stepPhrase(blocks: readonly Block[], plan: readonly Step[]): string {
-  const total = blocks.length;
+  const logical = new Map(plan.map((step) => [step.id, step.tileId || step.id]));
+  const ids = [...new Set(blocks.map((block) => logical.get(block.id) ?? block.id))];
+  const total = ids.length;
   if (total === 0) return '';
 
   const admission = nothingChecksThisPlan(plan) ? NO_CHECKS : '';
-  const running = blocks.filter((block) => block.state === 'now').length;
+  const active = [
+    ...new Set(
+      blocks
+        .filter((block) => block.state === 'now')
+        .map((block) => logical.get(block.id) ?? block.id),
+    ),
+  ];
+  const running = active.length;
   if (running === 1) {
     /* Numer kroku jest jego pozycją w grafie, nie liczbą tych, które się skończyły: przy
      * biegu, który przeskoczył krok, „step 2 of 4" i „drugi blok" muszą być tym samym blokiem. */
-    const at = blocks.findIndex((block) => block.state === 'now') + 1;
+    const at = ids.indexOf(active[0]!) + 1;
     return `step ${at} of ${total}${admission}`;
   }
   if (running > 1) {

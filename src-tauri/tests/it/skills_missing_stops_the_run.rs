@@ -317,6 +317,7 @@ async fn one_run(
     let started = Arc::new(AtomicUsize::new(0));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: counting_drivers(Arc::clone(&started)),

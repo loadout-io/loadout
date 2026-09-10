@@ -331,7 +331,14 @@ async fn a_graph_sent_directly_to_the_ipc_validator_gets_the_same_context_refusa
         )),
     );
 
-    let notes = loadout_lib::ipc::check_workflow(conflict).await;
+    let notes = loadout_lib::ipc::check_workflow_in(
+        tempfile::tempdir()
+            .expect("isolated library")
+            .path()
+            .to_path_buf(),
+        conflict,
+    )
+    .await;
 
     assert!(
         notes.iter().any(|note| note

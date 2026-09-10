@@ -118,7 +118,7 @@ async fn the_final_prompt_keeps_exact_requirements_before_the_short_index()
         &format!("FULL-SOURCE-CONTENT {}", "detail ".repeat(5_000)),
     )?;
     let version = loadout_lib::context::files::folder_of(
-        &loadout_lib::context::files::library_root(bench.home.path()),
+        &loadout_lib::context::files::library_root(&bench.library()),
         &material.set_id,
     )?
     .join("versions")
@@ -242,6 +242,7 @@ async fn an_oversized_requirement_refuses_start_before_the_first_process()
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.library(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers(Arc::clone(&seen), None, None, None),
@@ -327,6 +328,7 @@ async fn nine_sets_after_inheritance_refuse_before_the_first_process() -> Result
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.library(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers(Arc::clone(&seen), None, None, None),

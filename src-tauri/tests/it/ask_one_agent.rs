@@ -403,6 +403,7 @@ impl Bench {
     ) -> Result<Result<RunReport, loadout_lib::commands::RunError>, Box<dyn Error>> {
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store,
             drivers: fake_drivers(Arc::clone(watch), TURN),

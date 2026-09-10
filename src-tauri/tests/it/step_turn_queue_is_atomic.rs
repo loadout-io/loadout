@@ -314,13 +314,13 @@ impl World {
         let project = root.path().canonicalize()?.join("project");
         let home = root.path().canonicalize()?.join("home");
         fs::create_dir_all(project.join(".loadout"))?;
-        fs::create_dir_all(home.join("workflows"))?;
+        fs::create_dir_all(project.join(".loadout/workflows"))?;
         let mut agent = Agent::example();
         if minutes > 0 {
             agent.give_up_after_minutes = minutes;
         }
-        write_agent_file(&home.join("agents"), &agent, None)?;
-        let workflow = home.join("workflows/message.json");
+        write_agent_file(&project.join(".loadout/agents"), &agent, None)?;
+        let workflow = project.join(".loadout/workflows/message.json");
         let mut steps = vec![json!({"kind":"agent","id":"builder","name":"Builder",
             "agent":agent.id,"instructions":"Return a brief result.","overrides":{},
             "folder":{"use":"project"},"at":{"x":0,"y":0}})];

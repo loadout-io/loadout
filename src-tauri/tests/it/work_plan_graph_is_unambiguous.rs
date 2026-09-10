@@ -206,7 +206,14 @@ fn says_all(message: &str, words: &[&str]) -> bool {
 
 #[tokio::test]
 async fn two_unordered_authors_are_named_before_the_run_starts() {
-    let notes = loadout_lib::ipc::check_workflow(two_unordered_authors()).await;
+    let notes = loadout_lib::ipc::check_workflow_in(
+        tempfile::tempdir()
+            .expect("isolated library")
+            .path()
+            .to_path_buf(),
+        two_unordered_authors(),
+    )
+    .await;
 
     assert!(
         notes.iter().any(|note| {
@@ -246,7 +253,14 @@ fn every_unresolved_graph_is_saved_with_a_warning() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn every_unresolved_graph_is_a_named_problem_in_the_window() {
     for broken in broken_graphs() {
-        let notes = loadout_lib::ipc::check_workflow(broken.file).await;
+        let notes = loadout_lib::ipc::check_workflow_in(
+            tempfile::tempdir()
+                .expect("isolated library")
+                .path()
+                .to_path_buf(),
+            broken.file,
+        )
+        .await;
         assert!(
             notes.iter().any(|note| {
                 note.level == Level::Problem && says_all(&note.message, &broken.words)
@@ -424,7 +438,14 @@ async fn an_unknown_plan_mode_is_refused_at_save_window_and_start() -> Result<()
     let save_refusal = save(&file, &path, None)
         .expect_err("an unknown mode was saved")
         .to_string();
-    let notes = loadout_lib::ipc::check_workflow(file.clone()).await;
+    let notes = loadout_lib::ipc::check_workflow_in(
+        tempfile::tempdir()
+            .expect("isolated library")
+            .path()
+            .to_path_buf(),
+        file.clone(),
+    )
+    .await;
     let start_refusal = plan_ready_to_start(&file, &included(&file))
         .expect_err("Start treated an unknown Plan mode as Off");
 

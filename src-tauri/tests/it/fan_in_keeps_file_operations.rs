@@ -416,6 +416,7 @@ async fn run_case(scenario: Scenario, first: &'static str) -> Result<CaseResult,
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: &project,
         store: &store,
         drivers,

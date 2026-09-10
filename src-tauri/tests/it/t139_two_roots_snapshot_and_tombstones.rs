@@ -124,8 +124,7 @@ fn the_noncanonical_snapshot_fixture_is_a_real_readable_note() -> Result<(), Box
 }
 
 #[test]
-fn catalog_is_an_exact_multiset_of_place_and_id_across_both_roots() -> Result<(), Box<dyn StdError>>
-{
+fn project_catalog_excludes_shared_notes_even_when_ids_match() -> Result<(), Box<dyn StdError>> {
     let tree = Tree::new()?;
     seed_note(
         &tree.library,
@@ -160,8 +159,6 @@ fn catalog_is_an_exact_multiset_of_place_and_id_across_both_roots() -> Result<()
     assert_eq!(
         multiset(&actual),
         BTreeMap::from([
-            ((NotePlace::Library, "library-only".to_owned()), 1),
-            ((NotePlace::Library, "same".to_owned()), 1),
             ((NotePlace::Project, "project-only".to_owned()), 1),
             ((NotePlace::Project, "same".to_owned()), 1),
         ])
@@ -866,6 +863,7 @@ async fn run_fixture(
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &tree.home,
+        library: tree.home.clone(),
         project,
         store: &store,
         drivers: fake_drivers(seen, missing, reflection_marker),

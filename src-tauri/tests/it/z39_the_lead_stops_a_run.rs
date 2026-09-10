@@ -306,6 +306,7 @@ async fn a_confirmed_stop_brings_the_run_down_and_names_what_it_stopped()
     let started: Arc<Mutex<Option<GroupId>>> = Arc::new(Mutex::new(None));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers_for(Arc::new(Fake {

@@ -135,6 +135,7 @@ async fn a_saved_agent_a_saved_workflow_and_a_run_that_actually_ran() -> Result<
     let seen = Watched::default();
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: seen.drivers(),

@@ -283,6 +283,7 @@ async fn a_later_try_is_given_the_input_of_the_loop_and_everything_it_already_di
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -379,6 +380,7 @@ async fn a_later_try_of_the_second_loop_still_sees_what_the_first_one_left()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

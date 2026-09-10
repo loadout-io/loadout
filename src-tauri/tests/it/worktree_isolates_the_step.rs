@@ -105,6 +105,7 @@ async fn each_step_works_in_its_own_git_tree() -> Result<(), Box<dyn Error>> {
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

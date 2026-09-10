@@ -1,3 +1,4 @@
+import { activeWorkspace } from '../../state/workspaces';
 import { invoke } from '@tauri-apps/api/core';
 
 /* Krawędź sekcji Lab. Kształty są LUSTREM `src-tauri/src/commands/lab.rs`, pole w pole.
@@ -212,8 +213,9 @@ export function applyFix(
   agent: string,
   instructions: string,
   expectedRevision: string | null,
+  folder: string | null = activeWorkspace()?.folder ?? null,
 ): Promise<string> {
-  return invoke<string>('apply_eval_fix', { agent, instructions, expectedRevision });
+  return invoke<string>('apply_eval_fix', { agent, instructions, expectedRevision, folder });
 }
 
 export function stopProposing(): Promise<void> {

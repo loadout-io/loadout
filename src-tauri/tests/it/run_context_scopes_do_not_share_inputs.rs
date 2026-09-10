@@ -61,6 +61,7 @@ async fn two_contexts_keep_their_task_instructions_and_published_directories_sep
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &library,
+        library: library.clone(),
         project: &project,
         store: &store,
         drivers,
@@ -150,6 +151,7 @@ async fn two_contexts_keep_their_task_instructions_and_published_directories_sep
     }
     let retry_deps = RunDeps {
         home: &library,
+        library: library.clone(),
         project: &project,
         store: &store,
         drivers: deps.drivers.clone(),
@@ -227,6 +229,7 @@ async fn each_context_materializes_its_addressed_saved_input_not_todays_host_fil
         fs::write(project.join("seed.txt"), marker)?;
         let deps = RunDeps {
             home: &library,
+            library: library.clone(),
             project: &project,
             store: &store,
             drivers: drivers.clone(),
@@ -264,6 +267,7 @@ async fn each_context_materializes_its_addressed_saved_input_not_todays_host_fil
     fs::write(&path, serde_json::to_vec(&graph)?)?;
     let deps = RunDeps {
         home: &library,
+        library: library.clone(),
         project: &project,
         store: &store,
         drivers,

@@ -9,3 +9,10 @@
 pub mod agent_generation;
 pub mod agents;
 pub mod definition;
+
+/// 2026-09-10: zawartość projektu nigdy nie korzysta z domyślnej biblioteki
+/// użytkownika. Stare pliki pozostają źródłem jawnego importu.
+#[must_use]
+pub fn project_root(project: &std::path::Path) -> std::path::PathBuf {
+    project.join(".loadout")
+}

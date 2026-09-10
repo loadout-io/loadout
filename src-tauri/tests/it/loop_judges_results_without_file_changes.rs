@@ -478,6 +478,7 @@ async fn run(case: Case) -> Result<Ran, Box<dyn Error>> {
     let control = RunControl::new();
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,

@@ -8,6 +8,7 @@
  * dostać nazwane zdanie po angielsku i zostać odmową, którą magazyn umie pokazać.
  */
 import { invoke } from '@tauri-apps/api/core';
+import { activeWorkspace } from '../../state/workspaces';
 
 import type {
   ContextApp,
@@ -30,171 +31,271 @@ import type {
 } from '../../state/context';
 import { emptyDraft } from '../../state/context';
 
-/** Wszystkie gotowe zestawy tej biblioteki. */
-export async function list(archived: boolean): Promise<ContextSet[]> {
-  const answer = await invoke<unknown>('list_context_sets', { archived });
-  if (!Array.isArray(answer)) {
-    throw new Error('Loadout could not read the context sets you have saved.');
-  }
-  return answer.filter(isSet);
-}
-
-/** Przenosi zestaw między dwiema półkami bez ruszania jego przypięć. */
-export async function archive(setId: string, archived: boolean): Promise<ContextSet> {
-  const answer = await invoke<unknown>('archive_context_set', { id: setId, archived });
-  if (!isSet(answer)) throw new Error('Loadout could not move that context set.');
-  return answer;
-}
-
-/** Pierwszy obrót zwraca pytanie z użyciami, drugi wykonuje tę samą rozstrzygniętą czynność. */
-export async function deleteSet(setId: string, confirmed: boolean): Promise<DeleteContextSet> {
-  const answer = await invoke<unknown>('delete_context_set', {
-    id: setId,
-    confirmed,
-    folder: null,
-  });
-  if (typeof answer !== 'object' || answer === null) {
-    throw new Error('Loadout could not check that context set before deleting it.');
-  }
-  const row = answer as Partial<DeleteContextSet>;
-  if (typeof row.setId !== 'string' || typeof row.said !== 'string') {
-    throw new Error('Loadout could not check that context set before deleting it.');
-  }
+/** Operacja jest przypisana do projektu przez całe życie edytora/budowania. */
+export function forProject(folder: string | null) {
   return {
-    setId: row.setId,
-    title: typeof row.title === 'string' ? row.title : '',
-    uses: Array.isArray(row.uses)
-      ? row.uses.filter((use): use is string => typeof use === 'string')
-      : [],
-    deleted: row.deleted === true,
-    said: row.said,
+    list,
+    archive,
+    deleteSet,
+    read,
+    create,
+    saveDraft,
+    importSources,
+    completePreparation,
+    readSource,
+    removeSource,
+    buildContext,
+    readBuild,
+    stopBuild,
+    saveRevision,
   };
-}
 
-/** Jeden zestaw w całości: manifest, szkic i rewizja, którą okno odda przy zapisie. */
-export async function read(id: string): Promise<ContextSetRead> {
-  return asRead(await invoke<unknown>('read_context_set', { id }), 'open');
-}
-
-/** Nowy zestaw pod nazwą, którą wpisał człowiek. */
-export async function create(title: string): Promise<ContextSetRead> {
-  return asRead(await invoke<unknown>('create_context_set', { title }), 'make');
-}
-
-/**
- * Zapisuje tytuł, opis i szkic — z rewizją, którą to okno przeczytało.
- *
- * Bez `expectedRevision` zapis z okna otwartego pięć minut temu kasuje pracę zapisaną minutę
- * temu i wygląda przy tym na udany. Odmowa wraca gotowym zdaniem z Rusta.
- */
-export async function saveDraft(edit: DraftEdit): Promise<ContextSetRead> {
-  const answer = await invoke<unknown>('save_context_draft', {
-    id: edit.id,
-    title: edit.title,
-    description: edit.description,
-    draft: edit.draft,
-    expectedRevision: edit.expectedRevision,
-  });
-  return asRead(answer, 'save');
-}
-
-/**
- * Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił.
- *
- * Plik jedzie ŚCIEŻKĄ, nie bajtami: okno nie ma po co czytać pliku, którego i tak nie pokaże,
- * a 50 MiB przepchnięte base64 przez granicę byłoby jego kopią w pamięci karty. Bajty jadą tylko
- * ze schowka, bo schowka nie da się otworzyć z Rusta.
- */
-export async function importSources(
-  setId: string,
-  operationId: string,
-  items: ImportItem[],
-  expectedRevision: string | null,
-): Promise<ImportReport> {
-  const answer = await invoke<unknown>('import_context_sources', {
-    setId,
-    operationId,
-    items,
-    expectedRevision,
-  });
-  if (typeof answer !== 'object' || answer === null) {
-    throw new Error('Loadout could not add those files to this context set.');
+  /** Wszystkie gotowe zestawy tej biblioteki. */
+  async function list(archived: boolean): Promise<ContextSet[]> {
+    const answer = await invoke<unknown>('list_context_sets', { folder, archived });
+    if (!Array.isArray(answer)) {
+      throw new Error('Loadout could not read the context sets you have saved.');
+    }
+    return answer.filter(isSet);
   }
-  const row = answer as Partial<ImportReport>;
-  return {
-    operationId: typeof row.operationId === 'string' ? row.operationId : operationId,
-    results: Array.isArray(row.results) ? row.results.filter(isResult) : [],
-    read: asRead(row.read, 'save'),
-  };
+
+  /** Przenosi zestaw między dwiema półkami bez ruszania jego przypięć. */
+  async function archive(setId: string, archived: boolean): Promise<ContextSet> {
+    const answer = await invoke<unknown>('archive_context_set', { folder, id: setId, archived });
+    if (!isSet(answer)) throw new Error('Loadout could not move that context set.');
+    return answer;
+  }
+
+  /** Pierwszy obrót zwraca pytanie z użyciami, drugi wykonuje tę samą rozstrzygniętą czynność. */
+  async function deleteSet(setId: string, confirmed: boolean): Promise<DeleteContextSet> {
+    const answer = await invoke<unknown>('delete_context_set', { folder, id: setId, confirmed });
+    if (typeof answer !== 'object' || answer === null) {
+      throw new Error('Loadout could not check that context set before deleting it.');
+    }
+    const row = answer as Partial<DeleteContextSet>;
+    if (typeof row.setId !== 'string' || typeof row.said !== 'string') {
+      throw new Error('Loadout could not check that context set before deleting it.');
+    }
+    return {
+      setId: row.setId,
+      title: typeof row.title === 'string' ? row.title : '',
+      uses: Array.isArray(row.uses)
+        ? row.uses.filter((use): use is string => typeof use === 'string')
+        : [],
+      deleted: row.deleted === true,
+      said: row.said,
+    };
+  }
+
+  /** Jeden zestaw w całości: manifest, szkic i rewizja, którą okno odda przy zapisie. */
+  async function read(id: string): Promise<ContextSetRead> {
+    return asRead(await invoke<unknown>('read_context_set', { folder, id }), 'open');
+  }
+
+  /** Nowy zestaw pod nazwą, którą wpisał człowiek. */
+  async function create(title: string): Promise<ContextSetRead> {
+    return asRead(await invoke<unknown>('create_context_set', { folder, title }), 'make');
+  }
+
+  /**
+   * Zapisuje tytuł, opis i szkic — z rewizją, którą to okno przeczytało.
+   *
+   * Bez `expectedRevision` zapis z okna otwartego pięć minut temu kasuje pracę zapisaną minutę
+   * temu i wygląda przy tym na udany. Odmowa wraca gotowym zdaniem z Rusta.
+   */
+  async function saveDraft(edit: DraftEdit): Promise<ContextSetRead> {
+    const answer = await invoke<unknown>('save_context_draft', {
+      folder,
+      id: edit.id,
+      title: edit.title,
+      description: edit.description,
+      draft: edit.draft,
+      expectedRevision: edit.expectedRevision,
+    });
+    return asRead(answer, 'save');
+  }
+
+  /**
+   * Kładzie w zestawie wszystko, co człowiek wybrał albo wkleił.
+   *
+   * Plik jedzie ŚCIEŻKĄ, nie bajtami: okno nie ma po co czytać pliku, którego i tak nie pokaże,
+   * a 50 MiB przepchnięte base64 przez granicę byłoby jego kopią w pamięci karty. Bajty jadą tylko
+   * ze schowka, bo schowka nie da się otworzyć z Rusta.
+   */
+  async function importSources(
+    setId: string,
+    operationId: string,
+    items: ImportItem[],
+    expectedRevision: string | null,
+  ): Promise<ImportReport> {
+    const answer = await invoke<unknown>('import_context_sources', {
+      folder,
+      setId,
+      operationId,
+      items,
+      expectedRevision,
+    });
+    if (typeof answer !== 'object' || answer === null) {
+      throw new Error('Loadout could not add those files to this context set.');
+    }
+    const row = answer as Partial<ImportReport>;
+    return {
+      operationId: typeof row.operationId === 'string' ? row.operationId : operationId,
+      results: Array.isArray(row.results) ? row.results.filter(isResult) : [],
+      read: asRead(row.read, 'save'),
+    };
+  }
+
+  /** Zatwierdza jedną przygotowaną stronę dokumentu. */
+  async function completePreparation(
+    setId: string,
+    sourceId: string,
+    page: PreparedPage,
+    expectedRevision: string | null,
+  ): Promise<ContextSetRead> {
+    const answer = await invoke<unknown>('complete_context_source_preparation', {
+      folder,
+      setId,
+      sourceId,
+      page,
+      expectedRevision,
+    });
+    return asRead(answer, 'save');
+  }
+
+  /** Kawałek zatwierdzonego źródła. `page === null` przy dokumencie znaczy „daj cały plik". */
+  async function readSource(
+    setId: string,
+    sourceId: string,
+    page: number | null,
+  ): Promise<SourcePart> {
+    const answer = await invoke<unknown>('read_context_source', { folder, setId, sourceId, page });
+    return asPart(answer);
+  }
+
+  /** Zdejmuje źródło z zestawu. */
+  async function removeSource(
+    setId: string,
+    sourceId: string,
+    expectedRevision: string | null,
+  ): Promise<ContextSetRead> {
+    const answer = await invoke<unknown>('remove_context_source', {
+      folder,
+      setId,
+      sourceId,
+      expectedRevision,
+    });
+    return asRead(answer, 'save');
+  }
+
+  /** Uruchamia budowanie; postęp podczas pracy czyta osobna krawędź poniżej. */
+  async function buildContext(
+    setId: string,
+    operationId: string,
+    app: ContextApp,
+    model: string | null,
+  ): Promise<ContextBuildRead> {
+    const answer = await invoke<unknown>('build_context', {
+      folder,
+      setId,
+      operationId,
+      app,
+      model,
+    });
+    return asBuildRead(answer, 'build');
+  }
+
+  /** Odczyt trwałego postępu po wejściu albo powrocie do zestawu. */
+  async function readBuild(setId: string): Promise<ContextBuildRead> {
+    return asBuildRead(await invoke<unknown>('read_context_build', { folder, setId }), 'read');
+  }
+
+  /** Prosi o zatrzymanie i wraca dopiero z zapisanym końcem. */
+  async function stopBuild(setId: string, operationId: string): Promise<ContextBuild> {
+    return asBuild(
+      await invoke<unknown>('stop_context_build', { folder, setId, operationId }),
+      'Loadout could not stop this context build.',
+    );
+  }
+
+  /** Publikuje zmianę człowieka jako następną, niezmienną wersję. */
+  async function saveRevision(setId: string, edit: RevisionEdit): Promise<ContextBuildRead> {
+    return asBuildRead(
+      await invoke<unknown>('save_context_revision', { folder, setId, edit }),
+      'save',
+    );
+  }
 }
 
-/** Zatwierdza jedną przygotowaną stronę dokumentu. */
-export async function completePreparation(
-  setId: string,
-  sourceId: string,
-  page: PreparedPage,
-  expectedRevision: string | null,
-): Promise<ContextSetRead> {
-  const answer = await invoke<unknown>('complete_context_source_preparation', {
-    setId,
-    sourceId,
-    page,
-    expectedRevision,
-  });
-  return asRead(answer, 'save');
+export function list(
+  ...args: Parameters<ReturnType<typeof forProject>['list']>
+): ReturnType<ReturnType<typeof forProject>['list']> {
+  return forProject(activeWorkspace()?.folder ?? null).list(...args);
 }
-
-/** Kawałek zatwierdzonego źródła. `page === null` przy dokumencie znaczy „daj cały plik". */
-export async function readSource(
-  setId: string,
-  sourceId: string,
-  page: number | null,
-): Promise<SourcePart> {
-  const answer = await invoke<unknown>('read_context_source', { setId, sourceId, page });
-  return asPart(answer);
+export function archive(
+  ...args: Parameters<ReturnType<typeof forProject>['archive']>
+): ReturnType<ReturnType<typeof forProject>['archive']> {
+  return forProject(activeWorkspace()?.folder ?? null).archive(...args);
 }
-
-/** Zdejmuje źródło z zestawu. */
-export async function removeSource(
-  setId: string,
-  sourceId: string,
-  expectedRevision: string | null,
-): Promise<ContextSetRead> {
-  const answer = await invoke<unknown>('remove_context_source', {
-    setId,
-    sourceId,
-    expectedRevision,
-  });
-  return asRead(answer, 'save');
+export function deleteSet(
+  ...args: Parameters<ReturnType<typeof forProject>['deleteSet']>
+): ReturnType<ReturnType<typeof forProject>['deleteSet']> {
+  return forProject(activeWorkspace()?.folder ?? null).deleteSet(...args);
 }
-
-/** Uruchamia budowanie; postęp podczas pracy czyta osobna krawędź poniżej. */
-export async function buildContext(
-  setId: string,
-  operationId: string,
-  app: ContextApp,
-  model: string | null,
-): Promise<ContextBuildRead> {
-  const answer = await invoke<unknown>('build_context', { setId, operationId, app, model });
-  return asBuildRead(answer, 'build');
+export function read(
+  ...args: Parameters<ReturnType<typeof forProject>['read']>
+): ReturnType<ReturnType<typeof forProject>['read']> {
+  return forProject(activeWorkspace()?.folder ?? null).read(...args);
 }
-
-/** Odczyt trwałego postępu po wejściu albo powrocie do zestawu. */
-export async function readBuild(setId: string): Promise<ContextBuildRead> {
-  return asBuildRead(await invoke<unknown>('read_context_build', { setId }), 'read');
+export function create(
+  ...args: Parameters<ReturnType<typeof forProject>['create']>
+): ReturnType<ReturnType<typeof forProject>['create']> {
+  return forProject(activeWorkspace()?.folder ?? null).create(...args);
 }
-
-/** Prosi o zatrzymanie i wraca dopiero z zapisanym końcem. */
-export async function stopBuild(setId: string, operationId: string): Promise<ContextBuild> {
-  return asBuild(
-    await invoke<unknown>('stop_context_build', { setId, operationId }),
-    'Loadout could not stop this context build.',
-  );
+export function saveDraft(
+  ...args: Parameters<ReturnType<typeof forProject>['saveDraft']>
+): ReturnType<ReturnType<typeof forProject>['saveDraft']> {
+  return forProject(activeWorkspace()?.folder ?? null).saveDraft(...args);
 }
-
-/** Publikuje zmianę człowieka jako następną, niezmienną wersję. */
-export async function saveRevision(setId: string, edit: RevisionEdit): Promise<ContextBuildRead> {
-  return asBuildRead(await invoke<unknown>('save_context_revision', { setId, edit }), 'save');
+export function importSources(
+  ...args: Parameters<ReturnType<typeof forProject>['importSources']>
+): ReturnType<ReturnType<typeof forProject>['importSources']> {
+  return forProject(activeWorkspace()?.folder ?? null).importSources(...args);
+}
+export function completePreparation(
+  ...args: Parameters<ReturnType<typeof forProject>['completePreparation']>
+): ReturnType<ReturnType<typeof forProject>['completePreparation']> {
+  return forProject(activeWorkspace()?.folder ?? null).completePreparation(...args);
+}
+export function readSource(
+  ...args: Parameters<ReturnType<typeof forProject>['readSource']>
+): ReturnType<ReturnType<typeof forProject>['readSource']> {
+  return forProject(activeWorkspace()?.folder ?? null).readSource(...args);
+}
+export function removeSource(
+  ...args: Parameters<ReturnType<typeof forProject>['removeSource']>
+): ReturnType<ReturnType<typeof forProject>['removeSource']> {
+  return forProject(activeWorkspace()?.folder ?? null).removeSource(...args);
+}
+export function buildContext(
+  ...args: Parameters<ReturnType<typeof forProject>['buildContext']>
+): ReturnType<ReturnType<typeof forProject>['buildContext']> {
+  return forProject(activeWorkspace()?.folder ?? null).buildContext(...args);
+}
+export function readBuild(
+  ...args: Parameters<ReturnType<typeof forProject>['readBuild']>
+): ReturnType<ReturnType<typeof forProject>['readBuild']> {
+  return forProject(activeWorkspace()?.folder ?? null).readBuild(...args);
+}
+export function stopBuild(
+  ...args: Parameters<ReturnType<typeof forProject>['stopBuild']>
+): ReturnType<ReturnType<typeof forProject>['stopBuild']> {
+  return forProject(activeWorkspace()?.folder ?? null).stopBuild(...args);
+}
+export function saveRevision(
+  ...args: Parameters<ReturnType<typeof forProject>['saveRevision']>
+): ReturnType<ReturnType<typeof forProject>['saveRevision']> {
+  return forProject(activeWorkspace()?.folder ?? null).saveRevision(...args);
 }
 
 function asBuildRead(answer: unknown, doing: 'build' | 'read' | 'save'): ContextBuildRead {

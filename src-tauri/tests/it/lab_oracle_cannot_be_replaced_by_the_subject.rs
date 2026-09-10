@@ -166,6 +166,7 @@ print(json.dumps(dict(format=1,status='completed',passed=int(ok),failed=int(not 
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &home,
+        library: home.clone(),
         project: &project,
         store: &store,
         drivers: Arc::new(move |_| {

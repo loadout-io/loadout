@@ -1033,11 +1033,12 @@ impl AppState {
         /* WSKAZANIE SĄDZIMY PRZED WZIĘCIEM ZAMKA, bo odmowa „nie wskazałeś lidera" nie ma nic
          * wspólnego z rejestrem wątków: czytanie biblioteki pod zamkiem trzymałoby go przez
          * odczyt katalogu, w którym nic się nie zmienia. */
-        let who = commands::chat::Lead::pointed_at(self.home.as_path(), lead).map_err(|error| {
-            let said = error.to_string();
-            refused(&said);
-            said
-        })?;
+        let who = commands::chat::Lead::pointed_at(&crate::library::project_root(&cwd), lead)
+            .map_err(|error| {
+                let said = error.to_string();
+                refused(&said);
+                said
+            })?;
         self.leads
             .say_in_with_images(
                 &self.drivers,
@@ -1162,6 +1163,7 @@ impl AppState {
         RunDeps {
             processes: std::sync::Arc::clone(&self.started),
             home: self.home.as_path(),
+            library: crate::library::project_root(project),
             project,
             store: &self.store,
             drivers: Arc::clone(&self.drivers),
@@ -1415,6 +1417,7 @@ impl AppState {
     /// Okno prosi, pokazuje i anuluje; niczego nie prowadzi.
     pub async fn generate_agent_in(
         &self,
+        project: &Path,
         operation: &str,
         described: &str,
         runs_with: crate::library::agents::Vendor,
@@ -1433,11 +1436,12 @@ impl AppState {
          * katalogu modeli ta wersja nie ma, a stara statyczna lista z formularza nie jest
          * dowodem bieżącej dostępności. Pusta lista znaczy „nie sprawdzamy", więc model
          * wskazany przez generatora przechodzi i widzi go człowiek. */
+        let home = crate::library::project_root(project);
         let available = Available {
-            skills: commands::skills::list_skills_in(&self.home, None)
+            skills: commands::skills::list_skills_in(&home, Some(project))
                 .map(|skills| skills.into_iter().map(|one| one.name).collect())
                 .unwrap_or_default(),
-            connections: crate::connections::runtime::all(&self.home.join("connections"))
+            connections: crate::connections::runtime::all(&home.join("connections"))
                 .map(|found| found.into_iter().map(|one| one.id).collect())
                 .unwrap_or_default(),
             services: Vec::new(),
@@ -1480,12 +1484,13 @@ impl AppState {
 
     fn begin_context_build_in(
         &self,
+        home: &Path,
         set_id: &str,
         operation: &str,
         app: Option<crate::library::agents::Vendor>,
         model: Option<&str>,
     ) -> Result<(tokio_util::sync::CancellationToken, u64), String> {
-        let library = crate::context::files::library_root(&self.home);
+        let library = crate::context::files::library_root(home);
         let mut building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
         let already_building = building.keys().any(|owned| {
             crate::context::build::read_build(&library, set_id, Some(owned))
@@ -1540,8 +1545,8 @@ impl AppState {
         Ok((cancel, generation))
     }
 
-    fn context_build_owner_in(&self, set_id: &str) -> Option<(String, u64)> {
-        let library = crate::context::files::library_root(&self.home);
+    fn context_build_owner_in(&self, home: &Path, set_id: &str) -> Option<(String, u64)> {
+        let library = crate::context::files::library_root(home);
         let operation = crate::context::build::read_build(&library, set_id, None)
             .ok()
             .flatten()?
@@ -1790,6 +1795,14 @@ impl AppState {
         Ok(project)
     }
 
+    /// Jeden korzeń dla katalogów, edytorów i uruchomień. Brak katalogu oznacza
+    /// pusty projekt; nie jest powodem do odczytania biblioteki innego projektu.
+    pub async fn library_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
+        self.project_for(folder)
+            .await
+            .map(|project| crate::library::project_root(&project))
+    }
+
     /// Ten sam rejestr, z którego korzystają mosty wszystkich rozmów tej aplikacji.
     pub fn lead_starts(&self) -> Arc<commands::lead_start::LeadStarts> {
         self.leads.lead_starts()
@@ -1798,7 +1811,7 @@ impl AppState {
     fn replay_desk(&self, project: PathBuf) -> crate::bridge::library::Desk {
         let starts = self.lead_starts();
         let identity = starts.ui_identity();
-        crate::bridge::library::Desk::at(Some(self.home.clone()), project)
+        crate::bridge::library::Desk::at(Some(crate::library::project_root(&project)), project)
             .starting_with(starts, Arc::new(Mutex::new(identity)))
     }
 
@@ -1824,7 +1837,7 @@ impl AppState {
         source_run_id: &str,
     ) -> Result<Value, String> {
         let project = self.project_for(Some(folder)).await?;
-        let home = self.home.clone();
+        let home = crate::library::project_root(&project);
         let source_run_id = source_run_id.to_owned();
         tokio::task::spawn_blocking(move || {
             commands::replay::copy_recorded_workflow(&home, &project, &source_run_id)
@@ -1977,7 +1990,7 @@ impl AppState {
     ) -> Result<commands::chat::ChatPins, String> {
         let project = self.project_for(Some(folder)).await?;
         self.leads.library_is(self.home.clone());
-        let home = self.home.clone();
+        let home = crate::library::project_root(&project);
         let checked = sets.clone();
         tokio::task::spawn_blocking(move || {
             let recipient = commands::context_inputs::Recipient {
@@ -2011,9 +2024,9 @@ impl AppState {
             .leads
             .what_this_chat_pinned(&commands::chat::Terminal {
                 id: terminal.to_owned(),
-                folder: project,
+                folder: project.clone(),
             })?;
-        let home = self.home.clone();
+        let home = crate::library::project_root(&project);
         let selected = pins.sets.clone();
         let view = tokio::task::spawn_blocking(move || {
             commands::workflow_context::resolve_chat_context_inner(&home, &selected)
@@ -2509,13 +2522,75 @@ fn did_not_finish(what: &str, error: &tokio::task::JoinError) -> String {
 
 /// Wszyscy zapisani agenci.
 #[tauri::command]
-pub async fn list_agents() -> Result<Vec<Definition<Agent>>, String> {
-    tokio::task::spawn_blocking(|| {
-        commands::agents::list_agent_definitions_inner(&crate::loadout_dir())
+pub async fn list_agents(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<Vec<Definition<Agent>>, String> {
+    let home = state.library_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || commands::agents::list_agent_definitions_inner(&home))
+        .await
+        .map_err(|error| did_not_finish("reading the agents you have saved", &error))?
+        .map_err(|error| error.to_string())
+}
+
+// Import czyta wyłącznie jawnie wskazany, zapisany projekt albo dawną bibliotekę.
+// Nie otwiera jego rozmów i nie uruchamia odzyskiwania procesów źródła.
+fn setup_source(
+    home: &std::path::Path,
+    folder: Option<String>,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let Some(folder) = folder else {
+        return Ok((home.to_path_buf(), None));
+    };
+    let source = std::fs::canonicalize(folder).map_err(|error| error.to_string())?;
+    let registered = commands::workspaces::list_workspaces_inner(home)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .any(|workspace| std::fs::canonicalize(&workspace.folder).ok().as_ref() == Some(&source));
+    if !registered || !source.is_dir() {
+        return Err("Choose a project from your workspace list first.".to_owned());
+    }
+    Ok((crate::library::project_root(&source), Some(source)))
+}
+
+#[tauri::command]
+pub async fn preview_project_setup(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    source_folder: Option<String>,
+) -> Result<commands::project_setup::SetupPreview, String> {
+    let destination = state.library_for(folder.as_deref()).await?;
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let (source, project) = setup_source(&home, source_folder)?;
+        commands::project_setup::preview(&source, project.as_deref(), &destination)
     })
     .await
-    .map_err(|error| did_not_finish("reading the agents you have saved", &error))?
-    .map_err(|error| error.to_string())
+    .map_err(|error| did_not_finish("reading the project setup", &error))?
+}
+
+#[tauri::command]
+pub async fn import_project_setup(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    source_folder: Option<String>,
+    revision: String,
+    selected: Vec<String>,
+) -> Result<commands::project_setup::SetupReceipt, String> {
+    let destination = state.library_for(folder.as_deref()).await?;
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let (source, project) = setup_source(&home, source_folder)?;
+        commands::project_setup::apply(
+            &source,
+            project.as_deref(),
+            &destination,
+            &revision,
+            &selected,
+        )
+    })
+    .await
+    .map_err(|error| did_not_finish("importing the project setup", &error))?
 }
 
 /// Świeży uuid v7 — jedna mennica dla wszystkich sekcji.
@@ -2543,10 +2618,13 @@ pub async fn scan_setup(
 /// Zapisuje ponownie zweryfikowaną migawkę do biblioteki Loadouta.
 #[tauri::command]
 pub async fn apply_setup(
+    state: State<'_, AppState>,
+    folder: Option<String>,
     request: commands::import::ApplySetup,
 ) -> Result<crate::import::apply::ImportReceipt, String> {
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
-        commands::import::apply_setup_inner(&crate::loadout_dir(), &crate::your_home(), &request)
+        commands::import::apply_setup_inner(&home, &crate::your_home(), &request)
     })
     .await
     .map_err(|error| did_not_finish("saving that setup", &error))?
@@ -2586,12 +2664,14 @@ pub async fn apply_setup(
 #[tauri::command]
 pub async fn compare_import_copies(
     state: State<'_, AppState>,
+    folder: Option<String>,
     workspace: &str,
     item: &str,
     agent: &str,
 ) -> Result<Option<crate::import::compare::Comparison>, String> {
+    let home = state.library_for(folder.as_deref()).await?;
     commands::import::compare_copies_inner(
-        &crate::loadout_dir(),
+        &home,
         // Katalog domowy CZŁOWIEKA, nie biblioteka Loadouta — ten sam argument, którym czyta
         // projekt `scan_setup`: plan musi wyjść dokładnie taki sam, jak ten na ekranie.
         &crate::your_home(),
@@ -2735,8 +2815,9 @@ pub async fn propose_eval_cases(
         .project_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
+    let home = crate::library::project_root(&project);
     commands::lab::propose_cases_inner(
-        &crate::loadout_dir(),
+        &home,
         &state.drivers,
         &state.proposing,
         &project,
@@ -2761,8 +2842,9 @@ pub async fn propose_eval_fix(
         .project_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
+    let home = crate::library::project_root(&project);
     commands::lab::propose_fix_inner(
-        &crate::loadout_dir(),
+        &home,
         &state.drivers,
         &state.proposing,
         &project,
@@ -2781,19 +2863,17 @@ pub async fn propose_eval_fix(
 /// cudzą, nowszą zmianę tej samej definicji bez jednego zdania.
 #[tauri::command]
 pub async fn apply_eval_fix(
+    state: State<'_, AppState>,
+    folder: Option<String>,
     agent: &str,
     instructions: String,
     expected_revision: Option<&str>,
 ) -> Result<String, String> {
+    let home = state.library_for(folder.as_deref()).await?;
     let agent = agent.to_owned();
     let expected_revision = expected_revision.map(str::to_owned);
     tokio::task::spawn_blocking(move || {
-        commands::lab::apply_fix_inner(
-            &crate::loadout_dir(),
-            &agent,
-            instructions,
-            expected_revision.as_deref(),
-        )
+        commands::lab::apply_fix_inner(&home, &agent, instructions, expected_revision.as_deref())
     })
     .await
     .map_err(|error| did_not_finish("applying that fix", &error))?
@@ -2969,15 +3049,10 @@ pub async fn preview_eval_run(
         .project_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    commands::lab::preview_run_inner(
-        &state.home,
-        &project,
-        set,
-        expected_revision,
-        &state.drivers,
-    )
-    .await
-    .map_err(|error| error.to_string())
+    let home = crate::library::project_root(&project);
+    commands::lab::preview_run_inner(&home, &project, set, expected_revision, &state.drivers)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Rewizje zatwierdzone razem w podglądzie przed uruchomieniem pomiaru.
@@ -3010,7 +3085,7 @@ pub async fn run_eval_set(
         .inspect_err(refused)?;
     let planned = {
         let at = project.clone();
-        let library = state.home.clone();
+        let library = crate::library::project_root(&project);
         let set = set.to_owned();
         let expected_revision = approval.revision;
         let expected_sources = approval.sources;
@@ -3051,14 +3126,16 @@ pub async fn run_eval_set(
 /// `expected_revision` jest tym, co okno przeczytało; `null` znaczy „tego pliku ma jeszcze nie
 /// być". Zapis, który nie niesie rewizji, kasowałby cudzą, nowszą pracę bez jednego zdania.
 #[tauri::command]
-pub async fn save_agent(agent: Agent, expected_revision: Option<&str>) -> Result<String, String> {
+pub async fn save_agent(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    agent: Agent,
+    expected_revision: Option<&str>,
+) -> Result<String, String> {
+    let home = state.library_for(folder.as_deref()).await?;
     let expected_revision = expected_revision.map(str::to_owned);
     tokio::task::spawn_blocking(move || {
-        commands::agents::save_agent_inner(
-            &crate::loadout_dir(),
-            agent,
-            expected_revision.as_deref(),
-        )
+        commands::agents::save_agent_inner(&home, agent, expected_revision.as_deref())
     })
     .await
     .map_err(|error| did_not_finish("saving that agent", &error))?
@@ -3073,12 +3150,14 @@ pub async fn save_agent(agent: Agent, expected_revision: Option<&str>) -> Result
 #[tauri::command]
 pub async fn generate_agent(
     state: State<'_, AppState>,
+    folder: Option<String>,
     operation: &str,
     described: &str,
     runs_with: crate::library::agents::Vendor,
 ) -> Result<serde_json::Value, String> {
+    let project = state.project_for(folder.as_deref()).await?;
     state
-        .generate_agent_in(operation, described, runs_with)
+        .generate_agent_in(&project, operation, described, runs_with)
         .await
 }
 
@@ -3094,14 +3173,17 @@ pub async fn stop_generating_agent(
 
 /// Usuwa agenta po identyfikatorze, razem z jego plikiem.
 #[tauri::command]
-pub async fn delete_agent(id: &str) -> Result<(), String> {
+pub async fn delete_agent(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    id: &str,
+) -> Result<(), String> {
+    let home = state.library_for(folder.as_deref()).await?;
     let id = id.to_owned();
-    tokio::task::spawn_blocking(move || {
-        commands::agents::delete_agent_inner(&crate::loadout_dir(), &id)
-    })
-    .await
-    .map_err(|error| did_not_finish("removing that agent", &error))?
-    .map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || commands::agents::delete_agent_inner(&home, &id))
+        .await
+        .map_err(|error| did_not_finish("removing that agent", &error))?
+        .map_err(|error| error.to_string())
 }
 
 // ── CZTERY KOMENDY BIBLIOTEKI WORKFLOW ─────────────────────────────────────────────────────
@@ -3124,8 +3206,9 @@ pub async fn list_workflows(
     folder: Option<String>,
 ) -> Result<Vec<Definition<commands::workflows::WorkflowEntry>>, String> {
     let project = state.project_for(folder.as_deref()).await?;
+    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
-        commands::workflows::list_workflow_definitions_inner(&crate::loadout_dir(), Some(&project))
+        commands::workflows::list_workflow_definitions_inner(&home, Some(&project))
     })
     .await
     .map_err(|error| did_not_finish("reading your workflows", &error))?
@@ -3141,8 +3224,9 @@ pub async fn load_workflow(
 ) -> Result<commands::workflows::OpenWorkflow, String> {
     let project = state.project_for(folder.as_deref()).await?;
     let file_name = file_name.to_owned();
+    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
-        commands::workflows::load_workflow_inner(&crate::loadout_dir(), Some(&project), &file_name)
+        commands::workflows::load_workflow_inner(&home, Some(&project), &file_name)
     })
     .await
     .map_err(|error| did_not_finish("opening that workflow", &error))?
@@ -3164,9 +3248,10 @@ pub async fn save_workflow(
     let project = state.project_for(folder.as_deref()).await?;
     let file_name = file_name.to_owned();
     let expected_revision = expected_revision.map(str::to_owned);
+    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
         commands::workflows::save_workflow_inner(
-            &crate::loadout_dir(),
+            &home,
             Some(&project),
             &file_name,
             workflow,
@@ -3188,12 +3273,9 @@ pub async fn delete_workflow(
 ) -> Result<(), String> {
     let project = state.project_for(folder.as_deref()).await?;
     let file_name = file_name.to_owned();
+    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
-        commands::workflows::delete_workflow_inner(
-            &crate::loadout_dir(),
-            Some(&project),
-            &file_name,
-        )
+        commands::workflows::delete_workflow_inner(&home, Some(&project), &file_name)
     })
     .await
     .map_err(|error| did_not_finish("removing that workflow", &error))?
@@ -3202,9 +3284,19 @@ pub async fn delete_workflow(
 
 /// Uwagi walidatora o tym workflow — te same, które padają przy zapisie i przed Startem.
 #[tauri::command]
-pub async fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
+pub async fn check_workflow(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    workflow: WorkflowFile,
+) -> Result<Vec<Note>, String> {
+    let home = state.library_for(folder.as_deref()).await?;
+    Ok(check_workflow_in(home, workflow).await)
+}
+
+/// Wspólne ciało IPC; jawny katalog pozwala sprawdzać odmowy bez danych człowieka.
+pub async fn check_workflow_in(home: PathBuf, workflow: WorkflowFile) -> Vec<Note> {
     match tokio::task::spawn_blocking(move || {
-        let mut notes = commands::workflows::check_workflow_inner(&crate::loadout_dir(), &workflow);
+        let mut notes = commands::workflows::check_workflow_inner(&home, &workflow);
         let plan_problems =
             crate::workflow::work_plan::notes(&workflow, crate::workflow::work_plan::When::Running);
         /* Zapis musi przyjąć nieukończony szkic, ale lista obok Startu nie może nazywać tej
@@ -3241,45 +3333,55 @@ pub async fn check_workflow(workflow: WorkflowFile) -> Vec<Note> {
 
 /// Adres → pobrana i przejrzana umiejętność.
 #[tauri::command]
-pub async fn review_skill(url: &str) -> Result<commands::skills::ImportWire, String> {
+pub async fn review_skill(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+    url: &str,
+) -> Result<commands::skills::ImportWire, String> {
+    let home = state.library_for(folder.as_deref()).await?;
     // Ta jedna komenda czeka na SIEĆ, do dwudziestu sekund (`ingest::FETCH_TIMEOUT_SECONDS`),
     // i jest powodem, dla którego akapit nad `list_agents` w ogóle powstał.
     let url = url.to_owned();
-    tokio::task::spawn_blocking(move || {
-        commands::skills::review_skill_inner(&crate::loadout_dir(), &url)
-    })
-    .await
-    .map_err(|error| did_not_finish("fetching that skill", &error))?
-    .map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || commands::skills::review_skill_inner(&home, &url))
+        .await
+        .map_err(|error| did_not_finish("fetching that skill", &error))?
+        .map_err(|error| error.to_string())
 }
 
 /// Trzy pytania z formularza → umiejętność przejrzana tym samym rdzeniem, co wklejony link.
 #[tauri::command]
 pub async fn author_skill(
+    state: State<'_, AppState>,
+    folder: Option<String>,
     authored: commands::skills::Authored,
 ) -> Result<commands::skills::ImportWire, String> {
-    tokio::task::spawn_blocking(move || {
-        commands::skills::author_skill_inner(&crate::loadout_dir(), authored)
-    })
-    .await
-    .map_err(|error| did_not_finish("looking over that skill", &error))?
-    .map_err(|error| error.to_string())
+    let home = state.library_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || commands::skills::author_skill_inner(&home, authored))
+        .await
+        .map_err(|error| did_not_finish("looking over that skill", &error))?
+        .map_err(|error| error.to_string())
 }
 
 /// Zapisuje przejrzaną umiejętność w katalogach vendorów wybranego zakresu.
 #[tauri::command]
 pub async fn install_skill(
+    state: State<'_, AppState>,
     item: commands::skills::ImportWire,
     landing: commands::skills::Landing,
     folder: Option<&str>,
 ) -> Result<(), String> {
+    let project = state.project_for(folder).await?;
+    if matches!(landing, commands::skills::Landing::Everywhere) {
+        return Err("Skills belong to this project. Choose This project.".to_owned());
+    }
+    let home = crate::library::project_root(&project);
     // Rozbiór, a nie `item.name`: z całego przeglądu Rust bierze WYŁĄCZNIE nazwę, bo bajty do
     // zapisania czyta z kopii kanonicznej — z tych samych, które przeskanował i pokazał
     // człowiekowi. Ten jeden wiersz mówi to wprost i nie da się go przeczytać inaczej.
     let commands::skills::ImportWire { name, .. } = item;
-    let folder = folder.map(str::to_owned);
+    let folder = Some(project.to_string_lossy().into_owned());
     tokio::task::spawn_blocking(move || {
-        install_reviewed_skill(&crate::loadout_dir(), &name, landing, folder.as_deref())
+        install_reviewed_skill(&home, &name, landing, folder.as_deref())
     })
     .await
     .map_err(|error| did_not_finish("adding that skill", &error))?
@@ -3338,16 +3440,18 @@ pub fn install_reviewed_skill(
 /// znaczyłoby haszowanie całej półki przy każdym wejściu do sekcji.
 #[tauri::command]
 pub async fn list_skills(
+    state: State<'_, AppState>,
     folder: Option<&str>,
     names: Option<Vec<String>>,
 ) -> Result<Vec<commands::skills::InstalledWire>, String> {
+    let project = state.project_for(folder).await?;
+    let home = crate::library::project_root(&project);
     // Ten sam sąd nad folderem, co przy zapisie i przy Starcie biegu (`project_folder`).
     // Lista czytana z folderu, którego nie ma, jest pustą listą — czyli zdaniem „nic tam nie
     // leży" o katalogu, o który nikt nie umiał zapytać.
-    let project = project_folder(folder)?;
     let names = names.unwrap_or_default();
     tokio::task::spawn_blocking(move || {
-        commands::skills::list_skills_and_sources(&crate::loadout_dir(), project.as_deref(), &names)
+        commands::skills::list_skills_and_sources(&home, Some(project.as_path()), &names)
     })
     .await
     .map_err(|error| did_not_finish("reading the skills you have added", &error))?
@@ -3389,22 +3493,22 @@ pub async fn list_host_material(folder: Option<&str>) -> Result<Lendable, String
 /// „z tego projektu" ma zostawić kopię globalną tam, gdzie jest.
 #[tauri::command]
 pub async fn delete_skill(
+    state: State<'_, AppState>,
     name: &str,
     landing: commands::skills::Landing,
     folder: Option<&str>,
 ) -> Result<(), String> {
+    let project = state.project_for(folder).await?;
+    if matches!(landing, commands::skills::Landing::Everywhere) {
+        return Err("Skills belong to this project. Choose This project.".to_owned());
+    }
+    let home = crate::library::project_root(&project);
     // Ten sam sąd nad folderem, co przy zapisie: zdjęcie „z tego projektu" z folderu, którego
     // nie ma, jest odmową o folderze, a nie o umiejętności — i to jest zdanie, po którym
     // człowiek wie, co zrobić.
-    let project = project_folder(folder)?;
     let name = name.to_owned();
     tokio::task::spawn_blocking(move || {
-        commands::skills::delete_skill_from(
-            &crate::loadout_dir(),
-            &name,
-            landing,
-            project.as_deref(),
-        )
+        commands::skills::delete_skill_from(&home, &name, landing, Some(project.as_path()))
     })
     .await
     .map_err(|error| did_not_finish("taking that skill away", &error))?
@@ -3457,26 +3561,22 @@ pub async fn delete_skill(
 #[tauri::command]
 pub async fn draft_skill(
     state: State<'_, AppState>,
+    folder: Option<String>,
     want: &str,
     agent: &str,
 ) -> Result<Option<commands::skills::Authored>, String> {
-    commands::skills::draft_skill_inner(
-        &crate::loadout_dir(),
-        &state.drivers,
-        &state.drafting,
-        want,
-        agent,
-    )
-    .await
-    .map(|outcome| match outcome {
-        commands::skills::DraftOutcome::Wrote(authored) => Some(authored),
-        commands::skills::DraftOutcome::Cancelled => None,
-    })
-    .map_err(|error| {
-        let said = error.to_string();
-        refused(&said);
-        said
-    })
+    let home = state.library_for(folder.as_deref()).await?;
+    commands::skills::draft_skill_inner(&home, &state.drivers, &state.drafting, want, agent)
+        .await
+        .map(|outcome| match outcome {
+            commands::skills::DraftOutcome::Wrote(authored) => Some(authored),
+            commands::skills::DraftOutcome::Cancelled => None,
+        })
+        .map_err(|error| {
+            let said = error.to_string();
+            refused(&said);
+            said
+        })
 }
 
 /// „Stop" dla draftu: zatrzymuje agenta, który pisze umiejętność.
@@ -3771,13 +3871,16 @@ pub async fn forget_runs_older_than(
 #[tauri::command]
 pub async fn build_context(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     operation_id: String,
     app: Option<crate::library::agents::Vendor>,
     model: Option<String>,
 ) -> Result<crate::context::ContextBuildRead, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    let library = crate::library::project_root(&project);
     let (cancel, generation) =
-        state.begin_context_build_in(&set_id, &operation_id, app, model.as_deref())?;
+        state.begin_context_build_in(&library, &set_id, &operation_id, app, model.as_deref())?;
     // 2026-09-08 — TEN ODCZYT SZEDL NA WATKU, NA KTORYM TAURI ZAWOLALO KOMENDE, i ten sam
     // watek niesie Stop, linie biegu w drodze na ekran oraz kazdy zapis do indeksu. Reszta tej
     // komendy jest `async`, wiec zostal wylacznie ten jeden synchroniczny dotyk dysku — i tylko
@@ -3800,8 +3903,8 @@ pub async fn build_context(
         budget_usd,
     };
     let result = commands::context_build::build_context_inner(
-        &state.home,
-        &state.project,
+        &library,
+        &project,
         &state.drivers,
         &state.slots,
         &request,
@@ -3821,11 +3924,14 @@ pub async fn build_context(
 #[tauri::command]
 pub async fn read_context_build(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
 ) -> Result<crate::context::ContextBuildRead, String> {
-    let live = state.context_build_owner_in(&set_id);
+    let project = state.project_for(folder.as_deref()).await?;
+    let library = crate::library::project_root(&project);
+    let live = state.context_build_owner_in(&library, &set_id);
     commands::context_build::read_context_build_inner(
-        &state.home,
+        &library,
         &state.drivers,
         &set_id,
         live.as_ref()
@@ -3839,14 +3945,17 @@ pub async fn read_context_build(
 #[tauri::command]
 pub async fn stop_context_build(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     operation_id: String,
 ) -> Result<crate::context::ContextBuild, String> {
+    let project = state.project_for(folder.as_deref()).await?;
+    let library = crate::library::project_root(&project);
     let (cancel, generation) = state
         .context_build_cancel_in(&operation_id)
         .ok_or_else(|| "That context build is not running now.".to_owned())?;
     let result = commands::context_build::stop_context_build_inner(
-        &state.home,
+        &library,
         &set_id,
         &operation_id,
         &cancel,
@@ -3863,10 +3972,11 @@ pub async fn stop_context_build(
 #[tauri::command]
 pub async fn save_context_revision(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     edit: crate::context::RevisionEdit,
 ) -> Result<crate::context::ContextBuildRead, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context_build::save_context_revision_inner(&home, &set_id, &edit)
     })
@@ -3879,10 +3989,11 @@ pub async fn save_context_revision(
 #[tauri::command]
 pub async fn archive_context_set(
     state: State<'_, AppState>,
+    folder: Option<String>,
     id: String,
     archived: bool,
 ) -> Result<crate::context::ContextSet, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context::archive_context_set_inner(&home, &id, archived)
     })
@@ -3903,7 +4014,7 @@ pub async fn delete_context_set(
         .project_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     let building = Arc::clone(&state.building);
     tokio::task::spawn_blocking(move || {
         // 2026-09-08 (CT-08): ten sam krótki zamek obejmuje sprawdzenie i usunięcie. Bez
@@ -3945,9 +4056,10 @@ pub async fn delete_context_set(
 #[tauri::command]
 pub async fn list_context_sets(
     state: State<'_, AppState>,
+    folder: Option<String>,
     archived: Option<bool>,
 ) -> Result<Vec<crate::context::ContextSet>, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context::list_context_sets_by_archive_inner(&home, archived.unwrap_or(false))
     })
@@ -3960,9 +4072,10 @@ pub async fn list_context_sets(
 #[tauri::command]
 pub async fn read_context_set(
     state: State<'_, AppState>,
+    folder: Option<String>,
     id: String,
 ) -> Result<crate::context::ContextSetRead, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || commands::context::read_context_set_inner(&home, &id))
         .await
         .map_err(|error| did_not_finish("opening that context set", &error))?
@@ -3973,9 +4086,10 @@ pub async fn read_context_set(
 #[tauri::command]
 pub async fn resolve_workflow_context(
     state: State<'_, AppState>,
+    folder: Option<String>,
     workflow: crate::workflow::WorkflowFile,
 ) -> Result<commands::workflow_context::WorkflowContextView, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::workflow_context::resolve_workflow_context_inner(&home, &workflow)
     })
@@ -3999,9 +4113,10 @@ pub async fn resolve_workflow_plan(
 #[tauri::command]
 pub async fn create_context_set(
     state: State<'_, AppState>,
+    folder: Option<String>,
     title: String,
 ) -> Result<crate::context::ContextSetRead, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || commands::context::create_context_set_inner(&home, &title))
         .await
         .map_err(|error| did_not_finish("making that context set", &error))?
@@ -4016,13 +4131,14 @@ pub async fn create_context_set(
 #[tauri::command]
 pub async fn save_context_draft(
     state: State<'_, AppState>,
+    folder: Option<String>,
     id: String,
     title: String,
     description: String,
     draft: crate::context::ContextDraft,
     expected_revision: Option<String>,
 ) -> Result<crate::context::ContextSetRead, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context::save_context_draft_inner(
             &home,
@@ -4053,12 +4169,13 @@ pub async fn save_context_draft(
 #[tauri::command]
 pub async fn import_context_sources(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     operation_id: String,
     items: Vec<crate::context::sources::ImportItem>,
     expected_revision: Option<String>,
 ) -> Result<crate::context::sources::ImportReport, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context_sources::import_context_sources_inner(
             &home,
@@ -4081,12 +4198,13 @@ pub async fn import_context_sources(
 #[tauri::command]
 pub async fn complete_context_source_preparation(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     source_id: String,
     page: crate::context::sources::PreparedPage,
     expected_revision: Option<String>,
 ) -> Result<crate::context::ContextSetRead, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context_sources::complete_context_source_preparation_inner(
             &home,
@@ -4108,11 +4226,12 @@ pub async fn complete_context_source_preparation(
 #[tauri::command]
 pub async fn read_context_source(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     source_id: String,
     page: Option<u32>,
 ) -> Result<crate::context::sources::SourcePart, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context_sources::read_context_source_inner(&home, &set_id, &source_id, page)
     })
@@ -4125,11 +4244,12 @@ pub async fn read_context_source(
 #[tauri::command]
 pub async fn remove_context_source(
     state: State<'_, AppState>,
+    folder: Option<String>,
     set_id: String,
     source_id: String,
     expected_revision: Option<String>,
 ) -> Result<crate::context::ContextSetRead, String> {
-    let home = state.home.clone();
+    let home = state.library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::context_sources::remove_context_source_inner(
             &home,
@@ -4157,7 +4277,7 @@ pub async fn list_notes(
         .project_for(catalog_folder.as_deref())
         .await
         .inspect_err(refused)?;
-    let home = state.home.clone();
+    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
         let library_root = commands::memory::notes_root(&home);
         commands::memory::list_notes_for_project_inner(&library_root, &project)
@@ -4179,7 +4299,12 @@ pub async fn put_note_to_use(
         .project_for(catalog_folder.as_deref())
         .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let home = state.home.clone();
+    let home = crate::library::project_root(&project);
+    if place != commands::memory::NotePlace::Project {
+        return Err(commands::memory::NoteRefusal::Said(
+            "Import this note into the project first.".to_owned(),
+        ));
+    }
     let address = commands::memory::NoteAddress { place, id };
     tokio::task::spawn_blocking(move || {
         let library_root = commands::memory::notes_root(&home);
@@ -4208,7 +4333,12 @@ pub async fn stop_using_note(
         .project_for(catalog_folder.as_deref())
         .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let home = state.home.clone();
+    let home = crate::library::project_root(&project);
+    if place != commands::memory::NotePlace::Project {
+        return Err(commands::memory::NoteRefusal::Said(
+            "Import this note into the project first.".to_owned(),
+        ));
+    }
     let address = commands::memory::NoteAddress { place, id };
     tokio::task::spawn_blocking(move || {
         let library_root = commands::memory::notes_root(&home);
@@ -4241,7 +4371,12 @@ pub async fn discard_note(
         .project_for(catalog_folder.as_deref())
         .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let home = state.home.clone();
+    let home = crate::library::project_root(&project);
+    if place != commands::memory::NotePlace::Project {
+        return Err(commands::memory::NoteRefusal::Said(
+            "Import this note into the project first.".to_owned(),
+        ));
+    }
     let address = commands::memory::NoteAddress { place, id };
     tokio::task::spawn_blocking(move || {
         let library_root = commands::memory::notes_root(&home);
@@ -4804,7 +4939,7 @@ pub async fn rerun_step(
         let step = step.to_owned();
         tokio::task::spawn_blocking(move || {
             commands::rerun::again(
-                &crate::loadout_dir(),
+                &crate::library::project_root(&at),
                 &at,
                 &file_name,
                 &step,
@@ -4865,7 +5000,13 @@ pub async fn resume_run(
         let run = run.to_owned();
         let step = step.to_owned();
         tokio::task::spawn_blocking(move || {
-            commands::rerun::onward(&crate::loadout_dir(), &at, &run, &step, how_many_at_once)
+            commands::rerun::onward(
+                &crate::library::project_root(&at),
+                &at,
+                &run,
+                &step,
+                how_many_at_once,
+            )
         })
         .await
         .map_err(|error| did_not_finish("getting that run ready to carry on", &error))?
@@ -5178,13 +5319,14 @@ pub async fn interrupt_the_lead(
 #[tauri::command]
 pub async fn what_the_lead_can_do(
     state: State<'_, AppState>,
+    folder: Option<String>,
     lead: Option<String>,
 ) -> Result<commands::chat::WhatTheLeadCanDo, String> {
+    let home = state.library_for(folder.as_deref()).await?;
     // PULA BLOKUJACA, NIE WATEK OKNA (2026-09-05). `what_the_lead_can_do_inner` czyta agenta
     // z biblioteki i pyta fabryke o sterownik, czyli dotyka dysku — a `no_command_freezes_the_window`
     // sadzi KAZDA skorupe po tym, czy oddaje taka prace `spawn_blocking`. Ten sam watek niesie Stop,
     // linie biegu w drodze na ekran i kazdy zapis do indeksu (Z-10).
-    let home = state.home.clone();
     let drivers = Arc::clone(&state.drivers);
     tokio::task::spawn_blocking(move || {
         commands::chat::what_the_lead_can_do_inner(home.as_path(), &drivers, lead.as_deref())
@@ -5799,6 +5941,8 @@ macro_rules! every_command_the_window_can_call {
             install_skill,
             interrupt_the_lead,
             list_agents,
+            preview_project_setup,
+            import_project_setup,
             list_context_sets,
             list_eval_sets,
             list_handoffs,

@@ -280,6 +280,7 @@ async fn a_check_that_ran_out_of_time_leaves_its_last_words() -> Result<(), Box<
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -407,6 +408,7 @@ async fn run_it(
     let workflow = bench.workflow("last-words", file)?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

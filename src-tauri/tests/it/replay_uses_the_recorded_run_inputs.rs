@@ -44,7 +44,7 @@ async fn a_historical_workflow_is_saved_under_a_new_identity_without_overwriting
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");
     let project = root.path().join("project");
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
     fs::create_dir_all(project.join(".loadout"))?;
     let old = json!({"format":1,"id":"historical-workflow-id","name":"Saved workflow","links":[],
         "steps":[{"kind":"agent","id":"build","name":"Build","agent":Agent::example().id,
@@ -52,7 +52,7 @@ async fn a_historical_workflow_is_saved_under_a_new_identity_without_overwriting
     let mut current = old.clone();
     current["name"] = json!("Today's workflow");
     current["steps"][0]["instructions"] = json!("Today's instructions");
-    let current_path = home.join("workflows/saved.json");
+    let current_path = project.join(".loadout/workflows/saved.json");
     fs::write(&current_path, current.to_string())?;
     let current_bytes = fs::read(&current_path)?;
     let id = uuid::Uuid::now_v7().to_string();
@@ -82,7 +82,11 @@ async fn a_historical_workflow_is_saved_under_a_new_identity_without_overwriting
     let filename = copied["fileName"]
         .as_str()
         .ok_or("the saved copy has no file name")?;
-    let loaded = loadout_lib::commands::workflows::load_workflow_inner(&home, None, filename)?;
+    let loaded = loadout_lib::commands::workflows::load_workflow_inner(
+        &project.join(".loadout"),
+        None,
+        filename,
+    )?;
     assert_ne!(loaded.workflow.id, "historical-workflow-id");
     assert!(uuid::Uuid::parse_str(&loaded.workflow.id).is_ok());
     assert_eq!(loaded.workflow.id, copied["workflowId"]);
@@ -107,7 +111,7 @@ async fn a_historical_workflow_is_saved_under_a_new_identity_without_overwriting
             .is_err(),
         "a directory cannot impersonate another saved run"
     );
-    assert_eq!(fs::read_dir(home.join("workflows"))?.count(), 2);
+    assert_eq!(fs::read_dir(project.join(".loadout/workflows"))?.count(), 2);
     Ok(())
 }
 
@@ -137,14 +141,14 @@ async fn recorded_case(
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");
     let project = root.path().join("project");
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
     fs::create_dir_all(project.join(".loadout"))?;
     fs::write(project.join("seed.txt"), "original input")?;
     let mut agent = Agent::example();
     agent.model = "historical-model".to_owned();
     agent.instructions = "Historical agent instructions".to_owned();
-    let written_agent = write_agent_file(&home.join("agents"), &agent, None)?;
-    let workflow = home.join("workflows/replay.json");
+    let written_agent = write_agent_file(&project.join(".loadout/agents"), &agent, None)?;
+    let workflow = project.join(".loadout/workflows/replay.json");
     let graph = json!({"format":1,"id":"wf-replay","name":"Saved configuration","links":[],
         "steps":[{"kind":"agent","id":"build","name":"Build","agent":agent.id,
             "copies":2,"instructions":if composed {"Historical Copy marker {{copy}} of {{copies}}."} else {"Historical copy {{copy}} of {{copies}}."},"overrides":{},
@@ -183,7 +187,11 @@ async fn recorded_case(
     // Dwie niezależne zmiany: inny model oraz graf o innej liczbie sesji.
     agent.model = "current-model".to_owned();
     agent.instructions = "Current agent instructions".to_owned();
-    write_agent_file(&home.join("agents"), &agent, Some(&written_agent.revision))?;
+    write_agent_file(
+        &project.join(".loadout/agents"),
+        &agent,
+        Some(&written_agent.revision),
+    )?;
     let mut current = graph;
     current["steps"][0]["copies"] = json!(if composed { 2 } else { 1 });
     current["steps"][0]["instructions"] = json!(if composed {
@@ -238,7 +246,7 @@ async fn recorded_case(
     let previous_starts = if composed { 4 } else { 2 };
     let waiting = Arc::new(Waiting::default());
     let (sink, mut conversation) = line_channel(512);
-    let desk = Desk::at(Some(home), project.clone())
+    let desk = Desk::at(Some(project.join(".loadout")), project.clone())
         .showing(Arc::new(Mutex::new(sink)))
         .hearing(Arc::clone(&waiting))
         .starting_with(
@@ -562,23 +570,25 @@ async fn recorded_case(
 async fn replacing_the_current_tile_agent_cannot_restore_the_old_agents_broader_permissions()
 -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let home = root.path().join("home");
     let project = root.path().join("project");
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
     fs::create_dir_all(&project)?;
     fs::write(project.join("seed.txt"), "saved source")?;
     let old = Agent::example();
-    write_agent_file(&home.join("agents"), &old, None)?;
+    write_agent_file(&project.join(".loadout/agents"), &old, None)?;
     let mut replacement = Agent::example();
     replacement.id = uuid::Uuid::now_v7();
     replacement.name = "Read-only replacement".to_owned();
     replacement.file_access = loadout_lib::library::agents::FileAccess::LookOnly;
-    write_agent_file(&home.join("agents"), &replacement, None)?;
+    write_agent_file(&project.join(".loadout/agents"), &replacement, None)?;
     let recorded = json!({"format":1,"id":"permission-replay","name":"Saved permissions","links":[],
         "steps":[{"kind":"agent","id":"build","name":"Build","agent":old.id,"instructions":"Read the input", "overrides":{},"folder":{"use":"fresh-copy"},"at":{"x":0,"y":0}}]});
     let mut current = recorded.clone();
     current["steps"][0]["agent"] = json!(replacement.id);
-    fs::write(home.join("workflows/permission.json"), current.to_string())?;
+    fs::write(
+        project.join(".loadout/workflows/permission.json"),
+        current.to_string(),
+    )?;
     let id = uuid::Uuid::now_v7().to_string();
     let source = project
         .join(".loadout/runs")
@@ -595,7 +605,7 @@ async fn replacing_the_current_tile_agent_cannot_restore_the_old_agents_broader_
         "input_snapshot":{"id":input.id()},"project_instructions":{"id":instructions.id(),"digest":instructions.package_digest()?},
         "steps":[{"node_key":"build","effective":old}]}).to_string())?;
     let (sink, mut shown) = line_channel(32);
-    let desk = Desk::at(Some(home), project)
+    let desk = Desk::at(Some(project.join(".loadout")), project)
         .showing(Arc::new(Mutex::new(sink)))
         .starting_with(
             Arc::new(loadout_lib::commands::lead_start::LeadStarts::default()),

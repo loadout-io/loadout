@@ -321,6 +321,7 @@ async fn an_alive_group_does_not_hold_the_forward_pump_open_and_remains_owned()
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers_with(
@@ -393,6 +394,7 @@ async fn explicit_stop_also_closes_the_pump_and_retains_an_alive_group()
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers_with(Vec::new(), true, true, true, Arc::clone(&watch)),
@@ -509,6 +511,7 @@ async fn run_case_with(
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(calls, hang, Arc::clone(&watch)),

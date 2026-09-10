@@ -247,6 +247,7 @@ async fn three_hundred_lines() -> Result<(RunReport, PumpStats, Vec<Json>), Box<
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(LINES),

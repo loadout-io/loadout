@@ -78,7 +78,7 @@ async fn run(vendor: Vendor, driver_id: &'static str) -> Result<(), Box<dyn Erro
             ServiceOperation::Stop,
         ],
     }];
-    write_agent_file(&library.path().join("agents"), &agent, None)?;
+    write_agent_file(&project.path().join(".loadout/agents"), &agent, None)?;
     let workflow = library.path().join("apps.json");
     fs::write(
         &workflow,
@@ -107,6 +107,7 @@ async fn run(vendor: Vendor, driver_id: &'static str) -> Result<(), Box<dyn Erro
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: library.path(),
+        library: project.path().join(".loadout"),
         project: project.path(),
         store: &store,
         drivers,
@@ -191,7 +192,7 @@ async fn run_lead(vendor: Vendor, driver_id: &'static str) -> Result<(), Box<dyn
         service: "s_preview".to_owned(),
         operations: vec![ServiceOperation::Read],
     }];
-    write_agent_file(&library.path().join("agents"), &agent, None)?;
+    write_agent_file(&project.path().join(".loadout/agents"), &agent, None)?;
     let workflow = library.path().join("lead-apps.json");
     fs::write(
         &workflow,

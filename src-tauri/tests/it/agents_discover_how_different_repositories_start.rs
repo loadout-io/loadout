@@ -206,6 +206,7 @@ async fn run(variant: &str, case: Case) -> Result<Ran, Box<dyn Error>> {
     let processes = Arc::new(Processes::new());
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,
@@ -245,13 +246,12 @@ async fn run(variant: &str, case: Case) -> Result<Ran, Box<dyn Error>> {
     let report = report??;
     while source.try_next().is_some() {}
     let book = serde_json::from_slice(&fs::read(report.dir.join("run.json"))?)?;
-    let consumers = *seen.lock().unwrap_or_else(PoisonError::into_inner);
     Ok(Ran {
         book,
         mode: fs::read_to_string(control.path().join("mode")).unwrap_or_default(),
         prepared: fs::read_to_string(control.path().join("prepared")).unwrap_or_default(),
         cwd,
-        consumers,
+        consumers: *seen.lock().unwrap_or_else(PoisonError::into_inner),
         manual: control.path().join("manual").exists(),
         cwd_survived_graph,
     })

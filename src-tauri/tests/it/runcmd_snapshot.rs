@@ -259,6 +259,7 @@ async fn one_run(
 ) -> Result<RunReport, Box<dyn Error>> {
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store,
         drivers: fake_drivers(),

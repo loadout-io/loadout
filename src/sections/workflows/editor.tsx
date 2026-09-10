@@ -59,7 +59,8 @@ import * as agentsIo from '../agents/io';
 import { WorkflowCanvas } from './canvas/canvas';
 import type { NoteFocus } from './canvas/problems';
 import { RunButton, ThingsToFix, focusNote, howMany } from './canvas/problems';
-import * as disk from './io';
+import * as workflowIo from './io';
+import { activeWorkspace } from '../../state/workspaces';
 import { WorkflowContextPicker } from './step-panel/context-row';
 import { PanelForStep } from './step-panel/panel';
 
@@ -127,6 +128,8 @@ export function WorkflowEditor({
   onCreateAgent,
   openStep,
 }: WorkflowEditorProps): ReactElement {
+  const [folder] = useState(() => activeWorkspace()?.folder ?? null);
+  const [disk] = useState(() => workflowIo.forProject(folder));
   /* Magazyn powstaje DOKŁADNIE RAZ na zamontowanie tego ekranu — inicjalizator `useState`
    * biegnie tylko przy pierwszym renderze.
    *
@@ -153,7 +156,7 @@ export function WorkflowEditor({
          * płótno i panele: nie jest ona faktem o otwartym workflow. Okno między odczytem
          * a publikacją zamyka Rust — to on porównuje bajty (`agents/io.ts`, `revisionOf`). */
         saveAgent: async (agent) => {
-          await agentsIo.save(agent, await agentsIo.revisionOf(agent.id));
+          await agentsIo.save(agent, await agentsIo.revisionOf(agent.id, folder), folder);
         },
       },
       document,

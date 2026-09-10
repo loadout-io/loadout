@@ -266,6 +266,7 @@ async fn a_note_that_reached_the_model_says_when_and_the_forced_choice_reads_it(
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

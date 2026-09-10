@@ -98,6 +98,7 @@ async fn a_repo_with_no_commits_stops_the_run_with_a_sentence() -> Result<(), Bo
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&started)),

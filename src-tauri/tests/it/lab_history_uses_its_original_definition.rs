@@ -128,6 +128,7 @@ async fn measure_then_change(change: &str) -> Result<(), Box<dyn Error>> {
     let drivers: Drivers = Arc::new(|_| Arc::new(Fixture));
     let deps = RunDeps {
         home: &library,
+        library: library.clone(),
         project: &project,
         store: &store,
         drivers,

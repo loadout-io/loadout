@@ -37,6 +37,8 @@ pub struct InstructionSettings {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSettings {
     #[serde(default)]
+    pub default_lead: String,
+    #[serde(default)]
     pub instructions: InstructionSettings,
     #[serde(default)]
     pub lead_instructions: Option<bool>,
@@ -134,6 +136,7 @@ fn merge(target: &mut Value, patch: &Value) {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
+    default_lead: String,
     instructions: InstructionChoiceView,
     lead_instructions: Option<bool>,
     sources: Vec<InstructionSource>,
@@ -165,6 +168,7 @@ pub fn settings_view(project: &Path) -> io::Result<SettingsView> {
         discover(project)?
     };
     Ok(SettingsView {
+        default_lead: settings.default_lead,
         instructions: InstructionChoiceView {
             enabled: settings.instructions.enabled,
             include_local: settings.instructions.include_local,

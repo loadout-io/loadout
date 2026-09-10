@@ -353,6 +353,7 @@ pub(crate) async fn run_fixture(
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&script)),

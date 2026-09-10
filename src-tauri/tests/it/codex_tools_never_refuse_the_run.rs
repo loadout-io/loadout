@@ -390,6 +390,7 @@ impl Bench {
         let seen = Arc::new(Seen::default());
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &store,
             drivers: watching_drivers(Arc::clone(&seen), narrows),

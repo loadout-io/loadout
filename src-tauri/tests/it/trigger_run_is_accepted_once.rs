@@ -394,7 +394,12 @@ fn retry_refusals_leave_the_ledger_byte_identical() -> Result<(), Box<dyn Error>
     let missing_workflow = Bench::new()?;
     let delivery = missing_workflow.one_delivery()?;
     let _ = accept_fixture_delivery(&missing_workflow, &delivery, CREATED + 10)?;
-    fs::remove_file(missing_workflow.home.path().join("workflows/ship-it.json"))?;
+    fs::remove_file(
+        missing_workflow
+            .project
+            .path()
+            .join(".loadout/workflows/ship-it.json"),
+    )?;
     let ledger_file = trigger_ledger_path(missing_workflow.home.path(), "mine");
     let before = fs::read(&ledger_file)?;
     let refused = triggers::retry(missing_workflow.home.path(), "mine", CREATED + 100);
@@ -408,6 +413,10 @@ fn retry_refusals_leave_the_ledger_byte_identical() -> Result<(), Box<dyn Error>
         "missing-workflow refusal changed ledger"
     );
 
+    missing_and_broken_configs_leave_the_ledger_unchanged()
+}
+
+fn missing_and_broken_configs_leave_the_ledger_unchanged() -> Result<(), Box<dyn Error>> {
     // Brak i uszkodzenie configu sa rozstrzygane przed ledgerem, a blad nie odbija sekretu.
     let missing_config = Bench::new()?;
     let delivery = missing_config.one_delivery()?;
@@ -773,7 +782,7 @@ async fn crash_after_run_json_reconciles_without_a_second_directory_or_start()
         &run_file,
         serde_json::to_vec_pretty(&accepted_run_json(&delivery))?,
     )?;
-    fs::remove_file(bench.home.path().join("workflows/ship-it.json"))?;
+    fs::remove_file(bench.project.path().join(".loadout/workflows/ship-it.json"))?;
 
     let starts = Arc::new(AtomicUsize::new(0));
     let state = bench.app_state(counting_drivers(Arc::clone(&starts)))?;
@@ -858,7 +867,7 @@ async fn reconciliation_stays_bound_until_the_run_file_and_directory_are_durable
         );
     }
 
-    fs::remove_file(bench.home.path().join("workflows/ship-it.json"))?;
+    fs::remove_file(bench.project.path().join(".loadout/workflows/ship-it.json"))?;
     let starts = Arc::new(AtomicUsize::new(0));
     let store = Store::open(&bench.db())?;
     let deps = bench.deps(&store, counting_drivers(Arc::clone(&starts)));
@@ -892,7 +901,10 @@ async fn crash_before_run_json_reuses_the_bound_run_and_repairs_its_partial_copy
         "\"overrides\": {},",
         "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
     );
-    fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+    fs::write(
+        bench.project.path().join(".loadout/workflows/ship-it.json"),
+        fresh_copy,
+    )?;
     fs::write(bench.project.path().join("source.txt"), "the project")?;
 
     let run_dir = bench
@@ -965,7 +977,10 @@ async fn crash_after_worktree_add_rebuilds_the_dirty_human_diff_before_the_drive
         "\"overrides\": {},",
         "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
     );
-    fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+    fs::write(
+        bench.project.path().join(".loadout/workflows/ship-it.json"),
+        fresh_copy,
+    )?;
     let run_dir = bench
         .project
         .path()
@@ -1062,7 +1077,10 @@ async fn recovery_refuses_a_symlink_to_an_external_worktree_without_touching_it(
         "\"overrides\": {},",
         "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
     );
-    fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+    fs::write(
+        bench.project.path().join(".loadout/workflows/ship-it.json"),
+        fresh_copy,
+    )?;
     let run_dir = bench
         .project
         .path()
@@ -1151,7 +1169,10 @@ async fn recovery_refuses_a_symlinked_work_root_without_touching_the_external_wo
         "\"overrides\": {},",
         "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
     );
-    fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+    fs::write(
+        bench.project.path().join(".loadout/workflows/ship-it.json"),
+        fresh_copy,
+    )?;
     let run_dir = bench
         .project
         .path()
@@ -1233,7 +1254,10 @@ async fn recovery_never_reads_an_authorization_through_a_marker_link() -> Result
             "\"overrides\": {},",
             "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
         );
-        fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+        fs::write(
+            bench.project.path().join(".loadout/workflows/ship-it.json"),
+            fresh_copy,
+        )?;
         let run_dir = bench
             .project
             .path()
@@ -1328,7 +1352,10 @@ async fn recovery_recognizes_one_stale_admin_entry_without_a_synthetic_marker()
         "\"overrides\": {},",
         "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
     );
-    fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+    fs::write(
+        bench.project.path().join(".loadout/workflows/ship-it.json"),
+        fresh_copy,
+    )?;
     let run_dir = bench
         .project
         .path()
@@ -1419,7 +1446,10 @@ async fn recovery_refuses_a_locked_missing_worktree_without_unlocking_or_removin
         "\"overrides\": {},",
         "\"overrides\": {},\n    \"folder\": { \"use\": \"fresh-copy\" },",
     );
-    fs::write(bench.home.path().join("workflows/ship-it.json"), fresh_copy)?;
+    fs::write(
+        bench.project.path().join(".loadout/workflows/ship-it.json"),
+        fresh_copy,
+    )?;
     let run_dir = bench
         .project
         .path()
@@ -1576,6 +1606,7 @@ async fn a_project_opened_through_a_link_still_uses_its_real_generated_children(
     let starts = Arc::new(AtomicUsize::new(0));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.project.path().join(".loadout"),
         project: &opened,
         store: &store,
         drivers: counting_drivers(Arc::clone(&starts)),
@@ -1841,7 +1872,7 @@ async fn a_fresh_copy_key_cannot_escape_or_nest_under_the_runs_work_folder()
         workflow["steps"][0]["id"] = json!(malicious);
         workflow["steps"][0]["folder"] = json!({"use": "fresh-copy"});
         fs::write(
-            bench.home.path().join("workflows/ship-it.json"),
+            bench.project.path().join(".loadout/workflows/ship-it.json"),
             serde_json::to_vec_pretty(&workflow)?,
         )?;
 
@@ -2152,16 +2183,19 @@ impl Bench {
         let home = TempDir::new()?;
         let project = RealDir::new()?;
         fs::create_dir_all(home.path().join("triggers"))?;
-        fs::create_dir_all(home.path().join("agents"))?;
-        fs::create_dir_all(home.path().join("workflows"))?;
+        fs::create_dir_all(project.path().join(".loadout/agents"))?;
+        fs::create_dir_all(project.path().join(".loadout/workflows"))?;
         fs::create_dir_all(project.path().join(".loadout"))?;
         let workspace = project
             .path()
             .to_str()
             .ok_or("test workspace is not UTF-8")?;
         workspaces::save_workspace_inner(home.path(), "Trigger tests", workspace)?;
-        fs::write(home.path().join("agents/witness.md"), AGENT)?;
-        fs::write(home.path().join("workflows/ship-it.json"), WORKFLOW)?;
+        fs::write(project.path().join(".loadout/agents/witness.md"), AGENT)?;
+        fs::write(
+            project.path().join(".loadout/workflows/ship-it.json"),
+            WORKFLOW,
+        )?;
         fs::write(
             home.path().join("triggers/mine.json"),
             serde_json::to_vec_pretty(&json!({
@@ -2185,9 +2219,9 @@ impl Bench {
 
     fn workflow(&self, slug: &str, text: &str) -> Result<PathBuf, Box<dyn Error>> {
         let path = self
-            .home
+            .project
             .path()
-            .join("workflows")
+            .join(".loadout/workflows")
             .join(format!("{slug}.json"));
         fs::write(&path, text)?;
         Ok(path)
@@ -2195,7 +2229,7 @@ impl Bench {
 
     fn request(&self) -> RunRequest {
         RunRequest {
-            workflow: self.home.path().join("workflows/ship-it.json"),
+            workflow: self.project.path().join(".loadout/workflows/ship-it.json"),
             how_many_at_once: 1,
             task: Some("LOAD-1: Do the work\n\nbody".to_owned()),
             part: None,
@@ -2218,6 +2252,7 @@ impl Bench {
     fn deps<'a>(&'a self, store: &'a Store, drivers: Drivers) -> RunDeps<'a> {
         RunDeps {
             home: self.home.path(),
+            library: self.project.path().join(".loadout"),
             project: self.project.path(),
             store,
             drivers,

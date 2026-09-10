@@ -225,6 +225,7 @@ async fn scout_then_open() -> Result<(RunReport, Arc<Seen>, Bench), Box<dyn Erro
     let seen = Arc::new(Seen::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

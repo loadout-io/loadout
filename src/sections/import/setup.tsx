@@ -408,10 +408,12 @@ function unresolvedIn(preview: ImportPreview): string[] {
 export function ImportSetup({
   onClose,
   onImported,
-  io = Disk,
+  io: suppliedIo,
   initialPreview,
   agents = [],
 }: ImportSetupProps): ReactElement {
+  const [disk] = useState(() => Disk.forProject(activeWorkspace()?.folder ?? null));
+  const io = suppliedIo ?? disk;
   /* Import dotyczy projektu otwartego w bocznym menu, więc zaczyna od tego samego, jedynego
    * źródła prawdy co Run i Skills. Puste pole zostaje wyłącznie wtedy, gdy człowiek nie wybrał
    * jeszcze żadnego workspace; wpisanie ścieżki ręcznie nadal pozwala zeskanować inny projekt. */

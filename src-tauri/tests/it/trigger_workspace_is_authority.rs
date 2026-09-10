@@ -60,8 +60,10 @@ impl Bench {
         Ławka trzymająca surową ścieżkę sądziłaby ten skrót, a nie wyzwalacz. */
         let workspace_a = fs::canonicalize(&workspace_a)?;
         let workspace_b = fs::canonicalize(&workspace_b)?;
-        fs::create_dir_all(home.path().join("workflows"))?;
-        fs::write(home.path().join("workflows/ship.json"), WORKFLOW)?;
+        for workspace in [&workspace_a, &workspace_b] {
+            fs::create_dir_all(workspace.join(".loadout/workflows"))?;
+            fs::write(workspace.join(".loadout/workflows/ship.json"), WORKFLOW)?;
+        }
         workspaces::save_workspace_inner(home.path(), "Workspace A", path_text(&workspace_a)?)?;
         workspaces::save_workspace_inner(home.path(), "Workspace B", path_text(&workspace_b)?)?;
         let entry = triggers::create_with(

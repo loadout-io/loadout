@@ -117,6 +117,7 @@ async fn a_portable_parallel_repair_preserves_files_and_the_lead_addresses_that_
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &home,
+        library: home.clone(),
         project: &project,
         store: &store,
         drivers,

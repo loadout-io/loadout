@@ -466,7 +466,9 @@ impl Bench {
     /// tym, co kanoniczna tożsamość ma skleić w jeden klucz.
     fn folder(&self, name: &str) -> Result<PathBuf, Box<dyn Error>> {
         let path = self.project.path().join(name);
-        fs::create_dir_all(path.join(".loadout"))?;
+        // 2026-09-10: each test workspace explicitly owns its agent definition.
+        fs::create_dir_all(path.join(".loadout/agents"))?;
+        fs::write(path.join(".loadout/agents/hand.md"), HAND_FILE)?;
         Ok(path)
     }
 

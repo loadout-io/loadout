@@ -203,6 +203,7 @@ async fn run_json_carries_what_the_cli_loaded_from_the_folder() -> Result<(), Bo
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(&bench.folder),

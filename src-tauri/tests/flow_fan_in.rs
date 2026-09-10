@@ -167,6 +167,7 @@ async fn two_agents_in_their_own_copies_and_the_step_below_reads_both_files()
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: &bench.home,
+        library: bench.home.clone(),
         project: &bench.project,
         store: &store,
         drivers: real_drivers(),

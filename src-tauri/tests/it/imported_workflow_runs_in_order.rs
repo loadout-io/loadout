@@ -150,6 +150,7 @@ async fn imported_fan_out_and_join_reach_the_real_run_path() -> Result<(), Box<d
     let watch = Arc::new(Watch::default());
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

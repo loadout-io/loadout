@@ -211,6 +211,7 @@ async fn a_note_edited_mid_run_does_not_change_what_the_next_step_is_told()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen), bench.notes()),

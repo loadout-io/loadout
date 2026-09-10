@@ -232,6 +232,7 @@ async fn read_run_says_what_loadout_did_not_give_this_step() -> Result<(), Box<d
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(&bench.folder),

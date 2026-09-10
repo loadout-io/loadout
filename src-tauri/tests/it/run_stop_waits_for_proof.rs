@@ -164,6 +164,7 @@ async fn stop_comes_back_only_after_the_group_is_proved_dead() -> Result<(), Box
     let started: Arc<Mutex<Option<GroupId>>> = Arc::new(Mutex::new(None));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(script, ready.clone(), Arc::clone(&started)),

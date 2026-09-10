@@ -85,6 +85,7 @@ async fn a_check_step_runs_without_ever_asking_for_an_agent() -> Result<(), Box<
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: counting_drivers(Arc::clone(&watch), Arc::clone(&handed_out)),

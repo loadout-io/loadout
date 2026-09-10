@@ -139,6 +139,7 @@ function screen(
   const store = createTriggersStore(IO, CLOCK, RUN);
   store.setState({
     triggers: options.triggers ?? [],
+    workflowFolder: WORKSPACE,
     workflows: [
       { path: 'analysis.json', name: 'Analysis' },
       { path: 'verify.json', name: 'Verify' },
@@ -418,9 +419,9 @@ describe('the real Triggers screen owns the whole Linear setup', () => {
     );
   });
 
-  it('keeps an unreadable hand-written file as a named problem with zero controls', () => {
-    const one = row(screen({ triggers: [BROKEN] }), BROKEN.slug);
-    expect(one).toContain(BROKEN.problem);
-    expect(one).not.toMatch(/<(?:button|input|select)\b/);
+  it('does not attribute a file with no readable project to the open project', () => {
+    const markup = screen({ triggers: [BROKEN, HEALTHY] });
+    expect(row(markup, HEALTHY.slug)).toContain('Analysis');
+    expect(row(markup, BROKEN.slug)).toBe('');
   });
 });

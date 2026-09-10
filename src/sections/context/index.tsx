@@ -22,12 +22,11 @@ import type { PageMaker } from '../../state/context';
 import { useAgentApps } from '../../state/agent-apps';
 import { createContextStore, matching } from '../../state/context';
 import * as io from './io';
+import { activeWorkspace } from '../../state/workspaces';
 import ContextEditor from './editor';
 
 /** Prawdziwy magazyn tej sekcji — jeden na okno, wstrzyknięty krawędzią z `./io.ts`. */
-const useContext = createContextStore(io);
-
-export type ContextStore = typeof useContext;
+export type ContextStore = ReturnType<typeof createContextStore>;
 
 export interface ContextScreenProps {
   /** Bez propsu ekran bierze prawdziwy magazyn, z propsem ten z testu. */
@@ -56,7 +55,11 @@ const NOTHING_YET = 'No context sets yet.';
 const WHAT_A_SET_IS =
   'A set holds the material you want an agent to work from — notes, requirements, what matters.';
 
-export default function ContextScreen({ store = useContext }: ContextScreenProps): ReactElement {
+export default function ContextScreen({ store: supplied }: ContextScreenProps): ReactElement {
+  const [ownStore] = useState(() =>
+    createContextStore(io.forProject(activeWorkspace()?.folder ?? null)),
+  );
+  const store = supplied ?? ownStore;
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const apps = useSyncExternalStore(
     useAgentApps.subscribe,

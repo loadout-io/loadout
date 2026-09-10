@@ -302,6 +302,7 @@ pub(crate) mod support {
         let drivers: Drivers = Arc::new(move |_| Arc::clone(&driver));
         let deps = RunDeps {
             home: rig.home.path(),
+            library: rig.home.path().to_path_buf(),
             project: rig.project(),
             store,
             drivers,

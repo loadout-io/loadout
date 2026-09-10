@@ -276,7 +276,7 @@ describe('each trigger keeps its own polling cadence on the root heartbeat', () 
     );
 
     store.getState().startWatching();
-    await settle();
+    await store.getState().load();
     await clock.advanceMinutes(14);
     expect(checked).not.toHaveBeenCalled();
     await clock.advanceMinutes(1);

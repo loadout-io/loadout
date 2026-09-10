@@ -166,6 +166,7 @@ async fn real_stop_proves_the_term_resistant_group_dead() -> Result<(), Box<dyn 
     let started: Arc<Mutex<Option<GroupId>>> = Arc::new(Mutex::new(None));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(script, ready.clone(), Arc::clone(&started)),

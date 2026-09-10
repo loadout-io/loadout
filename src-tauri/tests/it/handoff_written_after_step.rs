@@ -392,6 +392,7 @@ async fn look_then_decide() -> Result<(RunReport, Bench), Box<dyn Error>> {
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(),

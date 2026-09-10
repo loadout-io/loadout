@@ -97,6 +97,7 @@ async fn the_step_sees_what_the_human_sees_and_hears_what_it_did_not_get()
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

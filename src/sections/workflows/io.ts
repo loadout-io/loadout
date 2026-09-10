@@ -34,18 +34,18 @@ import { activeWorkspace } from '../../state/workspaces';
  *
  * `undefined`, a nie pusty napis, kiedy człowiek nie wybrał jeszcze workspace'u: `Option<String>`
  * po tamtej stronie ma wtedy znaczyć „nie powiedziano", a nie „folder o pustej nazwie". */
-function here(): string | undefined {
-  return activeWorkspace()?.folder ?? undefined;
+function here(): string | null {
+  return activeWorkspace()?.folder ?? null;
 }
 
 /** Wszystko, co leży w katalogu workflow, każdy plik ze swoją nazwą. */
-export function listDefinitions(): Promise<Definition<WorkflowEntry>[]> {
-  return invoke<Definition<WorkflowEntry>[]>('list_workflows', { folder: here() });
+export function listDefinitions(folder = here()): Promise<Definition<WorkflowEntry>[]> {
+  return invoke<Definition<WorkflowEntry>[]>('list_workflows', { folder });
 }
 
 /** Callery poza ekranem Workflows potrzebują tylko poprawnie wczytanych plików. */
-export async function list(): Promise<WorkflowEntry[]> {
-  return healthyOnly(definitionsOf(await listDefinitions()));
+export async function list(folder = here()): Promise<WorkflowEntry[]> {
+  return healthyOnly(definitionsOf(await listDefinitions(folder)));
 }
 
 /** uuid v7, wybite po stronie Rusta — ta sama mennica, co w sekcji Agenci. */
@@ -66,8 +66,8 @@ export interface OpenWorkflow {
 }
 
 /** Wczytuje jeden plik workflow po jego nazwie w katalogu, razem z jego rewizją. */
-export function load(path: string): Promise<OpenWorkflow> {
-  return invoke<OpenWorkflow>('load_workflow', { fileName: path, folder: here() });
+export function load(path: string, folder = here()): Promise<OpenWorkflow> {
+  return invoke<OpenWorkflow>('load_workflow', { fileName: path, folder });
 }
 
 /**
@@ -83,18 +83,19 @@ export function write(
   path: string,
   workflow: WorkflowFile,
   expectedRevision: string | null,
+  folder = here(),
 ): Promise<string> {
   return invoke<string>('save_workflow', {
     fileName: path,
     workflow,
     expectedRevision,
-    folder: here(),
+    folder,
   });
 }
 
 /** Usuwa plik workflow z katalogu. */
-export function remove(path: string): Promise<void> {
-  return invoke<void>('delete_workflow', { fileName: path, folder: here() });
+export function remove(path: string, folder = here()): Promise<void> {
+  return invoke<void>('delete_workflow', { fileName: path, folder });
 }
 
 /**
@@ -102,13 +103,16 @@ export function remove(path: string): Promise<void> {
  * druga lista uwag byłaby drugim zdaniem o tym samym defekcie, a jedno z dwóch zawsze jest
  * nieaktualne (niezmiennik 13).
  */
-export function check(workflow: WorkflowFile): Promise<Note[]> {
-  return invoke<Note[]>('check_workflow', { workflow });
+export function check(workflow: WorkflowFile, folder = here()): Promise<Note[]> {
+  return invoke<Note[]>('check_workflow', { workflow, folder });
 }
 
 /** Efektywny wybór i katalog do obu pickerów. `null` jest dozwolone dla starszej atrapy IPC. */
-export function resolveContext(workflow: WorkflowFile): Promise<WorkflowContextView | null> {
-  return invoke<WorkflowContextView | null>('resolve_workflow_context', { workflow });
+export function resolveContext(
+  workflow: WorkflowFile,
+  folder = here(),
+): Promise<WorkflowContextView | null> {
+  return invoke<WorkflowContextView | null>('resolve_workflow_context', { workflow, folder });
 }
 
 /** Źródło planu policzone z tego samego rozwiniętego grafu, którego używa Start. */
@@ -149,4 +153,20 @@ export function previewAdditionalInputs(
   patterns: readonly string[],
 ): Promise<AdditionalInputPreview> {
   return invoke<AdditionalInputPreview>('preview_additional_inputs', { folder, patterns });
+}
+
+/** Rewizja i katalog pozostają parą także po przełączeniu projektu. */
+export function forProject(folder: string | null) {
+  return {
+    list: () => listDefinitions(folder),
+    newId,
+    write: (path: string, document: WorkflowFile, revision: string | null) =>
+      write(path, document, revision, folder),
+    remove: (path: string) => remove(path, folder),
+    load: (path: string) => load(path, folder),
+    check: (document: WorkflowFile) => check(document, folder),
+    resolveContext: (document: WorkflowFile) => resolveContext(document, folder),
+    resolvePlan,
+    listHostMaterial: () => listHostMaterial(folder),
+  };
 }

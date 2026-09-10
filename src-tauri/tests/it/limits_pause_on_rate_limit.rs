@@ -167,6 +167,7 @@ async fn a_provider_limit_pauses_the_run_and_it_comes_back_on_its_own() -> Resul
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch), resets_at),

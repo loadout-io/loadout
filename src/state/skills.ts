@@ -418,349 +418,366 @@ const NOWHERE_TO_LAND =
  * zdaniem z rdzenia (`skills::Error::NoProjectRoot`), zamiast zapisywać umiejętność pod
  * katalogiem, w którym akurat wstała aplikacja.
  */
-function whereWeWork(): string | null {
-  return activeWorkspace()?.folder ?? null;
-}
+export function createSkillsStore(folder?: string | null) {
+  const whereWeWork = (): string | null =>
+    folder === undefined ? (activeWorkspace()?.folder ?? null) : folder;
+  return create<SkillsState>()((set, get) => ({
+    pending: null,
+    acknowledged: [],
+    message: null,
+    installed: [],
+    adding: null,
+    agents: [],
+    want: '',
+    chosenAgent: '',
+    writing: false,
+    landing: 'this-project',
+    folders: 'reading',
+    removing: null,
 
-export const useSkills = create<SkillsState>()((set, get) => ({
-  pending: null,
-  acknowledged: [],
-  message: null,
-  installed: [],
-  adding: null,
-  agents: [],
-  want: '',
-  chosenAgent: '',
-  writing: false,
-  landing: 'everywhere',
-  folders: 'reading',
-  removing: null,
+    chooseLanding: (landing: Landing) => {
+      set({ landing });
+    },
 
-  chooseLanding: (landing: Landing) => {
-    set({ landing });
-  },
+    load: async () => {
+      /* „CZYTAM" ZAPALA SIĘ PRZED PYTANIEM, nie po nim. Ustawione po `await` nie zapaliłoby się
+       * ani razu: między jednym a drugim nie ma renderu, a to właśnie ta chwila jest cała.
+       * Drugie wejście w sekcję przechodzi tędy tak samo — lista zostaje na ekranie, dopóki
+       * odczyt nie wróci, bo stan „czytam" rozstrzyga wyłącznie o PUSTYM ekranie. */
+      set({ folders: 'reading' });
+      try {
+        /* PODMIANA CAŁEJ LISTY, nigdy dopisanie: drugie wejście w sekcję pokazałoby wtedy każdą
+         * umiejętność dwa razy, a licznik nad sekcją policzyłby dwa razy te same pliki.
+         * `pending` i `acknowledged` zostają nietknięte — odczyt katalogu nie ma nic wspólnego
+         * z przeglądem, który czeka na człowieka, a skasowanie go tutaj kasowałoby to, co ktoś
+         * właśnie czyta. */
+        /* FOLDER JEDZIE RAZEM Z PYTANIEM, bo lista odpowiada na „co widzi agent pracujący TUTAJ",
+         * a nie na „co kiedykolwiek zapisaliśmy". Bez niego umiejętność zapisana w projekcie nie
+         * pojawiłaby się na ekranie — czyli człowiek by jej nie zobaczył i nie miałby jak jej
+         * zabrać, choć leży w żywej konfiguracji jego narzędzi agentowych. Katalogi wylicza dalej
+         * Rust i tylko Rust (`skills::place::destinations`, niezmiennik 23). */
+        set({ installed: await listSkills(whereWeWork()), message: null, folders: 'read' });
+      } catch (error) {
+        /* Odmowa NIE leci w górę: wywołującym jest wejście w sekcję, a wyjątek stamtąd wywraca
+         * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — to, co sekcja pamięta
+         * z poprzedniego odczytu, nie jest tym, co leży w katalogach agentów, a tylko o tym
+         * drugim ta lista mówi (niezmiennik 4). */
+        set({ installed: [], message: why(error, COULD_NOT_READ), folders: 'unreadable' });
+      }
+    },
 
-  load: async () => {
-    /* „CZYTAM" ZAPALA SIĘ PRZED PYTANIEM, nie po nim. Ustawione po `await` nie zapaliłoby się
-     * ani razu: między jednym a drugim nie ma renderu, a to właśnie ta chwila jest cała.
-     * Drugie wejście w sekcję przechodzi tędy tak samo — lista zostaje na ekranie, dopóki
-     * odczyt nie wróci, bo stan „czytam" rozstrzyga wyłącznie o PUSTYM ekranie. */
-    set({ folders: 'reading' });
-    try {
-      /* PODMIANA CAŁEJ LISTY, nigdy dopisanie: drugie wejście w sekcję pokazałoby wtedy każdą
-       * umiejętność dwa razy, a licznik nad sekcją policzyłby dwa razy te same pliki.
-       * `pending` i `acknowledged` zostają nietknięte — odczyt katalogu nie ma nic wspólnego
-       * z przeglądem, który czeka na człowieka, a skasowanie go tutaj kasowałoby to, co ktoś
-       * właśnie czyta. */
-      /* FOLDER JEDZIE RAZEM Z PYTANIEM, bo lista odpowiada na „co widzi agent pracujący TUTAJ",
-       * a nie na „co kiedykolwiek zapisaliśmy". Bez niego umiejętność zapisana w projekcie nie
-       * pojawiłaby się na ekranie — czyli człowiek by jej nie zobaczył i nie miałby jak jej
-       * zabrać, choć leży w żywej konfiguracji jego narzędzi agentowych. Katalogi wylicza dalej
-       * Rust i tylko Rust (`skills::place::destinations`, niezmiennik 23). */
-      set({ installed: await listSkills(whereWeWork()), message: null, folders: 'read' });
-    } catch (error) {
-      /* Odmowa NIE leci w górę: wywołującym jest wejście w sekcję, a wyjątek stamtąd wywraca
-       * ekran zamiast pokazać zdanie. Lista pustoszeje z rozmysłem — to, co sekcja pamięta
-       * z poprzedniego odczytu, nie jest tym, co leży w katalogach agentów, a tylko o tym
-       * drugim ta lista mówi (niezmiennik 4). */
-      set({ installed: [], message: why(error, COULD_NOT_READ), folders: 'unreadable' });
-    }
-  },
+    review: async (url: string) => {
+      try {
+        /* Przeczytane znaleziska NIE przenoszą się na następny import. Ta sama karta z tym samym
+         * identyfikatorem znaleziska jest innym plikiem z innej strony. */
+        set({ pending: await readLink(url, whereWeWork()), acknowledged: [], message: null });
+      } catch (error) {
+        set({
+          pending: null,
+          acknowledged: [],
+          message: why(error, 'Loadout could not read that link.'),
+        });
+      }
+    },
 
-  review: async (url: string) => {
-    try {
-      /* Przeczytane znaleziska NIE przenoszą się na następny import. Ta sama karta z tym samym
-       * identyfikatorem znaleziska jest innym plikiem z innej strony. */
-      set({ pending: await readLink(url), acknowledged: [], message: null });
-    } catch (error) {
+    acknowledge: (findingId: string) => {
+      const { acknowledged } = get();
+      if (acknowledged.includes(findingId)) return;
+      set({ acknowledged: [...acknowledged, findingId] });
+    },
+
+    add: async () => {
+      const { pending, acknowledged, installed } = get();
+      if (pending === null) return;
+
+      /* Warunek stoi na WYWOŁANIU, nie na widoku. Wyłączony przycisk jest sugestią: zostaje
+       * klawiatura, skrót i druga ścieżka w interfejsie — a ta funkcja jest jedynym miejscem,
+       * przez które umiejętność z sieci może trafić na dysk. */
+      const waiting = unread(pending, acknowledged);
+      if (waiting.length > 0) {
+        set({ message: held(waiting.length) });
+        return;
+      }
+
+      try {
+        /* Jedzie CAŁY przegląd, ten sam obiekt, który przyszedł z Rusta. Ciało złożone tu jeszcze
+         * raz byłoby tekstem, którego nikt nie przeskanował.
+         *
+         * WYBÓR CZŁOWIEKA I FOLDER JADĄ RAZEM Z NIM. Bez wyboru kontrolka na ekranie byłaby
+         * kontrolką bez skutku (niezmiennik 16) dokładnie tam, gdzie skutkiem jest zapis do żywej
+         * konfiguracji cudzych narzędzi; bez folderu Rust nie miałby korzenia, pod którym pisać,
+         * a `place::destinations` odpowiada na zakres bez korzenia ścieżkami WZGLĘDNYMI.
+         *
+         * FOLDER JEDZIE PRZY OBU ZAKRESACH, nie tylko przy „ten projekt": pytanie „gdzie
+         * pracujemy" ma jedną odpowiedź niezależnie od tego, co człowiek wybrał, a warunek tutaj
+         * byłby drugim miejscem, w którym mieszka odwzorowanie wyboru na korzeń (niezmiennik 13).
+         * Odwzorowanie stoi w `Landing -> Scope`, po tamtej stronie granicy. */
+        await install(pending, get().landing, whereWeWork());
+      } catch (error) {
+        set({ message: why(error, 'Loadout could not add that skill.') });
+        return;
+      }
+
       set({
         pending: null,
         acknowledged: [],
-        message: why(error, 'Loadout could not read that link.'),
+        message: null,
+        /* Znacznik przeżywa instalację. Zastępuje podpisy i weryfikację pochodzenia, których w v1
+         * nie ma, więc znacznik gasnący po sukcesie nie znaczy nic.
+         *
+         * 2026-08-18 — pozycja o tej samej nazwie jest WYMIENIANA, nie doklejana. Nazwa
+         * umiejętności jest nazwą katalogu na dysku, więc drugie dodanie tego samego linku
+         * nadpisuje jeden plik, a lista pokazywała po nim DWA wiersze i licznik „N saved"
+         * liczył ten jeden plik dwa razy. Rust liczy to samo zbiorem
+         * (`list_skills_inner`, `BTreeSet`) — dwie odpowiedzi na jedno pytanie muszą się
+         * zgadzać co do znaku (niezmiennik 13). */
+        installed: [
+          ...installed.filter((one) => one.name !== pending.name),
+          /* Opis bierzemy z tego, co właśnie zainstalowaliśmy: `Import` już go niesie, a wiersz
+           * wstawiony bez niego pokazywałby przez chwilę „ta umiejętność nie mówi, po co jest"
+           * o umiejętności, której opis człowiek przed sekundą czytał na karcie przeglądu. */
+          {
+            name: pending.name,
+            fromTheInternet: pending.fromTheInternet,
+            summary: pending.summary,
+          },
+        ],
       });
-    }
-  },
+    },
 
-  acknowledge: (findingId: string) => {
-    const { acknowledged } = get();
-    if (acknowledged.includes(findingId)) return;
-    set({ acknowledged: [...acknowledged, findingId] });
-  },
+    openAdd: () => {
+      /* Otwarty panel zostaje taki, jaki jest. Wyzerowanie go tutaj kasowałoby akapit, który
+       * człowiek napisał, za drugie kliknięcie w ten sam przycisk. */
+      set({ adding: get().adding ?? NOTHING_TYPED });
+    },
 
-  add: async () => {
-    const { pending, acknowledged, installed } = get();
-    if (pending === null) return;
+    closeAdd: () => {
+      set({ adding: null });
+    },
 
-    /* Warunek stoi na WYWOŁANIU, nie na widoku. Wyłączony przycisk jest sugestią: zostaje
-     * klawiatura, skrót i druga ścieżka w interfejsie — a ta funkcja jest jedynym miejscem,
-     * przez które umiejętność z sieci może trafić na dysk. */
-    const waiting = unread(pending, acknowledged);
-    if (waiting.length > 0) {
-      set({ message: held(waiting.length) });
-      return;
-    }
+    typeInto: (part: Partial<AddPanel>) => {
+      const { adding } = get();
+      /* Pisanie w panelu, którego nie ma, nie otwiera panelu: „otwórz" jest osobną decyzją
+       * człowieka i ma zostać jedna. */
+      if (adding === null) return;
+      set({ adding: { ...adding, ...part } });
+    },
 
-    try {
-      /* Jedzie CAŁY przegląd, ten sam obiekt, który przyszedł z Rusta. Ciało złożone tu jeszcze
-       * raz byłoby tekstem, którego nikt nie przeskanował.
-       *
-       * WYBÓR CZŁOWIEKA I FOLDER JADĄ RAZEM Z NIM. Bez wyboru kontrolka na ekranie byłaby
-       * kontrolką bez skutku (niezmiennik 16) dokładnie tam, gdzie skutkiem jest zapis do żywej
-       * konfiguracji cudzych narzędzi; bez folderu Rust nie miałby korzenia, pod którym pisać,
-       * a `place::destinations` odpowiada na zakres bez korzenia ścieżkami WZGLĘDNYMI.
-       *
-       * FOLDER JEDZIE PRZY OBU ZAKRESACH, nie tylko przy „ten projekt": pytanie „gdzie
-       * pracujemy" ma jedną odpowiedź niezależnie od tego, co człowiek wybrał, a warunek tutaj
-       * byłby drugim miejscem, w którym mieszka odwzorowanie wyboru na korzeń (niezmiennik 13).
-       * Odwzorowanie stoi w `Landing -> Scope`, po tamtej stronie granicy. */
-      await install(pending, get().landing, whereWeWork());
-    } catch (error) {
-      set({ message: why(error, 'Loadout could not add that skill.') });
-      return;
-    }
+    writeItHere: async () => {
+      const { adding } = get();
+      if (adding === null) return;
+      try {
+        const pending = await authorSkill(
+          {
+            name: adding.name,
+            whenToUse: adding.whenToUse,
+            whatToDo: adding.whatToDo,
+          },
+          whereWeWork(),
+        );
+        set({ pending, acknowledged: [], message: null, adding: null });
+      } catch (error) {
+        set({ message: why(error, 'Loadout could not save that skill.') });
+      }
+    },
 
-    set({
-      pending: null,
-      acknowledged: [],
-      message: null,
-      /* Znacznik przeżywa instalację. Zastępuje podpisy i weryfikację pochodzenia, których w v1
-       * nie ma, więc znacznik gasnący po sukcesie nie znaczy nic.
-       *
-       * 2026-08-18 — pozycja o tej samej nazwie jest WYMIENIANA, nie doklejana. Nazwa
-       * umiejętności jest nazwą katalogu na dysku, więc drugie dodanie tego samego linku
-       * nadpisuje jeden plik, a lista pokazywała po nim DWA wiersze i licznik „N saved"
-       * liczył ten jeden plik dwa razy. Rust liczy to samo zbiorem
-       * (`list_skills_inner`, `BTreeSet`) — dwie odpowiedzi na jedno pytanie muszą się
-       * zgadzać co do znaku (niezmiennik 13). */
-      installed: [
-        ...installed.filter((one) => one.name !== pending.name),
-        /* Opis bierzemy z tego, co właśnie zainstalowaliśmy: `Import` już go niesie, a wiersz
-         * wstawiony bez niego pokazywałby przez chwilę „ta umiejętność nie mówi, po co jest"
-         * o umiejętności, której opis człowiek przed sekundą czytał na karcie przeglądu. */
-        {
-          name: pending.name,
-          fromTheInternet: pending.fromTheInternet,
-          summary: pending.summary,
-        },
-      ],
-    });
-  },
+    loadAgents: async () => {
+      try {
+        const saved = await listSavedAgents(whereWeWork());
+        /* DWA POLA Z PIĘTNASTU. Model, prompt systemowy i dial liczy Rust z zapisanej definicji
+         * (`library::agents::resolve`), więc trzymanie ich tutaj byłoby drugim egzemplarzem
+         * odpowiedzi, której ta sekcja i tak nie używa — i pierwszym miejscem, przez które
+         * okno mogłoby te trzy rzeczy podmienić. */
+        const agents: SavedAgent[] = saved.map((one) => ({ id: one.id, name: one.name }));
+        /* WYBÓR TRZYMA SIĘ TEGO, CO WIDAĆ. Pusty wybór przy niepustej liście znaczy ekran,
+         * na którym przeglądarka pokazuje pierwszą pozycję jako zaznaczoną, a magazyn nie zgadza
+         * się z ekranem (niezmiennik 13) — i wtedy pytanie jedzie do kogoś innego, niż człowiek
+         * przeczytał. Agent, którego człowiek wybrał, a potem usunął, wraca tą samą drogą. */
+        const chosen = get().chosenAgent;
+        set({
+          agents,
+          chosenAgent: agents.some((one) => one.id === chosen) ? chosen : (agents.at(0)?.id ?? ''),
+        });
+      } catch (error) {
+        /* Lista pustoszeje z rozmysłem, tak samo jak `installed` w `load`: to, co sekcja pamięta
+         * z poprzedniego odczytu, nie jest tym, co leży na dysku (niezmiennik 4). */
+        set({ agents: [], chosenAgent: '', message: why(error, COULD_NOT_READ_AGENTS) });
+      }
+    },
 
-  openAdd: () => {
-    /* Otwarty panel zostaje taki, jaki jest. Wyzerowanie go tutaj kasowałoby akapit, który
-     * człowiek napisał, za drugie kliknięcie w ten sam przycisk. */
-    set({ adding: get().adding ?? NOTHING_TYPED });
-  },
+    sayWhatYouWant: (said: string) => {
+      set({ want: said });
+    },
 
-  closeAdd: () => {
-    set({ adding: null });
-  },
+    chooseAgent: (id: string) => {
+      set({ chosenAgent: id });
+    },
 
-  typeInto: (part: Partial<AddPanel>) => {
-    const { adding } = get();
-    /* Pisanie w panelu, którego nie ma, nie otwiera panelu: „otwórz" jest osobną decyzją
-     * człowieka i ma zostać jedna. */
-    if (adding === null) return;
-    set({ adding: { ...adding, ...part } });
-  },
-
-  writeItHere: async () => {
-    const { adding } = get();
-    if (adding === null) return;
-    try {
-      const pending = await authorSkill({
-        name: adding.name,
-        whenToUse: adding.whenToUse,
-        whatToDo: adding.whatToDo,
-      });
-      set({ pending, acknowledged: [], message: null, adding: null });
-    } catch (error) {
-      set({ message: why(error, 'Loadout could not save that skill.') });
-    }
-  },
-
-  loadAgents: async () => {
-    try {
-      const saved = await listSavedAgents();
-      /* DWA POLA Z PIĘTNASTU. Model, prompt systemowy i dial liczy Rust z zapisanej definicji
-       * (`library::agents::resolve`), więc trzymanie ich tutaj byłoby drugim egzemplarzem
-       * odpowiedzi, której ta sekcja i tak nie używa — i pierwszym miejscem, przez które
-       * okno mogłoby te trzy rzeczy podmienić. */
-      const agents: SavedAgent[] = saved.map((one) => ({ id: one.id, name: one.name }));
-      /* WYBÓR TRZYMA SIĘ TEGO, CO WIDAĆ. Pusty wybór przy niepustej liście znaczy ekran,
-       * na którym przeglądarka pokazuje pierwszą pozycję jako zaznaczoną, a magazyn nie zgadza
-       * się z ekranem (niezmiennik 13) — i wtedy pytanie jedzie do kogoś innego, niż człowiek
-       * przeczytał. Agent, którego człowiek wybrał, a potem usunął, wraca tą samą drogą. */
-      const chosen = get().chosenAgent;
-      set({
-        agents,
-        chosenAgent: agents.some((one) => one.id === chosen) ? chosen : (agents.at(0)?.id ?? ''),
-      });
-    } catch (error) {
-      /* Lista pustoszeje z rozmysłem, tak samo jak `installed` w `load`: to, co sekcja pamięta
-       * z poprzedniego odczytu, nie jest tym, co leży na dysku (niezmiennik 4). */
-      set({ agents: [], chosenAgent: '', message: why(error, COULD_NOT_READ_AGENTS) });
-    }
-  },
-
-  sayWhatYouWant: (said: string) => {
-    set({ want: said });
-  },
-
-  chooseAgent: (id: string) => {
-    set({ chosenAgent: id });
-  },
-
-  askAnAgent: async () => {
-    const { adding, agents, chosenAgent, want, writing } = get();
-    /* Pytanie zadane, kiedy panelu nie ma, nie miałoby gdzie oddać trzech pól: „otwórz panel"
-     * jest osobną decyzją człowieka i ma zostać jedna (`typeInto` odmawia tak samo). */
-    if (adding === null) return;
-    /* Drugie pytanie w trakcie pisania odbija się TUTAJ, a nie na wyłączonym przycisku: zgoda
-     * musi być warunkiem WYWOŁANIA (nagłówek tego pliku). Bez zdania z rozmysłu — na ekranie
-     * stoi już żywy region mówiący, że agent pisze, i kontrolka, która to zatrzymuje. Drugie
-     * zdanie o tym samym fakcie byłoby drugim miejscem na jedną odpowiedź (niezmiennik 13). */
-    if (writing) return;
-    if (agents.length === 0) {
-      set({ message: NOBODY_TO_ASK });
-      return;
-    }
-
-    /* Pusty wybór przy niepustej liście to stan, w którym ekran pokazuje PIERWSZĄ pozycję jako
-     * zaznaczoną — tak działa `<select>` bez pasującej opcji. Pytanie jedzie więc do tego,
-     * kogo człowiek widzi, a nie do nikogo. Normalnie tego stanu nie ma: `loadAgents` ustawia
-     * wybór razem z listą. */
-    const agent = chosenAgent === '' ? (agents.at(0)?.id ?? '') : chosenAgent;
-
-    set({ writing: true, message: null });
-    try {
-      const drafted = await askRustToDraft(want, agent);
-      /* `null` znaczy „człowiek to zatrzymał" i jest WARTOŚCIĄ, nie odmową (niezmiennik 7):
-       * gaśnie stan „pisze" i nie ma ani draftu, ani zdania o awarii. Dowód zejścia grupy
-       * przyjeżdża tą samą drogą jako odmowa — i tylko wtedy, gdy go NIE MA. */
-      if (drafted === null) {
-        set({ writing: false });
+    askAnAgent: async () => {
+      const { adding, agents, chosenAgent, want, writing } = get();
+      /* Pytanie zadane, kiedy panelu nie ma, nie miałoby gdzie oddać trzech pól: „otwórz panel"
+       * jest osobną decyzją człowieka i ma zostać jedna (`typeInto` odmawia tak samo). */
+      if (adding === null) return;
+      /* Drugie pytanie w trakcie pisania odbija się TUTAJ, a nie na wyłączonym przycisku: zgoda
+       * musi być warunkiem WYWOŁANIA (nagłówek tego pliku). Bez zdania z rozmysłu — na ekranie
+       * stoi już żywy region mówiący, że agent pisze, i kontrolka, która to zatrzymuje. Drugie
+       * zdanie o tym samym fakcie byłoby drugim miejscem na jedną odpowiedź (niezmiennik 13). */
+      if (writing) return;
+      if (agents.length === 0) {
+        set({ message: NOBODY_TO_ASK });
         return;
       }
-      const panel = get().adding;
-      if (panel === null) {
-        set({ writing: false, message: NOWHERE_TO_LAND });
+
+      /* Pusty wybór przy niepustej liście to stan, w którym ekran pokazuje PIERWSZĄ pozycję jako
+       * zaznaczoną — tak działa `<select>` bez pasującej opcji. Pytanie jedzie więc do tego,
+       * kogo człowiek widzi, a nie do nikogo. Normalnie tego stanu nie ma: `loadAgents` ustawia
+       * wybór razem z listą. */
+      const agent = chosenAgent === '' ? (agents.at(0)?.id ?? '') : chosenAgent;
+
+      set({ writing: true, message: null });
+      try {
+        const drafted = await askRustToDraft(want, agent, whereWeWork());
+        /* `null` znaczy „człowiek to zatrzymał" i jest WARTOŚCIĄ, nie odmową (niezmiennik 7):
+         * gaśnie stan „pisze" i nie ma ani draftu, ani zdania o awarii. Dowód zejścia grupy
+         * przyjeżdża tą samą drogą jako odmowa — i tylko wtedy, gdy go NIE MA. */
+        if (drafted === null) {
+          set({ writing: false });
+          return;
+        }
+        const panel = get().adding;
+        if (panel === null) {
+          set({ writing: false, message: NOWHERE_TO_LAND });
+          return;
+        }
+        /* Draft ląduje w TYCH SAMYCH trzech polach, w których człowiek pisze ręką, i nic nie
+         * jedzie na dysk. Zapis idzie dalej jedną drogą (`writeItHere`), więc tekst poprawiony
+         * po drafcie przechodzi przez skan tak samo jak wpisany od zera (niezmiennik 23) —
+         * a tekst przeskanowany PRZED poprawką jest tekstem, którego nikt nie przeskanował. */
+        set({
+          writing: false,
+          adding: {
+            ...panel,
+            name: drafted.name,
+            whenToUse: drafted.whenToUse,
+            whatToDo: drafted.whatToDo,
+          },
+        });
+      } catch (error) {
+        /* Stan „pisze" gaśnie także tutaj. Odmowa, która zostawia go zapalonym, zostawia na
+         * ekranie Stop bez czego zatrzymywać i zabiera jedyną drogę do zadania pytania jeszcze
+         * raz. Zdanie człowieka zostaje w polu: tekst tracony przy odmowie to ten sam defekt co
+         * cisza, tylko droższy. */
+        set({ writing: false, message: why(error, COULD_NOT_ASK) });
+      }
+    },
+
+    stopWriting: async () => {
+      /* Zatrzymywanie czegoś, co nie pisze, jest wywołaniem bez skutku po obu stronach granicy —
+       * a nie jest ciszą wobec człowieka, bo wtedy na ekranie nie ma ani tej kontrolki, ani
+       * zdania o pisaniu. */
+      if (!get().writing) return;
+      try {
+        /* MUSI OPUŚCIĆ OKNO. Zgaszenie samego `writing` byłoby kontrolką, która melduje skutek
+         * bez skutku (niezmiennik 16), i to w jedynym miejscu tej sekcji, gdzie kłamstwo kosztuje
+         * pieniądze: proces vendora pisze dalej i dalej pali limit dostawcy. */
+        await stopTheDraft();
+      } catch (error) {
+        set({ message: why(error, COULD_NOT_STOP) });
+      }
+      /* `writing` gasi ODPOWIEDŹ draftu, nie ta akcja, i to jest ta sama decyzja, co przy Stopie
+       * biegu: dopóki tura się nie zwinęła, agent może jeszcze pisać, a ekran mówiący „już nie
+       * pisze" zabierałby kontrolkę, która jako jedyna umie go dobić. Zdanie o grupie, która
+       * mogła przeżyć, przyjeżdża odmową z `askAnAgent` (niezmiennik 6). */
+    },
+
+    askToRemove: (name: string) => {
+      /* SAMO PYTANIE, ani jednego bajtu ruszonego. Naciśnięcie „Remove" przy innym wierszu
+       * przestawia pytanie na tamten wiersz: dwa pytania naraz to dwa miejsca, w których stoi
+       * jedna decyzja (niezmiennik 13), i pierwsza okazja, żeby odpowiedzieć na inne pytanie,
+       * niż się czyta. */
+      set({ removing: name });
+    },
+
+    keepIt: () => {
+      set({ removing: null });
+    },
+
+    remove: async (from: Landing) => {
+      /* ZGODA JEST WARUNKIEM WYWOŁANIA, nie stanem widoku (nagłówek tego pliku). Pytanie, które
+       * nie stoi na ekranie, znaczy, że nikt o nic nie został zapytany — a po drugiej stronie
+       * granicy stoi `fs::remove_dir_all` (`src-tauri/src/skills/place.rs`), bez cofnięcia.
+       * Warunek na przycisku byłby sugestią: zostaje klawiatura, zostaje skrót i zostaje druga
+       * ścieżka w interfejsie.
+       *
+       * Bez zdania z rozmysłu: w tym stanie na ekranie nie ma ani tej kontrolki, ani nazwy,
+       * o której zdanie miałoby mówić. */
+      const name = get().removing;
+      if (name === null) return;
+
+      try {
+        /* MIEJSCE PRZYJEŻDŻA Z KONTROLKI, KTÓRĄ CZŁOWIEK NACISNĄŁ, i to jest cała ta poprawka
+         * (zmierzone 2026-08-31).
+         *
+         * Do tego dnia stało tu `get().landing` — wybór z grupy radiowej, która renderuje się
+         * WYŁĄCZNIE wewnątrz karty czekającego importu („Available in",
+         * `src/sections/skills/shelf.tsx`). Bez czekającego importu tej kontrolki na ekranie nie
+         * ma wcale, a wartość zostaje ta z ostatniego zapisu: człowiek, który raz dodał
+         * umiejętność „w tym projekcie", od tej chwili każdym „Remove" celował w katalog WEWNĄTRZ
+         * swojego repozytorium, patrząc na wiersz umiejętności leżącej w katalogu domowym.
+         * Ustawienie, którego w chwili decyzji nie widać, nie ma prawa rozstrzygać o kasowaniu.
+         *
+         * TA SAMA NAZWA W DWÓCH ZAKRESACH TO DALEJ DWIE RZECZY: `place::remove` zdejmuje wyłącznie
+         * kopie z podanego korzenia i zostawia drugą tam, gdzie jest. Zabranie obu naraz jest inną
+         * czynnością, o którą nikt nie prosił — więc miejsce jest jedno i nazywa je zdanie
+         * na przycisku, który człowiek nacisnął.
+         *
+         * FOLDER JEDZIE OSOBNO I DALEJ Z JEDNEJ DEFINICJI: „gdzie pracujemy" ma w tym repo jedną
+         * odpowiedź (`whereWeWork`), a odwzorowanie miejsca na korzenie liczy Rust
+         * (`Landing -> Scope`, niezmiennik 23).
+         *
+         * DŁUG, ZGŁOSZONY, NIE PRZEOCZONY: wiersz listy wciąż nie wie, w którym korzeniu leży
+         * jego plik — `InstalledWire` (`src-tauri/src/commands/skills.rs`) niesie `name`,
+         * `fromTheInternet` i `summary`, a `list_skills_in` zwija oba korzenie do jednego zbioru
+         * nazw. Dopóki tak jest, odpowiedź na „skąd kasujemy" musi paść na ekranie, przy tym
+         * wierszu, i pada tam. Kiedy `InstalledWire` dostanie pole per korzeń, pytanie o miejsce
+         * zniknie wszędzie tam, gdzie kopia jest jedna. */
+        await removeFromDisk(name, from, whereWeWork());
+      } catch (error) {
+        /* Odmowa Rusta wchodzi na ekran DOSŁOWNIE, jeśli ją napisał: „no skill named … is
+         * installed" i „could not write to that folder" to dwie różne rzeczy do zrobienia,
+         * a jedno zdanie zapasowe zamienia je w jedną.
+         *
+         * Pytanie schodzi z ekranu także tutaj: zostawione stojące obok zdania o awarii czyta się
+         * jak drugie zaproszenie do naciśnięcia tego samego, a odpowiedź już padła. */
+        set({ removing: null, message: why(error, COULD_NOT_REMOVE) });
         return;
       }
-      /* Draft ląduje w TYCH SAMYCH trzech polach, w których człowiek pisze ręką, i nic nie
-       * jedzie na dysk. Zapis idzie dalej jedną drogą (`writeItHere`), więc tekst poprawiony
-       * po drafcie przechodzi przez skan tak samo jak wpisany od zera (niezmiennik 23) —
-       * a tekst przeskanowany PRZED poprawką jest tekstem, którego nikt nie przeskanował. */
-      set({
-        writing: false,
-        adding: {
-          ...panel,
-          name: drafted.name,
-          whenToUse: drafted.whenToUse,
-          whatToDo: drafted.whatToDo,
-        },
-      });
-    } catch (error) {
-      /* Stan „pisze" gaśnie także tutaj. Odmowa, która zostawia go zapalonym, zostawia na
-       * ekranie Stop bez czego zatrzymywać i zabiera jedyną drogę do zadania pytania jeszcze
-       * raz. Zdanie człowieka zostaje w polu: tekst tracony przy odmowie to ten sam defekt co
-       * cisza, tylko droższy. */
-      set({ writing: false, message: why(error, COULD_NOT_ASK) });
-    }
-  },
 
-  stopWriting: async () => {
-    /* Zatrzymywanie czegoś, co nie pisze, jest wywołaniem bez skutku po obu stronach granicy —
-     * a nie jest ciszą wobec człowieka, bo wtedy na ekranie nie ma ani tej kontrolki, ani
-     * zdania o pisaniu. */
-    if (!get().writing) return;
-    try {
-      /* MUSI OPUŚCIĆ OKNO. Zgaszenie samego `writing` byłoby kontrolką, która melduje skutek
-       * bez skutku (niezmiennik 16), i to w jedynym miejscu tej sekcji, gdzie kłamstwo kosztuje
-       * pieniądze: proces vendora pisze dalej i dalej pali limit dostawcy. */
-      await stopTheDraft();
-    } catch (error) {
-      set({ message: why(error, COULD_NOT_STOP) });
-    }
-    /* `writing` gasi ODPOWIEDŹ draftu, nie ta akcja, i to jest ta sama decyzja, co przy Stopie
-     * biegu: dopóki tura się nie zwinęła, agent może jeszcze pisać, a ekran mówiący „już nie
-     * pisze" zabierałby kontrolkę, która jako jedyna umie go dobić. Zdanie o grupie, która
-     * mogła przeżyć, przyjeżdża odmową z `askAnAgent` (niezmiennik 6). */
-  },
+      set({ removing: null });
 
-  askToRemove: (name: string) => {
-    /* SAMO PYTANIE, ani jednego bajtu ruszonego. Naciśnięcie „Remove" przy innym wierszu
-     * przestawia pytanie na tamten wiersz: dwa pytania naraz to dwa miejsca, w których stoi
-     * jedna decyzja (niezmiennik 13), i pierwsza okazja, żeby odpowiedzieć na inne pytanie,
-     * niż się czyta. */
-    set({ removing: name });
-  },
-
-  keepIt: () => {
-    set({ removing: null });
-  },
-
-  remove: async (from: Landing) => {
-    /* ZGODA JEST WARUNKIEM WYWOŁANIA, nie stanem widoku (nagłówek tego pliku). Pytanie, które
-     * nie stoi na ekranie, znaczy, że nikt o nic nie został zapytany — a po drugiej stronie
-     * granicy stoi `fs::remove_dir_all` (`src-tauri/src/skills/place.rs`), bez cofnięcia.
-     * Warunek na przycisku byłby sugestią: zostaje klawiatura, zostaje skrót i zostaje druga
-     * ścieżka w interfejsie.
-     *
-     * Bez zdania z rozmysłu: w tym stanie na ekranie nie ma ani tej kontrolki, ani nazwy,
-     * o której zdanie miałoby mówić. */
-    const name = get().removing;
-    if (name === null) return;
-
-    try {
-      /* MIEJSCE PRZYJEŻDŻA Z KONTROLKI, KTÓRĄ CZŁOWIEK NACISNĄŁ, i to jest cała ta poprawka
-       * (zmierzone 2026-08-31).
+      /* Lista czytana JESZCZE RAZ Z DYSKU, nigdy odfiltrowana lokalnie.
        *
-       * Do tego dnia stało tu `get().landing` — wybór z grupy radiowej, która renderuje się
-       * WYŁĄCZNIE wewnątrz karty czekającego importu („Available in",
-       * `src/sections/skills/shelf.tsx`). Bez czekającego importu tej kontrolki na ekranie nie
-       * ma wcale, a wartość zostaje ta z ostatniego zapisu: człowiek, który raz dodał
-       * umiejętność „w tym projekcie", od tej chwili każdym „Remove" celował w katalog WEWNĄTRZ
-       * swojego repozytorium, patrząc na wiersz umiejętności leżącej w katalogu domowym.
-       * Ustawienie, którego w chwili decyzji nie widać, nie ma prawa rozstrzygać o kasowaniu.
-       *
-       * TA SAMA NAZWA W DWÓCH ZAKRESACH TO DALEJ DWIE RZECZY: `place::remove` zdejmuje wyłącznie
-       * kopie z podanego korzenia i zostawia drugą tam, gdzie jest. Zabranie obu naraz jest inną
-       * czynnością, o którą nikt nie prosił — więc miejsce jest jedno i nazywa je zdanie
-       * na przycisku, który człowiek nacisnął.
-       *
-       * FOLDER JEDZIE OSOBNO I DALEJ Z JEDNEJ DEFINICJI: „gdzie pracujemy" ma w tym repo jedną
-       * odpowiedź (`whereWeWork`), a odwzorowanie miejsca na korzenie liczy Rust
-       * (`Landing -> Scope`, niezmiennik 23).
-       *
-       * DŁUG, ZGŁOSZONY, NIE PRZEOCZONY: wiersz listy wciąż nie wie, w którym korzeniu leży
-       * jego plik — `InstalledWire` (`src-tauri/src/commands/skills.rs`) niesie `name`,
-       * `fromTheInternet` i `summary`, a `list_skills_in` zwija oba korzenie do jednego zbioru
-       * nazw. Dopóki tak jest, odpowiedź na „skąd kasujemy" musi paść na ekranie, przy tym
-       * wierszu, i pada tam. Kiedy `InstalledWire` dostanie pole per korzeń, pytanie o miejsce
-       * zniknie wszędzie tam, gdzie kopia jest jedna. */
-      await removeFromDisk(name, from, whereWeWork());
-    } catch (error) {
-      /* Odmowa Rusta wchodzi na ekran DOSŁOWNIE, jeśli ją napisał: „no skill named … is
-       * installed" i „could not write to that folder" to dwie różne rzeczy do zrobienia,
-       * a jedno zdanie zapasowe zamienia je w jedną.
-       *
-       * Pytanie schodzi z ekranu także tutaj: zostawione stojące obok zdania o awarii czyta się
-       * jak drugie zaproszenie do naciśnięcia tego samego, a odpowiedź już padła. */
-      set({ removing: null, message: why(error, COULD_NOT_REMOVE) });
-      return;
-    }
+       * Instalacja pisze do DWÓCH katalogów vendorów naraz (`DESTINATION_DIRS`). Usunięcie,
+       * które sprzątnęło jeden i nie sprzątnęło drugiego, po lokalnym odfiltrowaniu wygląda
+       * dokładnie jak sukces: wiersz znika z ekranu, a plik dalej leży tam, gdzie agent po niego
+       * sięga. To jest ten sam defekt, który ta fala naprawia — kontrolka reaguje, ekran melduje
+       * skutek, skutek nie zachodzi (niezmiennik 16). Odczyt po zapisie jest jedyną odpowiedzią,
+       * której nie musimy zgadywać (niezmiennik 4: pliki są prawdą). */
+      await get().load();
+    },
+  }));
+}
 
-    set({ removing: null });
+export const useSkills = createSkillsStore();
 
-    /* Lista czytana JESZCZE RAZ Z DYSKU, nigdy odfiltrowana lokalnie.
-     *
-     * Instalacja pisze do DWÓCH katalogów vendorów naraz (`DESTINATION_DIRS`). Usunięcie,
-     * które sprzątnęło jeden i nie sprzątnęło drugiego, po lokalnym odfiltrowaniu wygląda
-     * dokładnie jak sukces: wiersz znika z ekranu, a plik dalej leży tam, gdzie agent po niego
-     * sięga. To jest ten sam defekt, który ta fala naprawia — kontrolka reaguje, ekran melduje
-     * skutek, skutek nie zachodzi (niezmiennik 16). Odczyt po zapisie jest jedyną odpowiedzią,
-     * której nie musimy zgadywać (niezmiennik 4: pliki są prawdą). */
-    await get().load();
-  },
-}));
+// Szkic importu przeżywa przejście do innej sekcji, ale nigdy nie zmienia projektu.
+const projectStores = new Map<string, ReturnType<typeof createSkillsStore>>();
+export function skillsForProject(folder: string | null) {
+  if (folder === null) return useSkills;
+  let store = projectStores.get(folder);
+  if (!store) {
+    store = createSkillsStore(folder);
+    projectStores.set(folder, store);
+  }
+  return store;
+}

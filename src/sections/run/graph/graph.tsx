@@ -124,7 +124,8 @@ export function RunGraph({ plan, onOpen, onAnswer, footer }: RunGraphProps): Rea
    * stoi czasem karta pytania, więc n-te dziecko przestało być n-tym krokiem. Wersja licząca po
    * indeksie przewijała wtedy do SĄSIADA i nie było tego po czym poznać — kolumna dalej się
    * przewijała, tylko o jeden krok za daleko. */
-  const working = plan.steps.find((step) => step.status === 'working')?.id ?? '';
+  const activeStep = plan.steps.find((step) => step.status === 'working');
+  const working = activeStep?.tileId || activeStep?.id || '';
   useEffect(() => {
     if (working === '') return;
     list.current

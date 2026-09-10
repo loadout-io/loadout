@@ -77,6 +77,7 @@ async fn it_picks_up_at_the_named_step_and_walks_the_rest_of_the_graph()
     let processes = Arc::new(Processes::new());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: no_drivers(),
@@ -332,6 +333,7 @@ async fn a_picked_up_step_opens_the_tree_where_that_step_left_off() -> Result<()
     let processes = Arc::new(Processes::new());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: no_drivers(),
@@ -503,6 +505,7 @@ async fn the_run_file_records_what_was_asked_and_a_pick_up_carries_it() -> Resul
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: no_drivers(),

@@ -437,7 +437,7 @@ impl Bench {
         Ok(bench)
     }
     fn home(&self) -> PathBuf {
-        self.root.path().join("home")
+        self.project().join(".loadout")
     }
     fn project(&self) -> PathBuf {
         self.root.path().join("project")
@@ -488,6 +488,7 @@ impl Bench {
         let store = Store::open(&self.project().join(".loadout/loadout.db"))?;
         let deps = RunDeps {
             home: &self.home(),
+            library: self.home().clone(),
             project: &self.project(),
             store: &store,
             drivers: self.drivers(mutate),

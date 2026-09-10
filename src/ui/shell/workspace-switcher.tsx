@@ -51,6 +51,7 @@ import { why } from '../../ipc/why';
 import { chooseWorkingFolder, folderName } from '../../sections/run/folders';
 import type { Workspace } from '../../state/workspaces';
 import { useWorkspaces } from '../../state/workspaces';
+import { useProjectSetup } from '../project-setup/state';
 
 /** Co powiedzieć, kiedy człowiek nacisnął Save, a folderu jeszcze nie wskazał. */
 export const NO_FOLDER_YET =
@@ -367,6 +368,18 @@ export function WorkspaceSwitcher({
                   <span className="truncate">{one.name}</span>
                 </button>
               ))}
+              {active && (
+                <button
+                  type="button"
+                  className="row"
+                  onClick={() => {
+                    useProjectSetup.getState().open(active);
+                    act.toggle();
+                  }}
+                >
+                  Import setup from project
+                </button>
+              )}
               {/* Ten sam wiersz listy, w barwie akcentu: to jest pozycja, która COŚ ROBI,
                   a nie jeden z zakresów. `text-accent` to jedyna rzecz ponad prymitywem. */}
               <button

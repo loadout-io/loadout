@@ -155,6 +155,7 @@ async fn a_later_try_of_the_tester_is_given_what_it_said_before() -> Result<(), 
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

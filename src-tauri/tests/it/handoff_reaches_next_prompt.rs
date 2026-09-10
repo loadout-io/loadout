@@ -306,6 +306,7 @@ async fn scout_then_decide() -> Result<(RunReport, Arc<Seen>, Bench), Box<dyn Er
     let seen = Arc::new(Seen::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

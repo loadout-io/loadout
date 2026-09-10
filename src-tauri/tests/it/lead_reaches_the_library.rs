@@ -129,8 +129,8 @@ const WORKFLOW: &str = r#"{
 
 #[tokio::test]
 async fn the_conversation_is_handed_both_folders_of_the_library() -> Result<(), Box<dyn Error>> {
-    let library = TempDir::new()?;
     let scope = TempDir::new()?;
+    let library = scope.path().join(".loadout");
 
     // GDZIE BIBLIOTEKA TRZYMA JEDNO I DRUGIE — spytane jej własnego zapisu, nie sklejone tutaj
     // z literałów. Napis `"agents"` wpisany w ten plik zgadzałby się z produkcją dokładnie do
@@ -142,8 +142,8 @@ async fn the_conversation_is_handed_both_folders_of_the_library() -> Result<(), 
         FileAccess::LookOnly,
         "advise, do not run",
     )?;
-    let agents_dir = folder_of(&save_agent_inner(library.path(), &lead_agent, None)?.path)?;
-    let workflows_dir = folder_of(&saved_workflow(library.path(), scope.path())?)?;
+    let agents_dir = folder_of(&save_agent_inner(library.as_path(), &lead_agent, None)?.path)?;
+    let workflows_dir = folder_of(&saved_workflow(library.as_path(), scope.path())?)?;
 
     // KONTROLA PRZECIW PUSTEMU PRZEJŚCIU. Bez tych trzech linii wszystko niżej przechodzi dla
     // fikstury, w której jedna ze ścieżek nie istnieje albo obie są tą samą ścieżką — czyli
@@ -168,17 +168,17 @@ async fn the_conversation_is_handed_both_folders_of_the_library() -> Result<(), 
     // I kontrola do tej samej rodziny: folder, w którym człowiek pracuje, leży POZA biblioteką.
     // Zakres wskazany w nią zdawałby lidera z prawami, których nikt mu nie nadał.
     assert!(
-        !scope.path().starts_with(library.path()),
+        !scope.path().starts_with(library.as_path()),
         "the fixture's working folder lies inside the library, so the lead would reach these two \
          folders with nothing added at all"
     );
 
-    let lead = Lead::pointed_at(library.path(), Some(&lead_agent.id.to_string()))
+    let lead = Lead::pointed_at(library.as_path(), Some(&lead_agent.id.to_string()))
         .map_err(|refusal| refusal.to_string())
         .expect("the agent was just saved, so the pointed-at lead has to resolve");
 
     let (drivers, watch) = one_vendor();
-    let spec = one_sentence(&drivers, &watch, library.path(), &lead, scope.path()).await?;
+    let spec = one_sentence(&drivers, &watch, library.as_path(), &lead, scope.path()).await?;
 
     assert!(
         spec.extra_dirs.iter().any(|dir| dir == &agents_dir),
@@ -361,6 +361,7 @@ async fn plan_then_build() -> Result<(RunReport, Arc<Watch>, Bench), Box<dyn Err
     let (drivers, watch) = one_vendor();
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers,

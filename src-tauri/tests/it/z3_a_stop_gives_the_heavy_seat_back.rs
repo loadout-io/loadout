@@ -390,6 +390,7 @@ impl Bench {
     fn deps<'a>(&'a self, store: &'a Store, control: RunControl) -> RunDeps<'a> {
         RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store,
             drivers: no_drivers(),

@@ -120,6 +120,7 @@ async fn each_step_sees_the_project_and_keeps_its_changes_to_itself() -> Result<
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

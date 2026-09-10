@@ -697,6 +697,7 @@ impl Bench {
         let drivers: Drivers = Arc::new(|_| unreachable!("the service fixture has no model nodes"));
         let deps = RunDeps {
             home: self.catalog.path(),
+            library: self.catalog.path().to_path_buf(),
             project: self.project.path(),
             store: &store,
             drivers,

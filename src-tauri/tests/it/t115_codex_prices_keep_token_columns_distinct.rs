@@ -403,6 +403,7 @@ impl Bench {
     async fn run(&self) -> Result<(RunReport, Value), Box<dyn Error>> {
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &self.store,
             drivers: self.drivers(),

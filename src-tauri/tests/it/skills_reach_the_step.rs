@@ -228,6 +228,7 @@ async fn each_step_gets_the_skills_its_agent_and_its_overrides_add_up_to()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

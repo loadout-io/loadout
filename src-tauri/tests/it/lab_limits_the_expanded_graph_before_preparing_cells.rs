@@ -251,6 +251,7 @@ async fn a_project_and_an_exact_pick_alias_still_share_the_real_run_folder()
     let processes = Arc::new(loadout_lib::commands::processes::Processes::new());
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: &root,
         store: &store,
         drivers,

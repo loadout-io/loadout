@@ -29,7 +29,6 @@ import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { useWorkspaces } from '../../state/workspaces';
-import type { WorkflowListIo } from './list/store';
 import { createWorkflowListStore } from './list/store';
 import { WorkflowList } from './list/workflow-list';
 import * as Disk from './io';
@@ -73,13 +72,15 @@ export interface WorkflowsScreenProps {
  * Adnotacja typu zostaje z rozmysłem: moduł eksportuje więcej niż `WorkflowListIo` (`load`
  * i `check` należą do płótna), a to podstawienie ma sprawdzać, że NADAL niesie te cztery
  * funkcje, których chce magazyn listy. */
-const DISK: WorkflowListIo = { ...Disk, list: Disk.listDefinitions };
 
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu, a nie przy renderze: magazyn
  * budowany w ciele komponentu gubiłby całą zawartość ekranu przy każdym przemontowaniu. */
-const OWN_STORE = createWorkflowListStore(DISK);
 
-export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenProps): ReactElement {
+export default function WorkflowsScreen({ store: supplied }: WorkflowsScreenProps): ReactElement {
+  const [folder] = useState(() => activeWorkspace()?.folder ?? null);
+  const [disk] = useState(() => Disk.forProject(folder));
+  const [ownStore] = useState(() => createWorkflowListStore(disk));
+  const store = supplied ?? ownStore;
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
 
   /* KTÓRY FOLDER CZYTAMY (2026-08-29, T-164). Katalog workflow należy od tego dnia do
@@ -125,7 +126,7 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
   const [agents, setAgents] = useState<readonly Agent[]>([]);
   const [skills, setSkills] = useState<readonly string[]>([]);
   /* Jedno miejsce na to, czego nie udało się otworzyć. Do 2026-08-18 nie było go wcale:
-   * `Disk.load(path).then(setOpen)` stało bez `catch`, więc odmowa Rusta ginęła w cichej
+   * `disk.load(path).then(setOpen)` stało bez `catch`, więc odmowa Rusta ginęła w cichej
    * odrzuconej obietnicy, a plik, którego NIE dało się przeczytać, wjeżdżał do edytora jako
    * `document` i zabijał sekcję na `state.document.steps` (zmierzone w przeglądarce). */
   const [said, setSaid] = useState<string | null>(null);
@@ -265,7 +266,8 @@ export default function WorkflowsScreen({ store = OWN_STORE }: WorkflowsScreenPr
           /* Dokument bierzemy z DYSKU, a nie z pozycji listy: lista trzyma migawkę z chwili
            * odczytu katalogu, a edytor ma otwierać to, co naprawdę tam leży (niezmiennik 4). */
           setSaid(null);
-          void Disk.load(path)
+          void disk
+            .load(path)
             .then((opened) => {
               /* STRAŻ KSZTAŁTU, nie zaufanie do typu. Sygnatura mówi `Promise<OpenWorkflow>`,
                * ale po drugiej stronie granicy nie ma żadnych typów — jest JSON. Plik poprawiony

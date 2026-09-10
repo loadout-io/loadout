@@ -207,6 +207,7 @@ impl Bench {
         let store = Store::open(&self.database())?;
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &store,
             drivers: fake_drivers(

@@ -56,7 +56,7 @@ async fn deleting_the_library_after_adapter_start_does_not_change_the_read()
         }),
     )?;
     let seen = Arc::new(Seen::default());
-    let context_library = library_root(bench.home.path());
+    let context_library = library_root(&bench.library());
     let changed = folder_of(&context_library, &own.set_id)?.join("draft.json");
     let report = run(
         &bench,
@@ -123,7 +123,7 @@ async fn a_missing_referenced_source_refuses_start_before_the_first_process()
         "MISSING-REQUIREMENT names its exact source.",
         "MISSING-SOURCE-CONTENT must not disappear silently.",
     )?;
-    let library = library_root(bench.home.path());
+    let library = library_root(&bench.library());
     let draft = folder_of(&library, &material.set_id)?.join("draft.json");
     let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&draft)?)?;
     saved["sources"] = json!([]);
@@ -179,7 +179,7 @@ async fn a_referenced_source_with_no_readable_body_refuses_before_the_first_proc
         "EMPTY-REQUIREMENT still points at this source.",
         "EMPTY-SOURCE-CONTENT must be present.",
     )?;
-    let library = library_root(bench.home.path());
+    let library = library_root(&bench.library());
     let draft = folder_of(&library, &material.set_id)?.join("draft.json");
     let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&draft)?)?;
     saved["sources"][0]["text"] = json!("");
@@ -228,7 +228,7 @@ async fn a_missing_prepared_topic_file_refuses_before_the_first_process()
         "TOPIC-FILE-REQUIREMENT must remain exact.",
         "TOPIC-FILE-SOURCE must remain available.",
     )?;
-    let library = library_root(bench.home.path());
+    let library = library_root(&bench.library());
     let folder = folder_of(&library, &material.set_id)?;
     fs::remove_file(
         folder
@@ -280,7 +280,7 @@ async fn selecting_one_pdf_page_does_not_package_the_other_page() -> Result<(), 
         "PDF-REQUIREMENT points only at page one.",
         "the text-source placeholder is replaced below",
     )?;
-    let library = library_root(bench.home.path());
+    let library = library_root(&bench.library());
     let folder = folder_of(&library, &material.set_id)?;
     let source_root = folder.join("sources").join(&material.source_id).join("r1");
     fs::create_dir_all(source_root.join("pages"))?;

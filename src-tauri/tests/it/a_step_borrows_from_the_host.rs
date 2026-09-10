@@ -386,6 +386,7 @@ async fn one_run(
     let seen: Arc<Mutex<Vec<Started>>> = Arc::new(Mutex::new(Vec::new()));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: recording_drivers(Arc::clone(&seen)),

@@ -64,8 +64,9 @@
  */
 import type { ReactElement } from 'react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { Agent, AgentsIo, Color } from '../../state/agents';
+import type { Agent, Color } from '../../state/agents';
 import { createAgentsStore } from '../../state/agents';
+import { activeWorkspace } from '../../state/workspaces';
 import { problemSays } from '../../state/library';
 import { askedAgent, subscribeToAsked, takeAskedAgent } from '../../ui/palette/asked';
 import { evaluateAgent } from '../lab/evaluate';
@@ -150,11 +151,9 @@ export interface AgentsScreenProps {
  * Kształt modułu jest lustrem `AgentsIo`, więc podstawia się w całości. Adnotacja typu nie jest
  * ozdobą: to ona sprawdza, że moduł NADAL spełnia interfejs magazynu — funkcja usunięta po
  * tamtej stronie granicy przestaje się kompilować tutaj, zamiast odmawiać pod palcem. */
-const DISK: AgentsIo = { ...Disk, list: Disk.listDefinitions };
 
 /* Prawdziwy magazyn sekcji powstaje RAZ, przy wczytaniu modułu — magazyn budowany w ciele
  * komponentu gubiłby zawartość ekranu przy każdym przemontowaniu. */
-const OWN_STORE = createAgentsStore(DISK);
 
 /* Pięć przygaszonych tokenów tożsamości, `--id-1`…`--id-5` (DESIGN §3). Kolejność jest ta sama,
  * co w unii `Color` w `src/state/agents.ts`, i tak samo jak w makiecie: `clay` to `--id-3`,
@@ -331,12 +330,15 @@ function deletingSays(
  * stoi przy `deletingSays` wyżej. */
 
 export default function AgentsScreen({
-  store = OWN_STORE,
+  store: supplied,
   generating = { generate: Disk.generate, stopGenerating: Disk.stopGenerating },
   usage: usageProp,
   opened,
   confirming,
 }: AgentsScreenProps): ReactElement {
+  const [folder] = useState(() => activeWorkspace()?.folder ?? null);
+  const [ownStore] = useState(() => createAgentsStore(Disk.forProject(folder)));
+  const store = supplied ?? ownStore;
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   /* KTÓRĄ ROLĘ TRZYMA PRAWA KOLUMNA — sam identyfikator, nie kopia agenta.
    *

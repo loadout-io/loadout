@@ -220,7 +220,7 @@ impl Bench {
             name: "Lead".to_owned(),
             ..Agent::example()
         };
-        save_agent_inner(self.home.path(), &agent, None)?;
+        save_agent_inner(&self.project.path().join(".loadout"), &agent, None)?;
         Ok(agent.id.to_string())
     }
 }

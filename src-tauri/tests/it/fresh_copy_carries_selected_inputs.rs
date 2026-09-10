@@ -255,6 +255,7 @@ impl Bench {
         let store = Store::open(&self.project().join(".loadout/loadout.db"))?;
         let deps = RunDeps {
             home: &self.home(),
+            library: self.home().clone(),
             project: &self.project(),
             store: &store,
             drivers,

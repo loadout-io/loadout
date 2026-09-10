@@ -237,6 +237,7 @@ async fn the_step_after_three_loops_is_given_what_each_of_them_ended_on()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

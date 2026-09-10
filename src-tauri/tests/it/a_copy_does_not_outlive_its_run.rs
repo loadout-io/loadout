@@ -567,6 +567,7 @@ impl Bench {
         let wrote = Arc::new(tokio::sync::Notify::new());
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store,
             drivers: fake_drivers(habit, Arc::clone(&wrote)),

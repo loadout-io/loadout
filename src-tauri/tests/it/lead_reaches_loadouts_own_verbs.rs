@@ -114,11 +114,18 @@ fn saved_workflow(home: &Path, file_name: &str, name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn the_verb_hands_back_names_the_command_line_would_accept() -> Result<(), Box<dyn Error>> {
-    let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
 
-    let first = saved_workflow(home.path(), "ship-a-feature.json", "Ship a feature");
-    let second = saved_workflow(home.path(), "review-and-fix.json", "Review and fix");
+    let first = saved_workflow(
+        &project.path().join(".loadout"),
+        "ship-a-feature.json",
+        "Ship a feature",
+    );
+    let second = saved_workflow(
+        &project.path().join(".loadout"),
+        "review-and-fix.json",
+        "Review and fix",
+    );
     assert!(
         first.exists() && second.exists(),
         "both files have to be on disk before this measures anything, or 'the verb listed them' \
@@ -126,7 +133,7 @@ async fn the_verb_hands_back_names_the_command_line_would_accept() -> Result<(),
     );
 
     let desk = Desk::at(
-        Some(home.path().to_path_buf()),
+        Some(project.path().join(".loadout")),
         project.path().to_path_buf(),
     );
     let said = value_of(ask(&desk, "list_workflows").await);
@@ -145,11 +152,10 @@ async fn the_verb_hands_back_names_the_command_line_would_accept() -> Result<(),
 
 #[tokio::test]
 async fn an_empty_library_gets_a_sentence_and_not_an_empty_list() -> Result<(), Box<dyn Error>> {
-    let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
 
     let desk = Desk::at(
-        Some(home.path().to_path_buf()),
+        Some(project.path().join(".loadout")),
         project.path().to_path_buf(),
     );
     let said = value_of(ask(&desk, "list_workflows").await);
@@ -173,16 +179,16 @@ async fn an_empty_library_gets_a_sentence_and_not_an_empty_list() -> Result<(), 
 
 #[tokio::test]
 async fn the_agent_verb_answers_from_the_same_library() -> Result<(), Box<dyn Error>> {
-    let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
 
     let mut agent = Agent::example();
     agent.name = "Note taker".to_owned();
     agent.summary = "Writes the notes nobody else will".to_owned();
-    save_agent_inner(home.path(), &agent, None).expect("the library accepts this agent");
+    save_agent_inner(&project.path().join(".loadout"), &agent, None)
+        .expect("the library accepts this agent");
 
     let desk = Desk::at(
-        Some(home.path().to_path_buf()),
+        Some(project.path().join(".loadout")),
         project.path().to_path_buf(),
     );
     let said = value_of(ask(&desk, "list_agents").await);
@@ -198,9 +204,9 @@ async fn the_agent_verb_answers_from_the_same_library() -> Result<(), Box<dyn Er
 // ── START: CO LIDER MOŻE, A CZEGO NIE, ZANIM COKOLWIEK RUSZY ───────────────────────────────
 
 /// Biurko z drogą na ekran plus podsłuch tego, co na niej stanęło.
-fn desk_that_shows(home: &Path, project: &Path) -> (Desk, LineSource) {
+fn desk_that_shows(_home: &Path, project: &Path) -> (Desk, LineSource) {
     let (sink, source) = line_channel(LINES);
-    let desk = Desk::at(Some(home.to_path_buf()), project.to_path_buf())
+    let desk = Desk::at(Some(project.join(".loadout")), project.to_path_buf())
         .showing(Arc::new(Mutex::new(sink)));
     (desk, source)
 }
@@ -209,7 +215,11 @@ fn desk_that_shows(home: &Path, project: &Path) -> (Desk, LineSource) {
 async fn starting_a_workflow_nobody_has_names_the_ones_they_do() -> Result<(), Box<dyn Error>> {
     let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
-    saved_workflow(home.path(), "ship-a-feature.json", "Ship a feature");
+    saved_workflow(
+        &project.path().join(".loadout"),
+        "ship-a-feature.json",
+        "Ship a feature",
+    );
     let (desk, _stream) = desk_that_shows(home.path(), project.path());
 
     let said = desk
@@ -244,7 +254,11 @@ async fn starting_a_workflow_puts_it_on_the_screen_before_anything_runs()
 -> Result<(), Box<dyn Error>> {
     let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
-    saved_workflow(home.path(), "ship-a-feature.json", "Ship a feature");
+    saved_workflow(
+        &project.path().join(".loadout"),
+        "ship-a-feature.json",
+        "Ship a feature",
+    );
     let (desk, mut stream) = desk_that_shows(home.path(), project.path());
     let starts = Arc::new(loadout_lib::commands::lead_start::LeadStarts::default());
     let desk = desk.starting_with(
@@ -313,12 +327,15 @@ async fn starting_a_workflow_puts_it_on_the_screen_before_anything_runs()
 
 #[tokio::test]
 async fn a_desk_with_no_screen_refuses_to_start_anything() -> Result<(), Box<dyn Error>> {
-    let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
-    saved_workflow(home.path(), "ship-a-feature.json", "Ship a feature");
+    saved_workflow(
+        &project.path().join(".loadout"),
+        "ship-a-feature.json",
+        "Ship a feature",
+    );
     /* BEZ `showing`: rozmowa, której okno jeszcze nie otworzyło strumienia. */
     let desk = Desk::at(
-        Some(home.path().to_path_buf()),
+        Some(project.path().join(".loadout")),
         project.path().to_path_buf(),
     );
 
@@ -341,10 +358,9 @@ async fn a_desk_with_no_screen_refuses_to_start_anything() -> Result<(), Box<dyn
 
 #[tokio::test]
 async fn a_verb_nobody_has_is_refused_by_name() -> Result<(), Box<dyn Error>> {
-    let home = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
     let desk = Desk::at(
-        Some(home.path().to_path_buf()),
+        Some(project.path().join(".loadout")),
         project.path().to_path_buf(),
     );
 
@@ -363,10 +379,10 @@ async fn a_verb_nobody_has_is_refused_by_name() -> Result<(), Box<dyn Error>> {
 // ── PYTANIE: CZY NAPRAWDĘ CZEKA, I CZY ODPOWIEDŹ TRAFIA DO WŁAŚCIWEGO ──────────────────────
 
 /// Biurko, które umie pokazać pytanie i usłyszeć odpowiedź.
-fn desk_that_asks(home: &Path, project: &Path) -> (Desk, LineSource, Arc<Waiting>) {
+fn desk_that_asks(_home: &Path, project: &Path) -> (Desk, LineSource, Arc<Waiting>) {
     let (sink, source) = line_channel(LINES);
     let waiting = Arc::new(Waiting::default());
-    let desk = Desk::at(Some(home.to_path_buf()), project.to_path_buf())
+    let desk = Desk::at(Some(project.join(".loadout")), project.to_path_buf())
         .showing(Arc::new(Mutex::new(sink)))
         .hearing(Arc::clone(&waiting));
     (desk, source, waiting)
@@ -647,7 +663,8 @@ async fn a_conversation_carries_loadouts_own_server() -> Result<(), Box<dyn Erro
 
     let mut agent = Agent::example();
     agent.runs_with = Vendor::ClaudeCode;
-    save_agent_inner(home.path(), &agent, None).expect("the library accepts this lead");
+    save_agent_inner(&project.path().join(".loadout"), &agent, None)
+        .expect("the library accepts this lead");
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let driver: Arc<dyn AgentDriver> = Arc::new(Watching {
@@ -655,8 +672,11 @@ async fn a_conversation_carries_loadouts_own_server() -> Result<(), Box<dyn Erro
     });
     let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&driver));
 
-    let lead = Lead::pointed_at(home.path(), Some(&agent.id.to_string()))
-        .expect("the lead this test just saved is in the library");
+    let lead = Lead::pointed_at(
+        &project.path().join(".loadout"),
+        Some(&agent.id.to_string()),
+    )
+    .expect("the lead this test just saved is in the library");
     let terminal = Terminal {
         id: "terminal-1".to_owned(),
         folder: project.path().to_path_buf(),

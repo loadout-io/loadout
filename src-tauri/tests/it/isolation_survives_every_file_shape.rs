@@ -259,6 +259,7 @@ fn run_in_its_own_thread(
             let store = Store::open(&setup.db).map_err(|error| error.to_string())?;
             let deps = RunDeps {
                 home: &setup.home,
+                library: setup.home.clone(),
                 project: &setup.project,
                 store: &store,
                 drivers: fake_drivers(setup.seen),

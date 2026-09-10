@@ -48,9 +48,9 @@ const WAITING: Note = {
   modified: '2026-08-31T09:00:00Z',
 };
 
-/** Notatka w użyciu i sięgająca poza jeden projekt — to ona niesie słowo zasięgu. */
+/** Notatka w użyciu, po jawnym imporcie należąca wyłącznie do tego projektu. */
 const IN_USE: Note = {
-  place: 'library',
+  place: 'project',
   id: 'n-2',
   title: 'Say what changed',
   rule: 'Say what changed, not what you tried.',
@@ -178,7 +178,7 @@ describe('knowledge is one section with two shelves that say the difference', ()
     expect(
       markup,
       'the note in use is on this screen under its own words, not just its shelf heading',
-    ).toContain('data-note-address="library:n-2"');
+    ).toContain('data-note-address="project:n-2"');
     expect(
       markup,
       'and so is the skill on disk — one document carries both, or this is two screens with ' +
@@ -186,26 +186,12 @@ describe('knowledge is one section with two shelves that say the difference', ()
     ).toContain('data-skill="pdf"');
   });
 
-  it('says the reach of a note and the reach of a skill with the same words', () => {
+  it('shows that notes and skills belong to this project', () => {
     const markup = renderToStaticMarkup(<App section="knowledge" />);
-
-    expect(
-      markup,
-      'control against an empty assertion below: the choice of where a skill goes has to be ' +
-        'on this screen at all, or "the old wording is gone" also passes on a screen that ' +
-        'draws no choice',
-    ).toContain('data-pick-where');
-
-    expect(
-      markup,
-      'a note that reaches past one project and a skill that reaches past one project are the ' +
-        'same fact on one axis. Two wordings for it read as two different things, and a person ' +
-        'has no way to find out they are not',
-    ).not.toContain('Everywhere');
-    expect(
-      (markup.match(/Every project/g) ?? []).length,
-      'both halves say it, so the shared wording is on screen twice: once by the note in use, ' +
-        'once as the choice of where a skill goes',
-    ).toBeGreaterThanOrEqual(2);
+    expect(markup).toContain('data-note-address="project:n-2"');
+    expect(markup).toContain('data-pick-where');
+    expect(markup).not.toContain('Every project');
+    expect(markup).not.toContain('Everywhere');
+    expect((markup.match(/This project/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 });

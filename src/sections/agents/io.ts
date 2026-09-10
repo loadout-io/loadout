@@ -16,6 +16,8 @@
  * `invoke` na nieistniejącą komendę odmawia dopiero pod palcem użytkownika.
  */
 import { invoke } from '@tauri-apps/api/core';
+import { activeWorkspace } from '../../state/workspaces';
+import type { AgentsIo } from '../../state/agents';
 
 import type { Agent } from '../../state/agents';
 import type { Definition } from '../../state/library';
@@ -91,14 +93,16 @@ function whole(one: Definition<Agent> | Agent): Definition<Agent> | Agent {
  *
  * Powod, dwie wady i kierunek zlaczenia stoja przy [`whole`] wyzej.
  */
-export async function listDefinitions(): Promise<Definition<Agent>[]> {
-  const listed = await invoke<(Definition<Agent> | Agent)[]>('list_agents');
+export async function listDefinitions(
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<Definition<Agent>[]> {
+  const listed = await invoke<(Definition<Agent> | Agent)[]>('list_agents', { folder });
   return listed.map(whole) as Definition<Agent>[];
 }
 
 /** Callery poza ekranem Agents potrzebują tylko zdrowych zapisanych agentów. */
-export async function list(): Promise<Agent[]> {
-  return healthyOnly(definitionsOf(await listDefinitions()));
+export async function list(folder = activeWorkspace()?.folder ?? null): Promise<Agent[]> {
+  return healthyOnly(definitionsOf(await listDefinitions(folder)));
 }
 
 /**
@@ -119,8 +123,12 @@ export function newId(): Promise<string> {
  * ma jeszcze nie być". Klucz jedzie zawsze, nawet z `null` w środku — Tauri dopasowuje
  * argumenty po nazwie, więc klucz zdjęty przez `JSON.stringify` byłby wywołaniem ODRZUCONYM.
  */
-export function save(agent: Agent, expectedRevision: string | null): Promise<string> {
-  return invoke<string>('save_agent', { agent, expectedRevision });
+export function save(
+  agent: Agent,
+  expectedRevision: string | null,
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<string> {
+  return invoke<string>('save_agent', { agent, expectedRevision, folder });
 }
 
 /**
@@ -132,16 +140,19 @@ export function save(agent: Agent, expectedRevision: string | null): Promise<str
  * tuż przed zapisem — dokładnie tak, jak magazyn listy czyta katalog tuż przed wyborem wolnej
  * nazwy pliku. Okno między odczytem a zapisem zamyka i tak Rust: to on porównuje bajty.
  */
-export async function revisionOf(id: string): Promise<string | null> {
-  const found = definitionsOf(await listDefinitions()).find(
+export async function revisionOf(
+  id: string,
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<string | null> {
+  const found = definitionsOf(await listDefinitions(folder)).find(
     (definition) => definition.kind === 'healthy' && definition.value.id === id,
   );
   return found?.kind === 'healthy' ? (found.revision ?? null) : null;
 }
 
 /** Usuwa agenta po identyfikatorze — stabilnym przez zmianę nazwy, w odróżnieniu od pliku. */
-export function remove(id: string): Promise<void> {
-  return invoke<void>('delete_agent', { id });
+export function remove(id: string, folder = activeWorkspace()?.folder ?? null): Promise<void> {
+  return invoke<void>('delete_agent', { id, folder });
 }
 
 /** Co wrócilo z generowania: szkic i wszystko, czego w nim nie ma. */
@@ -168,11 +179,22 @@ export function generate(
   operation: string,
   described: string,
   runsWith: Agent['runsWith'],
+  folder = activeWorkspace()?.folder ?? null,
 ): Promise<GeneratedDraft> {
-  return invoke<GeneratedDraft>('generate_agent', { operation, described, runsWith });
+  return invoke<GeneratedDraft>('generate_agent', { operation, described, runsWith, folder });
 }
 
 /** Zatrzymuje JEDNO generowanie. Bieg workflow sie o tym nie dowiaduje. */
 export function stopGenerating(operation: string): Promise<void> {
   return invoke<void>('stop_generating_agent', { operation });
+}
+
+/** Każdy zapis wraca do projektu, w którym otwarto edytor, także po przełączeniu. */
+export function forProject(folder: string | null): AgentsIo {
+  return {
+    list: () => listDefinitions(folder),
+    newId,
+    save: (agent, revision) => save(agent, revision, folder),
+    remove: (id) => remove(id, folder),
+  };
 }

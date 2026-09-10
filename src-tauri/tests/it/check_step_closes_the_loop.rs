@@ -135,6 +135,7 @@ async fn the_loop_closes_on_what_the_command_did() -> Result<(), Box<dyn Error>>
     let watch = Arc::new(Watch::new());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -248,6 +249,7 @@ async fn work_that_never_passes_runs_out_of_tries_and_stops() -> Result<(), Box<
     let watch = Arc::new(Watch::new());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

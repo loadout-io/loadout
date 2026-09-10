@@ -755,6 +755,7 @@ async fn workflow_trigger_and_ask_leave_both_vendor_streams_and_rebuild_exactly(
     let store = Store::open(&database)?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: workspace.path(),
         store: &store,
         drivers,
@@ -1096,6 +1097,7 @@ async fn poisoned_evidence_turns_an_apparent_success_into_a_failed_product_run()
     let started = Arc::new(AtomicBool::new(false));
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: workspace.path(),
         store: &store,
         drivers: fake_drivers(
@@ -1148,6 +1150,7 @@ async fn an_actual_dead_group_proof_is_persisted_on_the_cancelled_product_step()
     let control = RunControl::new();
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: workspace.path(),
         store: &store,
         drivers: fake_drivers(
@@ -1196,6 +1199,7 @@ async fn an_alive_cancel_proof_keeps_the_handle_owned_until_a_retry_proves_dead(
     let control = RunControl::new();
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: workspace.path(),
         store: &store,
         drivers: fake_drivers(

@@ -119,6 +119,7 @@ impl Bench {
         let control = RunControl::new();
         let deps = RunDeps {
             home: &self.home,
+            library: self.home.clone(),
             project: &self.project,
             store: &store,
             drivers: drivers(Arc::clone(&self.starts)),

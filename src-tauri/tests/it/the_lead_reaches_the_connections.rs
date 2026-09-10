@@ -397,7 +397,7 @@ impl Bench {
         let project = TempDir::new()?;
         // `Store::open` zakłada plik bazy, ale nie katalog nad nim.
         fs::create_dir_all(project.path().join(".loadout"))?;
-        let connections = home.path().join("connections");
+        let connections = project.path().join(".loadout/connections");
         fs::create_dir_all(&connections)?;
         fs::write(connections.join("x.json"), connection_file())?;
         Ok(Self { home, project })
@@ -419,7 +419,7 @@ impl Bench {
             connections: connections.to_vec(),
             ..Agent::example()
         };
-        save_agent_inner(self.home.path(), &agent, None)?;
+        save_agent_inner(&self.project.path().join(".loadout"), &agent, None)?;
         Ok(agent.id.to_string())
     }
 

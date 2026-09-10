@@ -126,7 +126,7 @@ export function lengthLabel(length: number): string {
  * obie połowy sekcji (niezmiennik 13). */
 function reachLabel(note: Note, legacy: boolean): string | null {
   if (legacy) return null;
-  if (note.scope === 'everywhere') return EVERY_PROJECT;
+  if (note.scope === 'everywhere') return note.place === 'project' ? THIS_PROJECT : EVERY_PROJECT;
   if (note.scope === 'this-project') return THIS_PROJECT;
   return note.agent ? onlyAgent(note.agent) : null;
 }

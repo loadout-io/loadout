@@ -985,7 +985,7 @@ impl Bench {
         Ok(bench)
     }
     fn home(&self) -> PathBuf {
-        self.root.path().join("home")
+        self.project().join(".loadout")
     }
     fn project(&self) -> PathBuf {
         self.root.path().join("project")
@@ -1031,6 +1031,7 @@ impl Bench {
         let drivers: Drivers = Arc::new(move |_| Arc::clone(&driver));
         let deps = RunDeps {
             home: &self.home(),
+            library: self.home().clone(),
             project: &self.project(),
             store: &store,
             drivers,

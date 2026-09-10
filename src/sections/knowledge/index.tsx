@@ -35,9 +35,9 @@
  * `useSyncExternalStore`, przeczytaj w `src/sections/workflows/index.tsx`.
  */
 import type { ReactElement } from 'react';
-import { useEffect, useSyncExternalStore } from 'react';
-import { useMemory } from '../../state/memory';
-import { useSkills } from '../../state/skills';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { memoryForProject } from '../../state/memory';
+import { skillsForProject } from '../../state/skills';
 import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import type { MemoryStore } from '../memory/shelf';
 import NotesShelf, { waitingFrom } from '../memory/shelf';
@@ -108,9 +108,14 @@ function activeCatalogFolder(): string | null {
 }
 
 export default function KnowledgeScreen({
-  notes = useMemory,
-  skills = useSkills,
+  notes: suppliedNotes,
+  skills: suppliedSkills,
 }: KnowledgeScreenProps): ReactElement {
+  const [folder] = useState(activeCatalogFolder);
+  const [ownNotes] = useState(() => memoryForProject(folder));
+  const [ownSkills] = useState(() => skillsForProject(folder));
+  const notes = suppliedNotes ?? ownNotes;
+  const skills = suppliedSkills ?? ownSkills;
   const noteState = useSyncExternalStore(notes.subscribe, notes.getState, notes.getState);
   const skillState = useSyncExternalStore(skills.subscribe, skills.getState, skills.getState);
   const catalogFolder = useSyncExternalStore(

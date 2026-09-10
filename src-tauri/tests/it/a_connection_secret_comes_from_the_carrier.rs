@@ -238,6 +238,7 @@ async fn a_step_of_a_run_gets_the_value_from_the_carrier() -> Result<(), Box<dyn
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.project.path().join(".loadout"),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -296,7 +297,7 @@ fn a_value_nobody_can_find_neither_stops_codex_nor_reaches_its_argv() -> Result<
         run.path(),
         "codex",
         &[a_connection_that_needs_a_value()],
-        &Carrier::in_library(Some(bench.home.path())),
+        &Carrier::in_library(Some(&bench.project.path().join(".loadout"))),
     )?;
 
     assert!(
@@ -495,18 +496,18 @@ impl Bench {
     fn new() -> Result<Self, Box<dyn Error>> {
         let home = TempDir::new()?;
         let project = TempDir::new()?;
-        fs::create_dir_all(home.path().join("agents"))?;
-        fs::create_dir_all(home.path().join("workflows"))?;
+        fs::create_dir_all(project.path().join(".loadout/agents"))?;
+        fs::create_dir_all(project.path().join(".loadout/workflows"))?;
         // `Store::open` zakłada plik bazy, ale nie katalog nad nim.
         fs::create_dir_all(project.path().join(".loadout"))?;
-        let connections = home.path().join("connections");
+        let connections = project.path().join(".loadout/connections");
         fs::create_dir_all(&connections)?;
         fs::write(connections.join("figma.json"), connection_file())?;
         Ok(Self { home, project })
     }
 
     fn carrier_path(&self) -> PathBuf {
-        self.home.path().join(CARRIER)
+        self.project.path().join(".loadout").join(CARRIER)
     }
 
     /// Nośnik z jedną wartością, w podanych prawach dostępu.
@@ -529,7 +530,11 @@ impl Bench {
     }
 
     fn workflow(&self, text: &str) -> Result<PathBuf, Box<dyn Error>> {
-        let path = self.home.path().join("workflows").join("z23.json");
+        let path = self
+            .project
+            .path()
+            .join(".loadout/workflows")
+            .join("z23.json");
         fs::write(&path, text)?;
         Ok(path)
     }
@@ -542,7 +547,7 @@ impl Bench {
             connections: connections.to_vec(),
             ..Agent::example()
         };
-        save_agent_inner(self.home.path(), &agent, None)?;
+        save_agent_inner(&self.project.path().join(".loadout"), &agent, None)?;
         Ok(agent.id)
     }
 

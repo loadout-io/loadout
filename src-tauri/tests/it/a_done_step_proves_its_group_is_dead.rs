@@ -205,6 +205,7 @@ async fn a_step_says_done_only_after_its_process_group_answers_esrch() -> Result
     let keeper: Keeper = Arc::new(Mutex::new(None));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers_for(Arc::new(Fake {
@@ -351,6 +352,7 @@ async fn a_group_that_survives_every_escalation_fails_the_step_and_says_so()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers_for(Arc::new(Unprovable::never_proves())),
@@ -450,6 +452,7 @@ async fn an_unproven_group_keeps_its_handle_and_its_slot_until_a_proof_frees_the
     let ledger = driver.ledger();
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers_for(Arc::new(driver)),

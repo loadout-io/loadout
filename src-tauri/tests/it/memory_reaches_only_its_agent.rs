@@ -301,6 +301,7 @@ async fn each_step_is_told_what_its_own_agent_knows_and_nothing_of_the_other()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

@@ -98,6 +98,7 @@ async fn a_copy_that_cannot_be_made_stops_the_run_and_says_why() -> Result<(), B
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&started)),

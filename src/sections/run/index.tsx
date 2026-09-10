@@ -64,7 +64,7 @@ import type { ContextPin } from '../../state/context';
 import type { FeedLine, Step } from '../../state/run';
 import type { Link } from '../../state/workflows';
 import { runFor, useRun } from '../../state/run';
-import { useSkills } from '../../state/skills';
+import { createSkillsStore } from '../../state/skills';
 import { useWorkspaces } from '../../state/workspaces';
 import { sessionAddresseeOf } from './addressee';
 import { saidOf } from './entry/echo';
@@ -82,7 +82,7 @@ import { PastRuns } from './past/panel';
 import { FORGET_AFTER_DAYS } from './past/store';
 import { Diagnostics } from './diagnostics';
 import { chooseWorkingFolder, folderName, whereTheRunIs } from './folders';
-import { openOneRun, planOfPastRun, theOneThatIsGoing } from './history-command';
+import { openOneRun, theOneThatIsGoing } from './history-command';
 import {
   answerTheLead,
   acceptLeadContextRequest,
@@ -91,7 +91,6 @@ import {
   listRuns,
   openChat,
   pinContextToChat,
-  readRun,
   sendToStep,
   stepMessageRecipients,
   sayToOrchestrator,
@@ -134,9 +133,12 @@ import { list as listWorkflows } from '../workflows/io';
  * Agents (niezmiennik 23). Ekran Run nie trzyma agentów i nie ma po co: przewodnik pierwszego
  * uruchomienia potrzebuje LICZBY, a nie listy. `list` oddaje wyłącznie zdrowe definicje, więc
  * plik, którego nie da się wczytać, nie odhacza kroku „dodaj agenta" po cichu. */
+import { useProjectSetup } from '../../ui/project-setup/state';
+import { loadProjectLead } from '../../state/settings';
 import { list as listAgents } from '../agents/io';
 import { cardOnTop, cardsIn, runTabs } from './tabs/store';
 import { newTerminal } from './tabs/terminal';
+import { visibleRun } from './visible-run';
 import { PausedBanner } from './limits/paused-banner';
 import type { AgentFacts } from './rail/roster';
 import { agentStatusOf, atWork, roster } from './rail/roster';
@@ -337,12 +339,16 @@ function planFor(
 ): RunPlan {
   const spoke = new Map(cards.map((card) => [card.id, card]));
   const doing = new Map(now.rows.map((row) => [row.agent, row.text]));
-  const names = new Map<string, number>();
-  for (const step of steps) names.set(step.name, (names.get(step.name) ?? 0) + 1);
+  const names = new Map<string, Set<string>>();
+  for (const step of steps) {
+    const tiles = names.get(step.name) ?? new Set<string>();
+    tiles.add(step.tileId || step.id);
+    names.set(step.name, tiles);
+  }
 
   return {
     steps: steps.map((step): GraphStep => {
-      const card = (names.get(step.name) ?? 0) > 1 ? undefined : spoke.get(step.name);
+      const card = (names.get(step.name)?.size ?? 0) > 1 ? undefined : spoke.get(step.name);
       /* Żywe zdanie bije ostatnie: strefa TERAZ mówi, co się dzieje, a `say.ts` — co ten agent
        * powiedział z autorytetem, kiedy już nic się nie dzieje. Dwa różne pytania, jedna linia
        * na kafelku, więc pierwszeństwo musi być zapisane, a nie przypadkowe. */
@@ -355,6 +361,8 @@ function planFor(
       const stepStatus = agentStatusOf(step.state);
       return {
         id: step.id,
+        ...(step.tileId === undefined ? {} : { tileId: step.tileId }),
+        ...(step.processStarted === undefined ? {} : { processStarted: step.processStarted }),
         name: step.name,
         // Koniec tury vendora nie przesądza o wyniku kroku ani wymaganych plikach.
         status: asked !== undefined && step.state === 'running' ? 'needs you' : stepStatus,
@@ -767,7 +775,7 @@ function LeadContextPreview({
 
 export default function Run(): ReactElement {
   const view = useSyncExternalStore(runFeed.subscribe, currentView, currentView);
-  const run = useSyncExternalStore(useRun.subscribe, useRun.getState, useRun.getState);
+  const projectRun = useSyncExternalStore(useRun.subscribe, useRun.getState, useRun.getState);
   const tabs = useSyncExternalStore(runTabs.subscribe, runTabs.getState, runTabs.getState);
   /* ZAKRES CZYTAMY TĄ SAMĄ DROGĄ, CO POZOSTAŁE MAGAZYNY — i to jest jedyne miejsce, w którym
    * ten ekran pyta „gdzie pracujemy". Odpowiedź mieszka w `src/state/workspaces.ts`
@@ -785,6 +793,13 @@ export default function Run(): ReactElement {
    * pytanie „jak nazywa się ten projekt" (niezmiennik 13). */
   const scope = scopes.all.find((one) => one.id === scopes.activeId) ?? null;
   const folder = scope?.folder ?? null;
+  const setupRevision = useProjectSetup((state) => state.revisions[folder ?? ''] ?? 0);
+  // Ten sam wybór karty rozstrzyga o strumieniu i zakończonym obrazie biegu.
+  const onTop = useMemo(
+    () => cardOnTop(tabs.tabs, tabs.activeId, folder),
+    [tabs.tabs, tabs.activeId, folder],
+  );
+  const run = useMemo(() => visibleRun(projectRun, onTop, folder), [projectRun, onTop, folder]);
 
   /* Jedno miejsce na to, co Loadout odpowiedział o folderze albo o zatrzymaniu wywołanym
    * z wiersza wejścia. Cicha porażka wygląda dokładnie jak martwa kontrolka. */
@@ -823,7 +838,7 @@ export default function Run(): ReactElement {
    */
   useEffect(() => {
     let alive = true;
-    listWorkflows()
+    listWorkflows(folder)
       .then((entries) => {
         if (alive) rememberWorkflows(toChoices(entries));
       })
@@ -839,7 +854,7 @@ export default function Run(): ReactElement {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [folder, setupRevision]);
   /* ZEGAR DLA KONTROLKI „Interrupt" (2026-09, Z-40).
    *
    * Ten sam odstęp i ten sam powód, co przy `ASK_AGAIN` w `./rail/rail.tsx`: sekunda jest dolną
@@ -898,13 +913,14 @@ export default function Run(): ReactElement {
    * `list_skills` czyta półki projektu razem z globalnymi (`commands::skills::list_skills_in`),
    * więc przełączenie zakresu zmienia odpowiedź. Odmowa nie leci w górę i nie ma tu czego łapać —
    * obsługuje ją magazyn i zostawia w swoim stanie zdanie dla człowieka. */
+  const skills = useMemo(() => createSkillsStore(folder), [folder]);
   useEffect(() => {
-    void useSkills.getState().load();
-  }, [folder]);
+    void skills.getState().load();
+  }, [skills, setupRevision]);
   const installedSkills = useSyncExternalStore(
-    useSkills.subscribe,
-    useSkills.getState,
-    useSkills.getState,
+    skills.subscribe,
+    skills.getState,
+    skills.getState,
   ).installed;
   const skillNames = useMemo<readonly string[]>(
     () => installedSkills.map((one) => one.name),
@@ -922,10 +938,13 @@ export default function Run(): ReactElement {
    * definicji agenta i z sufitu jego dialu, a biblioteka jest globalna (`docs/ARCHITECTURE.md`
    * §8). Przełączenie zakresu nie zmienia w niej ani jednego pola — w odróżnieniu od listy
    * umiejętności wyżej, która czyta półki projektu. */
+  useEffect(() => {
+    void loadProjectLead().catch(() => {});
+  }, [folder]);
   const chosenLead = useSyncExternalStore(subscribeToLead, lead, lead);
   useEffect(() => {
     void readWhatTheLeadCanDo();
-  }, [chosenLead]);
+  }, [chosenLead, folder, setupRevision]);
   const leadCanDo = useSyncExternalStore(subscribeToLeadPowers, whatItCanDoNow, whatItCanDoNow);
 
   /**
@@ -1111,14 +1130,6 @@ export default function Run(): ReactElement {
    * ORAZ karty w środku ekranu). Filtr jest funkcją czystą w `./tabs/store`, żeby dało się go
    * osądzić bez okna. */
   const shown = useMemo(() => cardsIn(tabs.tabs, folder), [tabs.tabs, folder]);
-  /* KTÓRA KARTA JEST NA WIERZCHU — z tych, które WIDAĆ, i to jest to samo wyrażenie, którym
-   * rozstrzyga to rejestr strumienia (`./feed/live`, `runFeed`). Jedna odpowiedź na jedno pytanie
-   * (niezmiennik 13): dwie kopie dałyby pasek podświetlający jedną kartę nad historią należącą
-   * do drugiej — i wyglądałoby to jak lider, który odpowiada nie na to, o co pytano. */
-  const onTop = useMemo(
-    () => cardOnTop(tabs.tabs, tabs.activeId, folder),
-    [tabs.tabs, tabs.activeId, folder],
-  );
 
   /* KANONICZNY KLUCZ TEJ KARTY — jedna odpowiedź na „w której sesji jesteśmy" (niezmiennik 13).
    *
@@ -1275,37 +1286,11 @@ export default function Run(): ReactElement {
     });
   }, [folder, onTop]);
 
-  /* OSTATNI BIEG TEGO FOLDERU, KIEDY TO OKNO DOPIERO WSTAJE.
-   *
-   * # Po co to istnieje
-   *
-   * Zgłoszenie właściciela 2026-08-23: odmowa „A run is already going… Press Stop first", a pod
-   * nią `/stop` → „Nothing is running." Zdanie ze Stopu naprawił Rust — on jeden wie, czy coś
-   * idzie — ale samo pytanie „skąd okno ma to wiedzieć" zostało bez odpowiedzi. Pamięć okna
-   * o żywym biegu jest ULOTNA: przeładowanie strony zeruje magazyny i moduł, a bieg po tamtej
-   * stronie pracuje dalej. Człowiek widzi wtedy ekran bez paska i bez Stopu nad czymś, co
-   * kosztuje pieniądze.
-   *
-   * # Skąd bierzemy odpowiedź
-   *
-   * Z historii tego zakresu, bez nowej krawędzi: `list_runs` podaje `state`, a bieg ze słowem
-   * `running` w SWOIM katalogu jest tym, który idzie. Gdy żaden nie idzie, pierwszy wiersz jest
-   * ostatnim skończonym; jego kroki czyta ten sam `read_run`, którym panel otwiera historię.
-   * Biegi porzucone przez zamknięte okno nie są tu pomyłką, bo sprzątanie przy starcie
-   * przepisuje je na `interrupted`, zanim to okno cokolwiek zamówi
-   * (`ipc::AppState::settle_everything_left_behind`).
-   *
-   * # Czego to NIE robi i dlaczego
-   *
-   * ŻYWEMU biegowi nie podaje kroków. Strumień linii należy do wywołania, które ten bieg
-   * zaczęło, i po przeładowaniu nie da się do niego wrócić — pasek narysowany z migawki
-   * `run.json` stałby w miejscu i wyglądałby jak bieg, który utknął. Pusta lista kroków jest tu
-   * tą samą decyzją, co przy wznowieniu z historii (`io.ts`, `asARun`): lepiej nie rysować
-   * bloków, niż rysować takie, które udają żywe (niezmiennik 17). Skończony bieg jest odwrotny:
-   * jego zapis już się nie poruszy i jest jedynym prawdziwym źródłem końcowych stanów.
-   *
-   * Zdanie w strumieniu mówi to wprost, bo bez niego brak linii nad pracującym biegiem czyta się
-   * jak bieg, który nic nie robi. */
+  /* 2026-09-10: nowe okno odnajduje wyłącznie ŻYWY bieg, żeby Stop był dostępny.
+   * Wczytywanie ostatniego zakończonego biegu do nowej rozmowy pokazywało stare czerwone
+   * kafelki jako jej stan. Historia nadal korzysta z tej listy, ale wynik otwiera człowiek.
+   * Żywemu biegowi nie odtwarzamy statycznych kroków: bez podłączonego strumienia wyglądałyby
+   * na zatrzymane. Ten odczyt ustala dostępność Stopu, a nie udaje transmisji na żywo. */
   useEffect(() => {
     let alive = true;
     const session = runFor(folder);
@@ -1332,27 +1317,6 @@ export default function Run(): ReactElement {
           );
           return;
         }
-
-        const latest = rows[0];
-        if (latest === undefined || session.getState().ended !== null) return;
-        /* 2026-09 (Z-37) — TEN SAM `read_run`, KTÓRY CZYTA HISTORIA. Dzisiejszy plik workflow
-         * mógł po biegu zmienić kroki albo zniknąć, więc nie jest paragonem tego, co zaszło
-         * (niezmienniki 4 i 17). */
-        return readRun(folder, latest.folder).then((past) => {
-          if (!alive) return;
-          const current = session.getState();
-          /* Odczyt dysku nie może nadpisać biegu wystartowanego, kiedy `read_run` było w locie. */
-          if (current.workflow !== '' || current.ended !== null) return;
-          current.finishedRun(
-            past.title,
-            planOfPastRun(past),
-            folder,
-            past.workflowFile,
-            null,
-            latest.when,
-            past.state,
-          );
-        });
       })
       .catch(() => {
         /* Świadomie bez zdania na ekranie: nieczytelna historia mówi o sobie sama, kiedy
@@ -1419,7 +1383,7 @@ export default function Run(): ReactElement {
    */
   useEffect(() => {
     let alive = true;
-    listAgents()
+    listAgents(folder)
       .then((saved) => {
         if (alive) rememberAgents(saved.length);
       })
@@ -1429,7 +1393,7 @@ export default function Run(): ReactElement {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [folder, setupRevision]);
 
   /**
    * TRZY KROKI DO PIERWSZEGO BIEGU, policzone z tego, co naprawdę leży na dysku.

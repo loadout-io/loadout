@@ -152,6 +152,7 @@ async fn a_circle_is_refused_before_anything_starts() -> Result<(), Box<dyn Erro
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -216,6 +217,7 @@ async fn a_warning_alone_does_not_stop_the_run() -> Result<(), Box<dyn Error>> {
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

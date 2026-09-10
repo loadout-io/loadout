@@ -116,6 +116,7 @@ async fn stopping_a_run_cancels_it_and_kills_what_was_alive() -> Result<(), Box<
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch), LONG),

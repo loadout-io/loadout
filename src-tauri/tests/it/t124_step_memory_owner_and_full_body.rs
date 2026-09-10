@@ -134,6 +134,7 @@ async fn run_one_step(bench: &Bench) -> Result<RunReport, Box<dyn Error>> {
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(),

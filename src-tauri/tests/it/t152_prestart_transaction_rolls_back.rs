@@ -261,6 +261,7 @@ impl Bench {
         let store = Store::open(&self.database())?;
         let deps = RunDeps {
             home: &self.home,
+            library: self.home.clone(),
             project: &self.project,
             store: &store,
             drivers: drivers(Arc::clone(&self.starts), false),
@@ -300,6 +301,7 @@ impl Bench {
         let store = Store::open(&self.database())?;
         let deps = RunDeps {
             home: &self.home,
+            library: self.home.clone(),
             project: &self.project,
             store: &store,
             drivers: drivers(Arc::clone(&self.starts), false),
@@ -751,6 +753,7 @@ async fn ownership_transfer_disarms_the_provisional_guard() -> Result<(), Box<dy
     let faults = Arc::new(Faults::observing());
     let deps = RunDeps {
         home: &bench.home,
+        library: bench.home.clone(),
         project: &bench.project,
         store: &store,
         drivers: drivers(Arc::clone(&bench.starts), true),

@@ -2498,7 +2498,7 @@ fn stamp_what_this_run_carried(carried: &[MemoryRecord]) {
 ///   dzielącymi ten sam kafelek, więc „po turze" znaczyłoby czytanie tego samego katalogu tyle
 ///   razy, ile rund. Katalog jest kompletny dopiero wtedy, kiedy zszedł ostatni krok.
 fn what_the_steps_wrote_down(deps: &RunDeps<'_>, plan: &Plan) {
-    let root = super::memory::notes_root(deps.home);
+    let root = super::memory::notes_root(&deps.library);
     let at = noticed_now();
     // Rundy jednej pętli dzielą kafelek, więc dzielą katalog pamięci — i mają go dać jeden raz.
     let mut done: BTreeSet<&str> = BTreeSet::new();
@@ -2912,7 +2912,7 @@ fn keep_reflection_notes(
     run: &str,
     worth: Vec<Remembered>,
 ) -> KeptReflectionNotes {
-    let library_root = super::memory::notes_root(deps.home);
+    let library_root = super::memory::notes_root(&deps.library);
     let project_root = super::memory::project_notes_root(deps.project);
     let at = noticed_now();
     let mut kept = 0;
@@ -4791,16 +4791,16 @@ fn the_setup_for<'a>(
         wanted,
         inputs,
         folders,
-        library: deps.home.join(AGENTS_DIR),
-        connections: deps.home.join("connections"),
-        data: deps.home,
+        library: deps.library.join(AGENTS_DIR),
+        connections: deps.library.join("connections"),
+        data: &deps.library,
         knows: if let Some(replay) = recorded {
             match &replay.memory_sources {
-                Some(snapshot) => frozen_known(snapshot, deps.home, deps.project, None)?,
+                Some(snapshot) => frozen_known(snapshot, &deps.library, deps.project, None)?,
                 None => empty_known(),
             }
         } else {
-            what_the_agents_know(deps.home, deps.project)
+            what_the_agents_know(&deps.library, deps.project)
         },
         is_ask: false,
         /* Zadanie z wiersza wejścia, przycięte. Brak zadania i zadanie z samych spacji to jeden
@@ -4986,13 +4986,13 @@ fn freeze_context_inputs(
     } else {
         match overlay {
             Some(overlay) => super::context_inputs::prepare_with_overlay(
-                deps.home,
+                &deps.library,
                 file,
                 &setup.inputs,
                 &recipients,
                 Some(overlay),
             ),
-            None => super::context_inputs::prepare(deps.home, file, &setup.inputs, &recipients),
+            None => super::context_inputs::prepare(&deps.library, file, &setup.inputs, &recipients),
         }
         .map_err(|refusal| {
             RunError::Refused(Note {
@@ -5014,6 +5014,15 @@ fn freeze_context_inputs(
         }
     }
     Ok(prepared.into_snapshot())
+}
+
+fn connect_planned_steps(steps: &mut [Planned], arrows: &[(StepId, StepId)]) {
+    // Klucze najpierw, dopiero potem dopisywanie: `steps[child]` i `steps[parent]` naraz to
+    // dwie pożyczki jednego wektora, a nie dwie różne rzeczy.
+    let keys: Vec<String> = steps.iter().map(|step| step.node_key.clone()).collect();
+    for &(parent, child) in arrows {
+        steps[child].depends_on.push(keys[parent].clone());
+    }
 }
 
 fn plan_run_with_identity(
@@ -5071,12 +5080,7 @@ fn plan_run_with_identity(
     let (mut steps, place) = plan_the_nodes(&unrolled, &file, &wanted, &setup)?;
     let arrows = arrows_between(&unrolled, &place, request.part.as_ref());
     let loops = loops_of(&unrolled, &file);
-    // Klucze najpierw, dopiero potem dopisywanie: `steps[child]` i `steps[parent]` naraz to
-    // dwie pożyczki jednego wektora, a nie dwie różne rzeczy.
-    let keys: Vec<String> = steps.iter().map(|step| step.node_key.clone()).collect();
-    for &(parent, child) in &arrows {
-        steps[child].depends_on.push(keys[parent].clone());
-    }
+    connect_planned_steps(&mut steps, &arrows);
     let routes = planned_routes(&file, &steps, &arrows)?;
     let context_sources = freeze_context_inputs(
         deps,
@@ -5086,9 +5090,14 @@ fn plan_run_with_identity(
         lead_start.and_then(|start| start.context.as_ref()),
         recorded,
     )?;
-    let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
-    let memory_sources =
-        freeze_memory_sources(&memory, &steps, deps.home, deps.project, recorded.is_none())?;
+    let memory = what_this_run_knew(&setup.knows, &steps, &deps.library, deps.project);
+    let memory_sources = freeze_memory_sources(
+        &memory,
+        &steps,
+        &deps.library,
+        deps.project,
+        recorded.is_none(),
+    )?;
     /* ZAMROŻENIE JEST JEDNORAZOWE, WIĘC BRAMKA STOI PRZED PLANEM, a nie w kroku: odmowa ma paść
      * ZANIM powstanie katalog biegu i zanim ruszy pierwszy proces (niezmiennik 12). Zwykły Start
      * jej nie widzi — `handoffs_from` niesie wyłącznie powtórzenie i wznowienie (`commands::rerun`). */
@@ -5147,7 +5156,7 @@ fn plan_run_with_identity(
         // Odczyt przy każdym zrzucie dałby wartości, które teoretycznie mogą się różnić —
         // i strażnik porównywałby wtedy coś z czymś innym.
         boot_id: crate::engine::supervisor::machine_booted_at(),
-        secrets: crate::connections::secrets::Carrier::in_library(Some(deps.home)),
+        secrets: crate::connections::secrets::Carrier::in_library(Some(&deps.library)),
         prices,
     })
 }
@@ -5295,7 +5304,7 @@ fn ask_workflow(saved: &Agent, ask: &AskRequest, title: &str) -> WorkflowFile {
 }
 
 fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
-    let library = deps.home.join(AGENTS_DIR);
+    let library = deps.library.join(AGENTS_DIR);
     /* ODMOWA PRZED PIERWSZYM KATALOGIEM — kolejność z `ARCHITECTURE` §4, ta sama, co przy
      * biegu z pliku. Bieg, który najpierw zakłada `runs/<ts>__<id>/`, a odmawia potem,
      * zostawia w historii ślad biegu, którego nie było (niezmiennik 4), i robi to w chwili,
@@ -5336,9 +5345,9 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         wanted: &[],
         inputs,
         folders,
-        connections: deps.home.join("connections"),
-        data: deps.home,
-        knows: what_the_agents_know(deps.home, deps.project),
+        connections: deps.library.join("connections"),
+        data: &deps.library,
+        knows: what_the_agents_know(&deps.library, deps.project),
         is_ask: true,
         /* PUSTE, bo zdanie człowieka jest już instrukcją tego kroku. Podane drugi raz jako
          * zadanie biegu dałoby prompt, w którym to samo polecenie stoi dwukrotnie — raz pod
@@ -5365,8 +5374,8 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         .collect::<Result<Vec<Planned>, RunError>>()?;
     // Ten sam rachunek z pamięci, co przy biegu z pliku: bieg z `/ask` też dostaje blok „co
     // wiadomo", więc też ma po sobie zostawić ślad, co model wtedy wiedział.
-    let memory = what_this_run_knew(&setup.knows, &steps, deps.home, deps.project);
-    let memory_sources = freeze_memory_sources(&memory, &steps, deps.home, deps.project, true)?;
+    let memory = what_this_run_knew(&setup.knows, &steps, &deps.library, deps.project);
+    let memory_sources = freeze_memory_sources(&memory, &steps, &deps.library, deps.project, true)?;
     /* Ten sam rachunek z umiejętności, co przy biegu z pliku — i tu zwykle pusty: krok `/ask`
      * powstaje z `Skills::default()`, więc nie ma po co sięgać. Bramki zamrożenia nie ma, bo bieg
      * jednokrokowy niczego nie wznawia (`seeded_from: None` niżej) i nie ma z czym porównywać. */
@@ -5416,7 +5425,7 @@ fn plan_ask(deps: &RunDeps<'_>, ask: &AskRequest) -> Result<Plan, RunError> {
         trigger_origin: None,
         // Pytamy system RAZ, jak przy planie z pliku: ten bieg ma nosić jedną odpowiedź.
         boot_id: crate::engine::supervisor::machine_booted_at(),
-        secrets: crate::connections::secrets::Carrier::in_library(Some(deps.home)),
+        secrets: crate::connections::secrets::Carrier::in_library(Some(&deps.library)),
         // Ta sama bramka, co przy planie z pliku: cennik nie do przeczytania jest odmową Startu,
         // także dla biegu z jednym kafelkiem (2026-09, Z-44).
         prices: the_prices_this_run_will_use(deps.home)?,
@@ -5643,10 +5652,15 @@ fn note_address(
     home: &Path,
     project: &Path,
 ) -> Option<super::memory::NoteAddress> {
-    let place = if note.path.strip_prefix(home).is_ok() {
-        super::memory::NotePlace::Library
-    } else if note.path.strip_prefix(project).is_ok() {
+    // 2026-09-10: the content library may be this project's .loadout folder.
+    // Its notes have a project address even when they also lie under `home`.
+    let place = if note
+        .path
+        .starts_with(super::memory::project_notes_root(project))
+    {
         super::memory::NotePlace::Project
+    } else if note.path.strip_prefix(home).is_ok() {
+        super::memory::NotePlace::Library
     } else {
         return None;
     };

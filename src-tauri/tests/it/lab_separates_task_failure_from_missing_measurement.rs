@@ -74,6 +74,7 @@ print(json.dumps(result))
         Arc::new(|_| unreachable!("there are no paid steps in this acceptance test"));
     let deps = RunDeps {
         home: &home,
+        library: home.clone(),
         project: &project,
         store: &store,
         drivers,

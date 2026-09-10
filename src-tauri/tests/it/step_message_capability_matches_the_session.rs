@@ -47,10 +47,10 @@ async fn scenario(with_voice: bool, external_messages: bool) -> Result<(), Box<d
     let project = root.path().canonicalize()?.join("project");
     let home = root.path().canonicalize()?.join("home");
     fs::create_dir_all(project.join(".loadout"))?;
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
     let agent = Agent::example();
-    write_agent_file(&home.join("agents"), &agent, None)?;
-    let workflow = home.join("workflows/message.json");
+    write_agent_file(&project.join(".loadout/agents"), &agent, None)?;
+    let workflow = project.join(".loadout/workflows/message.json");
     fs::write(
         &workflow,
         json!({"format":1,"id":"wf-message","name":"Message",

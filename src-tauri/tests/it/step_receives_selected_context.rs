@@ -147,11 +147,15 @@ pub(super) struct Bench {
 }
 
 impl Bench {
+    pub fn library(&self) -> PathBuf {
+        self.project.path().join(".loadout")
+    }
+
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let home = tempfile::tempdir()?;
         let project = tempfile::tempdir()?;
-        fs::create_dir_all(home.path().join("agents"))?;
-        fs::create_dir_all(home.path().join("workflows"))?;
+        fs::create_dir_all(project.path().join(".loadout/agents"))?;
+        fs::create_dir_all(project.path().join(".loadout/workflows"))?;
         fs::create_dir_all(project.path().join(".loadout"))?;
         fs::write(project.path().join("README.md"), "fixture\n")?;
         let mut agent = Agent::example();
@@ -159,7 +163,7 @@ impl Bench {
         "Context reader".clone_into(&mut agent.name);
         agent.runs_with = Vendor::ClaudeCode;
         agent.write_results_to.clear();
-        write_agent_file(&home.path().join("agents"), &agent, None)?;
+        write_agent_file(&project.path().join(".loadout/agents"), &agent, None)?;
         Ok(Self { home, project })
     }
 
@@ -172,10 +176,10 @@ impl Bench {
         requirement: &str,
         source_text: &str,
     ) -> Result<Published, Box<dyn Error>> {
-        let made = create_context_set_inner(self.home.path(), title)?;
+        let made = create_context_set_inner(&self.library(), title)?;
         let source_id = format!("source-{topic_id}");
         let saved = save_context_draft_inner(
-            self.home.path(),
+            &self.library(),
             &made.set.id,
             title,
             purpose,
@@ -195,7 +199,7 @@ impl Bench {
             Some(made.revision),
         )?;
         let revision = format!("revision-{topic_id}");
-        let folder = folder_of(&library_root(self.home.path()), &saved.set.id)?;
+        let folder = folder_of(&library_root(&self.library()), &saved.set.id)?;
         let version = folder.join("versions").join(&revision);
         fs::create_dir_all(version.join("topics"))?;
         let finding = ContextFinding {
@@ -259,8 +263,7 @@ impl Bench {
 
     pub fn workflow(&self, name: &str, value: &Value) -> Result<PathBuf, Box<dyn Error>> {
         let path = self
-            .home
-            .path()
+            .library()
             .join("workflows")
             .join(format!("{name}.json"));
         fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
@@ -343,6 +346,7 @@ pub(super) async fn run(
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.library(),
         project: bench.project.path(),
         store: &store,
         drivers,

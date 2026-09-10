@@ -343,6 +343,7 @@ async fn plan_then_build() -> Result<(RunReport, Vec<(Instant, Json)>, Bench), B
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(TURN),

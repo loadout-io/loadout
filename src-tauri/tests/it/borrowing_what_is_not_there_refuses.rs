@@ -264,6 +264,7 @@ async fn one_run(bench: &Bench, workflow: PathBuf) -> Result<Outcome, Box<dyn Er
     let prompts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: counting_drivers(Arc::clone(&started), Arc::clone(&prompts)),

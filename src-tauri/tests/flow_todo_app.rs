@@ -130,6 +130,7 @@ async fn six_agents_build_a_todo_list() -> Result<(), Box<dyn Error>> {
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: &bench.home,
+        library: bench.home.clone(),
         project: &bench.project,
         store: &store,
         drivers: real_drivers(),

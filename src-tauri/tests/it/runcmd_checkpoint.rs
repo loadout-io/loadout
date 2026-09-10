@@ -127,6 +127,7 @@ async fn continue_lets_the_run_go_on_from_the_checkpoint() -> Result<(), Box<dyn
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -223,6 +224,7 @@ async fn stopping_at_the_checkpoint_cancels_what_was_behind_it() -> Result<(), B
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -645,6 +647,7 @@ async fn a_step_set_to_ask_stops_the_run_and_the_answer_lets_it_through()
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

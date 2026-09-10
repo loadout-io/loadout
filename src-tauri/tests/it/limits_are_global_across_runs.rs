@@ -289,6 +289,7 @@ impl Lane {
     fn deps<'a>(&'a self, watch: &Arc<Watch>) -> RunDeps<'a> {
         RunDeps {
             home: self.bench.home.path(),
+            library: self.bench.home.path().to_path_buf(),
             project: self.bench.project.path(),
             store: &self.store,
             drivers: fake_drivers(Arc::clone(watch), STEP),

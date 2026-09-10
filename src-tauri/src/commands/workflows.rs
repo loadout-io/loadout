@@ -156,31 +156,17 @@ pub fn where_it_lives(
         ));
     }
 
-    let mine = project.map(|project| project_workflows(project).join(file_name));
-    if let Some(path) = mine.clone().filter(|path| path.is_file()) {
+    // Projekt nie dziedziczy pliku z biblioteki nawet wtedy, kiedy jeszcze nie ma
+    // własnego pliku o tej nazwie (decyzja właściciela 2026-09-10).
+    if let Some(project) = project {
         return Ok(Placed {
             place: WorkflowPlace::Project,
-            path,
+            path: project_workflows(project).join(file_name),
         });
     }
-    let shared = library_workflows(library).join(file_name);
-    if shared.is_file() {
-        return Ok(Placed {
-            place: WorkflowPlace::Library,
-            path: shared,
-        });
-    }
-    // Nowy plik ląduje w projekcie, kiedy jakiś jest otwarty. Bez otwartego projektu zostaje
-    // biblioteka — i to jest jedyny stan, w którym Loadout dalej pisze tam, gdzie pisał zawsze.
-    Ok(match mine {
-        Some(path) => Placed {
-            place: WorkflowPlace::Project,
-            path,
-        },
-        None => Placed {
-            place: WorkflowPlace::Library,
-            path: shared,
-        },
+    Ok(Placed {
+        place: WorkflowPlace::Library,
+        path: library_workflows(library).join(file_name),
     })
 }
 
@@ -294,19 +280,10 @@ fn list_from_shelves(
     project: Option<&Path>,
     read_shelf: impl Fn(&Path, WorkflowPlace) -> Result<Vec<Definition<WorkflowEntry>>, LoadError>,
 ) -> Result<Vec<Definition<WorkflowEntry>>, LoadError> {
-    let mut catalog = match project {
-        Some(project) => read_shelf(&project_workflows(project), WorkflowPlace::Project)?,
-        None => Vec::new(),
-    };
-    let taken: std::collections::BTreeSet<String> = catalog.iter().map(named).collect();
-    catalog.extend(
-        read_shelf(&library_workflows(home), WorkflowPlace::Library)?
-            .into_iter()
-            // APFS jest domyślnie NIEwrażliwy na wielkość liter, więc `Ship.JSON` i `ship.json`
-            // są tam jednym plikiem i muszą być jednym wierszem także tutaj.
-            .filter(|one| !taken.contains(&named(one).to_lowercase())),
-    );
-    Ok(catalog)
+    match project {
+        Some(project) => read_shelf(&project_workflows(project), WorkflowPlace::Project),
+        None => read_shelf(&library_workflows(home), WorkflowPlace::Library),
+    }
 }
 
 /// Nazwa workflow **do wpisania** — ta, którą człowiek pisze po `/run`.
@@ -348,14 +325,6 @@ pub fn typable(name: &str) -> String {
         }
     }
     out
-}
-
-/// Nazwa pliku tej pozycji, małymi literami — klucz przesłaniania.
-fn named(definition: &Definition<WorkflowEntry>) -> String {
-    match definition {
-        Definition::Healthy { value, .. } => value.path.to_lowercase(),
-        Definition::DefinitionProblem { file_name, .. } => file_name.to_lowercase(),
-    }
 }
 
 /// Jeden korzeń, cały jego katalog.

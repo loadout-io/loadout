@@ -12,6 +12,7 @@
  * (`skills::ingest`, `skills::place`), więc tu nie ma czego przepisać (niezmiennik 23).
  */
 import { invoke } from '@tauri-apps/api/core';
+import { activeWorkspace } from '../../state/workspaces';
 
 import type { Authored, Import, InstalledSkill, Landing } from '../../state/skills';
 
@@ -80,8 +81,8 @@ export function listSkills(
  * w `skills::ingest`. Frontend dostaje wynik, nigdy surowe bajty: treść, którą agent wykona,
  * nie ma po co przechodzić przez warstwę, która ją renderuje.
  */
-export function readLink(url: string): Promise<Import> {
-  return invoke<Import>('review_skill', { url });
+export function readLink(url: string, folder = activeWorkspace()?.folder ?? null): Promise<Import> {
+  return invoke<Import>('review_skill', { url, folder });
 }
 
 /**
@@ -96,8 +97,11 @@ export function readLink(url: string): Promise<Import> {
  * tekstem, którego nikt nie przeskanował, a nazwa policzona tutaj byłaby drugą odpowiedzią na
  * pytanie „jak nazywa się katalog" (niezmienniki 23 i 13).
  */
-export function authorSkill(authored: Authored): Promise<Import> {
-  return invoke<Import>('author_skill', { authored });
+export function authorSkill(
+  authored: Authored,
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<Import> {
+  return invoke<Import>('author_skill', { authored, folder });
 }
 
 /**
@@ -115,8 +119,12 @@ export function authorSkill(authored: Authored): Promise<Import> {
  * i dial bezpieczeństwa liczy Rust z zapisanej definicji, a nazwy vendorów nie ma prawa być
  * w tej sekcji ani na ekranie, ani w kodzie (`mounted.test.tsx` zamraża ich brak w markupie).
  */
-export function askAnAgent(want: string, agent: string): Promise<Authored | null> {
-  return invoke<Authored | null>('draft_skill', { want, agent });
+export function askAnAgent(
+  want: string,
+  agent: string,
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<Authored | null> {
+  return invoke<Authored | null>('draft_skill', { want, agent, folder });
 }
 
 /**

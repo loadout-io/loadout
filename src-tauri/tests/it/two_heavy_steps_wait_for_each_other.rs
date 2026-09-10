@@ -116,6 +116,7 @@ async fn two_heavy_agent_steps_never_share_a_moment() -> Result<(), Box<dyn Erro
     let (marks, mut recorded) = mpsc::unbounded_channel();
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(marks),

@@ -162,7 +162,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
       checkTrigger: checked,
     });
     store.getState().startWatching();
-    await settle();
+    await store.getState().load();
     expect(store.getState().triggers[0]).toEqual(expect.objectContaining({ workspace: null }));
 
     clock.advance();
@@ -190,7 +190,7 @@ describe('the trigger watcher belongs to the application lifetime', () => {
     });
 
     store.getState().startWatching();
-    await settle();
+    await store.getState().load();
     expect(listed).toHaveBeenCalledTimes(1);
     expect(store.getState().triggers.map((one) => one.slug)).toEqual(['loaded']);
 

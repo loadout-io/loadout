@@ -20,6 +20,7 @@
  * mieszkają w `./io.ts`, `../workflows/io.ts` i `../agents/io.ts`, i tam zostają
  * (niezmiennik 23).
  */
+import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
 import type { Choice } from './choices';
 import type { PastRunRow } from './io';
 
@@ -78,9 +79,16 @@ const NOTHING_READ_YET: WhatIsReady = {
 let state: WhatIsReady = NOTHING_READ_YET;
 
 const listening = new Set<() => void>();
+const projects = new Map<string, WhatIsReady>();
+useWorkspaces.subscribe((next, previous) => {
+  if (next.activeId === previous.activeId) return;
+  state = projects.get(activeWorkspace()?.folder ?? '') ?? NOTHING_READ_YET;
+  for (const one of listening) one();
+});
 
 function tell(next: WhatIsReady): void {
   state = next;
+  projects.set(activeWorkspace()?.folder ?? '', next);
   for (const one of listening) one();
 }
 
@@ -162,5 +170,6 @@ export function lastRunIn(ready: WhatIsReady, folder: string | null): PastRunRow
 
 /** Wyłącznie dla kryteriów: przywraca stan sprzed pierwszego odczytu. */
 export function forgetWhatIsReady(): void {
+  projects.clear();
   tell(NOTHING_READ_YET);
 }

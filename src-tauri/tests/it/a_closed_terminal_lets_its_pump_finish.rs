@@ -170,7 +170,7 @@ async fn a_terminal_that_spoke_lets_its_pump_finish() -> Result<(), Box<dyn Erro
         name: "Lead".to_owned(),
         ..Agent::example()
     };
-    save_agent_inner(home.path(), &lead, None)?;
+    save_agent_inner(&project.path().join(".loadout"), &lead, None)?;
     let store = Store::open(&project.path().join(".loadout").join("loadout.db"))?;
     let state = AppState::new(
         home.path().to_path_buf(),

@@ -79,6 +79,7 @@ async fn the_graph_walks_past_a_command_that_never_finishes() -> Result<(), Box<
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: no_drivers(),

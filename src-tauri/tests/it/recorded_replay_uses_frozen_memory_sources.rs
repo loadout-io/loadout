@@ -27,25 +27,32 @@ use tokio::sync::mpsc;
 #[tokio::test]
 async fn recorded_memory_reaches_each_physical_copy_after_sources_are_changed_or_deleted()
 -> Result<(), Box<dyn Error>> {
-    let bench = Bench::new()?;
+    recorded_memory_case(false).await
+}
+
+#[tokio::test]
+async fn a_run_from_the_shared_library_replays_matching_note_ids_after_project_isolation()
+-> Result<(), Box<dyn Error>> {
+    recorded_memory_case(true).await
+}
+
+async fn recorded_memory_case(legacy: bool) -> Result<(), Box<dyn Error>> {
+    let bench = Bench::with_legacy_library(legacy)?;
     let global = bench.note(
-        false,
-        "global",
+        if legacy { "same" } else { "global" },
         ("everywhere", None),
         "ORIGINAL-GLOBAL",
         "in-use",
         "",
     )?;
     let project = bench.note(
-        true,
-        "project",
+        if legacy { "same" } else { "project" },
         ("this-project", None),
         "ORIGINAL-PROJECT",
         "in-use",
         "",
     )?;
     let alpha = bench.note(
-        false,
         "alpha",
         ("this-agent", Some("Alpha")),
         "ALPHA-PRIVATE",
@@ -53,7 +60,6 @@ async fn recorded_memory_reaches_each_physical_copy_after_sources_are_changed_or
         "",
     )?;
     let beta = bench.note(
-        false,
         "beta",
         ("this-agent", Some("Beta")),
         "BETA-PRIVATE",
@@ -61,7 +67,6 @@ async fn recorded_memory_reaches_each_physical_copy_after_sources_are_changed_or
         "",
     )?;
     bench.note(
-        false,
         "suggested",
         ("everywhere", None),
         "SUGGESTED-MUST-NOT-LEAK",
@@ -154,7 +159,6 @@ async fn recorded_memory_reaches_each_physical_copy_after_sources_are_changed_or
 async fn source_note_budget_refuses_before_any_agent_starts() -> Result<(), Box<dyn Error>> {
     let bench = Bench::new()?;
     bench.note(
-        false,
         "large",
         ("everywhere", None),
         "a short accepted rule",
@@ -222,8 +226,8 @@ fn note_text(scope: &str, agent: Option<&str>, rule: &str, status: &str, body: &
 
 struct Bench {
     _root: TempDir,
-    home: PathBuf,
     project: PathBuf,
+    library: PathBuf,
     workflow: PathBuf,
     state: Arc<AppState>,
     seen: Arc<Mutex<Vec<String>>>,
@@ -231,10 +235,13 @@ struct Bench {
 
 impl Bench {
     fn new() -> Result<Self, Box<dyn Error>> {
+        Self::with_legacy_library(false)
+    }
+    fn with_legacy_library(legacy: bool) -> Result<Self, Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let home = root.path().join("home");
         let project = root.path().join("project");
-        fs::create_dir_all(home.join("workflows"))?;
+        fs::create_dir_all(project.join(".loadout/workflows"))?;
         fs::create_dir_all(project.join(".loadout"))?;
         fs::write(project.join("seed.txt"), "original project input")?;
         let mut alpha = Agent::example();
@@ -242,9 +249,19 @@ impl Bench {
         let mut beta = Agent::example();
         beta.id = uuid::Uuid::now_v7();
         beta.name = "Beta".to_owned();
-        write_agent_file(&home.join("agents"), &alpha, None)?;
-        write_agent_file(&home.join("agents"), &beta, None)?;
-        let workflow = home.join("workflows/memory-replay.json");
+        write_agent_file(&project.join(".loadout/agents"), &alpha, None)?;
+        write_agent_file(&project.join(".loadout/agents"), &beta, None)?;
+        let library = if legacy {
+            home.clone()
+        } else {
+            project.join(".loadout")
+        };
+        if legacy {
+            // Simulate a pre-isolation run; today's project independently owns both agents.
+            write_agent_file(&library.join("agents"), &alpha, None)?;
+            write_agent_file(&library.join("agents"), &beta, None)?;
+        }
+        let workflow = project.join(".loadout/workflows/memory-replay.json");
         fs::write(&workflow, json!({"format":1,"id":"memory-replay","name":"Replay selected source notes","links":[],"steps":[
             {"kind":"agent","id":"alpha","name":"Alpha copies","agent":alpha.id,"copies":2,"instructions":"WF23-ALPHA copy {{copy}}","folder":{"use":"fresh-copy"},"at":{"x":0,"y":0}},
             {"kind":"agent","id":"beta","name":"Beta copy","agent":beta.id,"instructions":"WF23-BETA","folder":{"use":"fresh-copy"},"at":{"x":0,"y":0}}
@@ -262,8 +279,8 @@ impl Bench {
         ));
         Ok(Self {
             _root: root,
-            home,
             project,
+            library,
             workflow,
             state,
             seen,
@@ -271,17 +288,16 @@ impl Bench {
     }
     fn note(
         &self,
-        project: bool,
         name: &str,
         scope: (&str, Option<&str>),
         rule: &str,
         status: &str,
         body: &str,
     ) -> Result<PathBuf, Box<dyn Error>> {
-        let root = if project {
+        let root = if scope.0 == "this-project" {
             loadout_lib::commands::memory::project_notes_root(&self.project)
         } else {
-            loadout_lib::commands::memory::notes_root(&self.home)
+            loadout_lib::commands::memory::notes_root(&self.library)
         };
         let path = root.join("notes").join(format!("{name}.md"));
         fs::create_dir_all(path.parent().ok_or("no note parent")?)?;
@@ -295,7 +311,8 @@ impl Bench {
             .clone()
     }
     async fn run(&self) -> Result<loadout_lib::commands::RunReport, Box<dyn Error>> {
-        let deps = self.state.begin_run(&self.project)?;
+        let mut deps = self.state.begin_run(&self.project)?;
+        deps.library.clone_from(&self.library);
         let (sink, _events) = line_channel(512);
         Ok(tokio::time::timeout(
             Duration::from_secs(30),

@@ -452,6 +452,7 @@ async fn run_budget_probe(
     let watch = Arc::new(Watch::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch), 9.25),
@@ -609,6 +610,7 @@ pub async fn run_live_oracle(assignment: Assignment) -> TestResult<LiveEvidence>
     let watch = Arc::new(LiveWatch::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: observed_live_drivers(Arc::clone(&watch)),
@@ -1254,6 +1256,7 @@ async fn run_fake_graph(
     let watch = Arc::new(Watch::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch), turn_cost),

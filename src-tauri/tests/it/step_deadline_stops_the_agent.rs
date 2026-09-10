@@ -105,6 +105,7 @@ async fn a_step_over_its_limit_is_stopped_and_its_group_proven_dead() -> Result<
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

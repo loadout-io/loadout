@@ -141,6 +141,7 @@ async fn one_tile_run_again_is_handed_exactly_what_it_had() -> Result<(), Box<dy
     let watch = Arc::new(Watch::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

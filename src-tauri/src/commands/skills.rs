@@ -293,7 +293,7 @@ fn roots_for(library: &Path, project: Option<&Path>) -> Roots {
     Roots {
         home: library.parent().unwrap_or(library).to_path_buf(),
         project: project.map(Path::to_path_buf),
-        data: library.to_path_buf(),
+        data: project.map_or_else(|| library.to_path_buf(), crate::library::project_root),
     }
 }
 
@@ -425,18 +425,20 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
     // Ścieżki liczy dalej WYŁĄCZNIE `place::destinations` (niezmiennik 23) — drugie miejsce,
     // w którym stoi `.claude/skills`, rozjechałoby się z pierwszym przy pierwszym vendorze,
     // którego dołożymy.
+    let scope = if project.is_some() {
+        Scope::Project
+    } else {
+        Scope::Global
+    };
     let mut dirs = Vec::from(crate::skills::place::destinations(
-        Scope::Global,
+        scope,
         &roots.home,
         roots.project.as_deref(),
     ));
-    if roots.project.is_some() {
-        dirs.extend(crate::skills::place::destinations(
-            Scope::Project,
-            &roots.home,
-            roots.project.as_deref(),
-        ));
-    }
+    // Kanoniczna kopia też jest widoczna: import zestawu nie musi instalować
+    // umiejętności w globalnej konfiguracji Claude ani Codex (2026-09-10).
+    let canonical = project.map_or_else(|| library.to_path_buf(), crate::library::project_root);
+    dirs.push(canonical.join(SKILLS_DIR));
 
     for dir in dirs {
         let entries = match std::fs::read_dir(&dir) {
@@ -469,7 +471,7 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
     // Zapis czytany RAZ, przed pętlą: plik jest jeden na bibliotekę, a odczyt per umiejętność
     // znaczyłby N otwarć tego samego pliku i N różnych odpowiedzi, gdyby ktoś pisał w niego
     // w trakcie.
-    let origins = origins_of(library);
+    let origins = origins_of(&canonical);
 
     Ok(names
         .into_iter()
@@ -479,7 +481,7 @@ pub fn list_skills_in(library: &Path, project: Option<&Path>) -> Result<Vec<Inst
                 // ufać dokładnie w tę jedną stronę, bo do 2026-08-19 kopie kanoniczne
                 // powstawały tylko na drodze linku. Powód, dla którego ostrożny kierunek jest
                 // tu jedynym uczciwym, stoi w doc tej funkcji.
-                library
+                canonical
                     .join(SKILLS_DIR)
                     .join(&name)
                     .join(SKILL_FILE)

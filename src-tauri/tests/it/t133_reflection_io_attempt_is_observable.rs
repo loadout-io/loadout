@@ -199,6 +199,7 @@ async fn run_fixture(bench: &Bench, seen: Arc<Seen>) -> Result<RunReport, Box<dy
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(seen),

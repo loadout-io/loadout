@@ -266,6 +266,7 @@ async fn source_run_at_once(
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.library(),
         project: bench.project.path(),
         store: &store,
         drivers: selected_drivers,
@@ -460,7 +461,7 @@ async fn the_recorded_replay_hands_the_consumer_the_same_plan_text() -> Result<(
     let diagnostics = loadout_lib::commands::diagnostics::support_report(bench.project.path())?;
     assert!(diagnostics.text().contains("\"workPlan\""));
     assert!(!diagnostics.text().contains(FROZEN_REQUIREMENT));
-    let context_library = loadout_lib::context::files::library_root(bench.home.path());
+    let context_library = loadout_lib::context::files::library_root(&bench.library());
     if context_library.exists() {
         fs::remove_dir_all(context_library)?;
     }

@@ -120,6 +120,7 @@ impl Bench {
         let control = RunControl::new();
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &store,
             drivers: fake_drivers(Arc::clone(&watch)),

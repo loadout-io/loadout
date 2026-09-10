@@ -116,15 +116,15 @@ async fn complaints(folder: &str, manifest: Manifest) -> Result<Vec<String>, Box
     let project = root.path().canonicalize()?.join("project");
     let home = root.path().canonicalize()?.join("home");
     fs::create_dir_all(project.join(".loadout"))?;
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
     let at = project.join(manifest.at);
     if let Some(parent) = at.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&at, manifest.text)?;
     let agent = Agent::example();
-    write_agent_file(&home.join("agents"), &agent, None)?;
-    let workflow = home.join("workflows/build.json");
+    write_agent_file(&project.join(".loadout/agents"), &agent, None)?;
+    let workflow = project.join(".loadout/workflows/build.json");
     fs::write(
         &workflow,
         json!({"format":1,"id":"wf-neighbour","name":"Neighbour","steps":[

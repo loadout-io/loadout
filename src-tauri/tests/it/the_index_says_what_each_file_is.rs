@@ -188,6 +188,7 @@ async fn every_row_of_the_index_says_what_its_file_is() -> Result<(), Box<dyn Er
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

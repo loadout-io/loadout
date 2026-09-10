@@ -200,6 +200,7 @@ async fn each_step_is_told_the_minutes_its_own_definition_gives_it() -> Result<(
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(
@@ -376,6 +377,7 @@ async fn the_step_with_no_limit_is_never_stopped_by_one() -> Result<(), Box<dyn 
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen), A_LONG_TURN, Arc::clone(&cancels)),

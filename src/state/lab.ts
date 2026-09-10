@@ -88,8 +88,8 @@ export interface LabState {
 
 /** Agenci biblioteki, sprowadzeni do dwóch pól. Definicji tu nie trzymamy: sekcja Agents jest
  * ich właścicielem, a druga kopia rozjechałaby się z nią po pierwszym zapisie. */
-async function people(): Promise<LabAgent[]> {
-  const all = await listAgents();
+async function people(project: string | null): Promise<LabAgent[]> {
+  const all = await listAgents(project);
   return all.map((one) => ({ id: one.id, name: one.name }));
 }
 
@@ -123,7 +123,10 @@ export function workflowPreviewReady(state: LabState): boolean {
 export function createLabStore(
   io: LabIo = labIo,
   launch: typeof runEvalSet = runEvalSet,
+  project: string | null = folder(),
 ): UseBoundStore<StoreApi<LabState>> {
+  // 2026-09-10: każdy odczyt i zapis pozostaje w projekcie, który utworzył magazyn.
+  const folder = (): string | null => project;
   let opened = 0;
   return create<LabState>((set, get) => ({
     sets: [],
@@ -142,7 +145,7 @@ export function createLabStore(
         /* Oba odczyty razem i oba przed zdjęciem `busy`: ekran bez listy agentów rysuje pole
          * wyboru, w którym nie ma czego wybrać — czyli kontrolkę, która na kliknięcie nie ma
          * odpowiedzi (niezmiennik 16). */
-        const [sets, agents] = await Promise.all([io.list(folder()), people()]);
+        const [sets, agents] = await Promise.all([io.list(folder()), people(folder())]);
         set({ sets, agents, busy: 'idle' });
       } catch (error: unknown) {
         set({ busy: 'idle', said: why(error, 'Loadout could not read the sets here.') });
@@ -369,7 +372,7 @@ export function createLabStore(
       if (fix === null || id === null) return;
       set({ busy: 'saving', said: null });
       try {
-        await io.applyFix(fix.agent, fix.instructions, fix.revision);
+        await io.applyFix(fix.agent, fix.instructions, fix.revision, folder());
         /* Poprawka schodzi z ekranu dopiero PO udanym zapisie: karta zdjęta wcześniej zabiera
          * tekst, którego nie ma już gdzie przeczytać, a odmowa dysku zostawia człowieka
          * z niczym. */
@@ -416,3 +419,13 @@ export function saidAboutCases(written: number, withoutAReason: number): string 
 
 /** Magazyn produkcyjny. */
 export const useLab = createLabStore();
+const projectLabs = new Map<string, typeof useLab>();
+export function labForProject(project: string | null = folder()): typeof useLab {
+  if (project === null) return useLab;
+  let store = projectLabs.get(project);
+  if (store === undefined) {
+    store = createLabStore(labIo, runEvalSet, project);
+    projectLabs.set(project, store);
+  }
+  return store;
+}

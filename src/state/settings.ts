@@ -2,7 +2,7 @@
  * kto prowadzi rozmowę, ile wolno wydać na jeden bieg, czy boczne menu stoi zwinięte i ile
  * ostatnich biegów zostaje w folderze projektu, oraz czy skończony bieg dostaje refleksję.
  *
- * CZYM TO JEST, A CZYM NIE JEST. „Domyślny lider" to jeden globalny wybór, który Run bierze,
+ * CZYM TO JEST, A CZYM NIE JEST. „Domyślny lider" to jeden wybór projektu, który Run bierze,
  * kiedy człowiek nie powiedział inaczej w pasku. Run go POKAZUJE i nie trzyma drugiej kopii:
  * `src/sections/run/lead.ts` pyta stąd, kiedy jego własne wskazanie okna jest puste. Dwie kopie
  * jednego faktu rozjeżdżają się przy pierwszym zapisie, a rozjazd tego akurat faktu wygląda na
@@ -10,7 +10,7 @@
  * dokładnie tak samo.
  *
  * DYSK PIERWSZY, tak jak w `./workspaces.ts`. `chooseDefaultLead` zmienia stan DOPIERO po
- * powrocie z `save_settings` i oddaje zdanie odmowy albo `null`. Odwrotna kolejność to defekt,
+ * powrocie z `save_project_settings` i oddaje zdanie odmowy albo `null`. Odwrotna kolejność to defekt,
  * który już raz w tym repo wystąpił: agent zniknięty z listy przy NIEUDANYM usunięciu wracał po
  * restarcie, bo okno uwierzyło sobie, a nie plikowi.
  *
@@ -25,9 +25,20 @@
  */
 import { why } from '../ipc/why';
 import type { Settings } from './settings-io';
-import { readSettings, saveSettings } from './settings-io';
+import {
+  readSettings,
+  saveSettings,
+  readProjectSettings,
+  saveProjectSettings,
+} from './settings-io';
+import { activeWorkspace, useWorkspaces } from './workspaces';
 
-let chosen = '';
+const chosen = ''; // Dawnego wspólnego wskazania nie przenosimy do nowych projektów.
+const projectLeads = new Map<string, string>();
+const leadReads = new Map<string, number>();
+function projectFolder(): string | null {
+  return activeWorkspace()?.folder ?? null;
+}
 /** Rewizja ustawień odczytanych przez to okno; każdy zapis odsyła ją jako warunek. */
 let revision: string | null = null;
 const listeners = new Set<() => void>();
@@ -170,7 +181,7 @@ export function collapseNav(collapsed: boolean): Promise<string | null> {
 
 /** Identyfikator agenta, który prowadzi domyślnie, albo `''`, dopóki nikt nie wybierał. */
 export function defaultLead(): string {
-  return chosen;
+  return projectLeads.get(projectFolder() ?? '') ?? '';
 }
 
 /** Ile wolno wydać na jeden bieg, dopóki człowiek nie wpisze innej kwoty na pasku Run. */
@@ -194,11 +205,25 @@ export function subscribeToDefaultBudget(listener: () => void): () => void {
   };
 }
 
-function remember(id: string): void {
-  if (id === chosen) return;
-  chosen = id;
+function remember(id: string, folder: string): void {
+  projectLeads.set(folder, id);
   for (const listener of listeners) listener();
 }
+
+export async function loadProjectLead(): Promise<void> {
+  const folder = projectFolder();
+  if (folder === null) return;
+  const generation = (leadReads.get(folder) ?? 0) + 1;
+  leadReads.set(folder, generation);
+  const settings = await readProjectSettings(folder);
+  if (leadReads.get(folder) === generation) remember(leadIn(settings), folder);
+}
+
+useWorkspaces.subscribe((state, previous) => {
+  if (state.activeId === previous.activeId) return;
+  for (const listener of listeners) listener();
+  void loadProjectLead().catch(() => {});
+});
 
 function rememberCeiling(dollars: number): void {
   if (dollars === ceiling) return;
@@ -285,7 +310,6 @@ let asked: Promise<string | null> | null = null;
 export function loadSettings(): Promise<string | null> {
   asked ??= readSettings()
     .then((settings) => {
-      remember(leadIn(settings));
       rememberCeiling(ceilingIn(settings));
       rememberNav(navIn(settings));
       rememberKept(keptIn(settings));
@@ -294,7 +318,12 @@ export function loadSettings(): Promise<string | null> {
       return null;
     })
     .catch((error: unknown) => why(error, 'Loadout could not read what it does by default.'));
-  return asked;
+  return Promise.all([
+    asked,
+    loadProjectLead()
+      .then(() => null)
+      .catch((error: unknown) => why(error, 'Loadout could not read this project’s lead.')),
+  ]).then(([globalError, projectError]) => globalError ?? projectError);
 }
 
 /**
@@ -308,17 +337,19 @@ export function loadSettings(): Promise<string | null> {
  * NIESIE CAŁY WPIS, nie samo wskazanie: plik jest jeden i zapis niosący połowę skasowałby
  * drugą połowę (`src-tauri/src/commands/settings.rs`, `save_settings_inner`).
  */
-export function chooseDefaultLead(id: string): Promise<string | null> {
-  return saveSettings({
-    defaultLead: id,
-    defaultBudgetUsd: ceiling,
-    navCollapsed: narrow,
-    keepLastRuns: kept,
-    learnFromRuns: learning,
-    expectedRevision: revision,
-  })
-    .then(saved)
-    .catch((error: unknown) => why(error, 'Loadout could not save who leads by default.'));
+export async function chooseDefaultLead(id: string): Promise<string | null> {
+  const folder = projectFolder();
+  if (folder === null) return 'Choose a project first.';
+  // Późny odczyt sprzed zapisu nie może przywrócić poprzedniego lidera.
+  leadReads.set(folder, (leadReads.get(folder) ?? 0) + 1);
+  try {
+    const settings = await saveProjectSettings(folder, { defaultLead: id });
+    leadReads.set(folder, (leadReads.get(folder) ?? 0) + 1);
+    remember(leadIn(settings), folder);
+    return null;
+  } catch (error) {
+    return why(error, 'Loadout could not save who leads this project.');
+  }
 }
 
 /**
@@ -398,7 +429,6 @@ export function chooseLearnFromRuns(enabled: boolean): Promise<string | null> {
 
 /** Co robimy z potwierdzonym wpisem — jedno miejsce dla wszystkich zapisów wyżej. */
 function saved(settings: Settings): null {
-  remember(leadIn(settings));
   rememberCeiling(ceilingIn(settings));
   rememberNav(navIn(settings));
   rememberKept(keptIn(settings));

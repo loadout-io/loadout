@@ -129,6 +129,7 @@ async fn the_full_text_travels_with_the_file_that_points_at_it() -> Result<(), B
     let watch = Arc::new(Watch::new(TOO_LONG));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -196,6 +197,7 @@ async fn a_run_that_put_nothing_aside_is_picked_up_all_the_same() -> Result<(), 
     let watch = Arc::new(Watch::new(0));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

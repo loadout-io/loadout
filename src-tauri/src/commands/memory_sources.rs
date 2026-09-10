@@ -137,7 +137,10 @@ impl Snapshot {
                     crate::memory::notes::Scope::Everywhere
                         | crate::memory::notes::Scope::ThisAgent
                 ),
-                NotePlace::Project => note.scope == crate::memory::notes::Scope::ThisProject,
+                // 2026-09-10: projects now own all notes, including imported Everywhere
+                // and ThisAgent notes. Their scope still narrows recipients within this
+                // project; the frozen package must remain replayable after source changes.
+                NotePlace::Project => true,
             };
             if !valid_scope || note.status != crate::memory::notes::Status::InUse {
                 return Err(unavailable(
@@ -192,8 +195,14 @@ impl Snapshot {
             .filter(|source| selected.is_none_or(|list| list.contains(&source.address)))
             .map(|source| {
                 let root = match source.address.place {
-                    NotePlace::Library => home,
-                    NotePlace::Project => project,
+                    // Old runs can contain library and project notes with the same ID.
+                    // These paths are only parser identities, never read or written.
+                    // Keep the old library distinct when today's library is .loadout.
+                    NotePlace::Library if home == project.join(".loadout") => {
+                        home.join("recorded-library")
+                    }
+                    NotePlace::Library => home.to_path_buf(),
+                    NotePlace::Project => project.to_path_buf(),
                 };
                 let parsed = crate::memory::notes::parse_note(
                     &root.join(relative_path(&source.address)),

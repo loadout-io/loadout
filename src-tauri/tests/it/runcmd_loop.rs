@@ -155,6 +155,7 @@ async fn the_loop_stops_at_the_first_pass() -> Result<(), Box<dyn Error>> {
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -211,6 +212,7 @@ async fn run_json_names_every_try_the_loop_did_not_need() -> Result<(), Box<dyn 
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::new(Watch::passing_on_turn(1))),
@@ -289,6 +291,7 @@ async fn the_work_after_the_loop_never_starts_when_the_tries_run_out() -> Result
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -599,6 +602,7 @@ async fn the_tester_is_told_how_to_say_how_it_went() -> Result<(), Box<dyn Error
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),
@@ -706,6 +710,7 @@ async fn why_it_ended(watch: Watch) -> Result<(Vec<String>, PathBuf), Box<dyn Er
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::new(watch)),
@@ -803,6 +808,7 @@ async fn a_handoff_is_titled_by_what_its_own_step_was_asked() -> Result<(), Box<
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::new(Watch::passing_on_turn(1))),
@@ -952,6 +958,7 @@ async fn what_a_never_passing_run_left(
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::new(Watch::passing_on_turn(usize::MAX))),
@@ -982,6 +989,7 @@ async fn a_step_set_to_carry_on_lets_the_work_through_and_still_reads_red()
     let watch = Arc::new(Watch::passing_on_turn(usize::MAX));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&watch)),

@@ -325,6 +325,7 @@ async fn two_reads_then_a_merge() -> Result<(RunReport, Arc<Seen>, Bench), Box<d
     let seen = Arc::new(Seen::default());
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

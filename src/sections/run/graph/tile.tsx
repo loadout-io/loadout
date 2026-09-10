@@ -297,7 +297,7 @@ export function RunTile({ step, plan, onOpen, style }: RunTileProps): ReactEleme
       {/* MIARA. `.value` niesie krój maszynowy i `tabular-nums` — to są wartości wyliczone,
           nie zdania. Stopień `--text-label` z makiety (`.node .bot`, 11 px). */}
       <CardLine
-        text={measure.handsOn ? `${measure.waits} · runs before ▸` : measure.waits}
+        text={measure.waits}
         className="value truncate border-t border-line pt-[5px] text-label"
       />
     </>

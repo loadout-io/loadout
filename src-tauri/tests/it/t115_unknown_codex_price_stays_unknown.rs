@@ -320,6 +320,7 @@ impl Bench {
         let drivers: Drivers = Arc::new(move |_vendor| Arc::clone(&driver));
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &self.store,
             drivers,

@@ -75,7 +75,7 @@ async fn the_saved_material_replays_after_the_whole_library_is_deleted()
     let source_rows = visible_material_rows(bench.project.path(), &source.dir)?;
     seen.lock().unwrap_or_else(PoisonError::into_inner).clear();
 
-    fs::remove_dir_all(loadout_lib::context::files::library_root(bench.home.path()))?;
+    fs::remove_dir_all(loadout_lib::context::files::library_root(&bench.library()))?;
     let state = AppState::new(
         bench.home.path().to_path_buf(),
         bench.project.path().to_path_buf(),
@@ -349,9 +349,9 @@ async fn archive_keeps_the_pin_and_delete_names_uses_before_future_start_refuses
             "links": []
         }),
     )?;
-    let archived = archive_context_set_inner(bench.home.path(), &material.set_id, true)?;
+    let archived = archive_context_set_inner(&bench.library(), &material.set_id, true)?;
     assert!(archived.archived);
-    let library = loadout_lib::context::files::library_root(bench.home.path());
+    let library = loadout_lib::context::files::library_root(&bench.library());
     assert!(
         loadout_lib::context::files::list_sets_by_archive(&library, false)?.is_empty(),
         "Archive left the set on the default shelf"
@@ -377,7 +377,7 @@ async fn archive_keeps_the_pin_and_delete_names_uses_before_future_start_refuses
     );
 
     let preview = delete_context_set_inner(
-        bench.home.path(),
+        &bench.library(),
         bench.project.path(),
         &material.set_id,
         false,
@@ -391,7 +391,7 @@ async fn archive_keeps_the_pin_and_delete_names_uses_before_future_start_refuses
     );
     assert!(library.exists(), "the preview deleted before confirmation");
     let deleted = delete_context_set_inner(
-        bench.home.path(),
+        &bench.library(),
         bench.project.path(),
         &material.set_id,
         true,
@@ -433,6 +433,7 @@ async fn prompt_before_first_process(
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.library(),
         project: bench.project.path(),
         store: &store,
         drivers: capturing_drivers(Arc::new(Mutex::new(Vec::new()))),
@@ -714,7 +715,7 @@ fn install_newer_revision(
     latest: &str,
 ) -> Result<(), Box<dyn Error>> {
     let folder = loadout_lib::context::files::folder_of(
-        &loadout_lib::context::files::library_root(bench.home.path()),
+        &loadout_lib::context::files::library_root(&bench.library()),
         &material.set_id,
     )?;
     let source = folder.join("versions").join(&material.revision);

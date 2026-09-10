@@ -315,6 +315,7 @@ mod parents_fold_into_one_copy;
 mod person_turn_is_visible;
 mod processes_cannot_rewrite_their_examiner;
 mod product_path_end_to_end;
+mod project_setup_is_private;
 mod quitting_leaves_the_index_small;
 mod read_run_exposes_only_verified_saved_inputs;
 mod receipt_tells_a_skipped_try_from_a_dead_step;

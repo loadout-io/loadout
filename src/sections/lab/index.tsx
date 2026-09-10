@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import type { LabState } from '../../state/lab';
-import { useLab, workflowPreviewReady } from '../../state/lab';
+import { labForProject, type useLab, workflowPreviewReady } from '../../state/lab';
 import { sectionEntry } from '../../ui/sections';
 import type { Section } from '../../ui/sections';
 import { isDirty, nextColumn, typedOf, withTyped } from './columns';
@@ -84,7 +84,7 @@ export interface LabScreenProps {
   readonly store?: typeof useLab;
 }
 
-export default function LabScreen({ store = useLab }: LabScreenProps): ReactElement {
+export default function LabScreen({ store = labForProject() }: LabScreenProps): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const empty = sectionEntry('lab' as Section).empty;
 

@@ -122,6 +122,7 @@ async fn run_messages(burst: usize, body_size: usize, full: bool) -> Result<(), 
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: library.path(),
+        library: library.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,

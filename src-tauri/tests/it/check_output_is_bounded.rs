@@ -408,6 +408,7 @@ async fn a_person_reading_the_handoff_is_told_the_output_was_cut() -> Result<(),
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: no_drivers(),

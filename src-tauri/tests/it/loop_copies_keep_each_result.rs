@@ -403,6 +403,7 @@ async fn run(case: Case) -> Result<Ran, Box<dyn Error>> {
     let drivers: Drivers = Arc::new(move |_| Arc::clone(&driver));
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,

@@ -203,6 +203,7 @@ async fn a_workflow_variant_executes_its_branches_loop_and_output_for_every_repe
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &home,
+        library: home.clone(),
         project: &project,
         store: &store,
         drivers,

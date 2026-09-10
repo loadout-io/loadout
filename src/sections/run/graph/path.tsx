@@ -45,6 +45,7 @@ import type { CSSProperties, ReactElement, Ref } from 'react';
 import { Fragment } from 'react';
 import type { GraphStep, Plan } from './model';
 import { RunTile } from './tile';
+import { groupedSteps } from './attempts';
 
 /** Odstęp między krokami — 14 px z reguły `.step` w makiecie (`padding:0 0 14px`). */
 const STEP_GAP = 8;
@@ -99,23 +100,43 @@ export interface StepPathProps {
 }
 
 export function StepPath({ plan, onOpen, asking, tail, listRef }: StepPathProps): ReactElement {
+  const grouped = groupedSteps(plan);
   return (
     <div ref={listRef} data-step-list className="grid content-start overflow-auto p-2" style={PATH}>
-      {plan.steps.map((step) => (
+      {grouped.rows.map(({ step, currentId, attempts, repeated }) => (
         <Fragment key={step.id}>
           {/* KARTA. Ta sama, co na płótnie — jeden kafelek kroku w całym repo. */}
           <RunTile
             step={step}
-            plan={plan}
+            plan={grouped.plan}
             style={CARD_CELL}
             {...(onOpen === undefined || step.who === undefined
               ? {}
               : {
                   onOpen: () => {
-                    onOpen(step.id);
+                    onOpen(currentId);
                   },
                 })}
           />
+          {repeated && (
+            <details className="mx-2 mb-2 text-meta text-muted">
+              <summary className="cursor-pointer">
+                {attempts.length} {attempts.length === 1 ? 'run' : 'runs'}
+              </summary>
+              <ol className="mt-2 flex flex-col gap-2" aria-label={`${step.name} runs`}>
+                {attempts.map((attempt, index) => (
+                  <li key={attempt.id}>
+                    <span>
+                      Run {index + 1} · {attempt.status}
+                    </span>
+                    {attempt.doing && attempt.status === 'failed' && (
+                      <p className="mt-1 text-fail">{attempt.doing}</p>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
 
           {/* KARTA PYTANIA POD SWOIM KROKIEM. Wraca tu po zdjeciu rynny znacznikow: wisiala
               w tej samej siatce i zeszla razem z nia. Siatka ma dzis JEDNA kolumne, wiec karta

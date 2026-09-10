@@ -28,6 +28,7 @@
  * NADPISANIE na to jedno okno. Druga kopia domyślnego wyboru trzymana tutaj rozjechałaby się
  * z plikiem przy pierwszym zapisie z Settings i nikt by tego nie zobaczył.
  */
+import { activeWorkspace } from '../../state/workspaces';
 import { defaultLead, subscribeToDefaultLead } from '../../state/settings';
 import { whatTheLeadCanDo as askRustWhatItCanDo } from './io';
 import type { WhatTheLeadCanDo } from './io';
@@ -45,7 +46,10 @@ import type { WhatTheLeadCanDo } from './io';
 export const LEAD_LABEL = 'Lead agent';
 
 /** Nadpisanie na TO okno: co człowiek wskazał w pasku, zamiast tego, co stoi w Settings. */
-let chosen = '';
+const chosen = new Map<string, string>();
+function projectKey(): string {
+  return activeWorkspace()?.folder ?? '';
+}
 const listeners = new Set<() => void>();
 
 /**
@@ -56,7 +60,7 @@ const listeners = new Set<() => void>();
  * robi u kogoś, kto raz coś ustawił w Settings — czyli kontrolka, która kłamie (niezmiennik 16).
  */
 export function lead(): string {
-  return chosen === '' ? defaultLead() : chosen;
+  return chosen.get(projectKey()) || defaultLead();
 }
 
 /**
@@ -73,8 +77,8 @@ export function lead(): string {
  * `commands::chat::Lead::pointed_at` bierze dokładnie ten napis.
  */
 export function setLead(id: string): void {
-  if (id === chosen) return;
-  chosen = id;
+  if (id === chosen.get(projectKey())) return;
+  chosen.set(projectKey(), id);
   for (const listener of listeners) listener();
 }
 
@@ -107,6 +111,7 @@ export function subscribeToLead(listener: () => void): () => void {
 
 /** Ostatnia odpowiedź Rusta. `null` znaczy „jeszcze nie przeczytano", nie „nic nie może". */
 let powers: WhatTheLeadCanDo | null = null;
+let powersFolder = '';
 const watchingThePowers = new Set<() => void>();
 
 /**
@@ -116,7 +121,7 @@ const watchingThePowers = new Set<() => void>();
  * mówił zawsze. Zdanie zgadnięte na czas odczytu byłoby zdaniem, które zmienia się pod ręką.
  */
 export function whatTheLeadCanDo(): WhatTheLeadCanDo | null {
-  return powers;
+  return powersFolder === projectKey() ? powers : null;
 }
 
 /** Prenumerata w kształcie, którego chce `useSyncExternalStore`. */
@@ -135,6 +140,7 @@ export function subscribeToLeadPowers(listener: () => void): () => void {
  */
 export function rememberWhatTheLeadCanDo(can: WhatTheLeadCanDo | null): void {
   powers = can;
+  powersFolder = projectKey();
   for (const listener of watchingThePowers) listener();
 }
 
@@ -152,14 +158,15 @@ export async function readWhatTheLeadCanDo(): Promise<void> {
    * POPRZEDNIM liderze nadpisałaby świeższą i zdanie pod polem opisywałoby kogoś, kogo już nie
    * ma na pasku — czyli dokładnie tę nieprawdę, którą to zadanie zdejmuje. */
   const asked = lead();
+  const folder = projectKey();
   try {
-    const can = await askRustWhatItCanDo(asked);
-    if (asked !== lead()) return;
+    const can = await askRustWhatItCanDo(asked, folder || null);
+    if (asked !== lead() || folder !== projectKey()) return;
     /* `null` z granicy znaczy „nie ma odpowiedzi" i nie ma prawa udawać zera mocy: taka jest
      * atrapa w testach przeglądarkowych (`e2e/harness.ts`), a zdanie o liderze, który nic nie
      * może, jest tam równie nieprawdziwe jak w produkcie. */
     rememberWhatTheLeadCanDo((can as WhatTheLeadCanDo | null) ?? null);
   } catch {
-    if (asked === lead()) rememberWhatTheLeadCanDo(null);
+    if (asked === lead() && folder === projectKey()) rememberWhatTheLeadCanDo(null);
   }
 }

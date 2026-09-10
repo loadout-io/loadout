@@ -23,6 +23,9 @@ import { discoverScreens, isScreen } from './ui/screens';
 import { CommandPalette } from './ui/palette';
 import { ScreenBoundary } from './ui/shell/screen-boundary';
 import { useSectionStore } from './ui/shell/section-store';
+import { useWorkspaces } from './state/workspaces';
+import { ProjectSetupModal } from './ui/project-setup/modal';
+import { useProjectSetup } from './ui/project-setup/state';
 import { navIsCollapsed, subscribeToNavCollapsed } from './state/settings';
 import { NAV_NARROW, NAV_WIDTH, PANE_GAP, SideNav } from './ui/shell/titlebar';
 
@@ -43,6 +46,8 @@ export interface AppProps {
 
 export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
   const entry = sectionEntry(section);
+  const project = useWorkspaces((state) => state.activeId);
+  const setupRevision = useProjectSetup((state) => state.revisions[project ?? ''] ?? 0);
   /* SZEROKOŚĆ PIERWSZEJ KOLUMNY MA DWIE WARTOŚCI od 2026-08-31, bo nawigacja ma dwa tryby.
    * Liczbę deklaruje TU siatka, a `SideNav` daje ją swojej kartce — obie biorą ją z tej samej
    * stałej, więc nie ma jak zostawić kartki 64 px w kolumnie 308 px, czyli dziury na 244 px
@@ -89,7 +94,7 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
             sekcji kasuje stan osłony przy każdym przejściu: bez tego jedna zepsuta sekcja
             zostawiałaby zdanie o awarii na ekranie także po przełączeniu na zdrową. */}
           <ScreenBoundary
-            key={entry.id}
+            key={entry.id === 'run' ? entry.id : `${entry.id}:${project ?? ''}:${setupRevision}`}
             section={entry.id}
             onLeave={
               entry.id === 'run'
@@ -109,6 +114,7 @@ export function App({ section, screens = DISCOVERED }: AppProps): ReactElement {
           propsu i nie wiedzą o palecie nic: gdyby wiedziały, ta sama decyzja mieszkałaby
           w siedmiu miejscach (niezmiennik 13). */}
       <CommandPalette />
+      <ProjectSetupModal />
     </>
   );
 }

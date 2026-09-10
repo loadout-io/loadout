@@ -81,6 +81,7 @@ async fn closing_with_nothing_running_does_not_wait_for_anything() {
     let store = Store::open(&bench.home.path().join("loadout.db")).expect("a store");
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: idle_drivers(),
@@ -123,6 +124,7 @@ async fn closing_mid_run_waits_until_the_run_is_really_down() {
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: idle_drivers(),
@@ -203,6 +205,7 @@ async fn a_run_that_will_never_come_down_still_lets_the_window_close() {
     control.begin();
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: idle_drivers(),
@@ -262,6 +265,7 @@ async fn stop_over_an_empty_screen_answers_instead_of_waiting() {
     let store = Store::open(&bench.home.path().join("loadout.db")).expect("a store");
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: idle_drivers(),
@@ -301,6 +305,7 @@ async fn stop_over_a_working_run_waits_for_it_and_says_so() {
     control.begin();
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: idle_drivers(),

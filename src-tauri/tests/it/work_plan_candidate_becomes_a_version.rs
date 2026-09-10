@@ -388,6 +388,7 @@ async fn one_create_run(
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,
@@ -492,6 +493,7 @@ async fn a_failed_plan_author_is_not_bypassed_by_carry_on() -> Result<(), Box<dy
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,
@@ -585,6 +587,7 @@ async fn stop_refuses_even_a_candidate_written_after_the_signal() -> Result<(), 
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,
@@ -640,6 +643,7 @@ async fn timeout_keeps_a_finished_candidate_unpublished() -> Result<(), Box<dyn 
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,
@@ -902,6 +906,7 @@ async fn a_create_and_an_update_become_two_versions_through_both_vendors()
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,
@@ -1022,6 +1027,7 @@ async fn a_read_only_plan_writer_is_refused_before_any_process() -> Result<(), B
         let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
         let deps = RunDeps {
             home: home.path(),
+            library: home.path().to_path_buf(),
             project: project.path(),
             store: &store,
             drivers,

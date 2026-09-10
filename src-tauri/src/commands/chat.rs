@@ -2880,12 +2880,6 @@ impl Threads {
                 .ok_or(ChatError::NotWatchingThatFolder)?;
             (lines, state.library.clone())
         };
-        let reaches = library
-            .as_ref()
-            .into_iter()
-            .flat_map(|library| [AGENTS_DIR, WORKFLOWS_DIR].map(|name| library.join(name)))
-            .filter(|folder| folder.is_dir())
-            .collect();
         // 2026-09 (Z-17) — rozmowa nie ma osobnego pola kwoty: ten sam wybór, który ogranicza
         // bieg w Settings, ogranicza pierwszą płatną turę lidera. Brak biblioteki zachowuje
         // stare duble; uszkodzony plik odmawia zamiast uruchomić proces bez sufitu.
@@ -2895,6 +2889,14 @@ impl Threads {
             .transpose()
             .map_err(|error| ChatError::CouldNotStart(error.to_string()))?
             .map(|settings| settings.default_budget_usd);
+        // 2026-09-10: zmiana projektu nie zmienia biblioteki już otwartego terminalu.
+        let library = library.map(|_| crate::library::project_root(&terminal.folder));
+        let reaches = library
+            .as_ref()
+            .into_iter()
+            .flat_map(|library| [AGENTS_DIR, WORKFLOWS_DIR].map(|name| library.join(name)))
+            .filter(|folder| folder.is_dir())
+            .collect();
         let thread = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             /* Stop podczas pierwszego handshake uczciwie oddaje `Alive`, zanim istnieje uchwyt,

@@ -181,6 +181,7 @@ async fn copies_keep_one_input(use_git: bool, resume_copies: usize) -> Result<()
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &home,
+        library: home.clone(),
         project: &project,
         store: &store,
         drivers,

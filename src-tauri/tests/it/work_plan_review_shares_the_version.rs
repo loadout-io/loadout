@@ -424,12 +424,12 @@ async fn check_plan_off_asks_and_judges_byte_for_byte_as_before() -> Result<(), 
     let project = root.path().canonicalize()?.join("project");
     let home = root.path().canonicalize()?.join("home");
     fs::create_dir_all(project.join(".loadout"))?;
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
 
     let mut agent = Agent::example();
     agent.write_results_to.clear();
-    write_agent_file(&home.join("agents"), &agent, None)?;
-    let workflow = home.join("workflows/wp-05-off.json");
+    write_agent_file(&project.join(".loadout/agents"), &agent, None)?;
+    let workflow = project.join(".loadout/workflows/wp-05-off.json");
     fs::write(
         &workflow,
         serde_json::to_vec_pretty(&json!({
@@ -565,12 +565,12 @@ async fn the_saved_run_says_the_tester_checked_other_work() -> Result<(), Box<dy
     let project = root.path().canonicalize()?.join("project");
     let home = root.path().canonicalize()?.join("home");
     fs::create_dir_all(project.join(".loadout"))?;
-    fs::create_dir_all(home.join("workflows"))?;
+    fs::create_dir_all(project.join(".loadout/workflows"))?;
 
     let mut agent = Agent::example();
     agent.write_results_to.clear();
-    write_agent_file(&home.join("agents"), &agent, None)?;
-    let workflow = home.join("workflows/wp-05.json");
+    write_agent_file(&project.join(".loadout/agents"), &agent, None)?;
+    let workflow = project.join(".loadout/workflows/wp-05.json");
     fs::write(
         &workflow,
         serde_json::to_vec_pretty(&json!({

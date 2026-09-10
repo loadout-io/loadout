@@ -975,6 +975,7 @@ async fn an_app_configured_for_an_agent_is_not_already_started_by_the_graph()
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: library.path(),
+        library: library.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,

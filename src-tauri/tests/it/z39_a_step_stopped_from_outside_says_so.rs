@@ -401,6 +401,7 @@ async fn a_run_whose_first_step(
     let started: Arc<Mutex<Option<GroupId>>> = Arc::new(Mutex::new(None));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers_for(Arc::new(Fake {

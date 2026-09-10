@@ -231,6 +231,7 @@ async fn pgids_from_a_stopped_step_let_the_reaper_kill_the_survivor() -> Result<
     let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),
@@ -396,6 +397,7 @@ async fn a_run_that_goes_down(
     let seen: Arc<Mutex<Seen>> = Arc::new(Mutex::new(Seen::default()));
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: drivers_that_end(Arc::clone(&seen), ends),
@@ -683,7 +685,7 @@ async fn a_lead_conversation_starts_its_vendor_with_a_marker() -> Result<(), Box
     lead.id = uuid::Uuid::now_v7();
     lead.name = "Marker Lead".to_owned();
     lead.runs_with = Vendor::ClaudeCode;
-    save_agent_inner(library.path(), &lead, None)?;
+    save_agent_inner(&workspace.path().join(".loadout"), &lead, None)?;
 
     let folder = workspace.path().to_string_lossy().into_owned();
     let (lines, _source) = line_channel(QUEUE_CAP);

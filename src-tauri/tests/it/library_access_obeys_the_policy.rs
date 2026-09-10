@@ -299,8 +299,10 @@ impl Reached {
 ///
 /// Osobny korzeń biblioteki na pozycję, bo definicje mają się różnić **wyłącznie** dialem — a dwa
 /// pliki o tej samej nazwie nie zmieszczą się w jednym katalogu.
-async fn reached(root: &Path, access: FileAccess) -> Result<Reached, Box<dyn Error>> {
+async fn reached(_root: &Path, access: FileAccess) -> Result<Reached, Box<dyn Error>> {
     let scope = TempDir::new()?;
+    let catalog = scope.path().join(".loadout");
+    let root = catalog.as_path();
     let lead_agent = definition(access)?;
     let agents_dir = folder_of(&save_agent_inner(root, &lead_agent, None)?.path)?;
     let workflows_dir = folder_of(&saved_workflow(root, scope.path())?)?;

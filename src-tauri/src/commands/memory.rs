@@ -289,7 +289,10 @@ pub(crate) fn lead_project_notes(project: &Path) -> Result<(Vec<NoteWire>, bool)
 fn catalog_rows(notes: &[Note], place: NotePlace) -> Vec<NoteWire> {
     let mut dropped = BTreeSet::new();
     match place {
-        NotePlace::Library => {
+        NotePlace::Library | NotePlace::Project => {
+            if place == NotePlace::Project {
+                dropped.extend(dropped_for(notes, Scope::ThisProject));
+            }
             dropped.extend(dropped_for(notes, Scope::Everywhere));
 
             // 2026-08-26 (T-129): limit `this-agent` należy do znormalizowanego właściciela,
@@ -308,7 +311,6 @@ fn catalog_rows(notes: &[Note], place: NotePlace) -> Vec<NoteWire> {
                 dropped.extend(dropped_for(owned, Scope::ThisAgent));
             }
         }
-        NotePlace::Project => dropped.extend(dropped_for(notes, Scope::ThisProject)),
     }
 
     notes
@@ -445,10 +447,15 @@ pub fn list_notes_inner(root: &Path) -> Result<Vec<NoteWire>, Error> {
 
 /// Pełny katalog biblioteki i wskazanego projektu.
 pub fn list_notes_for_project_inner(
-    library_root: &Path,
+    _library_root: &Path,
     catalog_folder: &Path,
 ) -> Result<Vec<NoteWire>, Error> {
-    list_note_catalog_inner(library_root, &project_notes_root(catalog_folder))
+    // „Everywhere” w dawnym pliku nie jest zgodą na udostępnienie go innemu
+    // projektowi. Import kopiuje wybraną notatkę do jego własnego katalogu.
+    Ok(catalog_rows(
+        &scan_notes(&project_notes_root(catalog_folder))?,
+        NotePlace::Project,
+    ))
 }
 
 /// „Use this": od tej chwili notatka wchodzi do promptu.

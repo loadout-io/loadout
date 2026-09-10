@@ -275,259 +275,285 @@ function request(catalogFolder: string | null, address: NoteAddress) {
   return { catalogFolder, place: address.place, id: address.id };
 }
 
-export const useMemory = create<MemoryState>()((set, get) => ({
-  notes: [],
-  catalogFolder: null,
-  notesFolder: null,
-  generation: 0,
-  passed: [],
-  passedRunsRead: 0,
-  passedMoreRuns: 0,
-  message: null,
-  passedProblem: null,
-  lastLearning: null,
-  choice: null,
-  read: false,
-  pendingDiscard: null,
+export function createMemoryStore(folder?: string | null) {
+  return create<MemoryState>()((set, get) => ({
+    notes: [],
+    catalogFolder: null,
+    notesFolder: null,
+    generation: 0,
+    passed: [],
+    passedRunsRead: 0,
+    passedMoreRuns: 0,
+    message: null,
+    passedProblem: null,
+    lastLearning: null,
+    choice: null,
+    read: false,
+    pendingDiscard: null,
 
-  load: async (catalogFolder) => {
-    const frozenFolder =
-      catalogFolder === undefined ? (activeWorkspace()?.folder ?? null) : catalogFolder;
-    const generation = get().generation + 1;
-    set({
-      catalogFolder: frozenFolder,
-      generation,
-      passedRunsRead: 0,
-      passedMoreRuns: 0,
-    });
+    load: async (catalogFolder) => {
+      const frozenFolder =
+        catalogFolder === undefined
+          ? folder === undefined
+            ? (activeWorkspace()?.folder ?? null)
+            : folder
+          : catalogFolder;
+      const generation = get().generation + 1;
+      set({
+        catalogFolder: frozenFolder,
+        notes: [],
+        notesFolder: null,
+        passed: [],
+        lastLearning: null,
+        choice: null,
+        pendingDiscard: null,
+        read: false,
+        generation,
+        passedRunsRead: 0,
+        passedMoreRuns: 0,
+      });
 
-    /* DWA ODCZYTY, DWIE OSOBNE ODMOWY, i to nie jest ostrożność na zapas: notatki leżą
-     * w `~/.loadout/memory/notes/`, a przekazania w katalogach biegów
-     * (`<repo>/.loadout/runs/<…>/handoffs/`). Jeden `try` na oba znaczy, że katalog notatek,
-     * którego nie da się przeczytać, zabiera z ekranu także przekazania — czyli awaria jednej
-     * ścieżki pustoszy strefę, która ma swoje pliki w porządku. Awaria każdej z nich ma
-     * kosztować dokładnie tyle, ile mówi (niezmiennik 5). */
-    const notesRead = (async () => {
-      try {
-        const notes = await listNotes(frozenFolder);
-        // 2026-08-26 (T-128): odpowiedź A może wrócić po B. Numer odczytu jest jedyną
-        // autoryzacją do podmiany katalogu; sama zgodność folderu nie odróżnia A1 od A2.
-        if (get().generation === generation) {
-          set({ notes, notesFolder: frozenFolder, message: null });
+      /* DWA ODCZYTY, DWIE OSOBNE ODMOWY, i to nie jest ostrożność na zapas: notatki leżą
+       * w `~/.loadout/memory/notes/`, a przekazania w katalogach biegów
+       * (`<repo>/.loadout/runs/<…>/handoffs/`). Jeden `try` na oba znaczy, że katalog notatek,
+       * którego nie da się przeczytać, zabiera z ekranu także przekazania — czyli awaria jednej
+       * ścieżki pustoszy strefę, która ma swoje pliki w porządku. Awaria każdej z nich ma
+       * kosztować dokładnie tyle, ile mówi (niezmiennik 5). */
+      const notesRead = (async () => {
+        try {
+          const notes = await listNotes(frozenFolder);
+          // 2026-08-26 (T-128): odpowiedź A może wrócić po B. Numer odczytu jest jedyną
+          // autoryzacją do podmiany katalogu; sama zgodność folderu nie odróżnia A1 od A2.
+          if (get().generation === generation) {
+            set({ notes, notesFolder: frozenFolder, message: null });
+          }
+        } catch (refusal) {
+          if (get().generation === generation) {
+            set({ notes: [], notesFolder: null, message: why(refusal, COULD_NOT_READ) });
+          }
         }
-      } catch (refusal) {
-        if (get().generation === generation) {
-          set({ notes: [], notesFolder: null, message: why(refusal, COULD_NOT_READ) });
-        }
-      }
-    })();
+      })();
 
-    const passedRead = (async () => {
+      const passedRead = (async () => {
+        try {
+          const page = await listHandoffs(frozenFolder, 0, RUNS_PER_BATCH);
+          if (get().generation === generation) {
+            set({
+              passed: page.handoffs,
+              passedRunsRead: page.runsRead,
+              passedMoreRuns: page.moreRuns,
+              passedProblem: null,
+            });
+          }
+        } catch (refusal) {
+          if (get().generation === generation) {
+            set({
+              passed: [],
+              passedRunsRead: 0,
+              passedMoreRuns: 0,
+              passedProblem: why(refusal, COULD_NOT_READ_PASSED),
+            });
+          }
+        }
+      })();
+
+      /* TRZECI ODCZYT, TRZECIE PYTANIE (2026-09, Z-38): co ostatni bieg tego projektu zostawił po
+       * swojej prywatnej turze. Osobny `try`, jak dwa wyżej i z tego samego powodu — ale BEZ
+       * własnego zdania odmowy, i to jest wybór: ta odpowiedź tylko TŁUMACZY pustą kolejkę, nie
+       * jest nią. Projekt, którego biegów nie da się wypisać, ma dalej pokazać swoje notatki,
+       * a zdanie o nieczytelnej historii ma już swoje miejsce w sekcji Run (niezmiennik 13).
+       * Cisza tutaj znaczy dokładnie tyle, ile na ekranie: nie ma czego dopowiedzieć. */
+      const learningRead = (async () => {
+        try {
+          const lastLearning = await whatTheLastRunLearned(frozenFolder);
+          if (get().generation === generation) set({ lastLearning });
+        } catch {
+          if (get().generation === generation) set({ lastLearning: null });
+        }
+      })();
+
+      await Promise.all([notesRead, passedRead, learningRead]);
+
+      /* DOPIERO TERAZ wolno powiedzieć „nie ma nic". Obojętne, czym się skończyło: po odmowie
+       * ekran mówi o odmowie, a nie o pustce — ale jedno i drugie jest odpowiedzią, a „jeszcze
+       * nie wiem" przestało być prawdą. Numer odczytu pilnuje, żeby spóźniona odpowiedź
+       * poprzedniego zakresu nie zdejmowała zdania o czytaniu z odczytu, który wciąż trwa. */
+      if (get().generation === generation) set({ read: true });
+    },
+
+    loadMorePassed: async () => {
+      const { catalogFolder, generation, passedRunsRead, passedMoreRuns } = get();
+      if (passedMoreRuns === 0) return;
       try {
-        const page = await listHandoffs(frozenFolder, 0, RUNS_PER_BATCH);
-        if (get().generation === generation) {
-          set({
-            passed: page.handoffs,
-            passedRunsRead: page.runsRead,
+        const page = await listHandoffs(catalogFolder, passedRunsRead, RUNS_PER_BATCH);
+        /* 2026-09 (Z-49): oprócz generacji pilnujemy kursora. Dwa szybkie kliknięcia mogą
+         * zapytać o tę samą stronę; tylko pierwsza odpowiedź ma prawo ją dołożyć, inaczej każdy
+         * plik pojawia się dwa razy mimo jednego miejsca na dysku (niezmiennik 13). */
+        if (
+          get().generation === generation &&
+          get().passedRunsRead === passedRunsRead &&
+          get().catalogFolder === catalogFolder
+        ) {
+          set((state) => ({
+            passed: [...state.passed, ...page.handoffs],
+            passedRunsRead: state.passedRunsRead + page.runsRead,
             passedMoreRuns: page.moreRuns,
             passedProblem: null,
-          });
+          }));
         }
       } catch (refusal) {
-        if (get().generation === generation) {
-          set({
-            passed: [],
-            passedRunsRead: 0,
-            passedMoreRuns: 0,
-            passedProblem: why(refusal, COULD_NOT_READ_PASSED),
-          });
+        if (
+          get().generation === generation &&
+          get().passedRunsRead === passedRunsRead &&
+          get().catalogFolder === catalogFolder
+        ) {
+          /* Już przeczytane pliki zostają: odmowa następnej strony nie cofa prawdy o poprzedniej. */
+          set({ passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
         }
       }
-    })();
+    },
 
-    /* TRZECI ODCZYT, TRZECIE PYTANIE (2026-09, Z-38): co ostatni bieg tego projektu zostawił po
-     * swojej prywatnej turze. Osobny `try`, jak dwa wyżej i z tego samego powodu — ale BEZ
-     * własnego zdania odmowy, i to jest wybór: ta odpowiedź tylko TŁUMACZY pustą kolejkę, nie
-     * jest nią. Projekt, którego biegów nie da się wypisać, ma dalej pokazać swoje notatki,
-     * a zdanie o nieczytelnej historii ma już swoje miejsce w sekcji Run (niezmiennik 13).
-     * Cisza tutaj znaczy dokładnie tyle, ile na ekranie: nie ma czego dopowiedzieć. */
-    const learningRead = (async () => {
+    use: async (address) => {
+      const { notesFolder, generation } = get();
       try {
-        const lastLearning = await whatTheLastRunLearned(frozenFolder);
-        if (get().generation === generation) set({ lastLearning });
-      } catch {
-        if (get().generation === generation) set({ lastLearning: null });
+        /* Komenda, odpowiedź, DOPIERO POTEM stan. Wiersz przestawiony przed odpowiedzią pokazuje
+         * „In use" dla notatki, której plik dalej mówi `suggested` — czyli kłamie dokładnie o tym
+         * jednym, o czym ta sekcja mówi: co wejdzie do promptu następnego agenta. */
+        const notes = await putToUse(request(notesFolder, address));
+        if (get().generation === generation && get().notesFolder === notesFolder) {
+          set({ notes, message: null, choice: null });
+        }
+      } catch (refusal) {
+        if (get().generation !== generation || get().notesFolder !== notesFolder) return;
+        if (isMemoryFull(refusal)) {
+          /* Lista do wymuszonego wyboru przychodzi Z ODMOWY i tylko stamtąd. Złożona tutaj
+           * z tego, co sekcja akurat trzyma, byłaby drugą odpowiedzią na pytanie „co odstawić",
+           * liczoną bez połowy plików i bez `last_used_at` (niezmiennik 13). */
+          set({
+            choice: { address, overBy: refusal.overBy, retire: refusal.retire },
+            message: null,
+          });
+          return;
+        }
+        /* Zwykła odmowa NIE otwiera okna: pytanie „które notatki odstawić" postawione komuś,
+         * kto właśnie usłyszał „ta notatka nie ma uzasadnienia", każe naprawiać nie to, co jest
+         * zepsute. Jedna odmowa, jedno miejsce, w którym o niej piszemy. */
+        set({ message: why(refusal, COULD_NOT_USE), choice: null });
       }
-    })();
+    },
 
-    await Promise.all([notesRead, passedRead, learningRead]);
+    stopUsing: async (address) => {
+      const { notesFolder, generation, choice } = get();
+      try {
+        const notes = await stopUsingOnDisk(request(notesFolder, address));
+        if (get().generation !== generation || get().notesFolder !== notesFolder) return;
 
-    /* DOPIERO TERAZ wolno powiedzieć „nie ma nic". Obojętne, czym się skończyło: po odmowie
-     * ekran mówi o odmowie, a nie o pustce — ale jedno i drugie jest odpowiedzią, a „jeszcze
-     * nie wiem" przestało być prawdą. Numer odczytu pilnuje, żeby spóźniona odpowiedź
-     * poprzedniego zakresu nie zdejmowała zdania o czytaniu z odczytu, który wciąż trwa. */
-    if (get().generation === generation) set({ read: true });
-  },
-
-  loadMorePassed: async () => {
-    const { catalogFolder, generation, passedRunsRead, passedMoreRuns } = get();
-    if (passedMoreRuns === 0) return;
-    try {
-      const page = await listHandoffs(catalogFolder, passedRunsRead, RUNS_PER_BATCH);
-      /* 2026-09 (Z-49): oprócz generacji pilnujemy kursora. Dwa szybkie kliknięcia mogą
-       * zapytać o tę samą stronę; tylko pierwsza odpowiedź ma prawo ją dołożyć, inaczej każdy
-       * plik pojawia się dwa razy mimo jednego miejsca na dysku (niezmiennik 13). */
-      if (
-        get().generation === generation &&
-        get().passedRunsRead === passedRunsRead &&
-        get().catalogFolder === catalogFolder
-      ) {
-        set((state) => ({
-          passed: [...state.passed, ...page.handoffs],
-          passedRunsRead: state.passedRunsRead + page.runsRead,
-          passedMoreRuns: page.moreRuns,
-          passedProblem: null,
-        }));
+        /* WYMUSZONY WYBÓR DOMYKA TO, PO CO CZŁOWIEK PRZYSZEDŁ (2026-08-31).
+         *
+         * Zmierzona wada: „Use this" → „Memory is full" → „Stop using" na innej notatce →
+         * okno znikało, a notatka, którą człowiek chciał przyjąć, dalej stała w „Waiting for
+         * you". Zwolnił miejsce i nie dostał nic, bez ani jednego zdania o tym dlaczego —
+         * z jego strony nieodróżnialne od przycisku, który połknął kliknięcie.
+         *
+         * Miejsce zwolnione W OKNIE należy do JEDNEJ notatki: tej, o którą pytał. Ponowienie
+         * jedzie tą samą drogą, co pierwsza próba — komenda, odpowiedź, dopiero potem stan —
+         * więc dalej rozstrzyga dysk, a nie okno. `use` sam zamknie wybór po sukcesie, postawi
+         * świeży przy dalszym braku miejsca i napisze zdanie przy każdej innej odmowie.
+         *
+         * Odstawienie POZA oknem zostaje tym, czym było: jedną decyzją i niczym więcej. */
+        if (choice === null || get().choice !== choice) {
+          set({ notes, message: null, choice: null });
+          return;
+        }
+        set({ notes, message: null });
+        await get().use(choice.address);
+      } catch (refusal) {
+        if (get().generation === generation && get().notesFolder === notesFolder) {
+          set({ message: why(refusal, COULD_NOT_STOP), choice: null });
+        }
       }
-    } catch (refusal) {
-      if (
-        get().generation === generation &&
-        get().passedRunsRead === passedRunsRead &&
-        get().catalogFolder === catalogFolder
-      ) {
-        /* Już przeczytane pliki zostają: odmowa następnej strony nie cofa prawdy o poprzedniej. */
-        set({ passedProblem: why(refusal, COULD_NOT_READ_PASSED) });
-      }
-    }
-  },
+    },
 
-  use: async (address) => {
-    const { notesFolder, generation } = get();
-    try {
-      /* Komenda, odpowiedź, DOPIERO POTEM stan. Wiersz przestawiony przed odpowiedzią pokazuje
-       * „In use" dla notatki, której plik dalej mówi `suggested` — czyli kłamie dokładnie o tym
-       * jednym, o czym ta sekcja mówi: co wejdzie do promptu następnego agenta. */
-      const notes = await putToUse(request(notesFolder, address));
-      if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ notes, message: null, choice: null });
+    discard: async (address) => {
+      const { notesFolder, generation } = get();
+      try {
+        /* Komenda, odpowiedź, DOPIERO POTEM stan — ta sama kolejność, co wyżej, i ten sam powód.
+         * Wiersz zdjęty przed odpowiedzią znika także wtedy, gdy Rust odmówił, a wtedy notatka
+         * dalej leży w katalogu i wróci przy następnym wejściu w sekcję: ekran mówiłby wtedy co
+         * innego niż pliki, czyli łamałby niezmiennik 4 w jedynym miejscu, w którym człowiek może
+         * to zobaczyć. Optymistyczne zdjęcie kosztuje tu więcej niż gdzie indziej, bo cofnięcia
+         * nie widać — pusta lista wygląda dokładnie tak samo jak lista, z której coś zniknęło. */
+        const notes = await discardNote(request(notesFolder, address));
+        if (get().generation === generation && get().notesFolder === notesFolder) {
+          /* Pytanie jest odpowiedziane, więc schodzi z ekranu razem z wierszem. Zostawione
+           * stałoby nad notatką, której już nie ma — a wtedy pyta o nic. */
+          set({ notes, message: null, pendingDiscard: null });
+        }
+      } catch (refusal) {
+        /* Odmowa „ta notatka jest w użyciu" jest zwykłym zdaniem, nie wymuszonym wyborem: pytanie
+         * „które notatki odstawić" postawione komuś, kto właśnie usłyszał „najpierw przestań jej
+         * używać", każe naprawiać nie to, co jest zepsute. `choice` zostaje więc nietknięte. */
+        if (get().generation === generation && get().notesFolder === notesFolder) {
+          set({ message: why(refusal, COULD_NOT_DISCARD), pendingDiscard: null });
+        }
       }
-    } catch (refusal) {
-      if (get().generation !== generation || get().notesFolder !== notesFolder) return;
-      if (isMemoryFull(refusal)) {
-        /* Lista do wymuszonego wyboru przychodzi Z ODMOWY i tylko stamtąd. Złożona tutaj
-         * z tego, co sekcja akurat trzyma, byłaby drugą odpowiedzią na pytanie „co odstawić",
-         * liczoną bez połowy plików i bez `last_used_at` (niezmiennik 13). */
-        set({
-          choice: { address, overBy: refusal.overBy, retire: refusal.retire },
-          message: null,
-        });
-        return;
-      }
-      /* Zwykła odmowa NIE otwiera okna: pytanie „które notatki odstawić" postawione komuś,
-       * kto właśnie usłyszał „ta notatka nie ma uzasadnienia", każe naprawiać nie to, co jest
-       * zepsute. Jedna odmowa, jedno miejsce, w którym o niej piszemy. */
-      set({ message: why(refusal, COULD_NOT_USE), choice: null });
-    }
-  },
+    },
 
-  stopUsing: async (address) => {
-    const { notesFolder, generation, choice } = get();
-    try {
-      const notes = await stopUsingOnDisk(request(notesFolder, address));
-      if (get().generation !== generation || get().notesFolder !== notesFolder) return;
-
-      /* WYMUSZONY WYBÓR DOMYKA TO, PO CO CZŁOWIEK PRZYSZEDŁ (2026-08-31).
+    askDiscard: (address) => {
+      /* PYTANIE, A NIE CZYNNOŚĆ, i nic tu nie jedzie do Rusta (2026-08-31).
        *
-       * Zmierzona wada: „Use this" → „Memory is full" → „Stop using" na innej notatce →
-       * okno znikało, a notatka, którą człowiek chciał przyjąć, dalej stała w „Waiting for
-       * you". Zwolnił miejsce i nie dostał nic, bez ani jednego zdania o tym dlaczego —
-       * z jego strony nieodróżnialne od przycisku, który połknął kliknięcie.
+       * Po tamtej stronie granicy `discard_note` zostawia TRWAŁY nagrobek w `discarded/`
+       * (`src-tauri/src/memory/notes.rs`, `was_discarded`), a skan pomija każdy plik, którego
+       * slug tam stoi. Odrzucona kandydatka nie wraca NIGDY — także wtedy, gdy inny agent
+       * nauczy się tego samego zdania jeszcze raz. Na ekranie było to jedno kliknięcie, obok
+       * „Use this" i w tej samej cichej skórce: nieodwracalna decyzja o odległości jednego
+       * omsknięcia. Wzorzec pytania jest ten sam, co przy usuwaniu agenta
+       * (`src/sections/agents/index.tsx`): PRAWDZIWY render, nigdy `window.confirm`, bo dialog
+       * przeglądarki blokuje webview i przy oknie Tauri nie ma go czym odblokować.
        *
-       * Miejsce zwolnione W OKNIE należy do JEDNEJ notatki: tej, o którą pytał. Ponowienie
-       * jedzie tą samą drogą, co pierwsza próba — komenda, odpowiedź, dopiero potem stan —
-       * więc dalej rozstrzyga dysk, a nie okno. `use` sam zamknie wybór po sukcesie, postawi
-       * świeży przy dalszym braku miejsca i napisze zdanie przy każdej innej odmowie.
-       *
-       * Odstawienie POZA oknem zostaje tym, czym było: jedną decyzją i niczym więcej. */
-      if (choice === null || get().choice !== choice) {
-        set({ notes, message: null, choice: null });
-        return;
-      }
-      set({ notes, message: null });
-      await get().use(choice.address);
-    } catch (refusal) {
-      if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ message: why(refusal, COULD_NOT_STOP), choice: null });
-      }
-    }
-  },
+       * Jedno pytanie naraz (niezmiennik 13): drugie kliknięcie w inny wiersz przestawia to,
+       * o co pytamy, zamiast zostawiać dwa otwarte pytania o dwie różne notatki. */
+      set({ pendingDiscard: address });
+    },
 
-  discard: async (address) => {
-    const { notesFolder, generation } = get();
-    try {
-      /* Komenda, odpowiedź, DOPIERO POTEM stan — ta sama kolejność, co wyżej, i ten sam powód.
-       * Wiersz zdjęty przed odpowiedzią znika także wtedy, gdy Rust odmówił, a wtedy notatka
-       * dalej leży w katalogu i wróci przy następnym wejściu w sekcję: ekran mówiłby wtedy co
-       * innego niż pliki, czyli łamałby niezmiennik 4 w jedynym miejscu, w którym człowiek może
-       * to zobaczyć. Optymistyczne zdjęcie kosztuje tu więcej niż gdzie indziej, bo cofnięcia
-       * nie widać — pusta lista wygląda dokładnie tak samo jak lista, z której coś zniknęło. */
-      const notes = await discardNote(request(notesFolder, address));
-      if (get().generation === generation && get().notesFolder === notesFolder) {
-        /* Pytanie jest odpowiedziane, więc schodzi z ekranu razem z wierszem. Zostawione
-         * stałoby nad notatką, której już nie ma — a wtedy pyta o nic. */
-        set({ notes, message: null, pendingDiscard: null });
-      }
-    } catch (refusal) {
-      /* Odmowa „ta notatka jest w użyciu" jest zwykłym zdaniem, nie wymuszonym wyborem: pytanie
-       * „które notatki odstawić" postawione komuś, kto właśnie usłyszał „najpierw przestań jej
-       * używać", każe naprawiać nie to, co jest zepsute. `choice` zostaje więc nietknięte. */
-      if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ message: why(refusal, COULD_NOT_DISCARD), pendingDiscard: null });
-      }
-    }
-  },
+    keepIt: () => {
+      /* Wyjście z pytania nie jest zgodą na nic i nie jest też odmową dla Rusta: nic tam nie
+       * pojechało, więc nie ma czego cofać. Znika samo pytanie. */
+      set({ pendingDiscard: null });
+    },
 
-  askDiscard: (address) => {
-    /* PYTANIE, A NIE CZYNNOŚĆ, i nic tu nie jedzie do Rusta (2026-08-31).
-     *
-     * Po tamtej stronie granicy `discard_note` zostawia TRWAŁY nagrobek w `discarded/`
-     * (`src-tauri/src/memory/notes.rs`, `was_discarded`), a skan pomija każdy plik, którego
-     * slug tam stoi. Odrzucona kandydatka nie wraca NIGDY — także wtedy, gdy inny agent
-     * nauczy się tego samego zdania jeszcze raz. Na ekranie było to jedno kliknięcie, obok
-     * „Use this" i w tej samej cichej skórce: nieodwracalna decyzja o odległości jednego
-     * omsknięcia. Wzorzec pytania jest ten sam, co przy usuwaniu agenta
-     * (`src/sections/agents/index.tsx`): PRAWDZIWY render, nigdy `window.confirm`, bo dialog
-     * przeglądarki blokuje webview i przy oknie Tauri nie ma go czym odblokować.
-     *
-     * Jedno pytanie naraz (niezmiennik 13): drugie kliknięcie w inny wiersz przestawia to,
-     * o co pytamy, zamiast zostawiać dwa otwarte pytania o dwie różne notatki. */
-    set({ pendingDiscard: address });
-  },
-
-  keepIt: () => {
-    /* Wyjście z pytania nie jest zgodą na nic i nie jest też odmową dla Rusta: nic tam nie
-     * pojechało, więc nie ma czego cofać. Znika samo pytanie. */
-    set({ pendingDiscard: null });
-  },
-
-  moveToProject: async (address) => {
-    const { notesFolder, generation } = get();
-    try {
-      const notes = await moveToProject(request(notesFolder, address));
-      if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ notes, message: null, choice: null });
+    moveToProject: async (address) => {
+      const { notesFolder, generation } = get();
+      try {
+        const notes = await moveToProject(request(notesFolder, address));
+        if (get().generation === generation && get().notesFolder === notesFolder) {
+          set({ notes, message: null, choice: null });
+        }
+      } catch (refusal) {
+        if (get().generation === generation && get().notesFolder === notesFolder) {
+          set({ message: why(refusal, COULD_NOT_MOVE), choice: null });
+        }
       }
-    } catch (refusal) {
-      if (get().generation === generation && get().notesFolder === notesFolder) {
-        set({ message: why(refusal, COULD_NOT_MOVE), choice: null });
-      }
-    }
-  },
+    },
 
-  cancel: () => {
-    /* Zamknięcie okna nie jest zgodą na nic: żaden status się nie rusza i nic nie jedzie do
-     * Rusta. Magazyn, który „przy okazji" odstawia pierwszą pozycję z listy, jest tym samym
-     * cichym przycięciem, przed którym stoi cały ten podsystem [T6 §5.3]. */
-    set({ choice: null });
-  },
-}));
+    cancel: () => {
+      /* Zamknięcie okna nie jest zgodą na nic: żaden status się nie rusza i nic nie jedzie do
+       * Rusta. Magazyn, który „przy okazji" odstawia pierwszą pozycję z listy, jest tym samym
+       * cichym przycięciem, przed którym stoi cały ten podsystem [T6 §5.3]. */
+      set({ choice: null });
+    },
+  }));
+}
+
+export const useMemory = createMemoryStore();
+
+const projectStores = new Map<string, ReturnType<typeof createMemoryStore>>();
+export function memoryForProject(folder: string | null) {
+  if (folder === null) return useMemory;
+  let store = projectStores.get(folder);
+  if (!store) {
+    store = createMemoryStore(folder);
+    projectStores.set(folder, store);
+  }
+  return store;
+}

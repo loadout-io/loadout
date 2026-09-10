@@ -86,6 +86,7 @@ export interface ProjectInstructionSource {
 }
 
 export interface ProjectSettings {
+  readonly defaultLead?: string;
   readonly instructions: { readonly enabled: boolean; readonly includeLocal: boolean };
   readonly leadInstructions: boolean | null;
   readonly sources: readonly ProjectInstructionSource[];
@@ -97,6 +98,7 @@ export interface ProjectSettings {
 }
 
 export interface ProjectSettingsPatch {
+  readonly defaultLead?: string;
   readonly instructions?: { readonly enabled?: boolean; readonly includeLocal?: boolean };
   readonly leadInstructions?: boolean | null;
 }

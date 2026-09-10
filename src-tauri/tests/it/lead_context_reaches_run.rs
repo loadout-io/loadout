@@ -254,13 +254,10 @@ async fn lead_desk(
         .chat_context_selection_inner(TERMINAL, &folder)
         .await?;
     let (sink, source) = line_channel(256);
-    let desk = Desk::at(
-        Some(bench.home.path().to_path_buf()),
-        bench.project.path().to_path_buf(),
-    )
-    .showing(Arc::new(Mutex::new(sink)))
-    .starting_with(state.lead_starts(), Arc::new(Mutex::new(Uuid::now_v7())))
-    .using_context(selected, CancellationToken::new());
+    let desk = Desk::at(Some(bench.library()), bench.project.path().to_path_buf())
+        .showing(Arc::new(Mutex::new(sink)))
+        .starting_with(state.lead_starts(), Arc::new(Mutex::new(Uuid::now_v7())))
+        .using_context(selected, CancellationToken::new());
     Ok((Arc::new(desk), source))
 }
 
@@ -308,7 +305,7 @@ fn publish_new_latest(
     revision: &str,
 ) -> Result<(), Box<dyn Error>> {
     let set = loadout_lib::context::files::folder_of(
-        &loadout_lib::context::files::library_root(bench.home.path()),
+        &loadout_lib::context::files::library_root(&bench.library()),
         &material.set_id,
     )?;
     let from = set.join("versions").join(&material.revision);
@@ -602,20 +599,25 @@ async fn conversations_and_workspaces_do_not_share_their_selection() -> Result<(
     assert!(!a.pins.transcript_keeps_previous_context);
     assert!(!b.pins.transcript_keeps_previous_context);
 
-    let elsewhere = tempfile::tempdir()?;
-    fs::create_dir_all(elsewhere.path().join(".loadout"))?;
+    let elsewhere = Bench::new()?;
+    let third = elsewhere.publish("Third", "Third", "third", "Third", "THIRD", "THIRD")?;
     let refusal = state
         .pin_context_to_chat_inner(
             "conversation-a",
-            &elsewhere.path().to_string_lossy(),
-            selected(&second)?,
+            &elsewhere.project.path().to_string_lossy(),
+            selected(&third)?,
         )
         .await
         .expect_err("the same conversation identity must not move to another workspace");
     assert!(refusal.contains("different workspace"), "{refusal}");
-    let elsewhere_folder = elsewhere.path().to_string_lossy();
-    state
+    let elsewhere_folder = elsewhere.project.path().to_string_lossy();
+    let foreign = state
         .pin_context_to_chat_inner("conversation-c", &elsewhere_folder, selected(&second)?)
+        .await
+        .expect_err("a new conversation must not inherit another project's Context");
+    assert!(foreign.contains("missing or damaged"), "{foreign}");
+    state
+        .pin_context_to_chat_inner("conversation-c", &elsewhere_folder, selected(&third)?)
         .await?;
     let c = state
         .what_this_chat_pinned_inner("conversation-c", &elsewhere_folder)
@@ -623,7 +625,7 @@ async fn conversations_and_workspaces_do_not_share_their_selection() -> Result<(
     let unchanged_a = state
         .what_this_chat_pinned_inner("conversation-a", &folder)
         .await?;
-    assert_eq!(c.pins.sets[0].id, second.set_id);
+    assert_eq!(c.pins.sets[0].id, third.set_id);
     assert_eq!(unchanged_a.pins.sets[0].id, first.set_id);
     Ok(())
 }
@@ -688,7 +690,7 @@ async fn a_set_that_vanishes_is_refused_when_pinned() -> Result<(), Box<dyn Erro
     let material = bench.publish("Exact", "Exact", "exact", "Exact", "EXACT", "EXACT")?;
     let state = app(&bench, Arc::new(Seen::default()))?;
     let set = loadout_lib::context::files::folder_of(
-        &loadout_lib::context::files::library_root(bench.home.path()),
+        &loadout_lib::context::files::library_root(&bench.library()),
         &material.set_id,
     )?;
     fs::remove_dir_all(set)?;
@@ -721,7 +723,7 @@ async fn a_version_that_vanishes_after_preview_is_refused_before_start()
     let line = request_from(&mut source).await?;
     let id = request_id(&line)?;
     let selected_version = loadout_lib::context::files::folder_of(
-        &loadout_lib::context::files::library_root(bench.home.path()),
+        &loadout_lib::context::files::library_root(&bench.library()),
         &readable.set_id,
     )?
     .join("versions")

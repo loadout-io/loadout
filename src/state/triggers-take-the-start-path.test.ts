@@ -262,6 +262,7 @@ describe('a trigger takes the same launch path as Start', () => {
       activeId: '/project',
       said: null,
     });
+    invoked.mockClear();
     await launchRun(CHOICE, 4, TASK, CLAIM);
 
     expect(invoked).toHaveBeenCalledTimes(1);
@@ -287,7 +288,7 @@ describe('a trigger takes the same launch path as Start', () => {
     expect(await launchRun(CHOICE, 4, TASK, { ...CLAIM, workspace: null })).toBe(
       TRIGGER_NO_WORKSPACE,
     );
-    expect(invoked).not.toHaveBeenCalled();
+    expect(invoked.mock.calls.filter(([cmd]) => cmd === 'run_workflow')).toHaveLength(0);
   });
 
   it('keeps pending visible until Rust returns its later durable acceptance time', async () => {

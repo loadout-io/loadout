@@ -484,7 +484,7 @@ impl Bench {
 
     /// Biblioteka tego człowieka — `~/.loadout`, czyli to, co okno mówi przy montażu ekranu.
     fn library(&self) -> PathBuf {
-        self.home.path().join(OURS)
+        self.project.path().join(OURS)
     }
 
     fn db(&self) -> PathBuf {
@@ -562,7 +562,7 @@ impl Bench {
 
         let store = Store::open(&self.db()).expect("the index has to open");
         let state = AppState::new(
-            self.library(),
+            self.home.path().join(OURS),
             self.project.path().to_path_buf(),
             store,
             drivers,

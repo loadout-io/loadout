@@ -20,6 +20,7 @@ async fn external_assessment_does_not_treat_subject_stdout_or_a_broken_examiner_
     let store = Store::open(&project.join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: &home,
+        library: home.clone(),
         project: &project,
         store: &store,
         drivers,

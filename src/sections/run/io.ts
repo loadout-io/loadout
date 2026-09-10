@@ -1284,8 +1284,11 @@ export interface WhatTheLeadCanDo {
  *   jest po tamtej stronie odmową nazywającą następny ruch — tą samą, którą dostanie przy
  *   pierwszym Enterze ([`sayToOrchestrator`]) — a nie cichym „nic nie może".
  */
-export function whatTheLeadCanDo(lead: string | null = null): Promise<WhatTheLeadCanDo> {
-  return invoke<WhatTheLeadCanDo>('what_the_lead_can_do', { lead });
+export function whatTheLeadCanDo(
+  lead: string | null = null,
+  folder: string | null = null,
+): Promise<WhatTheLeadCanDo> {
+  return invoke<WhatTheLeadCanDo>('what_the_lead_can_do', { lead, folder });
 }
 
 /**

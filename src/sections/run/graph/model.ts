@@ -41,6 +41,8 @@ export interface Who {
  */
 export interface GraphStep {
   readonly id: string;
+  readonly tileId?: string;
+  readonly processStarted?: boolean;
   readonly name: string;
   readonly status: AgentStatus;
   readonly who?: Who;
@@ -234,7 +236,7 @@ function nameOf(plan: Plan, id: string): string {
  * każdego biegu, a nazwanie trzech poprzedników po imieniu nie mieści się w kafelku.
  */
 export function measureOf(step: GraphStep, plan: Plan): Measure {
-  const incoming = plan.links.filter((link) => link.to === step.id);
+  const incoming = plan.links.filter((link) => link.to === step.id && link.max_turns === undefined);
   const first = incoming[0];
   const waits =
     step.waitingForHeavy === true
@@ -243,7 +245,7 @@ export function measureOf(step: GraphStep, plan: Plan): Measure {
         ? 'first step'
         : incoming.length === 1
           ? `after ${nameOf(plan, first.from)}`
-          : `reads ${String(incoming.length)} handoffs`;
+          : `after ${[...new Set(incoming.map((link) => nameOf(plan, link.from)))].join(', ')}`;
 
   return { waits, handsOn: plan.links.some((link) => link.from === step.id) };
 }

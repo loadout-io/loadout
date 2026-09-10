@@ -161,6 +161,7 @@ async fn a_run_saying(bench: &Bench, reflection_says: String) -> Result<RunRepor
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(reflection_says),

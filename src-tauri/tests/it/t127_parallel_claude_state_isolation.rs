@@ -120,6 +120,7 @@ async fn copies_overlap_and_reflection_uses_a_third_private_spawn() -> Result<()
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: real_claude_factory(bench.binary.clone(), bench.fake_home.path(), &bench.hostile),
@@ -207,6 +208,7 @@ async fn later_round_keeps_copy_state_keys_stable() -> Result<(), Box<dyn Error>
     let store = Store::open(&bench.db())?;
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: real_claude_factory(bench.binary.clone(), bench.fake_home.path(), &bench.hostile),

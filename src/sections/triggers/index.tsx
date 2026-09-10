@@ -88,6 +88,12 @@ export default function TriggersScreen({
     useWorkspaces.getState,
     useWorkspaces.getState,
   );
+  const project = workspaceState.all.find((one) => one.id === workspaceState.activeId);
+  const visibleTriggers = state.triggers.filter((one) => one.workspace === project?.folder);
+  const visibleWorkflows =
+    state.workflowFolder === undefined || state.workflowFolder === (project?.folder ?? null)
+      ? state.workflows
+      : [];
   const [ownEditor, setOwnEditor] = useState<TriggerEditorState>({
     opened: null,
     confirmingDelete: false,
@@ -138,7 +144,7 @@ export default function TriggersScreen({
       value: {
         connector: '',
         apiKey: '',
-        workflow: state.workflows[0]?.path ?? '',
+        workflow: visibleWorkflows[0]?.path ?? '',
         workspace,
         pollEveryMinutes: 1,
       },
@@ -146,7 +152,7 @@ export default function TriggersScreen({
   };
 
   const openSaved = (slug: string): void => {
-    const trigger = state.triggers.find((one) => one.slug === slug);
+    const trigger = visibleTriggers.find((one) => one.slug === slug);
     if (trigger === undefined || trigger.problem !== undefined) return;
     store.getState().resetEditorFeedback();
     replaceEditor({
@@ -249,7 +255,7 @@ export default function TriggersScreen({
     <section data-triggers-screen className="flex h-full flex-col">
       <header className="screen-head glass">
         <h1 className="text-title text-ink">Triggers</h1>
-        {state.triggers.length === 0 ? null : (
+        {visibleTriggers.length === 0 ? null : (
           <div className="ml-auto">
             {/* CICHNIE, KIEDY PANEL JEST OTWARTY. Powód w całości stoi przy
                 [`TriggerCreateControlProps.quiet`]: akcent na ekranie jest jeden. */}
@@ -266,7 +272,7 @@ export default function TriggersScreen({
             </p>
           )}
 
-          {state.triggers.length === 0 ? (
+          {visibleTriggers.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
               <span className="mark">◇</span>
               <p data-empty className="text-ink">
@@ -285,11 +291,11 @@ export default function TriggersScreen({
                wysokość TREŚCI, nie okna. Dwie kolumny dopiero od `lg`, bo w wąskim oknie karta
                po 300 px łamałaby nazwę workflow na cztery wiersze. */
             <ul className="grid gap-3 lg:grid-cols-2">
-              {state.triggers.map((trigger) => (
+              {visibleTriggers.map((trigger) => (
                 <Row
                   key={trigger.slug}
                   trigger={trigger}
-                  workspaces={workspaceState.all}
+                  workspaces={project ? [project] : []}
                   onToggle={toggle}
                   onRunAgain={runAgain}
                   onOpen={openSaved}
@@ -317,8 +323,8 @@ export default function TriggersScreen({
             <Form
               mode={opened.mode}
               value={opened.value}
-              workflows={state.workflows}
-              workspaces={workspaceState.all}
+              workflows={visibleWorkflows}
+              workspaces={project ? [project] : []}
               hasSavedKey={opened.mode === 'edit' ? opened.expected.hasApiKey : false}
               refusal={editor.state.refusal ?? null}
               connection={state.connection}

@@ -511,6 +511,7 @@ async fn oversized_runtime() -> Result<OversizedRun, Box<dyn Error>> {
     let store = Store::open(&project.path().join(".loadout/loadout.db"))?;
     let deps = RunDeps {
         home: home.path(),
+        library: home.path().to_path_buf(),
         project: project.path(),
         store: &store,
         drivers,

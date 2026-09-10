@@ -22,6 +22,7 @@ import type {
 } from '../sections/triggers/io';
 import type { TriggerConnectionState, TriggerWorkflowOption } from '../sections/triggers/form';
 import { list as listWorkflows } from '../sections/workflows/io';
+import { activeWorkspace } from './workspaces';
 
 /** The interval is named so the scheduler and the application share one answer. */
 export const TRIGGER_WATCH_INTERVAL_MS = 60_000;
@@ -38,7 +39,7 @@ export interface TriggerClock {
 
 /** The only route from the watcher to a run. It deliberately exposes launchRun, not run/io. */
 export interface TriggerRunPath {
-  listWorkflows(): Promise<readonly Listed[]>;
+  listWorkflows(folder?: string | null): Promise<readonly Listed[]>;
   launchRun(
     choice: Choice | null,
     atOnce: number,
@@ -85,6 +86,7 @@ export type TriggerMutationResult =
 export interface TriggersState {
   readonly triggers: readonly TriggerView[];
   readonly workflows: readonly TriggerWorkflowOption[];
+  readonly workflowFolder?: string | null;
   readonly connection: TriggerConnectionState;
   /** A library-level refusal. Per-trigger refusals live on their one row. */
   readonly said: string | null;
@@ -111,7 +113,7 @@ interface ToggleRefusal {
 }
 
 interface LibraryLoad {
-  readonly request: { epoch: number; readonly mutation: number };
+  readonly request: { epoch: number; readonly mutation: number; readonly folder: string | null };
   readonly promise: Promise<void>;
 }
 
@@ -186,7 +188,8 @@ export function createTriggersStore(
   run: TriggerRunPath,
 ): TriggersStore {
   let choices: readonly Choice[] = [];
-  let workflowsInFlight: Promise<readonly Choice[]> | null = null;
+  const projectChoices = new Map<string, readonly Choice[]>();
+
   let watchHandle: unknown = null;
   let watching = false;
   let generation = 0;
@@ -263,23 +266,15 @@ export function createTriggersStore(
       }));
     };
 
-    const currentChoices = (): Promise<readonly Choice[]> => {
-      if (workflowsInFlight !== null) return workflowsInFlight;
-      const request = run.listWorkflows().then((listed) => toChoices(listed));
-      workflowsInFlight = request;
-      const release = (): void => {
-        if (workflowsInFlight === request) workflowsInFlight = null;
-      };
-      request.then(release, release);
-      return request;
-    };
+    const currentChoices = (folder: string): Promise<readonly Choice[]> =>
+      run.listWorkflows(folder).then((listed) => toChoices(listed));
 
-    const rememberChoices = (fresh: readonly Choice[], epoch: number): void => {
+    const rememberChoices = (fresh: readonly Choice[], epoch: number, folder: string): void => {
       if (epoch !== generation) return;
-      choices = fresh;
+      projectChoices.set(folder, fresh);
       set((state) => ({
         triggers: state.triggers.map((trigger) => {
-          if (trigger.problem !== undefined) return trigger;
+          if (trigger.problem !== undefined || trigger.workspace !== folder) return trigger;
           return {
             ...trigger,
             workflowName: choiceFor(fresh, trigger.workflow)?.name ?? null,
@@ -371,11 +366,13 @@ export function createTriggersStore(
       setStatus(slug, { kind: 'busy', delivery }, epoch);
 
       try {
-        const fresh = await currentChoices();
+        if (delivery.claim.workspace === null)
+          throw new Error('Choose a project for this trigger first.');
+        const fresh = await currentChoices(delivery.claim.workspace);
         if (epoch !== generation) return;
         const current = configuredNow(slug);
         if (current === null || !current.enabled) return;
-        rememberChoices(fresh, epoch);
+        rememberChoices(fresh, epoch, delivery.claim.workspace);
         watchLaunch(slug, delivery, choiceFor(fresh, delivery.claim.workflow), epoch);
       } catch (error) {
         refuse(slug, error, 'Loadout could not read workflows for that trigger.', epoch, {
@@ -510,7 +507,9 @@ export function createTriggersStore(
             kind: 'accepted',
             /* The accepted workflow was frozen in the claim. The config file may have changed
              * meanwhile, so the row's current workflowName is not authoritative for receipt. */
-            workflow: choiceFor(choices, result.workflow)?.name ?? result.workflow,
+            workflow:
+              choiceFor(projectChoices.get(result.workspace ?? '') ?? [], result.workflow)?.name ??
+              result.workflow,
             workspace: result.workspace ?? null,
             receiptAt: result.receiptAt,
           },
@@ -575,24 +574,49 @@ export function createTriggersStore(
     };
 
     const loadLibrary = (): Promise<void> => {
-      if (libraryLoad !== null) {
+      const folder = activeWorkspace()?.folder ?? null;
+      if (libraryLoad !== null && libraryLoad.request.folder === folder) {
         /* Root and TriggersScreen can request the same read in adjacent effects. The newest
          * application epoch is allowed to consume that one result; Stop still invalidates it. */
         libraryLoad.request.epoch = generation;
         return libraryLoad.promise;
       }
 
-      const request = { epoch: generation, mutation: libraryMutation };
-      const promise = Promise.all([io.listTriggers(), run.listWorkflows()])
-        .then(([entries, listed]) => {
+      const request = { epoch: generation, mutation: libraryMutation, folder };
+      const promise = io
+        .listTriggers()
+        .then(async (entries) => {
+          const folders = [
+            ...new Set(entries.flatMap((entry) => (entry.workspace ? [entry.workspace] : []))),
+          ];
+          const catalogs = new Map(
+            await Promise.all(
+              folders.map(
+                async (folder) => [folder, toChoices(await run.listWorkflows(folder))] as const,
+              ),
+            ),
+          );
+          const listed = await run.listWorkflows(folder);
+          return { entries, listed, catalogs };
+        })
+        .then(({ entries, listed, catalogs }) => {
           if (request.epoch !== generation || request.mutation !== libraryMutation) return;
-          choices = toChoices(listed);
+          for (const [project, catalog] of catalogs) projectChoices.set(project, catalog);
+          const currentProject = folder === (activeWorkspace()?.folder ?? null);
+          if (currentProject) choices = toChoices(listed);
           const before = new Map(get().triggers.map((trigger) => [trigger.slug, trigger]));
-          const fresh = entries.map((entry) => viewOf(entry, choices, before.get(entry.slug)));
+          const fresh = entries.map((entry) =>
+            viewOf(entry, catalogs.get(entry.workspace ?? '') ?? [], before.get(entry.slug)),
+          );
           reconcileSchedule(fresh, before);
           set({
             triggers: fresh,
-            workflows: choices.map(({ path, name }) => ({ path, name })),
+            ...(currentProject
+              ? {
+                  workflowFolder: folder,
+                  workflows: choices.map(({ path, name }) => ({ path, name })),
+                }
+              : {}),
             said: null,
           });
         })
@@ -612,6 +636,7 @@ export function createTriggersStore(
     return {
       triggers: [],
       workflows: [],
+      workflowFolder: null,
       connection: { kind: 'idle' },
       said: null,
 
@@ -681,13 +706,14 @@ export function createTriggersStore(
       },
 
       create: async (draft) => {
+        const savedChoices = choices;
         try {
           const saved = await io.createTrigger(draft);
           libraryMutation += 1;
           set((state) => ({
             triggers: [
               ...state.triggers.filter((trigger) => trigger.slug !== saved.slug),
-              viewOf(saved, choices),
+              viewOf(saved, savedChoices),
             ],
             said: null,
           }));
@@ -702,6 +728,7 @@ export function createTriggersStore(
       },
 
       update: async (expected, draft) => {
+        const savedChoices = choices;
         const startingStatus = configuredNow(expected.slug)?.status ?? null;
         try {
           const saved = await io.updateTrigger(expected.slug, expected, draft);
@@ -711,7 +738,7 @@ export function createTriggersStore(
               trigger.slug === expected.slug
                 ? viewOf(
                     saved,
-                    choices,
+                    savedChoices,
                     /* 2026-08-21: Save usuwa wyłącznie odmowę, z którą wystartował. Nowy wynik
                      * Retry/Start może przyjść podczas await i jest wtedy nowszą prawdą. */
                     trigger.problem === undefined && trigger.status === startingStatus

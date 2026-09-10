@@ -543,11 +543,10 @@ pub(super) fn shelves_of(roots: &Roots, name: &str) -> Vec<PathBuf> {
             roots.project.as_deref(),
         ));
     }
-    shelves.extend(destinations(
-        Scope::Global,
-        &roots.home,
-        roots.project.as_deref(),
-    ));
+    // 2026-09-10: katalog domowy jest źródłem jawnego importu, nie dziedziczeniem projektu.
+    if roots.project.is_none() {
+        shelves.extend(destinations(Scope::Global, &roots.home, None));
+    }
 
     let mut looking: Vec<PathBuf> = shelves.iter().map(|shelf| shelf.join(name)).collect();
     looking.push(roots.data.join(SKILLS_DIR).join(name));

@@ -49,7 +49,7 @@ import { useSyncExternalStore } from 'react';
 import type { Landing } from '../../state/skills';
 import { useSkills } from '../../state/skills';
 import { activeWorkspace, useWorkspaces } from '../../state/workspaces';
-import { EVERY_PROJECT, THIS_PROJECT } from '../knowledge/reach';
+import { THIS_PROJECT } from '../knowledge/reach';
 import { evaluateSkill } from '../lab/evaluate';
 /* NAPIS KONTROLKI PRZYCHODZI Z KONTROLKI, nie jest tu przepisany. Zdanie odsyłające do rzeczy
  * nazwanej na ekranie inaczej jest instrukcją, której nie da się wykonać — a to jest jedyne
@@ -174,7 +174,6 @@ const NO_PROJECT_YET =
  */
 const LANDINGS: readonly { readonly value: Landing; readonly label: string }[] = [
   { value: 'this-project', label: THIS_PROJECT },
-  { value: 'everywhere', label: EVERY_PROJECT },
 ];
 
 /**
@@ -195,10 +194,7 @@ const PLACES: readonly {
   readonly label: string;
   /** Czy to miejsce w ogóle istnieje bez otwartego projektu. Bez korzenia nie istnieje. */
   readonly needsProject: boolean;
-}[] = [
-  { value: 'everywhere', label: 'Remove from this machine', needsProject: false },
-  { value: 'this-project', label: 'Remove from this project', needsProject: true },
-];
+}[] = [{ value: 'this-project', label: 'Remove from this project', needsProject: true }];
 
 /**
  * Pytanie zadane PRZED zdjęciem plików: po imieniu i z tym, co dokładnie zniknie.

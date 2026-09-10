@@ -213,6 +213,7 @@ fn deps<'a>(
 ) -> RunDeps<'a> {
     RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store,
         drivers: fake_drivers(seen),

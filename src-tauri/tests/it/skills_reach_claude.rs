@@ -842,6 +842,7 @@ impl Bench {
         let handed = Arc::new(Handed::default());
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &store,
             drivers: recording_drivers(Arc::clone(&handed)),

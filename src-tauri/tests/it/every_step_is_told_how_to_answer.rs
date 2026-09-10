@@ -265,6 +265,7 @@ async fn every_agent_step_ends_its_prompt_with_the_same_block() -> Result<(), Bo
 
     let deps = RunDeps {
         home: bench.home.path(),
+        library: bench.home.path().to_path_buf(),
         project: bench.project.path(),
         store: &store,
         drivers: fake_drivers(Arc::clone(&seen)),

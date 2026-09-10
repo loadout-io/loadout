@@ -348,6 +348,7 @@ impl Scene {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let deps = RunDeps {
             home: &self.home,
+            library: self.home.clone(),
             project: self.project.path(),
             store: &store,
             drivers: fake_drivers(Arc::clone(&seen)),

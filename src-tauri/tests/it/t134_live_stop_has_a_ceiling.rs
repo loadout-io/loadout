@@ -275,11 +275,20 @@ impl Bench {
     fn new() -> Result<Self, Box<dyn Error>> {
         let home = TempDir::new()?;
         let project = TempDir::new()?;
-        fs::create_dir_all(home.path().join("agents"))?;
-        fs::create_dir_all(home.path().join("workflows"))?;
+        fs::create_dir_all(project.path().join(".loadout/agents"))?;
+        fs::create_dir_all(project.path().join(".loadout/workflows"))?;
         fs::create_dir_all(project.path().join(".loadout"))?;
-        fs::write(home.path().join("agents").join("t134-builder.md"), AGENT)?;
-        let workflow = home.path().join("workflows").join("t134-stop.json");
+        fs::write(
+            project
+                .path()
+                .join(".loadout/agents")
+                .join("t134-builder.md"),
+            AGENT,
+        )?;
+        let workflow = project
+            .path()
+            .join(".loadout/workflows")
+            .join("t134-stop.json");
         fs::write(&workflow, WORKFLOW)?;
         Ok(Self {
             home,

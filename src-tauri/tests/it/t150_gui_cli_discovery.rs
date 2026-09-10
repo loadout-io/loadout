@@ -110,6 +110,7 @@ impl World {
         let store = Store::open(&self.home.path().join("loadout.db"))?;
         let deps = RunDeps {
             home: self.home.path(),
+            library: self.home.path().to_path_buf(),
             project: self.project.path(),
             store: &store,
             drivers,

@@ -79,6 +79,7 @@ pub mod mint;
 /// Rzeczy, które Loadout uruchomił dla człowieka: rejestr, kafelki, dowód śmierci. Wypełnia T-72.
 pub mod paths;
 pub mod processes;
+pub mod project_setup;
 /// Uzgodnienie biegów z plikami przy otwarciu folderu — po awarii aplikacji.
 pub mod reconcile;
 pub mod rerun;
@@ -147,10 +148,11 @@ pub type Drivers = Arc<dyn Fn(Vendor) -> Arc<dyn AgentDriver> + Send + Sync>;
 /// w teście, a tę strukturę da się w sześciu wierszach. `AppState` po stronie Tauri (T-01/T-07)
 /// tylko ją składa.
 pub struct RunDeps<'a> {
-    /// `~/.loadout` — biblioteka użytkownika: `agents/`, `workflows/`, `skills/`
-    /// (`docs/ARCHITECTURE.md` §8). Przychodzi **argumentem**, nigdy z `HOME` czytanego w środku:
-    /// katalog domowy odczytany tutaj znaczyłby, że każdy test pisze do prawdziwej biblioteki.
+    /// Ustawienia aplikacji, cennik i rejestr zaplanowanych uruchomień.
+    /// Nie służy do rozwiązywania agentów ani materiałów projektu.
     pub home: &'a Path,
+    /// 2026-09-10: biblioteka jednego projektu, oddzielona od ustawień aplikacji.
+    pub library: PathBuf,
     /// Katalog projektu, w którym biegnie workflow. To pod nim ląduje
     /// `.loadout/runs/<ts>__<id>/`.
     pub project: &'a Path,
@@ -182,6 +184,7 @@ impl fmt::Debug for RunDeps<'_> {
         formatter
             .debug_struct("RunDeps")
             .field("home", &self.home)
+            .field("library", &self.library)
             .field("project", &self.project)
             .field("drivers", &"<factory>")
             .field("control", &self.control)
