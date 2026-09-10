@@ -3761,6 +3761,12 @@ impl AgentDriver for CodexDriver {
         vec!["-c".to_owned(), format!("{EFFORT_KEY}={level}")]
     }
 
+    async fn model_catalog(&self) -> anyhow::Result<Option<super::models::ModelCatalog>> {
+        super::models::discover(&self.binary, &self.configuration, true)
+            .await
+            .map(Some)
+    }
+
     /// Pyta binarkę o wersję. **Brak pliku to `Ok(Probe { found: false, .. })`, nigdy `Err`**:
     /// nieobecne CLI jest ekranem ustawień, a nie awarią startu aplikacji.
     ///

@@ -52,7 +52,7 @@ type ReferenceFiles = Vec<(PathBuf, Vec<u8>)>;
 
 fn controlled_claude(home: &Path) -> Result<loadout_lib::commands::Drivers, Box<dyn Error>> {
     let binary = home.join("context-claude");
-    fs::write(&binary, CLAUDE_FAKE)?;
+    fs::write(&binary, super::model_catalog_fixture::shell(CLAUDE_FAKE))?;
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
     fs::write(home.join("context.stdout.jsonl"), CLAUDE_OUTPUT)?;
     let driver: Arc<dyn AgentDriver> = Arc::new(ClaudeDriver::with_binary(binary));

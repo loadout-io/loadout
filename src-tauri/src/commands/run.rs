@@ -2018,6 +2018,48 @@ async fn prepare_planned_run(
     slots: Limiter,
     options: PreparationOptions,
 ) -> Result<(Arc<Live>, Vec<Isolated>, Dag), RunError> {
+    // 2026-09-10: sprawdzamy również ostatni krok, zanim pierwszy dostanie prompt.
+    // Cache tylko w obrębie tego startu i konkretnego sterownika, nigdy między kontami.
+    let mut catalogs = std::collections::HashMap::new();
+    let cancel = deps.control.cancel_token();
+    for step in &plan.steps {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let Job::Agent(job) = &step.job else { continue };
+        let key = Arc::as_ptr(&job.driver).cast::<()>() as usize;
+        if let std::collections::hash_map::Entry::Vacant(entry) = catalogs.entry(key) {
+            let checked = job.driver.model_catalog().await;
+            // Sonda sprząta proces, potem istniejąca ścieżka zapisuje anulowany bieg.
+            if cancel.is_cancelled() {
+                break;
+            }
+            let catalog = checked.map_err(|error| {
+                RunError::Refused(Note {
+                    level: Level::Problem,
+                    step_id: Some(step.tile_key.clone()),
+                    message: format!("Could not check models for ‘{}’: {error}", step.name),
+                    fix: None,
+                })
+            })?;
+            entry.insert(catalog);
+        }
+        if let Some(Some(catalog)) = catalogs.get(&key) {
+            catalog
+                .check(
+                    job.model.as_deref(),
+                    crate::library::agents::effort_level(job.thinking),
+                )
+                .map_err(|error| {
+                    RunError::Refused(Note {
+                        level: Level::Problem,
+                        step_id: Some(step.tile_key.clone()),
+                        message: format!("‘{}’: {error} Nothing has started.", step.name),
+                        fix: None,
+                    })
+                })?;
+        }
+    }
     if plan.inputs.configuration.isolate_contexts {
         // Rzeczywisty, niepłatny proces dowodzi zdolności platformy przed pierwszym agentem.
         supervisor::FilesystemFence::new(Vec::new(), Vec::new(), vec![plan.project.clone()])?

@@ -64,6 +64,7 @@ pub mod host;
 pub mod prices;
 mod protected_state;
 
+pub mod models;
 /// Jeden rdzeń taniej sondy `--version` dla obu vendorów (niezmiennik 23). Prywatny, bo pytają
 /// o wersję wyłącznie sterowniki, a granicę IPC obsługuje `commands::agent_apps`.
 mod probe;
@@ -876,6 +877,12 @@ pub trait AgentDriver: Send + Sync {
     /// Czy CLI jest i w jakiej wersji. Biegnie przy starcie aplikacji i **nigdy nie zwraca
     /// błędu z powodu braku binarki**: brak CLI to ekran ustawień, a nie awaria startu.
     async fn probe(&self) -> anyhow::Result<Probe>;
+
+    /// Adaptery produkcyjne pobierają katalog z tej samej instalacji CLI co start.
+    /// Brak implementacji jest jawny; duble bez CLI zachowują dotychczasowy kontrakt.
+    async fn model_catalog(&self) -> anyhow::Result<Option<models::ModelCatalog>> {
+        Ok(None)
+    }
 
     /// Uruchamia krok. Zdarzenia płyną na `tx` aż do dokładnie jednego
     /// [`AgentEvent::Finished`] na turę.

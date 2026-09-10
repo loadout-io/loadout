@@ -60,6 +60,7 @@ install_skill
 import_context_sources
 import_project_setup
 interrupt_the_lead
+list_agent_models
 list_agents
 list_context_sets
 list_eval_sets

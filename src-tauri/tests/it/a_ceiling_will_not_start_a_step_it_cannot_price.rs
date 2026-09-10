@@ -400,7 +400,8 @@ impl Bench {
         let binary = home.path().join("codex-z44");
         fs::write(
             &binary,
-            CODEX_CLI.replace("MARKER", &marker.display().to_string()),
+            super::model_catalog_fixture::shell(CODEX_CLI)
+                .replace("MARKER", &marker.display().to_string()),
         )?;
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))?;
 

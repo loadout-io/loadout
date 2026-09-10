@@ -3452,6 +3452,12 @@ impl AgentDriver for ClaudeDriver {
         vec![EFFORT.to_owned(), level.to_owned()]
     }
 
+    async fn model_catalog(&self) -> anyhow::Result<Option<super::models::ModelCatalog>> {
+        super::models::discover(&self.binary, &self.configuration, false)
+            .await
+            .map(Some)
+    }
+
     /// Pięć znaków adaptera nad wspólnym rdzeniem (niezmiennik 23). To on odróżnia prawdziwy
     /// brak pliku od binarki, która jest i nie odpowiada, i to on pilnuje limitu, obu
     /// strumieni oraz dowodu śmierci grupy (niezmiennik 6).

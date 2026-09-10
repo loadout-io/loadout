@@ -120,7 +120,7 @@ const WORKFLOW: &str = r#"{
 
 fn write_cli(dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let path = dir.join("codex-t115");
-    fs::write(&path, CODEX_CLI)?;
+    fs::write(&path, super::model_catalog_fixture::shell(CODEX_CLI))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
     Ok(path)
 }
