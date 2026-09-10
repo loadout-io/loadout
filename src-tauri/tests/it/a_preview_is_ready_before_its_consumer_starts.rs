@@ -4,7 +4,7 @@
 
 use std::error::Error;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -601,6 +601,28 @@ fn read_port(control: &Path, name: &str) -> Option<u16> {
         .parse()
         .ok()
 }
+#[test]
+fn readiness_probe_reads_the_complete_status_across_tcp_fragments() -> Result<(), Box<dyn Error>> {
+    for (status, expected) in [("200 OK", true), ("503 Not Ready", false)] {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        let server = std::thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+            let mut request = [0u8; 512];
+            let _ = stream.read(&mut request)?;
+            stream.write_all(b"HTTP/1.1 ")?;
+            std::thread::sleep(Duration::from_millis(30));
+            write!(stream, "{status}\r\nContent-Length: 0\r\n\r\n")
+        });
+        let ready = http_ready(port);
+        let served = server.join().map_err(|_| "fixture server panicked")?;
+        assert_eq!(ready, expected, "fragmented HTTP status: {status}");
+        served?;
+    }
+    Ok(())
+}
+
 fn http_ready(port: u16) -> bool {
     let Ok(mut stream) =
         TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(300))
@@ -610,10 +632,12 @@ fn http_ready(port: u16) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
     let _ =
         stream.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    let mut response = [0u8; 512];
-    stream
-        .read(&mut response)
-        .is_ok_and(|count| response[..count].starts_with(b"HTTP/1.1 200 "))
+    // 2026-09-10: TCP dzieli także linię statusu. Pojedynczy read widział czasem
+    // tylko "HTTP/1.1 ", przez co pełna bramka odrzucała gotowy serwer z HTTP 200.
+    let mut response = String::new();
+    BufReader::new(stream.take(512))
+        .read_line(&mut response)
+        .is_ok_and(|_| response.starts_with("HTTP/1.1 200 "))
 }
 fn assert_dead(proofs: &[GroupProof]) {
     assert!(
