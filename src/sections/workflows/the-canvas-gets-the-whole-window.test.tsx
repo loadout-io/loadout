@@ -36,10 +36,13 @@ import type { WorkflowFile } from '../../state/workflows';
 import { WorkflowEditor } from './editor';
 
 /* Granica Tauriego: w vitest nie ma okna, a magazyn naprawdę zapisuje i naprawdę sprawdza. */
-vi.mock('./io', () => ({
-  write: () => Promise.resolve(),
-  check: () => Promise.resolve([]),
-}));
+vi.mock('./io', () => {
+  const disk = {
+    write: () => Promise.resolve(),
+    check: () => Promise.resolve([]),
+  };
+  return { ...disk, forProject: () => disk };
+});
 
 const PATH = 'ship-a-feature.json';
 

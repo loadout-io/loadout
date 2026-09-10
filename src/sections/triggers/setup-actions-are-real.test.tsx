@@ -29,7 +29,11 @@ const CLOCK: TriggerClock = {
   clearInterval: () => undefined,
 };
 const RUN: TriggerRunPath = {
-  listWorkflows: async () => [],
+  listWorkflows: async () =>
+    ['Analysis', 'Verify'].map((name) => ({
+      path: `${name.toLowerCase()}.json`,
+      workflow: { format: 1 as const, id: name.toLowerCase(), name, steps: [], links: [] },
+    })),
   launchRun: async () => null,
   atOnce: () => 3,
 };
@@ -270,6 +274,7 @@ function capture(
     });
   }
   store.setState({
+    workflowFolder: WORKSPACE,
     workflows: [
       { path: 'analysis.json', name: 'Analysis' },
       { path: 'verify.json', name: 'Verify' },
@@ -335,13 +340,11 @@ describe('the four setup actions cross the true screen and the disk-backed store
     changeThroughRealForm(observeForm(store, editor), 'cadence', '5');
     changeThroughRealForm(observeForm(store, editor), 'workflow', 'analysis.json');
 
-    /* 2026-08-21: the editor owns an explicit target. A side-menu switch between editing and
-     * Save must not retarget the trigger behind the person's back. */
-    useWorkspaces.getState().activate(OTHER_WORKSPACE);
-
     const ready = observeForm(store, editor);
     const saving = Promise.resolve(submitThroughRealForm(ready)).catch(() => undefined);
     const duplicate = Promise.resolve(submitThroughRealForm(ready)).catch(() => undefined);
+    // 2026-09-10: changing project after Save cannot retarget the request already in flight.
+    useWorkspaces.getState().activate(OTHER_WORKSPACE);
     expect(create).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledWith(DRAFT);
     expect(store.getState().triggers).toEqual([]);
@@ -388,7 +391,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
   it('requires both workspace and environment name before migrating a legacy trigger', async () => {
     const legacy: ConfiguredTriggerEntry = {
       ...ENTRY,
-      workspace: null,
+      workspace: WORKSPACE,
       enabled: false,
       tokenEnvironment: null,
       requiresMigration: true,
@@ -420,11 +423,13 @@ describe('the four setup actions cross the true screen and the disk-backed store
           status: { kind: 'unchecked' },
         },
       ],
+      workflowFolder: WORKSPACE,
       workflows: [{ path: 'analysis.json', name: 'Analysis' }],
     });
     const editor = controller({ opened: null, confirmingDelete: false });
 
     openSavedThroughRealRow(store, editor);
+    changeThroughRealForm(observeForm(store, editor), 'workspace', '');
     const blocked = observeForm(store, editor);
     expect(editor.state.opened).toEqual(
       expect.objectContaining({
@@ -461,8 +466,8 @@ describe('the four setup actions cross the true screen and the disk-backed store
   });
 
   it('removes an old missing-workspace retry refusal after the real Save repairs the target', async () => {
-    const legacy: ConfiguredTriggerEntry = { ...ENTRY, workspace: null };
-    const expected: TriggerSnapshot = { ...EXPECTED, workspace: null };
+    const legacy: ConfiguredTriggerEntry = { ...ENTRY, workspace: WORKSPACE };
+    const expected: TriggerSnapshot = { ...EXPECTED, workspace: WORKSPACE };
     const repaired: ConfiguredTriggerEntry = { ...legacy, workspace: WORKSPACE };
     const update = vi.fn(async () => repaired);
     const store = createTriggersStore(ioWith({ updateTrigger: update }), CLOCK, RUN);
@@ -470,7 +475,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
       triggers: [
         {
           ...legacy,
-          workspace: null,
+          workspace: WORKSPACE,
           workflowName: 'Analysis',
           status: {
             kind: 'accepted',
@@ -481,6 +486,7 @@ describe('the four setup actions cross the true screen and the disk-backed store
           },
         },
       ],
+      workflowFolder: WORKSPACE,
       workflows: [{ path: 'analysis.json', name: 'Analysis' }],
     });
     const editor = controller({ opened: null, confirmingDelete: false });

@@ -51,10 +51,13 @@ const NOTES: Note[] = [
   { level: 'warning', stepId: 's_build', message: WARNING },
 ];
 
-vi.mock('./io', () => ({
-  write: () => Promise.resolve(),
-  check: () => Promise.resolve(NOTES),
-}));
+vi.mock('./io', () => {
+  const disk = {
+    write: () => Promise.resolve(),
+    check: () => Promise.resolve(NOTES),
+  };
+  return { ...disk, forProject: () => disk };
+});
 
 vi.mock('../../state/workflows', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../state/workflows')>();

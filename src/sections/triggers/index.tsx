@@ -295,7 +295,7 @@ export default function TriggersScreen({
                 <Row
                   key={trigger.slug}
                   trigger={trigger}
-                  workspaces={project ? [project] : []}
+                  workspaces={workspaceState.all}
                   onToggle={toggle}
                   onRunAgain={runAgain}
                   onOpen={openSaved}

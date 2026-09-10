@@ -263,6 +263,27 @@ interface Wire {
 }
 
 const WIRES: readonly Wire[] = [
+  {
+    where: 'agents',
+    what: 'forProject',
+    command: 'list_agents',
+    given: [FOLDER],
+    call: () => agents.forProject(FOLDER).list(),
+  },
+  {
+    where: 'workflows',
+    what: 'forProject',
+    command: 'list_workflows',
+    given: [FOLDER],
+    call: () => workflows.forProject(FOLDER).list(),
+  },
+  {
+    where: 'context',
+    what: 'forProject',
+    command: 'list_context_sets',
+    given: [FOLDER, false],
+    call: () => context.forProject(FOLDER).list(false),
+  },
   /* 2026-09 (Z-34) — MIGAWKA LOKALNYCH APLIKACJI AGENTÓW. Bez argumentów, bo stan Tauri jest
    * jedynym parametrem skorupy: `check_agent_apps` pyta obie aplikacje naraz i to jest cała
    * jego treść. Wiersz stoi tu, bo tabela pokrywa CAŁY eksport krawędzi. */

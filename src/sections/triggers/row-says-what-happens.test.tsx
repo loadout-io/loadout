@@ -204,14 +204,12 @@ describe('the real Triggers screen explains and controls its library', () => {
     }
   });
 
-  it('shows a malformed file as a named problem with no invented config and no toggle', () => {
-    const markup = renderToStaticMarkup(<TriggersScreen store={seeded()} />);
-    const broken = row(markup, 'broken-file');
-    expect(broken).not.toBe('');
-    expect(broken).toContain('broken-file.json could not be read.');
-    expect(broken).not.toMatch(/undefined|null|unknown source|unavailable/i);
-    expect(occurrences(broken, 'data-trigger-toggle')).toBe(0);
-    expect(broken).not.toMatch(/<(?:button|input)\b/);
+  it('does not assign an unreadable global trigger to the current project', () => {
+    const store = seeded();
+    expect(store.getState().triggers.some((one) => one.slug === 'broken-file')).toBe(true);
+    const markup = renderToStaticMarkup(<TriggersScreen store={store} />);
+    expect(row(markup, 'broken-file')).toBe('');
+    expect(markup).not.toContain('broken-file.json could not be read.');
   });
 
   it('keeps every healthy row to four text carriers and exactly one live toggle', () => {

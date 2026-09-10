@@ -28,6 +28,18 @@ import ContextEditor from './editor';
 /** Prawdziwy magazyn tej sekcji — jeden na okno, wstrzyknięty krawędzią z `./io.ts`. */
 export type ContextStore = ReturnType<typeof createContextStore>;
 
+// 2026-09-10: powrót z innej sekcji zachowuje otwarty zestaw i jego budowanie,
+// ale inny projekt dostaje osobny magazyn oraz adapter z własnym katalogiem.
+const projectStores = new Map<string | null, ContextStore>();
+function contextForProject(folder: string | null): ContextStore {
+  let store = projectStores.get(folder);
+  if (store === undefined) {
+    store = createContextStore(io.forProject(folder));
+    projectStores.set(folder, store);
+  }
+  return store;
+}
+
 export interface ContextScreenProps {
   /** Bez propsu ekran bierze prawdziwy magazyn, z propsem ten z testu. */
   store?: ContextStore;
@@ -56,9 +68,7 @@ const WHAT_A_SET_IS =
   'A set holds the material you want an agent to work from — notes, requirements, what matters.';
 
 export default function ContextScreen({ store: supplied }: ContextScreenProps): ReactElement {
-  const [ownStore] = useState(() =>
-    createContextStore(io.forProject(activeWorkspace()?.folder ?? null)),
-  );
+  const [ownStore] = useState(() => contextForProject(activeWorkspace()?.folder ?? null));
   const store = supplied ?? ownStore;
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const apps = useSyncExternalStore(
@@ -125,9 +135,8 @@ export default function ContextScreen({ store: supplied }: ContextScreenProps): 
     }
   };
 
-  /* Biblioteka leży pod `home`, nie w projekcie, więc ten odczyt nie zależy od otwartego
-   * zakresu i biegnie RAZ na zamontowanie. `void`, bo odmowa jest obsłużona w magazynie
-   * i ląduje w jego stanie jako zdanie dla człowieka. */
+  /* Ponowne wejście odświeża pliki tylko tego projektu. Odmowa zostaje w jego magazynie
+   * jako zdanie dla człowieka, a stan budowania wraca z dysku. */
   useEffect(() => {
     void store.getState().load();
     void useAgentApps.getState().check();

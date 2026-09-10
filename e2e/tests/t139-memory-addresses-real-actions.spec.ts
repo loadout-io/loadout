@@ -314,16 +314,11 @@ describe('Memory keeps two roots and four human actions observable', () => {
   );
 
   it(
-    'keeps a visible B row addressed to B while C loads and ignores its late mutation result',
+    'hides B immediately when C opens and ignores the late result of a mutation started in B',
     async () => {
       const app = await openMemory(changingWorkspaceScene());
       try {
         await settleBothCatalogs(app);
-
-        await app.page.locator('[data-workspace-open]').click();
-        await app.page.locator(`[data-workspace-pick="${C}"]`).click();
-        await waitForCalls(app, 'list_notes', 3);
-        await expectAddresses(app, ['library:legacy', 'library:same', 'project:same']);
 
         await row(app, 'library:legacy')
           .getByRole('button', { name: 'Move to this project', exact: true })
@@ -332,6 +327,11 @@ describe('Memory keeps two roots and four human actions observable', () => {
         expect(moves.map((call) => call.args)).toEqual([
           { catalogFolder: B, place: 'library', id: 'legacy' },
         ]);
+
+        await app.page.locator('[data-workspace-open]').click();
+        await app.page.locator(`[data-workspace-pick="${C}"]`).click();
+        await waitForCalls(app, 'list_notes', 3);
+        await expectAddresses(app, []);
 
         await app.settle('catalog-c', { value: CATALOG_C });
         await expectAddresses(app, ['project:c-only']);

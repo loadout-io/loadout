@@ -182,9 +182,10 @@ const REFUSED = 'The agent came back with something that is not a skill: no name
  * z `ipc.rs`. Dlatego test porównuje tę połowę z podpisem komendy w tym samym biegu: parowanie,
  * którego klucze nikt nie sprawdza, przechodzi także wtedy, gdy Rust dawno przemianował argument.
  */
-const CARRIES: readonly [string, string][] = [
+const CARRIES: readonly [string, string | null][] = [
   ['want', WANT],
   ['agent', FORGE.id],
+  ['folder', null],
 ];
 
 function occurrences(haystack: string, needle: string): number {

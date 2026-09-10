@@ -15,7 +15,7 @@
  *   wskazanie innego lidera NA PASKU nie ma prawa przepisać pliku — bez tego „jeden fakt, jedno
  *     miejsce" (niezmiennik 13) byłoby zdaniem o dwóch kopiach, które akurat się zgadzają.
  *
- * GRANICA ODPOWIADA KSZTAŁTEM, nie treścią (nagłówek `../harness.ts`). `read_settings` dostaje
+ * GRANICA ODPOWIADA KSZTAŁTEM, nie treścią (nagłówek `../harness.ts`). `read_project_settings` dostaje
  * własną odpowiedź, bo domyślne `null` znaczyłoby tu „nikt nie wybierał" w scenie, której całym
  * pytaniem jest to, co plik pamięta.
  */
@@ -60,15 +60,24 @@ function copies<T>(value: T, count = 12): readonly { readonly value: T }[] {
   return Array.from({ length: count }, () => ({ value }));
 }
 
-/** `defaultLead` to wszystko, co plik pamięta — i jedyna rzecz, którą ta scena podstawia. */
+/** Wybór projektu wraca z pliku także po ponownym wejściu na sekcję. */
+function projectSettings(defaultLead: string) {
+  return {
+    defaultLead,
+    instructions: { enabled: true, includeLocal: true },
+    leadInstructions: null,
+    sources: [],
+    limits: { files: 20, fileBytes: 65536, totalBytes: 262144 },
+  };
+}
+
 function scene(defaultLead: string): Readonly<Record<string, readonly TauriReply[]>> {
   return {
     list_workspaces: copies([WORKSPACE]),
     list_agents: copies([SCOUT, BUILDER]),
     list_workflows: copies([]),
     list_skills: copies([]),
-    read_settings: copies({ defaultLead }),
-    save_settings: copies({ defaultLead: BUILDER.id }, 4),
+    read_project_settings: copies(projectSettings(defaultLead)),
   };
 }
 
@@ -121,6 +130,32 @@ describe('the lead chosen once in Settings is the lead the run strip shows', () 
     try {
       const page = app.page;
 
+      // 2026-09-10: ponowny odczyt musi widzieć to, co zapisał rzeczywisty handler.
+      // Stała kolejka pustych odpowiedzi udawała cofnięcie pliku po udanym zapisie.
+      await page.evaluate(
+        ({ folder, initial }) => {
+          const host = globalThis as unknown as {
+            __TAURI_INTERNALS__: {
+              invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+            };
+          };
+          const before = host.__TAURI_INTERNALS__.invoke;
+          let saved = initial;
+          host.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+            const answer = await before(cmd, args);
+            if (args?.['folder'] !== folder) return answer;
+            if (cmd === 'save_project_settings') {
+              const patch = args['patch'] as { defaultLead?: string };
+              saved = { ...saved, ...patch };
+            }
+            return cmd === 'read_project_settings' || cmd === 'save_project_settings'
+              ? saved
+              : answer;
+          };
+        },
+        { folder: FOLDER, initial: projectSettings('') },
+      );
+
       /* ── kontrola wstępna: pasek Run zaprasza, a nie wskazuje ──────────────────────────── */
       await page.locator(RUN_SCREEN).waitFor({ state: 'attached', timeout: APPEARS });
       const inviting = await leadOptions(page, RUN_LEAD);
@@ -149,17 +184,18 @@ describe('the lead chosen once in Settings is the lead the run strip shows', () 
         'the choice did not stay in the control it was made in, so the disk answered and the ' +
           'screen kept its old answer.',
       ).toBe(BUILDER.id);
-      const writes = await sentAs(app, 'save_settings');
+      const writes = await sentAs(app, 'save_project_settings');
       expect(
         writes,
         'choosing a default lead never reached Rust. The choice then lives in this window only ' +
           'and dies with it — which is the state this task exists to end.',
       ).toHaveLength(1);
       expect(
-        writes[0]?.['defaultLead'],
+        writes[0]?.['patch'],
         'the write reached Rust without the agent it was given. A call that arrives without its ' +
           'values is the same silence as no call at all.',
-      ).toBe(BUILDER.id);
+      ).toEqual({ defaultLead: BUILDER.id });
+      expect(writes[0]?.['folder']).toBe(FOLDER);
 
       /* ── i to samo widać na Run, bez wybierania drugi raz ──────────────────────────────── */
       await page.click(RUN_SWITCH);
@@ -192,7 +228,7 @@ describe('the lead chosen once in Settings is the lead the run strip shows', () 
           'facts: one is about this run, the other is about every run that has not said otherwise.',
       ).toBe(BUILDER.id);
       expect(
-        await sentAs(app, 'save_settings'),
+        await sentAs(app, 'save_project_settings'),
         'the run strip wrote to the settings file. Its control changes this window and nothing ' +
           'else — a second writer of one fact is how two copies of it start to disagree.',
       ).toHaveLength(1);
@@ -217,7 +253,7 @@ describe('the lead chosen once in Settings is the lead the run strip shows', () 
           'the same agent before every run.',
       ).toBe(BUILDER.id);
       expect(
-        await sentAs(reopened, 'save_settings'),
+        await sentAs(reopened, 'save_project_settings'),
         'opening a window wrote to the settings file although nobody chose anything. Showing a ' +
           'saved choice is a read; a write here would rewrite the file from whatever the screen ' +
           'happened to hold first.',

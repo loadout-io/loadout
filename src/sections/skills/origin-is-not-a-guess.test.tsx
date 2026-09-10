@@ -15,7 +15,7 @@
  * WYŁĄCZNIE polem `fromTheInternet`, i asercja w obie strony.
  *
  * DLACZEGO PRZEZ CAŁY EKRAN, A NIE PRZEZ SAM KOMPONENT KARTY. Bo (d) pyta o zdanie
- * `WHERE_IT_LANDS`, które stoi NAD kartą i należy do sekcji, nie do karty — a pytanie „czy
+ * `WHERE_IT_LANDS_IN_THE_PROJECT`, które stoi NAD kartą i należy do sekcji, nie do karty — a pytanie „czy
  * ostrzeżenie jest widoczne wcześniej niż decyzja" ma sens tylko w dokumencie, w którym stoją
  * oba. Kartę i tak renderuje ten sam komponent (`data-review-card`), tylko zamontowany tam,
  * gdzie go widzi człowiek. Zdanie jest IMPORTOWANE z sekcji, nie przepisane tutaj: druga kopia
@@ -29,7 +29,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Import } from '../../state/skills';
 import { useSkills } from '../../state/skills';
-import SkillsShelf, { WHERE_IT_LANDS } from './shelf';
+import SkillsShelf, { WHERE_IT_LANDS_IN_THE_PROJECT } from './shelf';
 
 const NAME = 'review-pull-requests';
 const SUMMARY = 'Use this when somebody asks for a second look at a pull request.';
@@ -134,7 +134,7 @@ describe('the review card says where a skill came from only when it knows', () =
           'something when there is exactly one decision on the page',
       ).toBe(1);
 
-      const warning = markup.indexOf(WHERE_IT_LANDS);
+      const warning = markup.indexOf(WHERE_IT_LANDS_IN_THE_PROJECT);
       const decision = markup.indexOf('data-add');
       expect(
         warning,

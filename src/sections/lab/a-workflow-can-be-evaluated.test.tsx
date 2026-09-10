@@ -97,8 +97,12 @@ async function openForms(extra: Readonly<Record<string, readonly TauriReply[]>> 
         },
         {
           kind: 'healthy',
-          revision: 'library-revision',
-          value: { path: 'pipeline.json', place: 'library', workflow: GRAPH },
+          revision: 'candidate-revision',
+          value: {
+            path: 'candidate.json',
+            place: 'project',
+            workflow: { ...GRAPH, id: 'candidate-workflow' },
+          },
         },
       ]),
       list_eval_sets: replies([FORM_SET]),
@@ -431,9 +435,11 @@ it('workflow column saves its exact shelf, file, revision, output and step chang
       await form.count(),
       'the workflow subject still renders the agent model-only editor',
     ).toBe(1);
-    await form.getByLabel('Workflow source', { exact: true }).selectOption('library/pipeline.json');
+    await form
+      .getByLabel('Workflow source', { exact: true })
+      .selectOption('project/candidate.json');
     await form.getByLabel('Output step', { exact: true }).selectOption('finish');
-    await form.getByLabel('Column name', { exact: true }).fill('Library candidate');
+    await form.getByLabel('Column name', { exact: true }).fill('Project candidate');
     await form
       .getByLabel('Step changes (JSON)', { exact: true })
       .fill('{"build":{"model":"chosen-model"}}');
@@ -448,12 +454,12 @@ it('workflow column saves its exact shelf, file, revision, output and step chang
         expectedRevision: 'set-before-edit',
         variant: {
           id: 'baseline',
-          name: 'Library candidate',
+          name: 'Project candidate',
           workflow: {
-            id: DOCUMENT.id,
-            place: 'library',
-            path: 'pipeline.json',
-            revision: 'library-revision',
+            id: 'candidate-workflow',
+            place: 'project',
+            path: 'candidate.json',
+            revision: 'candidate-revision',
             outputStep: 'finish',
             overrides: { build: { model: 'chosen-model' } },
           },
@@ -472,7 +478,9 @@ it('invalid step changes stay in the real form and do not reach the save adapter
   const app = await openForms();
   try {
     const form = app.page.locator('[data-workflow-column="baseline"]');
-    await form.getByLabel('Workflow source', { exact: true }).selectOption('library/pipeline.json');
+    await form
+      .getByLabel('Workflow source', { exact: true })
+      .selectOption('project/candidate.json');
     await form.getByLabel('Output step', { exact: true }).selectOption('finish');
     await form.getByLabel('Step changes (JSON)', { exact: true }).fill('[]');
     await form.getByRole('button', { name: 'Save column', exact: true }).click();

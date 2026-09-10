@@ -153,9 +153,7 @@ export const WHERE_IT_LANDS_IN_THE_PROJECT =
  * (niezmiennik 13), a ekran Umiejętności nie jest miejscem, w którym wybiera się projekt.
  */
 const NO_PROJECT_YET =
-  'No project is open, so a skill can only go into the folders on this machine. ' +
-  FIRST_INVITE +
-  ' in the side menu to put one inside a project instead.';
+  'No project is open. ' + FIRST_INVITE + ' in the side menu to add a skill to it.';
 
 /**
  * Dwie pozycje wyboru i dokładnie dwie, w słowach człowieka [T5 §8.3].

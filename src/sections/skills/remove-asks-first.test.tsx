@@ -182,35 +182,17 @@ describe('taking a skill back out asks first and strikes where the screen said',
     ).toEqual([[PDF.name, ON_THIS_MACHINE, null]]);
   });
 
-  it('offers one place with no project open and both when one is open, each named', () => {
+  it('offers removal only from the selected project', () => {
     useSkills.setState({ installed: [PDF], folders: 'read', removing: PDF.name });
-
-    const alone = words(rowFor(screen(), PDF.name));
-    expect(
-      alone,
-      'with no project open there is exactly one place a skill can be, so the question has to ' +
-        'offer exactly one — and name it. The row said: ' +
-        alone,
-    ).toContain('Remove from this machine');
-    expect(
-      alone,
-      'and it must not offer a place that has no folder behind it: with nothing open, "inside ' +
-        'the project" resolves to a relative path and the far side refuses. The row said: ' +
-        alone,
-    ).not.toContain('Remove from this project');
+    const withoutProject = rowFor(screen(), PDF.name);
+    expect(occurrences(withoutProject, 'data-goes-from=')).toBe(0);
+    expect(words(withoutProject)).not.toContain('Remove from this machine');
 
     useWorkspaces.setState({ all: [OPEN_PROJECT], activeId: OPEN_PROJECT.id, said: null });
-    const both = rowFor(screen(), PDF.name);
-
-    expect(
-      occurrences(both, 'data-goes-from='),
-      'with a project open the same name means two different folders, and a person has to say ' +
-        'which one goes. One control here is the defect this file is about, wearing a question ' +
-        'mark',
-    ).toBe(2);
-    expect(words(both), 'and the second one has to say where it strikes as well').toContain(
-      'Remove from this project',
-    );
+    const inProject = rowFor(screen(), PDF.name);
+    expect(occurrences(inProject, 'data-goes-from=')).toBe(1);
+    expect(words(inProject)).toContain('Remove from this project');
+    expect(words(inProject)).not.toContain('Remove from this machine');
   });
 
   it('a refused delete says what Rust said and puts the question away', async () => {

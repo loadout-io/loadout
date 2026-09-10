@@ -63,7 +63,8 @@ function scene(agents: readonly unknown[]): Readonly<Record<string, readonly Tau
     list_workflows: copies(WORKFLOWS),
     list_skills: copies([]),
     list_triggers: copies([TRIGGER]),
-    read_settings: copies({ defaultLead: BUILDER.id, defaultBudgetUsd: 25 }),
+    read_settings: copies({ defaultBudgetUsd: 25 }),
+    read_project_settings: copies({ defaultLead: BUILDER.id }),
   };
 }
 

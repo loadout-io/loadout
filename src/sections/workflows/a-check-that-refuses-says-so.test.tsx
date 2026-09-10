@@ -20,10 +20,13 @@ const spy = vi.hoisted(() => ({
   >(),
 }));
 
-vi.mock('./io', () => ({
-  write: () => Promise.resolve('r2'),
-  check: () => Promise.reject(CHECK_REFUSAL),
-}));
+vi.mock('./io', () => {
+  const disk = {
+    write: () => Promise.resolve('r2'),
+    check: () => Promise.reject(CHECK_REFUSAL),
+  };
+  return { ...disk, forProject: () => disk };
+});
 
 vi.mock('../../state/workflows', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../state/workflows')>();

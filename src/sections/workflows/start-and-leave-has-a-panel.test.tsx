@@ -37,13 +37,16 @@ const spy = vi.hoisted(() => ({
   written: [] as { path: string; file: WorkflowFile }[],
 }));
 
-vi.mock('./io', () => ({
-  write: (path: string, file: WorkflowFile) => {
-    spy.written.push({ path, file });
-    return Promise.resolve();
-  },
-  check: () => Promise.resolve([]),
-}));
+vi.mock('./io', () => {
+  const disk = {
+    write: (path: string, file: WorkflowFile) => {
+      spy.written.push({ path, file });
+      return Promise.resolve();
+    },
+    check: () => Promise.resolve([]),
+  };
+  return { ...disk, forProject: () => disk };
+});
 
 vi.mock('./step-panel/serve-panel', async (importOriginal) => {
   const real = await importOriginal<typeof import('./step-panel/serve-panel')>();

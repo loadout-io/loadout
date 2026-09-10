@@ -39,10 +39,13 @@ const REFUSED =
   'This workflow was not saved: it changed on disk after you opened it, so nothing was ' +
   'overwritten.';
 
-vi.mock('./io', () => ({
-  write: () => Promise.reject(REFUSED),
-  check: () => Promise.resolve([]),
-}));
+vi.mock('./io', () => {
+  const disk = {
+    write: () => Promise.reject(REFUSED),
+    check: () => Promise.resolve([]),
+  };
+  return { ...disk, forProject: () => disk };
+});
 
 vi.mock('../../state/workflows', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../state/workflows')>();

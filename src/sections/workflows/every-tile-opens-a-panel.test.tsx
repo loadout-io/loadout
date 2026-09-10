@@ -71,13 +71,16 @@ const spy = vi.hoisted(() => ({
 
 /* Granica Tauriego. Autosave jest częścią ścieżki, którą to kryterium sądzi, więc nie da się
  * go wyłączyć — a `invoke` bez okna odrzuca obietnicę, której magazyn świadomie nie łyka. */
-vi.mock('./io', () => ({
-  write: (path: string, file: WorkflowFile) => {
-    spy.written.push({ path, file });
-    return Promise.resolve();
-  },
-  check: () => Promise.resolve([]),
-}));
+vi.mock('./io', () => {
+  const disk = {
+    write: (path: string, file: WorkflowFile) => {
+      spy.written.push({ path, file });
+      return Promise.resolve();
+    },
+    check: () => Promise.resolve([]),
+  };
+  return { ...disk, forProject: () => disk };
+});
 
 /* Atrapa PRZEPUSZCZAJĄCA: prawdziwy komponent, prawdziwe drzewo, zapisane po drodze.
  * Gdyby ekran przestał ten plik montować, `spy.shown` zostaje puste i to jest ta czerwień,

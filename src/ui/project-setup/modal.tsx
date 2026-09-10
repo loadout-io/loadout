@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { why } from '../../ipc/why';
 import { useWorkspaces, type Workspace } from '../../state/workspaces';
 import { useProjectSetup } from './state';
+import { Tick } from '../primitives/tick';
 import './style.css';
 
 interface Item {
@@ -347,9 +348,9 @@ function ImportWindow({ destination }: { destination: Workspace }) {
                                   {glyphs[item.category] ?? '◇'}
                                 </span>
                                 <span className="setup-kind">{names[item.category] ?? 'Item'}</span>
-                                <input
-                                  type="checkbox"
-                                  aria-label={`Select ${item.name}`}
+                                <Tick
+                                  label={null}
+                                  name={`Select ${item.name}`}
                                   checked={selection.selected.has(item.key)}
                                   disabled={
                                     busy ||

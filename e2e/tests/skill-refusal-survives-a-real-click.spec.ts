@@ -181,7 +181,11 @@ function scene(
 ): Readonly<Record<string, readonly TauriReply[]>> {
   return {
     list_workspaces: [{ value: [WORKSPACE] }, { value: [WORKSPACE] }],
-    list_workflows: [{ value: [WORKFLOW] }, { value: [WORKFLOW] }],
+    list_workflows: Array.from({ length: 12 }, () => ({ value: [WORKFLOW] })),
+    load_workflow: Array.from({ length: 12 }, () => ({
+      value: { workflow: WORKFLOW.workflow, revision: 'r1' },
+    })),
+    check_workflow: Array.from({ length: 12 }, () => ({ value: [] })),
     list_agents: [{ value: agents }, { value: agents }],
     run_workflow: [answer],
   };

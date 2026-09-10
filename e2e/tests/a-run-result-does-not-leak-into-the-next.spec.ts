@@ -97,8 +97,8 @@ it('shows a failed result and starts fresh with distinct attempts after another 
       .poll(() => app.page.locator('[data-run-state]').innerText())
       .toMatch(/^Failed .*20 min/iu);
     expect(await app.page.locator('[data-run-head]').getAttribute('data-run-tone')).toBe('failed');
-    expect(await app.page.locator('[data-step]').count()).toBe(3);
-    expect(await app.page.locator('[data-step="qa-1"]').innerText()).toContain('not run');
+    expect(await app.page.locator('[data-step]').count()).toBe(2);
+    expect(await app.page.locator('[data-step="qa"]').innerText()).toContain('not run');
     await start.click();
     await expect
       .poll(async () => (await app.calls()).filter((call) => call.cmd === 'run_workflow').length)
@@ -107,10 +107,8 @@ it('shows a failed result and starts fresh with distinct attempts after another 
     if (next === undefined) throw new Error('The next Run click did not reach Rust');
     await send(app, next, 0, 'running', 'run-next');
     await send(app, first, 1, 'failed', 'run-first');
-    await expect
-      .poll(() => app.page.locator('[data-step="qa-1"]').innerText())
-      .toContain('waiting');
-    expect(await app.page.locator('[data-step]').count()).toBe(3);
+    await expect.poll(() => app.page.locator('[data-step="qa"]').innerText()).toContain('waiting');
+    expect(await app.page.locator('[data-step]').count()).toBe(2);
     expect(await app.page.locator('[data-step="plan"]').innerText()).not.toContain(
       'No plan was published.',
     );
