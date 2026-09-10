@@ -5,6 +5,7 @@
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -48,35 +49,41 @@ fn slug(id: Uuid) -> String {
 
 fn home_with_workflow() -> Result<TempDir, Box<dyn Error>> {
     let home = TempDir::new()?;
-    fs::create_dir_all(home.path().join("workflows"))?;
-    fs::write(home.path().join("workflows/linear.json"), WORKFLOW)?;
-    let workspace = workspace();
+    // 2026-09-10: każdy test ma własny projekt i jego workflow; brak wspólnej biblioteki
+    // nie może ukrywać testowanej odmowy zapisu wyzwalacza.
+    let workflows = home.path().join("project/.loadout/workflows");
+    fs::create_dir_all(&workflows)?;
+    fs::write(workflows.join("linear.json"), WORKFLOW)?;
+    let workspace = workspace(home.path());
     workspaces::save_workspace_inner(home.path(), "Trigger tests", &workspace)?;
     Ok(home)
 }
 
-fn workspace() -> String {
-    env!("CARGO_MANIFEST_DIR").to_owned()
+fn workspace(home: &Path) -> String {
+    fs::canonicalize(home.join("project"))
+        .expect("the fixture creates a project")
+        .to_string_lossy()
+        .into_owned()
 }
 
-fn draft(token_environment: Option<&str>, cadence: u32) -> TriggerDraft {
+fn draft(home: &Path, token_environment: Option<&str>, cadence: u32) -> TriggerDraft {
     TriggerDraft {
         source: "linear".to_owned(),
         condition: "assigned-to-me".to_owned(),
         workflow: "linear.json".to_owned(),
-        workspace: workspace(),
+        workspace: workspace(home),
         poll_every_minutes: cadence,
         token_environment: token_environment.map(str::to_owned),
     }
 }
 
-fn invalid_create_drafts() -> [(TriggerDraft, Uuid, &'static str); 8] {
+fn invalid_create_drafts(home: &Path) -> [(TriggerDraft, Uuid, &'static str); 8] {
     [
-        (draft(Some(ENVIRONMENT), 2), fixed_id(3), "cadence"),
+        (draft(home, Some(ENVIRONMENT), 2), fixed_id(3), "cadence"),
         (
             TriggerDraft {
                 source: REPLACEMENT.to_owned(),
-                ..draft(Some(ENVIRONMENT), 1)
+                ..draft(home, Some(ENVIRONMENT), 1)
             },
             fixed_id(4),
             "source",
@@ -84,7 +91,7 @@ fn invalid_create_drafts() -> [(TriggerDraft, Uuid, &'static str); 8] {
         (
             TriggerDraft {
                 condition: "anything changed".to_owned(),
-                ..draft(Some(ENVIRONMENT), 1)
+                ..draft(home, Some(ENVIRONMENT), 1)
             },
             fixed_id(5),
             "condition",
@@ -92,29 +99,29 @@ fn invalid_create_drafts() -> [(TriggerDraft, Uuid, &'static str); 8] {
         (
             TriggerDraft {
                 condition: "assigned to me".to_owned(),
-                ..draft(Some(ENVIRONMENT), 1)
+                ..draft(home, Some(ENVIRONMENT), 1)
             },
             fixed_id(11),
             "legacy condition in a new form",
         ),
         (
-            draft(Some("LINEAR-API-KEY"), 1),
+            draft(home, Some("LINEAR-API-KEY"), 1),
             fixed_id(6),
             "environment name",
         ),
         (
             TriggerDraft {
                 workflow: "missing.json".to_owned(),
-                ..draft(Some(ENVIRONMENT), 1)
+                ..draft(home, Some(ENVIRONMENT), 1)
             },
             fixed_id(7),
             "workflow",
         ),
-        (draft(None, 1), fixed_id(9), "missing environment"),
+        (draft(home, None, 1), fixed_id(9), "missing environment"),
         (
             TriggerDraft {
                 workflow: "../victim.json".to_owned(),
-                ..draft(Some(ENVIRONMENT), 1)
+                ..draft(home, Some(ENVIRONMENT), 1)
             },
             fixed_id(10),
             "workflow outside the library",
@@ -122,13 +129,13 @@ fn invalid_create_drafts() -> [(TriggerDraft, Uuid, &'static str); 8] {
     ]
 }
 
-fn snapshot(slug: &str, cadence: u32) -> TriggerSnapshot {
+fn snapshot(home: &Path, slug: &str, cadence: u32) -> TriggerSnapshot {
     TriggerSnapshot {
         slug: slug.to_owned(),
         source: Source::Linear,
         condition: "assigned-to-me".to_owned(),
         workflow: "linear.json".to_owned(),
-        workspace: Some(workspace()),
+        workspace: Some(workspace(home)),
         enabled: true,
         poll_every_minutes: cadence,
         key_saved: false,
@@ -158,7 +165,7 @@ fn literal_api_key_is_refused_before_any_trigger_file_is_written() -> Result<(),
         "source": "linear",
         "condition": "assigned-to-me",
         "workflow": "linear.json",
-        "workspace": workspace(),
+        "workspace": workspace(home.path()),
         "pollEveryMinutes": 5,
         "apiKey": KEY,
     }))?;
@@ -183,7 +190,7 @@ fn create_mints_a_private_complete_redacted_file() -> Result<(), Box<dyn Error>>
 
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 5),
+        draft(home.path(), Some(ENVIRONMENT), 5),
         || id,
         |stage, path| {
             if stage == EditorStage::BeforeContent {
@@ -215,7 +222,10 @@ fn create_mints_a_private_complete_redacted_file() -> Result<(), Box<dyn Error>>
     assert_eq!(entry.source, Some(Source::Linear));
     assert_eq!(entry.condition.as_deref(), Some("assigned-to-me"));
     assert_eq!(entry.workflow.as_deref(), Some("linear.json"));
-    assert_eq!(entry.workspace.as_deref(), Some(workspace().as_str()));
+    assert_eq!(
+        entry.workspace.as_deref(),
+        Some(workspace(home.path()).as_str())
+    );
     assert_eq!(entry.enabled, Some(true));
     assert_eq!(entry.poll_every_minutes, Some(5));
     assert_eq!(entry.key_saved, Some(false));
@@ -235,7 +245,7 @@ fn create_mints_a_private_complete_redacted_file() -> Result<(), Box<dyn Error>>
             "source": "linear",
             "enabled": true,
             "workflow": "linear.json",
-            "workspace": workspace(),
+            "workspace": workspace(home.path()),
             "condition": "assigned-to-me",
             "poll_every_minutes": 5,
             "token_environment": ENVIRONMENT,
@@ -244,7 +254,7 @@ fn create_mints_a_private_complete_redacted_file() -> Result<(), Box<dyn Error>>
     );
     assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
     assert_redacted(&format!("{} {:?}", serde_json::to_string(&entry)?, entry));
-    assert_redacted(&format!("{:?}", draft(Some(ENVIRONMENT), 5)));
+    assert_redacted(&format!("{:?}", draft(home.path(), Some(ENVIRONMENT), 5)));
     Ok(())
 }
 
@@ -259,7 +269,7 @@ fn create_is_no_clobber_and_invalid_forms_touch_no_config() -> Result<(), Box<dy
     fs::write(&collision_path, original)?;
     let collision_result = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(home.path(), Some(ENVIRONMENT), 1),
         || collision,
         |_, _| Ok(()),
     );
@@ -274,7 +284,7 @@ fn create_is_no_clobber_and_invalid_forms_touch_no_config() -> Result<(), Box<dy
     let manual_winner = b"manual writer won before publish";
     let racing_result = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(home.path(), Some(ENVIRONMENT), 1),
         || racing,
         |stage, _| {
             if stage == EditorStage::BeforeCompare {
@@ -291,7 +301,7 @@ fn create_is_no_clobber_and_invalid_forms_touch_no_config() -> Result<(), Box<dy
 
     fs::write(home.path().join("victim.json"), WORKFLOW)?;
 
-    for (invalid, id, label) in invalid_create_drafts() {
+    for (invalid, id, label) in invalid_create_drafts(home.path()) {
         let path = dir.join(format!("{}.json", slug(id)));
         assert_redacted(&format!("{invalid:?}"));
         let result = triggers::create_with(home.path(), invalid, || id, |_, _| Ok(()));
@@ -385,7 +395,7 @@ fn old_files_default_to_one_and_all_four_cadences_round_trip() -> Result<(), Box
         let id = fixed_id(20 + u8::try_from(index)?);
         let entry = triggers::create_with(
             home.path(),
-            draft(Some(ENVIRONMENT), cadence),
+            draft(home.path(), Some(ENVIRONMENT), cadence),
             || id,
             |_, _| Ok(()),
         )?;
@@ -405,7 +415,7 @@ fn edit_keeps_or_replaces_the_environment_name_and_refuses_invalid_drafts()
     let id = fixed_id(40);
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(home.path(), Some(ENVIRONMENT), 1),
         || id,
         |_, _| Ok(()),
     )?;
@@ -418,8 +428,8 @@ fn edit_keeps_or_replaces_the_environment_name_and_refuses_invalid_drafts()
     let saved = triggers::update(
         home.path(),
         &entry.slug,
-        &snapshot(&entry.slug, 1),
-        draft(Some(ENVIRONMENT), 5),
+        &snapshot(home.path(), &entry.slug, 1),
+        draft(home.path(), Some(ENVIRONMENT), 5),
     )?;
     assert_eq!(saved.poll_every_minutes, Some(5));
     assert!(
@@ -432,8 +442,8 @@ fn edit_keeps_or_replaces_the_environment_name_and_refuses_invalid_drafts()
     let replaced = triggers::update(
         home.path(),
         &entry.slug,
-        &snapshot(&entry.slug, 5),
-        draft(Some(REPLACEMENT_ENVIRONMENT), 15),
+        &snapshot(home.path(), &entry.slug, 5),
+        draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 15),
     )?;
     assert_eq!(replaced.poll_every_minutes, Some(15));
     assert!(
@@ -445,30 +455,30 @@ fn edit_keeps_or_replaces_the_environment_name_and_refuses_invalid_drafts()
     let invalid_updates = [
         TriggerDraft {
             source: "jira".to_owned(),
-            ..draft(Some(REPLACEMENT_ENVIRONMENT), 15)
+            ..draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 15)
         },
         TriggerDraft {
             condition: "anything changed".to_owned(),
-            ..draft(Some(REPLACEMENT_ENVIRONMENT), 15)
+            ..draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 15)
         },
         TriggerDraft {
             condition: "assigned to me".to_owned(),
-            ..draft(Some(REPLACEMENT_ENVIRONMENT), 15)
+            ..draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 15)
         },
-        draft(Some(REPLACEMENT_ENVIRONMENT), 2),
+        draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 2),
         TriggerDraft {
             workflow: "missing.json".to_owned(),
-            ..draft(Some(REPLACEMENT_ENVIRONMENT), 15)
+            ..draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 15)
         },
-        draft(Some("LINEAR-API-KEY"), 15),
-        draft(Some(REPLACEMENT), 15),
-        draft(None, 15),
+        draft(home.path(), Some("LINEAR-API-KEY"), 15),
+        draft(home.path(), Some(REPLACEMENT), 15),
+        draft(home.path(), None, 15),
     ];
     for invalid in invalid_updates {
         let result = triggers::update(
             home.path(),
             &entry.slug,
-            &snapshot(&entry.slug, 15),
+            &snapshot(home.path(), &entry.slug, 15),
             invalid,
         );
         let error = result.expect_err("an invalid Edit was accepted");
@@ -489,7 +499,7 @@ fn edit_migrates_a_fresh_manual_key_and_refuses_schema_change() -> Result<(), Bo
     let id = fixed_id(41);
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(REPLACEMENT_ENVIRONMENT), 15),
+        draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 15),
         || id,
         |_, _| Ok(()),
     )?;
@@ -505,8 +515,8 @@ fn edit_migrates_a_fresh_manual_key_and_refuses_schema_change() -> Result<(), Bo
     let schema_conflict = triggers::update(
         home.path(),
         &entry.slug,
-        &snapshot(&entry.slug, 15),
-        draft(Some(REPLACEMENT_ENVIRONMENT), 5),
+        &snapshot(home.path(), &entry.slug, 15),
+        draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 5),
     );
     assert!(matches!(
         schema_conflict,
@@ -524,19 +534,19 @@ fn edit_migrates_a_fresh_manual_key_and_refuses_schema_change() -> Result<(), Bo
         "source": "linear",
         "enabled": true,
         "workflow": "linear.json",
-        "workspace": workspace(),
+        "workspace": workspace(home.path()),
         "condition": "assigned-to-me",
         "poll_every_minutes": 15,
         "api_key": KEY,
     }))?;
     fs::write(&path, key_only)?;
-    let mut legacy_snapshot = snapshot(&entry.slug, 15);
+    let mut legacy_snapshot = snapshot(home.path(), &entry.slug, 15);
     legacy_snapshot.key_saved = true;
     let migrated_manual_key = triggers::update(
         home.path(),
         &entry.slug,
         &legacy_snapshot,
-        draft(Some(ENVIRONMENT), 5),
+        draft(home.path(), Some(ENVIRONMENT), 5),
     )?;
     assert_eq!(migrated_manual_key.poll_every_minutes, Some(5));
     assert!(
@@ -558,7 +568,7 @@ fn edit_refuses_a_stale_snapshot_symlink_and_directory() -> Result<(), Box<dyn E
     let id = fixed_id(42);
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(REPLACEMENT_ENVIRONMENT), 5),
+        draft(home.path(), Some(REPLACEMENT_ENVIRONMENT), 5),
         || id,
         |_, _| Ok(()),
     )?;
@@ -579,8 +589,8 @@ fn edit_refuses_a_stale_snapshot_symlink_and_directory() -> Result<(), Box<dyn E
     let conflict = triggers::update(
         home.path(),
         &entry.slug,
-        &snapshot(&entry.slug, 5),
-        draft(Some(ENVIRONMENT), 15),
+        &snapshot(home.path(), &entry.slug, 5),
+        draft(home.path(), Some(ENVIRONMENT), 15),
     );
     assert!(matches!(conflict, Err(TriggerError::ConfigChanged)));
     assert_eq!(
@@ -601,8 +611,8 @@ fn edit_refuses_a_stale_snapshot_symlink_and_directory() -> Result<(), Box<dyn E
     let linked = triggers::update(
         home.path(),
         linked_slug,
-        &snapshot(linked_slug, 1),
-        draft(Some(ENVIRONMENT), 5),
+        &snapshot(home.path(), linked_slug, 1),
+        draft(home.path(), Some(ENVIRONMENT), 5),
     );
     assert!(matches!(linked, Err(TriggerError::NotRegularConfig)));
     assert_eq!(fs::read(&victim)?, b"outside");
@@ -616,8 +626,8 @@ fn edit_refuses_a_stale_snapshot_symlink_and_directory() -> Result<(), Box<dyn E
     let directory = triggers::update(
         home.path(),
         directory_slug,
-        &snapshot(directory_slug, 1),
-        draft(Some(ENVIRONMENT), 5),
+        &snapshot(home.path(), directory_slug, 1),
+        draft(home.path(), Some(ENVIRONMENT), 5),
     );
     assert!(matches!(directory, Err(TriggerError::NotRegularConfig)));
     Ok(())
@@ -629,7 +639,7 @@ fn conflict_seam_keeps_a_manual_change_byte_for_byte() -> Result<(), Box<dyn Err
     let id = fixed_id(50);
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(home.path(), Some(ENVIRONMENT), 1),
         || id,
         |_, _| Ok(()),
     )?;
@@ -641,8 +651,8 @@ fn conflict_seam_keeps_a_manual_change_byte_for_byte() -> Result<(), Box<dyn Err
     let result = triggers::update_with(
         home.path(),
         &entry.slug,
-        &snapshot(&entry.slug, 1),
-        draft(Some(ENVIRONMENT), 5),
+        &snapshot(home.path(), &entry.slug, 1),
+        draft(home.path(), Some(ENVIRONMENT), 5),
         |stage, _| {
             if stage == EditorStage::BeforeCompare {
                 fs::write(&path, &manual)?;
@@ -668,7 +678,7 @@ fn trigger_root_links_are_refused_and_crash_temps_have_one_safe_reader()
     )?;
     let result = triggers::create_with(
         linked_home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(linked_home.path(), Some(ENVIRONMENT), 1),
         || fixed_id(60),
         |_, _| Ok(()),
     );
@@ -740,7 +750,7 @@ fn recovery_waits_for_the_slug_that_owns_an_active_ledger_temp() -> Result<(), B
     let home = home_with_workflow()?;
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(home.path(), Some(ENVIRONMENT), 1),
         || fixed_id(62),
         |_, _| Ok(()),
     )?;
@@ -808,7 +818,7 @@ fn recovery_accepts_a_ledger_temp_published_after_candidate_discovery() -> Resul
     let home = home_with_workflow()?;
     let entry = triggers::create_with(
         home.path(),
-        draft(Some(ENVIRONMENT), 1),
+        draft(home.path(), Some(ENVIRONMENT), 1),
         || fixed_id(63),
         |_, _| Ok(()),
     )?;

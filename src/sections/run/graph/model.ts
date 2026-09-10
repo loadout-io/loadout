@@ -231,9 +231,8 @@ function nameOf(plan: Plan, id: string): string {
  * mieszka na pasku loadoutu i nigdzie indziej (niezmiennik 13). Druga jej kopia na kafelku
  * dawałaby dwa liczniki jednego faktu, w dwóch miejscach, aktualizowane osobno.
  *
- * Trzy zdania, bo trzy różne fakty: nikt przede mną, jeden krok przede mną, kilka kroków
- * przede mną. Jedno „reads N handoffs" dla wszystkich trzech kłamie na pierwszym kroku
- * każdego biegu, a nazwanie trzech poprzedników po imieniu nie mieści się w kafelku.
+ * 2026-09-10: pokazujemy nazwy poprzedników zamiast liczby przekazań. Człowiek widzi,
+ * na czyją pracę czeka ten krok; strzałki powrotu pętli nie tworzą nowego poprzednika.
  */
 export function measureOf(step: GraphStep, plan: Plan): Measure {
   const incoming = plan.links.filter((link) => link.to === step.id && link.max_turns === undefined);

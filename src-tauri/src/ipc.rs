@@ -1798,9 +1798,20 @@ impl AppState {
     /// Jeden korzeń dla katalogów, edytorów i uruchomień. Brak katalogu oznacza
     /// pusty projekt; nie jest powodem do odczytania biblioteki innego projektu.
     pub async fn library_for(&self, folder: Option<&str>) -> Result<PathBuf, String> {
-        self.project_for(folder)
+        self.project_and_library_for(folder)
             .await
-            .map(|project| crate::library::project_root(&project))
+            .map(|(_, library)| library)
+    }
+
+    // 2026-09-10: komendy potrzebujące obu korzeni muszą dostać tę samą sprawdzoną
+    // tożsamość projektu; nie rozstrzygają ponownie katalogu po rozpoczęciu operacji.
+    async fn project_and_library_for(
+        &self,
+        folder: Option<&str>,
+    ) -> Result<(PathBuf, PathBuf), String> {
+        let project = self.project_for(folder).await?;
+        let library = crate::library::project_root(&project);
+        Ok((project, library))
     }
 
     /// Ten sam rejestr, z którego korzystają mosty wszystkich rozmów tej aplikacji.
@@ -2811,11 +2822,10 @@ pub async fn propose_eval_cases(
     set: &str,
     agent: &str,
 ) -> Result<commands::lab::ProposedWire, String> {
-    let project = state
-        .project_for(folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    let home = crate::library::project_root(&project);
     commands::lab::propose_cases_inner(
         &home,
         &state.drivers,
@@ -2838,11 +2848,10 @@ pub async fn propose_eval_fix(
     set: &str,
     agent: &str,
 ) -> Result<commands::lab::FixWire, String> {
-    let project = state
-        .project_for(folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    let home = crate::library::project_root(&project);
     commands::lab::propose_fix_inner(
         &home,
         &state.drivers,
@@ -3045,11 +3054,10 @@ pub async fn preview_eval_run(
     set: &str,
     expected_revision: Option<&str>,
 ) -> Result<commands::lab::PreviewRun, String> {
-    let project = state
-        .project_for(folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
-    let home = crate::library::project_root(&project);
     commands::lab::preview_run_inner(&home, &project, set, expected_revision, &state.drivers)
         .await
         .map_err(|error| error.to_string())
@@ -3079,13 +3087,12 @@ pub async fn run_eval_set(
     approval: EvalApproval,
     lines: Channel<Vec<Line>>,
 ) -> Result<(), String> {
-    let project = state
-        .project_for(folder.as_deref())
+    let (project, library) = state
+        .project_and_library_for(folder.as_deref())
         .await
         .inspect_err(refused)?;
     let planned = {
         let at = project.clone();
-        let library = crate::library::project_root(&project);
         let set = set.to_owned();
         let expected_revision = approval.revision;
         let expected_sources = approval.sources;
@@ -3205,8 +3212,7 @@ pub async fn list_workflows(
     state: State<'_, AppState>,
     folder: Option<String>,
 ) -> Result<Vec<Definition<commands::workflows::WorkflowEntry>>, String> {
-    let project = state.project_for(folder.as_deref()).await?;
-    let home = crate::library::project_root(&project);
+    let (project, home) = state.project_and_library_for(folder.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         commands::workflows::list_workflow_definitions_inner(&home, Some(&project))
     })
@@ -3222,9 +3228,8 @@ pub async fn load_workflow(
     file_name: &str,
     folder: Option<String>,
 ) -> Result<commands::workflows::OpenWorkflow, String> {
-    let project = state.project_for(folder.as_deref()).await?;
+    let (project, home) = state.project_and_library_for(folder.as_deref()).await?;
     let file_name = file_name.to_owned();
-    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
         commands::workflows::load_workflow_inner(&home, Some(&project), &file_name)
     })
@@ -3245,10 +3250,9 @@ pub async fn save_workflow(
     expected_revision: Option<&str>,
     folder: Option<String>,
 ) -> Result<String, String> {
-    let project = state.project_for(folder.as_deref()).await?;
+    let (project, home) = state.project_and_library_for(folder.as_deref()).await?;
     let file_name = file_name.to_owned();
     let expected_revision = expected_revision.map(str::to_owned);
-    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
         commands::workflows::save_workflow_inner(
             &home,
@@ -3271,9 +3275,8 @@ pub async fn delete_workflow(
     file_name: &str,
     folder: Option<String>,
 ) -> Result<(), String> {
-    let project = state.project_for(folder.as_deref()).await?;
+    let (project, home) = state.project_and_library_for(folder.as_deref()).await?;
     let file_name = file_name.to_owned();
-    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
         commands::workflows::delete_workflow_inner(&home, Some(&project), &file_name)
     })
@@ -3370,11 +3373,10 @@ pub async fn install_skill(
     landing: commands::skills::Landing,
     folder: Option<&str>,
 ) -> Result<(), String> {
-    let project = state.project_for(folder).await?;
+    let (project, home) = state.project_and_library_for(folder).await?;
     if matches!(landing, commands::skills::Landing::Everywhere) {
         return Err("Skills belong to this project. Choose This project.".to_owned());
     }
-    let home = crate::library::project_root(&project);
     // Rozbiór, a nie `item.name`: z całego przeglądu Rust bierze WYŁĄCZNIE nazwę, bo bajty do
     // zapisania czyta z kopii kanonicznej — z tych samych, które przeskanował i pokazał
     // człowiekowi. Ten jeden wiersz mówi to wprost i nie da się go przeczytać inaczej.
@@ -3444,8 +3446,7 @@ pub async fn list_skills(
     folder: Option<&str>,
     names: Option<Vec<String>>,
 ) -> Result<Vec<commands::skills::InstalledWire>, String> {
-    let project = state.project_for(folder).await?;
-    let home = crate::library::project_root(&project);
+    let (project, home) = state.project_and_library_for(folder).await?;
     // Ten sam sąd nad folderem, co przy zapisie i przy Starcie biegu (`project_folder`).
     // Lista czytana z folderu, którego nie ma, jest pustą listą — czyli zdaniem „nic tam nie
     // leży" o katalogu, o który nikt nie umiał zapytać.
@@ -3498,11 +3499,10 @@ pub async fn delete_skill(
     landing: commands::skills::Landing,
     folder: Option<&str>,
 ) -> Result<(), String> {
-    let project = state.project_for(folder).await?;
+    let (project, home) = state.project_and_library_for(folder).await?;
     if matches!(landing, commands::skills::Landing::Everywhere) {
         return Err("Skills belong to this project. Choose This project.".to_owned());
     }
-    let home = crate::library::project_root(&project);
     // Ten sam sąd nad folderem, co przy zapisie: zdjęcie „z tego projektu" z folderu, którego
     // nie ma, jest odmową o folderze, a nie o umiejętności — i to jest zdanie, po którym
     // człowiek wie, co zrobić.
@@ -3877,8 +3877,7 @@ pub async fn build_context(
     app: Option<crate::library::agents::Vendor>,
     model: Option<String>,
 ) -> Result<crate::context::ContextBuildRead, String> {
-    let project = state.project_for(folder.as_deref()).await?;
-    let library = crate::library::project_root(&project);
+    let (project, library) = state.project_and_library_for(folder.as_deref()).await?;
     let (cancel, generation) =
         state.begin_context_build_in(&library, &set_id, &operation_id, app, model.as_deref())?;
     // 2026-09-08 — TEN ODCZYT SZEDL NA WATKU, NA KTORYM TAURI ZAWOLALO KOMENDE, i ten sam
@@ -3927,8 +3926,7 @@ pub async fn read_context_build(
     folder: Option<String>,
     set_id: String,
 ) -> Result<crate::context::ContextBuildRead, String> {
-    let project = state.project_for(folder.as_deref()).await?;
-    let library = crate::library::project_root(&project);
+    let library = state.library_for(folder.as_deref()).await?;
     let live = state.context_build_owner_in(&library, &set_id);
     commands::context_build::read_context_build_inner(
         &library,
@@ -3949,8 +3947,7 @@ pub async fn stop_context_build(
     set_id: String,
     operation_id: String,
 ) -> Result<crate::context::ContextBuild, String> {
-    let project = state.project_for(folder.as_deref()).await?;
-    let library = crate::library::project_root(&project);
+    let library = state.library_for(folder.as_deref()).await?;
     let (cancel, generation) = state
         .context_build_cancel_in(&operation_id)
         .ok_or_else(|| "That context build is not running now.".to_owned())?;
@@ -4273,11 +4270,10 @@ pub async fn list_notes(
     state: State<'_, AppState>,
     catalog_folder: Option<String>,
 ) -> Result<Vec<commands::memory::NoteWire>, String> {
-    let project = state
-        .project_for(catalog_folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(catalog_folder.as_deref())
         .await
         .inspect_err(refused)?;
-    let home = crate::library::project_root(&project);
     tokio::task::spawn_blocking(move || {
         let library_root = commands::memory::notes_root(&home);
         commands::memory::list_notes_for_project_inner(&library_root, &project)
@@ -4295,18 +4291,17 @@ pub async fn put_note_to_use(
     place: commands::memory::NotePlace,
     id: String,
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
-    let project = state
-        .project_for(catalog_folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(catalog_folder.as_deref())
         .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let home = crate::library::project_root(&project);
-    if place != commands::memory::NotePlace::Project {
-        return Err(commands::memory::NoteRefusal::Said(
-            "Import this note into the project first.".to_owned(),
-        ));
-    }
     let address = commands::memory::NoteAddress { place, id };
     tokio::task::spawn_blocking(move || {
+        if place != commands::memory::NotePlace::Project {
+            return Err(commands::memory::NoteRefusal::Said(
+                "Import this note into the project first.".to_owned(),
+            ));
+        }
         let library_root = commands::memory::notes_root(&home);
         commands::memory::put_addressed_note_to_use_inner(
             &library_root,
@@ -4329,18 +4324,17 @@ pub async fn stop_using_note(
     place: commands::memory::NotePlace,
     id: String,
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
-    let project = state
-        .project_for(catalog_folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(catalog_folder.as_deref())
         .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let home = crate::library::project_root(&project);
-    if place != commands::memory::NotePlace::Project {
-        return Err(commands::memory::NoteRefusal::Said(
-            "Import this note into the project first.".to_owned(),
-        ));
-    }
     let address = commands::memory::NoteAddress { place, id };
     tokio::task::spawn_blocking(move || {
+        if place != commands::memory::NotePlace::Project {
+            return Err(commands::memory::NoteRefusal::Said(
+                "Import this note into the project first.".to_owned(),
+            ));
+        }
         let library_root = commands::memory::notes_root(&home);
         commands::memory::stop_using_addressed_note_inner(
             &library_root,
@@ -4367,18 +4361,17 @@ pub async fn discard_note(
     place: commands::memory::NotePlace,
     id: String,
 ) -> Result<Vec<commands::memory::NoteWire>, commands::memory::NoteRefusal> {
-    let project = state
-        .project_for(catalog_folder.as_deref())
+    let (project, home) = state
+        .project_and_library_for(catalog_folder.as_deref())
         .await
         .map_err(commands::memory::NoteRefusal::Said)?;
-    let home = crate::library::project_root(&project);
-    if place != commands::memory::NotePlace::Project {
-        return Err(commands::memory::NoteRefusal::Said(
-            "Import this note into the project first.".to_owned(),
-        ));
-    }
     let address = commands::memory::NoteAddress { place, id };
     tokio::task::spawn_blocking(move || {
+        if place != commands::memory::NotePlace::Project {
+            return Err(commands::memory::NoteRefusal::Said(
+                "Import this note into the project first.".to_owned(),
+            ));
+        }
         let library_root = commands::memory::notes_root(&home);
         commands::memory::discard_addressed_note_inner(
             &library_root,

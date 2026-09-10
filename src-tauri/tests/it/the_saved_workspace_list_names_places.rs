@@ -149,9 +149,9 @@ fn a_trigger_frozen_with_an_older_spelling_still_names_its_project() -> Result<(
     let link = home.path().join("project-link");
     std::os::unix::fs::symlink(real.path(), &link)?;
     fs::create_dir_all(home.path().join("triggers"))?;
-    fs::create_dir_all(home.path().join("workflows"))?;
+    fs::create_dir_all(real.path().join(".loadout/workflows"))?;
     fs::write(
-        home.path().join("workflows/ship.json"),
+        real.path().join(".loadout/workflows/ship.json"),
         br#"{
   "format": 1,
   "id": "wf_ship",

@@ -209,10 +209,9 @@ fn removing_from_the_project_takes_both_project_copies_and_leaves_the_global_one
 
     assert_eq!(
         listed(&world.library, Some(&world.project)),
-        vec![NAME.to_owned(), SOMEBODY_ELSES.to_owned()],
-        "after the project copy is gone the list read from disk no longer carries '{NAME}' at \
-         all, and the global copy is still on disk. The list is read back from the folders after \
-         every remove precisely so that a row disappears only when the file really did"
+        vec![SOMEBODY_ELSES.to_owned()],
+        "the removed project skill must disappear from this project's list; the global copy \
+         remains on disk but does not belong to this project"
     );
 }
 

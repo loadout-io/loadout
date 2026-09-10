@@ -358,18 +358,28 @@ fn a_skill_that_install_wrote_comes_back_from_the_directory_and_not_from_memory(
          it must not carry that marker. Answer: {both:?}"
     );
 
-    // 4. Nie ma tu żadnej pamięci: zdejmujemy katalogi z dysku i lista pustoszeje. Bez tego kroku
-    //    kryterium przechodziłoby też na implementacji, która odpowiada z tego, co zapamiętała
-    //    przy instalacji — czyli na dokładnie tej wadzie, którą to zadanie naprawia.
+    // 4. 2026-09-10: biblioteka przechowuje też własną kopię do jawnego importu.
+    //    Usunięcie kopii vendorów nie usuwa tej kopii, ale po zdjęciu WSZYSTKICH plików
+    //    lista musi być pusta — inaczej odpowiadałaby z pamięci zamiast z dysku.
     for dir in vendor_dirs(home.path()) {
         if dir.exists() {
             fs::remove_dir_all(&dir).unwrap();
         }
     }
+    let canonical = list_skills_in(&library, None).expect("the library copy still exists");
+    assert_eq!(
+        canonical
+            .iter()
+            .map(|one| one.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![FROM_THE_LINK],
+        "removing vendor copies must leave the canonical library copy visible"
+    );
+    fs::remove_dir_all(library.join("skills").join(FROM_THE_LINK)).unwrap();
     let gone = list_skills_in(&library, None).expect("an emptied directory is not a failure");
     assert!(
         gone.is_empty(),
-        "the agent directories are empty and the read path still answered {gone:?}. It is \
+        "the library and agent directories are empty and the read path still answered {gone:?}. It is \
          answering from something it remembered, so the screen would go on showing a skill that \
          no agent can load"
     );

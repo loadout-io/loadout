@@ -178,8 +178,8 @@ describe('miara na czwartej linii', () => {
     ],
   };
 
-  it('counts the handovers when more than one step feeds this one', () => {
-    expect(measureOf(step('sum'), many).waits).toBe('reads 3 handoffs');
+  it('names the preceding steps when more than one feeds this one', () => {
+    expect(measureOf(step('sum'), many).waits).toBe('after a, b, c');
   });
 
   it('names the single step before this one, never its key', () => {
