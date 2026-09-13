@@ -344,6 +344,16 @@ const WIRES: readonly Wire[] = [
     given: ['op-1'],
     call: () => agents.stopGenerating('op-1'),
   },
+  /* 2026-09-13 — POŁĄCZENIA, Z KTÓRYMI STARTUJE NOWY AGENT. Dopisane, nic nie usunięte. Folder
+   * jedzie, bo biblioteką projektu jest wyłącznie `<projekt>/.loadout`: krawędź, która by go
+   * zgubiła, siałaby połączenia katalogu, pod którym wstała aplikacja. */
+  {
+    where: 'agents',
+    what: 'connectionsHere',
+    command: 'list_connections',
+    given: [FOLDER],
+    call: () => agents.connectionsHere(FOLDER),
+  },
   /* 2026-09-07 (CT-01) — CZTERY KRAWĘDZIE SEKCJI CONTEXT, dopisane, nic nie usunięte. Bez nich
    * pierwszy test wyżej jest czerwony, bo `context/io.ts` eksportuje te cztery funkcje,
    * a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył docierającej do Rusta.

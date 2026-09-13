@@ -49,6 +49,10 @@ const FILLED = {
   tools: 'everything',
   reachesTheWeb: true,
   skills: [],
+  /* PUSTO, CHOĆ NOWY AGENT STARTUJE OD 2026-09-13 Z POŁĄCZENIAMI PROJEKTU (`blankAgent`
+   * w `./index.tsx`) — jedyny wyjątek od „tej samej wartości" z akapitu wyżej. To jest naprawa
+   * pliku, któremu zabrakło klucza, a nie nowa rola: plik bez `connections` nie ma po cichu
+   * dostać każdego połączenia biblioteki, bo nikt ich przy nim nie wybierał. */
   connections: [],
   writeResultsTo: '',
 } as const satisfies Omit<Agent, 'id'>;
@@ -98,6 +102,31 @@ export async function listDefinitions(
 ): Promise<Definition<Agent>[]> {
   const listed = await invoke<(Definition<Agent> | Agent)[]>('list_agents', { folder });
   return listed.map(whole) as Definition<Agent>[];
+}
+
+/**
+ * Nazwy połączeń WŁĄCZONYCH w bibliotece tego projektu — albo `null`, kiedy tego nie wiadomo.
+ *
+ * 2026-09-13 — z tej listy startuje nowy agent (`blankAgent` w `./index.tsx`) i trzej gotowi
+ * z pierwszego ekranu (`../run/starters.ts`). Rust oddaje ten sam zbiór, który przyjmuje Start
+ * i który dostaje generator z opisu (`runtime::enabled_names`), więc okno niczego tu nie odsiewa.
+ *
+ * KSZTAŁT SPRAWDZANY TUTAJ, a nie u czytelników: `invoke<T>` jest rzutowaniem, a odpowiedź
+ * zapisana do stanu bez sprawdzenia zdjęła 2026-09-07 dwa ekrany przez granicę ekranu. Odmowa
+ * i każdy inny kształt dają `null`, czyli „nie wiem" — nigdy `[]`, bo pusta lista znaczy
+ * „policzone i zero", a na to jedno sekcja Agents ma zdanie (`more-settings.tsx`).
+ */
+export async function connectionsHere(
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<readonly string[] | null> {
+  try {
+    const listed: unknown = await invoke('list_connections', { folder });
+    if (!Array.isArray(listed)) return null;
+    const names: unknown[] = listed;
+    return names.every((one): one is string => typeof one === 'string') ? names : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Callery poza ekranem Agents potrzebują tylko zdrowych zapisanych agentów. */

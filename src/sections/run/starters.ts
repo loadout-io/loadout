@@ -30,7 +30,7 @@ import { why } from '../../ipc/why';
 import type { Agent } from '../../state/agents';
 import { VENDORS } from '../agents/agent-form';
 import { capability } from '../agents/capabilities';
-import { newId, save } from '../agents/io';
+import { connectionsHere, newId, save } from '../agents/io';
 import { oneMoreAgentIsSaved } from './whats-ready';
 
 /** Wszystko, co ten moduł robi poza swoją głową. Jedna atrapa w kryterium zastępuje całość. */
@@ -39,6 +39,8 @@ export interface StarterIo {
   newId(): Promise<string>;
   /** `expectedRevision` to rewizja pliku, którą znamy; `null` znaczy „tego pliku ma nie być". */
   save(agent: Agent, expectedRevision: string | null): Promise<string>;
+  /** Połączenia włączone w bibliotece projektu; `null`, kiedy tego nie wiadomo. */
+  connections(): Promise<readonly string[] | null>;
 }
 
 export interface Starter {
@@ -53,7 +55,7 @@ export interface Starter {
   readonly take: () => Promise<boolean>;
 }
 
-const DISK: StarterIo = { newId, save };
+const DISK: StarterIo = { newId, save, connections: connectionsHere };
 
 /* Granica, do której piszą przyciski. Podmienialna WYŁĄCZNIE przez `starterWritesTo`, bo
  * kryterium ma zobaczyć, co naprawdę dojechało do zapisu, a nie uwierzyć, że coś dojechało. */
@@ -81,7 +83,11 @@ export function starterWritesTo(io: StarterIo): () => void {
  * plikowego, więc nie zmienia tego, co któremuś z nich wolno zrobić z kodem.
  */
 
-/** Wspólne pola trójki — wszystko, czego ten wybór NIE dotyczy. */
+/** Wspólne pola trójki — wszystko, czego ten wybór NIE dotyczy.
+ *
+ * `connections` zostaje tu PUSTE i to nie jest to, co jedzie na dysk: połączenia projektu
+ * dopisuje `takeStarter` w chwili naciśnięcia (2026-09-13), bo stała modułu nie wie, w którym
+ * projekcie człowiek naciśnie kartę. */
 const SHARED = {
   schema: 1,
   id: '',
@@ -241,8 +247,14 @@ export function forgetStarters(): void {
 export async function takeStarter(agent: Agent): Promise<boolean> {
   tell({ busy: agent.name, landed: null, said: null });
   try {
+    /* POŁĄCZENIA CZYTANE W CHWILI NACIŚNIĘCIA, 2026-09-13 — ta sama lista, z którą startuje
+     * `＋ Create` w Agents (`blankAgent`), i z tego samego powodu: gotowy agent bez połączeń
+     * projektu pracuje bez nich, a człowiek dowiaduje się o tym dopiero po biegu. Nieudany
+     * odczyt daje pustą listę i nie mówi nic (niezmiennik 17) — karta ma zapisać agenta,
+     * a nie odmówić z powodu, który nie dotyczy tego, co zapisuje. */
+    const read = await disk.connections();
     const id = await disk.newId();
-    await disk.save({ ...agent, id }, null);
+    await disk.save({ ...agent, id, connections: [...(read ?? [])] }, null);
     oneMoreAgentIsSaved();
     tell({ busy: null, landed: agent.name, said: null });
     return true;

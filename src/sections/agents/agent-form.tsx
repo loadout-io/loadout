@@ -72,6 +72,8 @@ export interface AgentFormProps {
   onChange: (next: Agent) => void;
   onToggleMore: () => void;
   onSave: () => void;
+  /** Otwiera import, kiedy projekt nie ma ani jednego połączenia — trafia pod pole Connections. */
+  onImportConnections?: () => void;
 }
 
 interface Choice<T extends string> {
@@ -211,6 +213,7 @@ export function AgentForm({
   onChange,
   onToggleMore,
   onSave,
+  onImportConnections,
 }: AgentFormProps): ReactElement {
   const [brain, setBrain] = useState(brainOpen ?? false);
   const [advanced, setAdvanced] = useState(advancedOpen ?? false);
@@ -494,7 +497,15 @@ export function AgentForm({
         </div>
       </section>
 
-      {expanded ? <MoreSettings value={value} onChange={onChange} /> : null}
+      {expanded ? (
+        <MoreSettings
+          value={value}
+          onChange={onChange}
+          /* Rozłożenie warunkowe, bo `exactOptionalPropertyTypes` nie przyjmuje jawnego
+             `undefined` w miejscu propsu, którego ma nie być (2026-09-13). */
+          {...(onImportConnections === undefined ? {} : { onImportConnections })}
+        />
+      ) : null}
       {advanced ? <Advanced value={value} onChange={onChange} /> : null}
 
       <div className="stack sticky bottom-0 z-10 border-t border-line bg-solid py-3" data-gap="2">
