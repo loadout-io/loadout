@@ -25,6 +25,16 @@ pub struct ImportReceipt {
     #[serde(default)]
     pub files: BTreeMap<PathBuf, ImportedFileReceipt>,
     pub enabled_connections: Vec<String>,
+    /// Agenci, którym ten import dopisał nazwy połączeń — pusto, kiedy nie dopisał nikomu.
+    ///
+    /// 2026-09-14 — KOPIA W `imports/<id>.json` NIE NIESIE ANI JEDNEGO WPISU i to jest własność,
+    /// nie przeoczenie: przebieg po agentach, którzy leżeli w bibliotece przed tym importem,
+    /// biegnie dopiero PO atomowym przeniesieniu, czyli po tym, jak ten plik został już zapisany.
+    /// Paragon na dysku opisuje więc to, co import przeniósł; lista niżej jedzie do okna, które
+    /// na odpowiedź czeka. `#[serde(default)]`, bo paragon zapisany przed tym dniem tego klucza
+    /// nie ma, a jego brak znaczy dokładnie „nikomu niczego nie dopisano".
+    #[serde(default)]
+    pub filled_agents: Vec<crate::connections::fill::FilledAgent>,
     pub vendor_configurations: crate::connections::runtime::VendorConfigurations,
 }
 
@@ -157,6 +167,8 @@ fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<I
         written,
         files,
         enabled_connections,
+        // Pusto: kto co dostał, wie dopiero `commands::import`, po przeniesieniu plików.
+        filled_agents: Vec::new(),
         vendor_configurations: crate::connections::runtime::for_connections(&draft.connections),
     };
     write_json(&stage.join(&receipt_path), &receipt)?;

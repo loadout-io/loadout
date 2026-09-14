@@ -90,7 +90,12 @@ describe('Import setup', () => {
         initialPreview={preview}
         io={{
           scanSetup: async () => preview,
-          applySetup: async () => ({ id: 'receipt', written: [], enabledConnections: [] }),
+          applySetup: async () => ({
+            id: 'receipt',
+            written: [],
+            enabledConnections: [],
+            filledAgents: [],
+          }),
           /* Ten test nie pyta o porównanie kopii — ale `ImportIo` jest zbiorem zamkniętym,
              więc literał bez tych dwóch pól nie przechodzi `web-types`. Odpowiedź „nikt tego
              nie zawołał" jest tu uczciwsza niż udawana druga opinia. */
@@ -103,7 +108,10 @@ describe('Import setup', () => {
     );
     expect(html).toContain('Exact');
     expect(html).toContain('Needs a choice');
-    expect(html).toContain('Connections stay off unless you enable them');
+    /* 2026-09-14: brzmienie zmieniło się razem z regułą. Twoje własne połączenia startują
+       zaznaczone, więc zdanie „stay off unless you enable them" było prawdziwe dla połowy
+       listy — a stoi nad ptaszkami, które mówią co innego. */
+    expect(html).toContain('Your own connections start on, the project’s stay off');
     expect(html).toContain('disabled=""');
     expect(html).toContain('Choose how to reproduce this routine.');
     expect(html).toContain('Import without this behavior');

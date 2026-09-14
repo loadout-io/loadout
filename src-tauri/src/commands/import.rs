@@ -15,11 +15,12 @@ use crate::commands::skills::{
     Ended, MAY_STILL_BE_RUNNING, give_up_after, off_the_wire, one_turn, some_text,
     the_agent_saved_as,
 };
+use crate::connections::fill;
 use crate::engine::drivers::{AgentHandle, DecodedEvent, FinishReason, Policy, RunSpec};
 use crate::engine::supervisor::GroupProof;
 use crate::import::apply::ImportReceipt;
 use crate::import::compare::{self, Comparison};
-use crate::import::{Compatibility, ImportError, ImportPreview, Result};
+use crate::import::{Compatibility, ImportError, ImportPreview, MigrationDraft, Result};
 use crate::library::agents::{Overrides, resolve};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,8 +148,58 @@ pub fn apply_setup_inner(
     for connection in &mut preview.draft.connections {
         connection.enabled = requested.contains(connection.id.as_str());
     }
-    crate::import::translate::refresh_statuses(&mut preview.draft);
-    crate::import::apply::apply(home, &preview.draft)
+    apply_with_the_agents_filled_in(home, &mut preview.draft)
+}
+
+/// Zapisuje plan i rozdaje nazwy włączonych połączeń agentom, którzy nie wymieniali żadnego.
+///
+/// # Dlaczego dopiero tutaj, a nie przy skanie
+///
+/// 2026-09-14 — bo nazwa dopisana agentowi przy skanie staje się jego ZALEŻNOŚCIĄ
+/// (`translate::dependencies_for` robi z niej `connection:<nazwa>`), a niezaznaczone połączenie
+/// zamienia taki wiersz w pozycję zablokowaną i `apply` odmawia wtedy CAŁOŚCI. Tu, między
+/// ustawieniem `enabled` z zaznaczeń a `refresh_statuses`, plan jest już rozstrzygnięty:
+/// dopełnienie nie ma jak dołożyć wymagania, którego człowiek nie zaznaczył.
+///
+/// Osobna funkcja, bo [`apply_setup_inner`] stoi tuż pod sufitem stu linii (clippy), a ta
+/// kolejność — dopełnij, odśwież statusy, zapisz, dopełnij zastanych — jest tym, co ma być
+/// widoczne z jednego miejsca.
+fn apply_with_the_agents_filled_in(
+    home: &Path,
+    draft: &mut MigrationDraft,
+) -> Result<ImportReceipt> {
+    let brought: Vec<String> = draft
+        .connections
+        .iter()
+        .filter(|connection| connection.enabled)
+        .map(|connection| connection.name.clone())
+        .collect();
+    let mut after = brought.clone();
+    if !after.is_empty() {
+        // Biblioteka mogła mieć włączone połączenia już przed tym importem. Agent przywieziony
+        // z połową listy byłby drugą odpowiedzią na to samo pytanie (niezmiennik 13).
+        after.extend(
+            crate::connections::runtime::enabled_names(&home.join("connections"))
+                .unwrap_or_default(),
+        );
+        after.sort();
+        after.dedup();
+    }
+    let mut filled = Vec::new();
+    for agent in &mut draft.agents {
+        if fill::fill_one(agent, &after) {
+            filled.push(fill::FilledAgent::of(agent));
+        }
+    }
+    crate::import::translate::refresh_statuses(draft);
+    let mut receipt = crate::import::apply::apply(home, draft)?;
+    receipt.filled_agents = filled;
+    // Agenci zapisani przed tym importem idą PO przeniesieniu plików: dopiero teraz katalog
+    // `connections/` niesie to, co ten przebieg wniósł.
+    receipt
+        .filled_agents
+        .extend(fill::fill_saved(home, &brought));
+    Ok(receipt)
 }
 
 // ── PORÓWNANIE KOPII ───────────────────────────────────────────────────────────────────────
