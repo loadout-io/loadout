@@ -128,6 +128,39 @@ mechanizm, nie tylko zdanie — to była cała wada, którą Q-5 opisywało.
 
 ---
 
+## Q-9 — pełne CI myli się raz na dwa przebiegi, na dwóch testach wrażliwych na czas
+
+**Zmierzone 2026-09-13/14, podczas wydania 0.6.0**, na pięciu przebiegach `scripts/ci.sh full`
+na `main`, bez żadnej zmiany w kodzie między czerwonym a zielonym:
+
+| przebieg | wynik | co padło |
+|---|---|---|
+| po merge'u `h-conn-seed` | 1 z 1910 | `a_preview_is_ready_before_its_consumer_starts::a_delayed_real_server_is_ready_before_qa_and_its_address_reaches_qa` |
+| powtórka | zielony, 661 s | — |
+| po merge'u `h-conn-import-fill` | 1 z 1913 | `supervisor_timeout_kills::the_deadline_goes_through_the_kill_path_and_not_through_a_dropped_future` |
+| powtórka | zielony, 614 s | — |
+| po merge'u `h-conn-picker` | zielony, 630 s | — |
+
+Każdy z tych dwóch testów przechodzi w izolacji natychmiast: cały moduł podglądu 8/8 w 4,28 s,
+test supervisora 1/1 w 0,44 s. Oba mierzą CZAS przy prawdziwym procesie potomnym i prawdziwym
+gnieździe, a suita ma dziś 1913 testów — pod jej własnym obciążeniem termin, który przy pustej
+maszynie jest z zapasem, bywa przekroczony. Plik podglądu ma już w historii trzy poprawki tej
+samej klasy (`4afee161`, `d23e61cc`, `900d6c7e`), więc to nie jest pojedynczy przypadek.
+
+**Skutek:** `scripts/h land` jest wyrocznią wydania i mówi „czerwone" mniej więcej raz na dwa
+przebiegi, a orchestrator nie odróżni flaka od wady inaczej niż dziesięcioma minutami powtórki.
+To jest dokładnie ta klasa, która uczy ignorować czerwień.
+
+**Dlaczego NIE zmechanizowane teraz** (niezmiennik 28, punkt po odrzuceniu wszystkich trzech
+dróg): hak ani uprawnienie tu nie pomogą, bo nie ma stanu do naprawienia. Sprawdzenie w
+`checks/` też nie — to sama bramka się myli. Jedyne, co by „zadziałało" od ręki, to ponowienie
+padniętego testu w `scripts/ci.sh`, i tego **nie wolno zrobić**: ponowienie chowa czerwień
+prawdziwą razem z flakiem, czyli rozluźnia bramkę (§5a punkt 4). Poprawka należy do tych dwóch
+testów z osobna — termin wyprowadzony z obciążenia albo szeregowanie ich poza równoległą częścią
+suity — i jest zadaniem na osobny bieg, nie doklejką do wydania.
+
+---
+
 ## Czego świadomie NIE mechanizujemy
 
 **„Jedna komenda na wywołanie Bash".** Kusi, żeby zrobić z tego hak `PreToolUse`, ale hak
