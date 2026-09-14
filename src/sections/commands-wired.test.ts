@@ -354,6 +354,17 @@ const WIRES: readonly Wire[] = [
     given: [FOLDER],
     call: () => agents.connectionsHere(FOLDER),
   },
+  /* 2026-09-14 — TA SAMA KRAWĘDŹ, DRUGIE ZAKOŃCZENIE. `connectionsOf` rzuca odmową Rusta,
+   * `connectionsHere` zamienia ją w `null`; wywołanie komendy jest jedno, bo druga funkcja
+   * woła pierwszą. Wiersz jest tu, bo pierwszy test wyżej porównuje CAŁY eksport modułu —
+   * a picker połączeń czyta właśnie tę połowę, żeby mieć co pokazać po odmowie. */
+  {
+    where: 'agents',
+    what: 'connectionsOf',
+    command: 'list_connections',
+    given: [FOLDER],
+    call: () => agents.connectionsOf(FOLDER),
+  },
   /* 2026-09-07 (CT-01) — CZTERY KRAWĘDZIE SEKCJI CONTEXT, dopisane, nic nie usunięte. Bez nich
    * pierwszy test wyżej jest czerwony, bo `context/io.ts` eksportuje te cztery funkcje,
    * a krawędź bez wiersza jest krawędzią, której nikt nie zobaczył docierającej do Rusta.

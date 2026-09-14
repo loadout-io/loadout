@@ -37,16 +37,25 @@
  * postawiony tutaj byłby drugą kopią polityki, a druga kopia zawsze w końcu mówi co innego
  * (niezmiennik 23).
  *
- * Kontrolki to pola tekstowe z nazwami po przecinku, a nie pickery z makiety
- * (`docs/mockup/index.html:611`: `[ + Add a skill ]`). Picker potrzebuje listy umiejętności
- * z dysku, a ta wchodzi z T-18; przycisk, który otwiera picker, którego nie ma, jest
- * kontrolką bez handlera (niezmiennik 16). Pole tekstowe zapisuje każdą literę i osiąga każdy
- * stan typu — łącznie z `everything`, które jest tu pustym polem, a nie brakiem wartości.
+ * `Tools` i `Skills` to dalej pola tekstowe z nazwami po przecinku, a nie pickery z makiety
+ * (`docs/mockup/index.html:611`: `[ + Add a skill ]`). Picker potrzebuje listy z dysku, a lista
+ * umiejętności wchodzi z T-18; przycisk, który otwiera picker, którego nie ma, jest kontrolką
+ * bez handlera (niezmiennik 16). Pole tekstowe zapisuje każdą literę i osiąga każdy stan typu —
+ * łącznie z `everything`, które jest tu pustym polem, a nie brakiem wartości.
+ *
+ * ══ `Connections` MA JUŻ SWÓJ PICKER — 2026-09-14 ═══════════════════════════════════════════
+ *
+ * Blokada z akapitu wyżej zniknęła dla tego jednego wiersza: `conn-seed` dał oknu nazwy
+ * połączeń WŁĄCZONYCH w bibliotece projektu, więc jest z czego wybierać. Pole tekstowe stąd
+ * ZNIKŁO, nie zeszło pod listę — pole i lista mówiące o tym samym fakcie to dwa żywe regiony
+ * jednego faktu (niezmiennik 13), a to z nich, które przyjmuje literówkę, jest tym gorszym.
+ * Etykieta i jej `id` zostają bez zmian; kontrolkę pod nimi rysuje `./connection-picker.tsx`.
  */
 import type { ReactElement } from 'react';
 import type { Agent, Tools } from '../../state/agents';
 import { Tick } from '../../ui/primitives/tick';
 import { capability } from './capabilities';
+import { ConnectionPicker } from './connection-picker';
 import { SkillSourcePicker } from '../skills/source-picker';
 import { AppPermissions } from './app-permissions';
 
@@ -123,7 +132,9 @@ export function MoreSettings({
 }: MoreSettingsProps): ReactElement {
   const tools = capability('tools', value.runsWith);
   const skills = capability('skills', value.runsWith);
-  const connections = capability('connections', value.runsWith);
+  /* `capability('connections', …)` NIE JEST tu czytane od 2026-09-14. Tabela odpowiada `native`
+     przy OBU aplikacjach, więc obie gałęzie („wygaś" i „podpowiedz") były nieosiągalne, a niosły
+     kopie zdań widocznych niżej. Powód i droga powrotu stoją w nagłówku `./connection-picker.tsx`. */
 
   return (
     /* WEJŚCIE SPRĘŻYNĄ, 2026-08-31 (DESIGN §7): tych wierszy NIE MA w dokumencie, dopóki
@@ -170,22 +181,14 @@ export function MoreSettings({
         <label htmlFor="agent-connections" className="label">
           Connections
         </label>
-        <input
-          id="agent-connections"
-          data-field="connections"
-          className={FIELD}
-          value={value.connections.join(', ')}
-          placeholder="None"
-          disabled={connections === 'unavailable'}
-          title={connections === 'approximate' ? APPROXIMATE : undefined}
-          aria-describedby={
-            onImportConnections === undefined ? undefined : 'agent-connections-where'
-          }
-          onChange={(event) => onChange({ ...value, connections: listOf(event.target.value) })}
+        <ConnectionPicker
+          value={value}
+          onChange={onChange}
+          describedBy={onImportConnections === undefined ? undefined : 'agent-connections-where'}
         />
-        {/* POD POLEM, NIGDY ZAMIAST NIEGO, i tylko z handlerem (niezmiennik 16): bez propsu nie
+        {/* POD LISTĄ, NIGDY ZAMIAST NIEJ, i tylko z handlerem (niezmiennik 16): bez propsu nie
             ma tu ani zdania, ani przycisku. `lead`, nie `label` — tekst w etykiecie stałby się
-            nazwą pola, a wiersze formularza sądzi się po klasie `label`. */}
+            nazwą kontrolki, a wiersze formularza sądzi się po klasie `label`. */}
         {onImportConnections === undefined ? null : (
           <>
             <p id="agent-connections-where" className="lead">

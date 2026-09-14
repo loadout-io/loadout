@@ -105,25 +105,43 @@ export async function listDefinitions(
 }
 
 /**
- * Nazwy połączeń WŁĄCZONYCH w bibliotece tego projektu — albo `null`, kiedy tego nie wiadomo.
+ * Nazwy połączeń WŁĄCZONYCH w bibliotece tego projektu, albo ODMOWA ze zdaniem Rusta.
  *
  * 2026-09-13 — z tej listy startuje nowy agent (`blankAgent` w `./index.tsx`) i trzej gotowi
  * z pierwszego ekranu (`../run/starters.ts`). Rust oddaje ten sam zbiór, który przyjmuje Start
  * i który dostaje generator z opisu (`runtime::enabled_names`), więc okno niczego tu nie odsiewa.
  *
  * KSZTAŁT SPRAWDZANY TUTAJ, a nie u czytelników: `invoke<T>` jest rzutowaniem, a odpowiedź
- * zapisana do stanu bez sprawdzenia zdjęła 2026-09-07 dwa ekrany przez granicę ekranu. Odmowa
- * i każdy inny kształt dają `null`, czyli „nie wiem" — nigdy `[]`, bo pusta lista znaczy
- * „policzone i zero", a na to jedno sekcja Agents ma zdanie (`more-settings.tsx`).
+ * zapisana do stanu bez sprawdzenia zdjęła 2026-09-07 dwa ekrany przez granicę ekranu.
+ *
+ * TA POŁOWA RZUCA, i to jest cały powód, dla którego stoi osobno — 2026-09-14. Picker połączeń
+ * (`./connection-picker.tsx`) pokazuje zdanie, którym Rust odmówił, a [`connectionsHere`] niżej
+ * zamienia KAŻDĄ przyczynę w `null`: przez taką krawędź nie przechodzi ani jedno słowo, więc
+ * człowiek z pustą listą nie wie, czy tu nic nie ma, czy nic się nie przeczytało. Wywołanie
+ * komendy jest dalej JEDNO (niezmiennik 23) — tamta funkcja woła tę.
+ */
+export async function connectionsOf(
+  folder = activeWorkspace()?.folder ?? null,
+): Promise<readonly string[]> {
+  const listed: unknown = await invoke('list_connections', { folder });
+  if (Array.isArray(listed)) {
+    const names: unknown[] = listed;
+    if (names.every((one): one is string => typeof one === 'string')) return names;
+  }
+  throw new Error('This project answered with something that is not a list of connections.');
+}
+
+/**
+ * To samo, ale `null` zamiast odmowy — dla czytelników, którzy mają na `null` własne zdanie.
+ *
+ * `null` znaczy „nie wiem" i nigdy `[]`, bo pusta lista znaczy „policzone i zero", a na to jedno
+ * sekcja Agents ma osobne zdanie pod polem (`more-settings.tsx`).
  */
 export async function connectionsHere(
   folder = activeWorkspace()?.folder ?? null,
 ): Promise<readonly string[] | null> {
   try {
-    const listed: unknown = await invoke('list_connections', { folder });
-    if (!Array.isArray(listed)) return null;
-    const names: unknown[] = listed;
-    return names.every((one): one is string => typeof one === 'string') ? names : null;
+    return await connectionsOf(folder);
   } catch {
     return null;
   }
