@@ -205,6 +205,25 @@ pub fn all(root: &Path) -> Result<Vec<Connection>, RuntimeError> {
     Ok(out)
 }
 
+/// Nazwy WŁĄCZONYCH połączeń biblioteki, po nazwie i bez powtórzeń.
+///
+/// 2026-09-13 — JEDNA LISTA NA TRZY PYTANIA (niezmienniki 13 i 23): z nią startuje nowy agent
+/// i trzej gotowi z pierwszego ekranu (komenda `list_connections`), ją dostaje generator agenta
+/// z opisu, i każdą jej nazwę przyjmuje [`selected`]. Do tego dnia generator brał [`all`] po
+/// `id`, więc proponował także połączenia wyłączone — a agent z takim wpisem był odmową Startu
+/// dopiero po zapisie. Filtr stoi tu, a nie u wołających: dwa filtry to dwie odpowiedzi.
+///
+/// `name`, nie `id`, bo nazwę człowiek widzi w polu Connections i nazwą Start szuka w pierwszej
+/// kolejności; identyfikator jest słowem, którego nikt tam nie wpisywał.
+pub fn enabled_names(root: &Path) -> Result<Vec<String>, RuntimeError> {
+    let names: BTreeSet<String> = all(root)?
+        .into_iter()
+        .filter(|one| one.enabled)
+        .map(|one| one.name)
+        .collect();
+    Ok(names.into_iter().collect())
+}
+
 pub fn selected(root: &Path, names: &[String]) -> Result<Vec<Connection>, RuntimeError> {
     if names.is_empty() {
         return Ok(Vec::new());

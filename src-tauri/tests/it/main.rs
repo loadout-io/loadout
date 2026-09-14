@@ -483,6 +483,7 @@ mod t210_handoff_recovery_stays_inside_run_root;
 mod t210_parallel_handoff_writers_keep_their_temps;
 mod t210_private_replace_preserves_fail_closed_guards;
 mod the_dial_tells_the_truth_about_the_shell;
+mod the_enabled_connections_are_one_list;
 mod the_index_says_what_each_file_is;
 mod the_index_stops_copying_the_transcript;
 mod the_lead_can_be_interrupted;

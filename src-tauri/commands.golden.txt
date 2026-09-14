@@ -62,6 +62,7 @@ import_project_setup
 interrupt_the_lead
 list_agent_models
 list_agents
+list_connections
 list_context_sets
 list_eval_sets
 list_handoffs

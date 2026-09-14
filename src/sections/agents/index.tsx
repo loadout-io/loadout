@@ -252,7 +252,7 @@ const SQID =
  * identyfikator wybija mennica po stronie Rusta przy zapisie [T4 §5.1], a nie ekran — i to
  * PUSTE `id` jest umową z magazynem: `store.save` po nim rozpoznaje nowego agenta.
  */
-function blankAgent(taken: number): Agent {
+function blankAgent(taken: number, connections: readonly string[]): Agent {
   return {
     schema: 1,
     id: '',
@@ -276,7 +276,18 @@ function blankAgent(taken: number): Agent {
      * tym najwęższy z trzech: sieć nie daje ani jednego czasownika plikowego. */
     reachesTheWeb: true,
     skills: [],
-    connections: [],
+    /* POŁĄCZENIA TEGO PROJEKTU, NIE PUSTKA — właściciel, 2026-09-11: „domyślnie to powinno
+     * wszystko być wypełnione, zwłaszcza connections, a nie że ja mam sam pisać". Ta sama klasa
+     * wady, co sieć wyżej: do pustej domyślnej trzeba było TRAFIĆ, a jedyną drogą było pole
+     * z nazwami serwerów wpisanymi z pamięci — 26 z 32 jego agentów zostało przy `[]`. Lista
+     * przychodzi z `list_connections`, czyli same włączone połączenia, każde przyjmowane przez
+     * Start. Granica zostaje ta sama: połączenia dają czasowniki narzędzi, a nie ani jednego
+     * czasownika plikowego, więc `fileAccess` wyżej zostaje `look-only`. Cena: pomiar
+     * z sierpnia w `engine/drivers/claude.rs` — 9 serwerów, 73 narzędzia, 36 870 zamiast 4 725
+     * tokenów tworzenia cache'u. Na `claude` 2.1.270 schematy narzędzi tych serwerów czekają
+     * za `ToolSearch` (widziane 2026-09-13), więc tamta cena nie przenosi się 1:1 — a nowej
+     * nikt nie zmierzył. */
+    connections: [...connections],
     writeResultsTo: '',
   };
 }
@@ -367,6 +378,13 @@ export default function AgentsScreen({
    * zdaniem nieprawdziwym — i to jest gorsze niż milczenie, bo wygląda na odpowiedź. */
   const [read, setRead] = useState<Record<string, number> | null>(null);
   const usage = usageProp === undefined ? read : usageProp;
+  /* Nazwy połączeń włączonych w bibliotece tego projektu — z nimi startuje nowa rola
+   * (`blankAgent`). Ta sama trójka stanów, co `read` wyżej: `null` znaczy „NIE WIEM" (odczyt
+   * nie wrócił albo się nie udał) i wtedy nowa rola dostaje puste pole bez słowa (niezmiennik
+   * 17); `[]` znaczy „policzone i zero" i tylko wtedy pod polem stoi, skąd połączenia wziąć.
+   * Licznik obok każe przeczytać je ponownie — po imporcie, który mógł je dopisać. */
+  const [here, setHere] = useState<readonly string[] | null>(null);
+  const [connectionsAsked, askForConnectionsAgain] = useState(0);
 
   useEffect(() => {
     void store.getState().load();
@@ -393,6 +411,18 @@ export default function AgentsScreen({
       live = false;
     };
   }, [usageProp]);
+
+  useEffect(() => {
+    /* `live` z tego samego powodu, co przy `readUsage` wyżej. Odmowy nie łapiemy, bo
+     * `connectionsHere` jej nie rzuca: zamienia ją w `null` na krawędzi (`./io.ts`). */
+    let live = true;
+    void Disk.connectionsHere(folder).then((names) => {
+      if (live) setHere(names);
+    });
+    return () => {
+      live = false;
+    };
+  }, [folder, connectionsAsked]);
 
   /**
    * KTÓRA ROLA STOI W CIELE EKRANU — jedna odpowiedź, trzy źródła, policzona w jednym miejscu.
@@ -444,7 +474,9 @@ export default function AgentsScreen({
     /* Drugie kliknięcie w `＋ Create` NIE kasuje tego, co człowiek zdążył wpisać w nowej roli.
      * Kliknięcie przy otwartej roli ZAPISANEJ zaczyna nową — bo o to właśnie prosi, a szkic
      * tamtej roli nie ma prawa wjechać pod nagłówek „New agent". */
-    setDraft((open) => (open !== null && open.id === '' ? open : blankAgent(state.agents.length)));
+    setDraft((open) =>
+      open !== null && open.id === '' ? open : blankAgent(state.agents.length, here ?? []),
+    );
     setPicked('');
     setExpanded(false);
     setPendingDelete(null);
@@ -993,6 +1025,15 @@ export default function AgentsScreen({
                 onSave={() => {
                   save(standing);
                 }}
+                /* Wyłącznie przy bibliotece policzonej na zero: przy `null` nie wiadomo, czy
+                   połączeń nie ma, więc zdanie „jeszcze nie ma" byłoby zmyślone (2026-09-13). */
+                {...(here !== null && here.length === 0
+                  ? {
+                      onImportConnections: () => {
+                        setImporting(true);
+                      },
+                    }
+                  : {})}
               />
 
               {/* ZDANIE DYSKU POD PRZYCISKIEM, KTÓRY JE WYWOŁAŁ. `AgentForm` kończy się przyciskiem
@@ -1134,6 +1175,9 @@ export default function AgentsScreen({
           onImported={() => {
             setImporting(false);
             void store.getState().load();
+            /* Import mógł dopisać połączenia, więc następna nowa rola ma startować z nimi,
+               a zdanie spod pola Connections ma zejść, kiedy już nie jest prawdą. */
+            askForConnectionsAgain((asked) => asked + 1);
           }}
         />
       ) : null}

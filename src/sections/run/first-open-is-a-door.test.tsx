@@ -275,6 +275,10 @@ describe('the first screen a person ever sees says what to press', () => {
         written.push({ name: agent.name, expected: expectedRevision, id: agent.id });
         return Promise.resolve('rev-1');
       },
+      /* 2026-09-13 — granica urosła o odczyt połączeń projektu. Ten punkt sądzi zapis, nie
+       * połączenia, więc odczyt odpowiada „nie wiem"; połączenia sądzi
+       * `a-starter-agent-gets-the-connections-here.test.tsx`. */
+      connections: () => Promise.resolve(null),
     });
     try {
       const [scout] = STARTERS;

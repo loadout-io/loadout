@@ -1441,8 +1441,11 @@ impl AppState {
             skills: commands::skills::list_skills_in(&home, Some(project))
                 .map(|skills| skills.into_iter().map(|one| one.name).collect())
                 .unwrap_or_default(),
-            connections: crate::connections::runtime::all(&home.join("connections"))
-                .map(|found| found.into_iter().map(|one| one.id).collect())
+            /* 2026-09-13 — WŁĄCZONE, PO NAZWIE: ta sama lista, z którą startuje nowy agent
+             * (`list_connections`) i którą przyjmuje Start. Do tego dnia stało tu `all(…)` po
+             * `id`, więc szkic dostawał także połączenie wyłączone, a Start takiego agenta
+             * odmawiał już po zapisie. Prośba o wyłączone ląduje dziś w `missing`, przed zapisem. */
+            connections: crate::connections::runtime::enabled_names(&home.join("connections"))
                 .unwrap_or_default(),
             services: Vec::new(),
             models: Vec::new(),
@@ -2556,6 +2559,30 @@ pub async fn list_agents(
         .await
         .map_err(|error| did_not_finish("reading the agents you have saved", &error))?
         .map_err(|error| error.to_string())
+}
+
+/// Nazwy połączeń WŁĄCZONYCH w bibliotece tego projektu.
+///
+/// 2026-09-13 — BEZ TEJ KOMENDY OKNO NIE ZNAŁO ANI JEDNEJ NAZWY, więc nowy agent startował
+/// z `connections: []`, a jedyną drogą do wypełnienia było pole tekstowe z nazwami serwerów
+/// wpisanymi z pamięci. Właściciel, 2026-09-11: „domyślnie to powinno wszystko być wypełnione,
+/// zwłaszcza connections, a nie że ja mam sam pisać" — 26 z 32 jego agentów miało tam pustkę.
+///
+/// Biblioteka przez [`AppState::library_for`], czyli wyłącznie `<projekt>/.loadout` (decyzja
+/// z 2026-09-10), a lista z [`crate::connections::runtime::enabled_names`] — tej samej, którą
+/// dostaje generator agenta i której każdą nazwę przyjmuje Start.
+#[tauri::command]
+pub async fn list_connections(
+    state: State<'_, AppState>,
+    folder: Option<String>,
+) -> Result<Vec<String>, String> {
+    let home = state.library_for(folder.as_deref()).await?;
+    tokio::task::spawn_blocking(move || {
+        crate::connections::runtime::enabled_names(&home.join("connections"))
+    })
+    .await
+    .map_err(|error| did_not_finish("reading the connections of this project", &error))?
+    .map_err(|error| error.to_string())
 }
 
 // Import czyta wyłącznie jawnie wskazany, zapisany projekt albo dawną bibliotekę.
@@ -5949,6 +5976,7 @@ macro_rules! every_command_the_window_can_call {
             install_skill,
             interrupt_the_lead,
             list_agents,
+            list_connections,
             preview_project_setup,
             import_project_setup,
             list_context_sets,

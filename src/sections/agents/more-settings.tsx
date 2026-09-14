@@ -53,6 +53,11 @@ import { AppPermissions } from './app-permissions';
 export interface MoreSettingsProps {
   value: Agent;
   onChange: (next: Agent) => void;
+  /**
+   * Otwiera import połączeń. Podany WYŁĄCZNIE wtedy, gdy biblioteka tego projektu na pewno nie
+   * ma ani jednego włączonego połączenia — odczyt się udał i oddał zero (`./index.tsx`).
+   */
+  onImportConnections?: () => void;
 }
 
 /** Jedno zdanie i dokładnie to zdanie [T4 §8.1]. */
@@ -62,6 +67,25 @@ const CODEX_HAS_NO_TOOL_LIST =
 /** Podpowiedź pod kursorem przy polu, które druga aplikacja tłumaczy na najbliższą swoją
  * rzecz [T4 §6.1: przybliżenie to zwykła kontrolka plus jedna linia]. */
 const APPROXIMATE = 'Codex has this, but sets it up its own way.';
+
+/* SKĄD WZIĄĆ POŁĄCZENIA, KIEDY TEN PROJEKT NIE MA ŻADNEGO — 2026-09-13.
+ *
+ * Nowy agent startuje od tego dnia z połączeniami włączonymi w bibliotece projektu, a biblioteka
+ * projektu jest świeża (od 2026-09-10 nie korzysta z domyślnej biblioteki użytkownika) — więc
+ * puste pole bez słowa zostawiało właściciela z pytaniem, skąd te nazwy w ogóle wziąć.
+ *
+ * ZDANIE NAZYWA DWA ŹRÓDŁA, bo żaden z dwóch importów nie prowadzi do obu. `Import setup`
+ * sekcji Agents czyta to, czego Claude Code i Codex używają w folderze (`.mcp.json`,
+ * `~/.claude.json`, serwery Codeksa); `Import setup from project` z przełącznika projektów kopiuje
+ * z innej biblioteki Loadouta, w tym z „Previous shared library", czyli ze starego `~/.loadout`,
+ * gdzie leżą połączenia właściciela. Przycisk otwiera pierwszy, bo to okno tej sekcji: wstaje
+ * bez przemontowania ekranu, a import z przełącznika podbija `setupRevision` w kluczu osłony
+ * (`src/App.tsx`) i wyrzuciłby niezapisanego nowego agenta. Etykieta jest inna niż
+ * „Import setup", bo dwie specyfikacje e2e klikają w tej sekcji przycisk po tym napisie. */
+const NO_CONNECTIONS_HERE =
+  'No connections in this project yet: import the tool servers Claude Code or Codex already use ' +
+  'here, or copy them from another project or the previous shared library with Import setup ' +
+  'from project in the project menu.';
 
 /* `FIELD_OFF` I `fieldClass` ZNIKŁY 2026-08-31, bo pole wyłączone jest dziś REGUŁĄ.
  *
@@ -92,7 +116,11 @@ function toolsText(tools: Tools): string {
   return tools === 'everything' ? '' : tools.only.join(', ');
 }
 
-export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactElement {
+export function MoreSettings({
+  value,
+  onChange,
+  onImportConnections,
+}: MoreSettingsProps): ReactElement {
   const tools = capability('tools', value.runsWith);
   const skills = capability('skills', value.runsWith);
   const connections = capability('connections', value.runsWith);
@@ -150,8 +178,24 @@ export function MoreSettings({ value, onChange }: MoreSettingsProps): ReactEleme
           placeholder="None"
           disabled={connections === 'unavailable'}
           title={connections === 'approximate' ? APPROXIMATE : undefined}
+          aria-describedby={
+            onImportConnections === undefined ? undefined : 'agent-connections-where'
+          }
           onChange={(event) => onChange({ ...value, connections: listOf(event.target.value) })}
         />
+        {/* POD POLEM, NIGDY ZAMIAST NIEGO, i tylko z handlerem (niezmiennik 16): bez propsu nie
+            ma tu ani zdania, ani przycisku. `lead`, nie `label` — tekst w etykiecie stałby się
+            nazwą pola, a wiersze formularza sądzi się po klasie `label`. */}
+        {onImportConnections === undefined ? null : (
+          <>
+            <p id="agent-connections-where" className="lead">
+              {NO_CONNECTIONS_HERE}
+            </p>
+            <button type="button" className="btn-quiet self-start" onClick={onImportConnections}>
+              Import tool servers
+            </button>
+          </>
+        )}
       </div>
       <AppPermissions value={value} onChange={onChange} />
       <Tick
