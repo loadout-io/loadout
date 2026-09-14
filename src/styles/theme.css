@@ -686,6 +686,19 @@
     resize: vertical;
   }
 
+  /* Lista wielokrotnego wyboru pokazuje kilka pozycji naraz — inaczej nie jest listą, tylko
+     pierwszym wierszem listy (2026-09-14, picker połączeń agenta). Wysokość stoi TUTAJ, a nie
+     klasą na kontrolce: `field-is-a-well-under-its-label.test.tsx` odrzuca `h-*` i `min-h-*`
+     dopisane do pola, bo pole opisane dwa razy rozjeżdża się po pierwszej edycji jednego
+     z dwóch opisów. Selektor z nazwą elementu I atrybutem, dokładnie jak `textarea.field` wyżej,
+     żeby `<select class="field">` z jedną odpowiedzią („Source for …") został przy wysokości
+     kontrolki. Wypełnienie w poziomie zdejmujemy: pozycje niosą własne, a podwojone odsuwa
+     pierwszą literę od obrysu dalej niż w każdym innym polu. */
+  select[multiple].field {
+    height: 96px;
+    padding: 4px 0;
+  }
+
   /* Skupienie pola: obwódka w akcencie (DESIGN §6). Globalny `:focus-visible` niżej dokłada
    * obrys — obwódka odpowiada na „które pole jest aktywne", obrys na „gdzie jest klawiatura",
    * i to są dwa różne pytania. */
