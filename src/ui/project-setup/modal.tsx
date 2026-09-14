@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { whatTheyGot } from '../../ipc/filled-agents';
 import { why } from '../../ipc/why';
 import { useWorkspaces, type Workspace } from '../../state/workspaces';
 import { useProjectSetup } from './state';
@@ -20,6 +21,16 @@ interface Item {
 interface Preview {
   revision: string;
   items: Item[];
+}
+/** Odpowiedź `import_project_setup` — lustro `SetupReceipt`.
+ *
+ * Nazwany typ, a nie literał w `invoke<…>`: `checks/invoke-args.sh` porzuca wywołanie, w którego
+ * parametrze typu stoi `{`, więc literał tutaj po cichu wypisałby tę komendę ze sprawdzenia
+ * nazw argumentów. `filledAgents` jest `unknown`, bo `invoke<T>` jest rzutowaniem — kształt
+ * rozstrzyga dopiero `whatTheyGot`. */
+interface ImportedSetup {
+  imported: string[];
+  filledAgents?: unknown;
 }
 const categories: Record<string, string> = {
   all: 'All',
@@ -64,7 +75,8 @@ function ImportWindow({ destination }: { destination: Workspace }) {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<number | null>(null);
+  /** Ile kopii weszło i co ten import dał agentom — jedno i drugie z odpowiedzi komendy. */
+  const [receipt, setReceipt] = useState<{ added: number; gave: string | null } | null>(null);
   const close = useProjectSetup.getState().close;
 
   useEffect(() => {
@@ -142,14 +154,16 @@ function ImportWindow({ destination }: { destination: Workspace }) {
     setBusy(true);
     setError(null);
     try {
-      const result = await invoke<{ imported: string[] }>('import_project_setup', {
+      const result = await invoke<ImportedSetup>('import_project_setup', {
         folder: destination.folder,
         sourceFolder: source.folder,
         revision: preview.revision,
         selected: [...selection.selected].sort(),
       });
       useProjectSetup.getState().imported(destination.folder);
-      setReceipt(result.imported.length);
+      /* Zdanie składa się z tego, co Rust NAPRAWDĘ zapisał; `invoke<T>` jest rzutowaniem, więc
+       * kształt sprawdza `whatTheyGot` — odpowiedź bez tego pola ma zostać ciszą, nie awarią. */
+      setReceipt({ added: result.imported.length, gave: whatTheyGot(result.filledAgents) });
     } catch (error) {
       setError(why(error, 'The setup could not be imported. Refresh the preview and try again.'));
     } finally {
@@ -191,9 +205,12 @@ function ImportWindow({ destination }: { destination: Workspace }) {
             ✓
           </span>
           <h3>
-            {receipt} {receipt === 1 ? 'item' : 'items'} added to {destination.name}
+            {receipt.added} {receipt.added === 1 ? 'item' : 'items'} added to {destination.name}
           </h3>
           <p>Your copies are ready to edit and use in this project.</p>
+          {/* KOMU TEN IMPORT DAŁ POŁĄCZENIA. Bez tego zdania agent dostaje nową listę i nikt się
+              o tym nie dowiada — a to jest zmiana w tym, co ten agent może zrobić. */}
+          {receipt.gave === null ? null : <p>{receipt.gave}</p>}
           <button type="button" className="btn-primary" onClick={close}>
             Done
           </button>

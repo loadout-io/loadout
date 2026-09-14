@@ -1773,6 +1773,21 @@ fn nested_toml_tables(content: &str, prefix: &str) -> Vec<String> {
 /// napotkał (`headers`, `timeout`, `disabled`…). Poziom wcięcia jest tym, co naprawdę odróżnia
 /// nazwę serwera od jego pola. Prawdziwy parser YAML należy do reszty T-81 i tej funkcji nie
 /// zastępuje niniejsza poprawka — zmniejsza tylko szkodę do czasu, aż tamten wejdzie.
+///
+/// # Dlaczego brak bloku zostaje pustą listą, choć brak `tools:` znaczy „dziedzicz"
+///
+/// 2026-09-14 — TA ASYMETRIA JEST ŚWIADOMA. W [`claude_agent_from_fields`], trzydzieści linii pod
+/// wywołaniem tej funkcji, pusta lista `tools:` czyta się jako `Tools::Everything`, czyli „to, co
+/// daje dial"; tutaj brak bloku `mcpServers:` daje `[]`, czyli „żadnych". Różni je to, czym `[]`
+/// jest po stronie vendora: agent
+/// uruchamiany pod `--strict-mcp-config` z pustą listą **traci** serwery, które projekt mu daje,
+/// więc „dziedzicz" nie ma tu jak być domyślną — nie ma czego dziedziczyć.
+///
+/// I dlatego dopełnienie list połączeń (`connections::fill`) NIE dzieje się w tym miejscu, choć
+/// to tutaj powstaje pusta lista. Nazwa dopisana przy skanie jest dla `translate::dependencies_for`
+/// ZALEŻNOŚCIĄ `connection:<nazwa>`; niezaznaczone połączenie robi z takiego agenta wiersz
+/// zablokowany, a `apply` odmawia wtedy całego importu. Dopełnienie stoi więc po drugiej stronie
+/// ekranu, w `commands::import::apply_with_the_agents_filled_in`, kiedy zaznaczenia są już znane.
 fn nested_names(content: &str, key: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut inside = false;

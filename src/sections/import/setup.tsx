@@ -1,5 +1,6 @@
 import type { FormEvent, ReactElement } from 'react';
 import { useRef, useState } from 'react';
+import { type FilledAgent, whatTheyGot } from '../../ipc/filled-agents';
 import { why } from '../../ipc/why';
 import type { Reviewed } from '../../state/skills';
 import { activeWorkspace } from '../../state/workspaces';
@@ -165,6 +166,8 @@ export interface ImportReceipt {
   id: string;
   written: string[];
   enabledConnections: string[];
+  /** Agenci, którym ten import dopisał połączenia — lustro `ImportReceipt::filled_agents`. */
+  filledAgents: FilledAgent[];
 }
 
 export interface ImportIo {
@@ -395,6 +398,26 @@ function blockers(preview: ImportPreview, leaveOut: readonly string[]): number {
   ).length;
 }
 
+/** Połączenia z TWOJEJ własnej konfiguracji — te startują zaznaczone.
+ *
+ * 2026-09-14 — DWIE GRUPY, DWIE ODPOWIEDZI, i to nie jest niekonsekwencja. `yours-here`
+ * i `yours-everywhere` to `~/.claude.json` tego człowieka: jego własne ustawienie, którego
+ * i tak używa codziennie, więc żądanie ptaszka jest żądaniem powtórzenia decyzji, którą już
+ * podjął. `project` to plik ze sklonowanego repo — `.mcp.json` z `"command": "npx"` jest
+ * uruchomieniem cudzego kodu, i dokładnie przed tym stoi `Connection::imported` z `enabled:
+ * false`. Zaznaczone domyślnie zostaje więc to, co i tak jest twoje.
+ *
+ * Eksport, bo tę samą listę czyta pierwsze otwarcie okna i każdy kolejny „Scan" — dwie kopie
+ * tej reguły rozjechałyby się przy pierwszym dopisanym zakresie (niezmiennik 23). */
+export function yoursAmong(preview: ImportPreview): string[] {
+  return preview.draft.connections
+    .filter(
+      (connection) =>
+        connection.origin === 'yours-here' || connection.origin === 'yours-everywhere',
+    )
+    .map((connection) => connection.id);
+}
+
 /** Pozycje, których Loadout nie umie wnieść: nieobsługiwane i te, które wymagają wyboru. */
 function unresolvedIn(preview: ImportPreview): string[] {
   return preview.draft.report.mappings
@@ -421,7 +444,9 @@ export function ImportSetup({
     initialPreview?.snapshot.root ?? activeWorkspace()?.folder ?? '',
   );
   const [preview, setPreview] = useState<ImportPreview | null>(initialPreview ?? null);
-  const [enabled, setEnabled] = useState<string[]>([]);
+  const [enabled, setEnabled] = useState<string[]>(
+    initialPreview === undefined ? [] : yoursAmong(initialPreview),
+  );
   /* POZYCJE NIE DO WNIESIENIA SĄ POMINIĘTE OD RAZU, a nie po 68 kliknięciach.
    *
    * 2026-08-22 — ZGŁOSZENIE WŁAŚCICIELA: „trzeba kliknąć każdy element po kolei, żeby
@@ -461,6 +486,8 @@ export function ImportSetup({
    * skan czyta pliki na nowo, więc zgoda sprzed niego dotyczyła innego tekstu. */
   const [read, setRead] = useState<string[]>([]);
   const whoCompares = chosenAgent === '' ? (agents[0]?.id ?? '') : chosenAgent;
+  /* Zdanie o tym, komu ten import dał połączenia — `null`, kiedy nie dał nikomu. */
+  const gave = saved === null ? null : whatTheyGot(saved.filledAgents);
   const hasTypedItems = preview !== null && preview.draft.items.length > 0;
   const selectedTypedItems =
     preview?.draft.items.filter((item) => !excludedItems.includes(item.id)) ?? [];
@@ -514,7 +541,9 @@ export function ImportSetup({
       .scanSetup(workspace.trim())
       .then((next) => {
         setPreview(next);
-        setEnabled([]);
+        /* Ta sama reguła, co przy pierwszym otwarciu okna: twoje własne połączenia wracają
+         * zaznaczone, połączenia z plików projektu wracają wyłączone. */
+        setEnabled(yoursAmong(next));
         /* Świeży skan wraca z domyślnym pominięciem, tak samo jak pierwsze otwarcie: inaczej
          * jedno kliknięcie „Scan" cofałoby ekran do stanu, w którym import jest zablokowany. */
         setLeaveOut(unresolvedIn(next));
@@ -534,8 +563,24 @@ export function ImportSetup({
       });
   };
 
+  /* Zamknięcie okna — i dopiero TU ekran za nim dowiaduje się o imporcie.
+   *
+   * 2026-09-14 — DO TEGO DNIA `onImported()` szło zaraz po zapisie, a ten handler u jedynego
+   * wołającego (`sections/agents/index.tsx`) ZDEJMUJE to okno. Zdanie „N files imported."
+   * powstawało więc w komponencie, który w tej samej chwili znikał: linia wyniku nie miała jak
+   * dojść do człowieka ani razu, a nikt tego nie zauważył, bo żadne kryterium nie klikało
+   * Importu naprawdę (niezmiennik 29 — kryterium zielone, funkcja martwa). Lista za oknem
+   * odświeża się teraz przy zamknięciu, czyli wtedy, kiedy w ogóle da się ją zobaczyć.
+   *
+   * Ten sam kształt, co w drugim oknie importu (`ui/project-setup/modal.tsx`): tam po zapisie
+   * zostaje sekcja sukcesu i przycisk „Done", a nie zniknięcie bez słowa. */
+  const finish = (): void => {
+    if (saved !== null) onImported();
+    onClose();
+  };
+
   const apply = (): void => {
-    if (preview === null || !hasItems || blocked > 0) return;
+    if (preview === null || !hasItems || blocked > 0 || saved !== null) return;
     setBusy(true);
     setRefusal(null);
     void io
@@ -549,7 +594,6 @@ export function ImportSetup({
       })
       .then((saved) => {
         setSaved(saved);
-        onImported();
       })
       .catch((error: unknown) => {
         setRefusal(why(error, 'Loadout could not save that setup.'));
@@ -634,7 +678,7 @@ export function ImportSetup({
               project folder.
             </p>
           </div>
-          <button type="button" className="btn-quiet ml-auto" onClick={onClose}>
+          <button type="button" className="btn-quiet ml-auto" onClick={finish}>
             Close
           </button>
         </div>
@@ -679,10 +723,14 @@ export function ImportSetup({
           </p>
         )}
         {saved === null ? null : (
-          <p
-            role="status"
-            className="enter text-ink"
-          >{`${String(saved.written.length)} files imported.`}</p>
+          /* KTO CO DOSTAŁ, po zatwierdzeniu i z tego, co Rust NAPRAWDĘ zapisał
+             (`ImportReceipt::filled_agents`). Zdanie zbudowane tu z zaznaczeń mówiłoby
+             o zamiarze, a nie o tym, co się stało — a różnica między jednym a drugim jest
+             całą treścią tego produktu (`docs/FOUNDATIONS.md` §2.1). */
+          <p role="status" className="enter text-ink">
+            {`${String(saved.written.length)} files imported.`}
+            {gave === null ? '' : ` ${gave}`}
+          </p>
         )}
 
         {preview === null ? (
@@ -1154,7 +1202,11 @@ export function ImportSetup({
             {preview.draft.connections.length === 0 ? null : (
               <fieldset className="flex flex-col gap-2 border-t border-line pt-3">
                 <legend className="flex w-full items-center gap-3 text-subhead text-ink">
-                  Connections stay off unless you enable them
+                  {/* ZDANIE MUSI BYĆ PRAWDZIWE DLA OBU GRUP (2026-09-14). Stało tu
+                      „Connections stay off unless you enable them" — od dnia, w którym twoje
+                      własne połączenia startują zaznaczone, to jest zdanie o połowie listy,
+                      a człowiek czyta je nad ptaszkami, które mówią co innego. */}
+                  Your own connections start on, the project’s stay off
                   {/* JEDNO KLIKNIĘCIE ZAMIAST N, i to jest cała treść tego przycisku (2026-08-22).
                       Projekt z siedmioma serwerami to dziś siedem ptaszków, a każdy z nich jest tą
                       samą decyzją. Przycisk NIE zmienia reguły — nadal to człowiek włącza, nadal
@@ -1176,6 +1228,9 @@ export function ImportSetup({
                     key={connection.id}
                     className="flex items-center gap-2 text-body text-ink"
                     label={connection.name}
+                    /* Nazwa połączenia na samym polu: bez niej nie da się powiedzieć, KTÓRY
+                       ptaszek jest zaznaczony, ani z testu, ani z e2e. */
+                    field={connection.id}
                     checked={enabled.includes(connection.id)}
                     onChange={(event) => {
                       setEnabled((now) =>
@@ -1192,6 +1247,14 @@ export function ImportSetup({
                     <span className="label">{whereFrom(connection.origin)}</span>
                   </Tick>
                 ))}
+                {/* CO TE PTASZKI ZROBIĄ AGENTOM, powiedziane PRZED zatwierdzeniem
+                    (niezmiennik 29). Do 2026-09-14 agent przyjeżdżał z pustą listą połączeń
+                    i nikt tego nie mówił: człowiek włączał pięć serwerów i dostawał agentów,
+                    którzy nie widzieli ani jednego. */}
+                <p className="lead">
+                  Agents that name no connection get the ones you turn on here. Agents that already
+                  name their own keep them.
+                </p>
               </fieldset>
             )}
             {/* SEKCJA „PROPOSED FILES" ZNIKŁA, bo mówiła to samo dwa razy (2026-08-29).
@@ -1213,26 +1276,31 @@ export function ImportSetup({
                 </button>
               )}
               <p className="lead">
-                {!hasItems
-                  ? 'No setup files were found in this project.'
-                  : blocked > 0
-                    ? hasTypedItems
-                      ? unread.length > 0
-                        ? readingSays(unread.length)
-                        : `${String(blocked)} item(s) still need attention.`
-                      : `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
-                    : hasTypedItems
-                      ? excludedItems.length === 0
-                        ? 'Ready to import.'
-                        : `Ready to import. ${String(excludedItems.length)} item(s) will not be imported.`
-                      : leftOut === 0
-                        ? 'Ready to import.'
-                        : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
+                {saved !== null
+                  ? 'Close this window when you have read what came over.'
+                  : !hasItems
+                    ? 'No setup files were found in this project.'
+                    : blocked > 0
+                      ? hasTypedItems
+                        ? unread.length > 0
+                          ? readingSays(unread.length)
+                          : `${String(blocked)} item(s) still need attention.`
+                        : `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
+                      : hasTypedItems
+                        ? excludedItems.length === 0
+                          ? 'Ready to import.'
+                          : `Ready to import. ${String(excludedItems.length)} item(s) will not be imported.`
+                        : leftOut === 0
+                          ? 'Ready to import.'
+                          : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
               </p>
               <button
                 type="button"
                 data-import-now
-                disabled={busy || !hasItems || blocked > 0}
+                /* Plan wniesiony raz nie daje się wnieść drugi raz: `apply::preflight` odmawia
+                   każdemu pliku, który już leży w bibliotece, więc żywy przycisk nad zapisanym
+                   planem obiecuje robotę, która skończy się samą odmową. */
+                disabled={busy || !hasItems || blocked > 0 || saved !== null}
                 className="btn-primary ml-auto"
                 onClick={apply}
               >

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod fill;
 pub mod runtime;
 pub mod secrets;
 

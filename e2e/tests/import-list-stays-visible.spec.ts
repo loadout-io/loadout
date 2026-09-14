@@ -106,9 +106,24 @@ const PREVIEW: ImportPreview = {
   },
 };
 
+/* Odpowiedź granicy na prawdziwe kliknięcie „Import" — w kształcie, którym odpowiada
+ * `apply_setup` (`ImportReceipt`). `filledAgents` niesie to, co Rust NAPRAWDĘ dopisał agentom;
+ * zdanie na ekranie ma powstać z tego, a nie z ptaszków, które człowiek postawił. */
+const SAVED = {
+  id: 'receipt-1',
+  written: ['agents/lead.md', 'connections/figma.json'],
+  enabledConnections: ['figma'],
+  filledAgents: [
+    { agent: 'lead', connections: ['figma', 'linear-server'] },
+    { agent: 'picky', connections: ['figma', 'linear-server'] },
+  ],
+};
+const GAVE = 'Gave figma and linear-server to lead and picky.';
+
 const SCENE: Readonly<Record<string, readonly TauriReply[]>> = {
   list_workspaces: Array.from({ length: 12 }, () => ({ value: [WORKSPACE] })),
   scan_setup: Array.from({ length: 4 }, () => ({ value: PREVIEW })),
+  apply_setup: [{ value: SAVED }],
 };
 
 const SWITCH = '[data-section-switch="agents"]';
@@ -277,6 +292,22 @@ describe('a big scan still shows the person every item it found', () => {
         /* A przycisk, który kończy całą tę robotę, ma dać się nacisnąć tam, gdzie stoi. */
         await page.locator(BRING).click({ trial: true, timeout: APPEARS });
       }
+
+      /* I CO Z TEGO WYNIKŁO — po prawdziwym kliknięciu, nie po przymiarce (2026-09-14).
+       *
+       * Import dopisuje połączenia agentom, którzy nie wymieniali żadnego, a to jest zmiana
+       * w tym, co ci agenci mogą zrobić — więc człowiek ma ją przeczytać. Do tego dnia okno
+       * znikało w tej samej chwili, w której powstawało zdanie wyniku, i żadne kryterium tego
+       * nie widziało, bo żadne nie klikało Importu naprawdę (niezmiennik 29). */
+      await page.locator(BRING).click({ timeout: APPEARS });
+      await expect
+        .poll(async () => (await app.calls()).some((call) => call.cmd === 'apply_setup'), {
+          timeout: APPEARS,
+        })
+        .toBe(true);
+      await expect
+        .poll(() => page.locator(DIALOG).innerText(), { timeout: APPEARS })
+        .toContain(GAVE);
     } finally {
       await app.close();
     }

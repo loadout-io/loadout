@@ -38,7 +38,17 @@ it('previews individual setup cards, includes workflow dependencies and copies o
           },
         },
       ],
-      import_project_setup: [{ value: { imported: ['agent:writer', 'workflow:ship'] } }],
+      /* `filledAgents` to agenci, którym ten import dopisał połączenia — kształt odpowiedzi
+       * `import_project_setup` (`SetupReceipt`). Zdanie na ekranie powstaje z tego, co Rust
+       * naprawdę zapisał, a nie z zaznaczeń po tej stronie granicy. */
+      import_project_setup: [
+        {
+          value: {
+            imported: ['agent:writer', 'workflow:ship'],
+            filledAgents: [{ agent: 'Atlas writer', connections: ['figma', 'linear-server'] }],
+          },
+        },
+      ],
     },
   });
   try {
@@ -85,6 +95,12 @@ it('previews individual setup cards, includes workflow dependencies and copies o
       selected: ['agent:writer', 'workflow:ship'],
     });
     await expect.poll(() => dialog.innerText()).toContain('2 items added to Blank project');
+    /* Kto dostał połączenia, powiedziane po prawdziwym kliknięciu Import: agent, który nie
+     * wymieniał żadnego, wychodzi z tego importu z nową listą, a to jest zmiana w tym, co ten
+     * agent może zrobić (2026-09-14, niezmiennik 29). */
+    await expect
+      .poll(() => dialog.innerText())
+      .toContain('Gave figma and linear-server to Atlas writer.');
     await dialog.getByRole('button', { name: 'Done', exact: true }).click();
     expect(await app.page.getByRole('dialog').count()).toBe(0);
     expect(

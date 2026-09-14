@@ -1,5 +1,6 @@
 import { activeWorkspace } from '../../state/workspaces';
 import { invoke } from '@tauri-apps/api/core';
+import { filledAgents } from '../../ipc/filled-agents';
 import type {
   ApplyRequest,
   CompareRequest,
@@ -12,11 +13,15 @@ export function scanSetup(workspace: string): Promise<ImportPreview> {
   return invoke<ImportPreview>('scan_setup', { workspace });
 }
 
-export function applySetup(
+/** Zapis planu. Odpowiedź przechodzi przez bramkę kształtu, bo `invoke<T>` jest rzutowaniem:
+ *  lista agentów, którym import dopisał połączenia, ma wrócić listą albo niczym — nigdy
+ *  wartością, na której składanie zdania rzuci wyjątkiem i zdejmie ekran. */
+export async function applySetup(
   request: ApplyRequest,
   folder: string | null = activeWorkspace()?.folder ?? null,
 ): Promise<ImportReceipt> {
-  return invoke<ImportReceipt>('apply_setup', { request, folder });
+  const receipt = await invoke<ImportReceipt>('apply_setup', { request, folder });
+  return { ...receipt, filledAgents: filledAgents(receipt.filledAgents) };
 }
 
 /** Jedno pytanie do agenta o kopie JEDNEJ pozycji. `null` znaczy „człowiek nacisnął Stop".

@@ -101,6 +101,7 @@ mod agents_wire_shape;
 mod an_agent_compares_the_copies;
 mod an_agent_is_written_by_the_vendor_that_was_asked;
 mod an_empty_set_says_the_next_move;
+mod an_import_fills_the_agents_that_had_none;
 mod an_interrupted_command_says_so;
 mod an_outcome_field_settles_the_rounds;
 mod app_logs_keep_the_last_error;

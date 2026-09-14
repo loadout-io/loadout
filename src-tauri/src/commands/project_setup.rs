@@ -28,6 +28,11 @@ pub struct SetupPreview {
 #[serde(rename_all = "camelCase")]
 pub struct SetupReceipt {
     pub imported: Vec<String>,
+    /// Agenci tej biblioteki, którym ten import dopisał nazwy połączeń — i jakie.
+    ///
+    /// 2026-09-14: okno mówi z tego jedno zdanie po zatwierdzeniu, więc lista jedzie stąd,
+    /// a nie z przewidywania po drugiej stronie granicy (niezmiennik 29).
+    pub filled_agents: Vec<crate::connections::fill::FilledAgent>,
 }
 
 use crate::library::agents::{Agent, agent_file_name, read_agent_directory, write_agent_file};
@@ -200,13 +205,37 @@ pub fn apply_with_hook(
     if let Err(error) = result {
         return Err(undo_import(&root, &written, &error));
     }
+    let imported: Vec<String> = items
+        .iter()
+        .filter(|item| selected.contains(&item.view.key) && !item.view.reusable)
+        .map(|item| item.view.key.clone())
+        .collect();
     Ok(SetupReceipt {
-        imported: items
-            .iter()
-            .filter(|item| selected.contains(&item.view.key) && !item.view.reusable)
-            .map(|item| item.view.key.clone())
-            .collect(),
+        // JEDEN PRZEBIEG NA OBIE GRUPY: kopie agentów leżą już na dysku, więc ten sam spacer
+        // obsługuje i agenta przywiezionego przed chwilą, i tego, który leżał tu wcześniej.
+        filled_agents: crate::connections::fill::fill_saved(
+            destination,
+            &connections_this_import_turned_on(destination, &imported),
+        ),
+        imported,
     })
+}
+
+/// Nazwy połączeń, które TEN import zapisał jako włączone.
+///
+/// Czytane z kopii leżących już w bibliotece docelowej, bo [`collect_connections`] kopiuje plik
+/// połączenia co do bajtu — czyli razem z `enabled`, którym człowiek rozstrzygnął to w projekcie
+/// źródłowym. Połączenia, które leżały tu wcześniej, zostają poza tą listą: dopełnienie należy
+/// do importu, który coś wniósł, a nie do każdego otwarcia okna (2026-09-14).
+fn connections_this_import_turned_on(destination: &Path, imported: &[String]) -> Vec<String> {
+    let Ok(copied) = crate::connections::runtime::all(&destination.join("connections")) else {
+        return Vec::new();
+    };
+    copied
+        .into_iter()
+        .filter(|one| one.enabled && imported.contains(&format!("connection:{}", one.id)))
+        .map(|one| one.name)
+        .collect()
 }
 
 fn undo_import(root: &PublicationRoot, written: &[CopiedFile<'_>], error: &str) -> String {
