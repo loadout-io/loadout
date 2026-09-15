@@ -130,6 +130,11 @@ export interface ImportedConnection {
   name: string;
   enabled: boolean;
   origin?: ConnectionOrigin;
+  /** Plik, w którym ten serwer jest zadeklarowany — lustro `connections::Connection::source`.
+   *
+   * Opcjonalne, bo połączenie złożone ręcznie w specyfikacji tego pola nie ma, a zdania
+   * o pochodzeniu brak ścieżki nie psuje (`whereFrom`). */
+  source?: string;
 }
 
 export interface ImportPreview {
@@ -218,14 +223,26 @@ const WINDOW =
 /* 2026-08-31: trzy stałe z listami klas zeszły do warstwy prymitywów (`theme.css`):
  * `BUTTON` -> `.btn-quiet`, `PRIMARY` -> `.btn-primary`, `ORIGIN` -> `.label`. */
 
-/** Zdanie o pochodzeniu połączenia — mówi, KTO JE WIDZI, nie w którym pliku leży.
+/** Zdanie o pochodzeniu połączenia: KTO JE WIDZI, a zaraz potem — z którego pliku przyjechało.
  *
- * Ścieżka pliku odpowiadałaby na to samo pytanie okrężnie i tylko komuś, kto zna trzy zakresy
- * Claude Code na pamięć. „Just you" kontra „in the project" rozstrzyga to jednym spojrzeniem. */
-function whereFrom(origin: ConnectionOrigin | undefined): string {
-  if (origin === 'yours-here') return 'just you, in this project';
-  if (origin === 'yours-everywhere') return 'just you, everywhere';
-  return 'in the project';
+ * Pierwsza połowa odpowiada na pytanie, które człowiek stojący nad tą listą zadaje najpierw:
+ * „to ustawienie zespołu czy moje własne?". Sama ścieżka odpowiadałaby na nie okrężnie i tylko
+ * komuś, kto zna trzy zakresy Claude Code na pamięć, więc zostaje tam, gdzie była.
+ *
+ * DRUGA POŁOWA JEST NOWA (2026-09-16) i ma swój incydent. Serwer bywa zadeklarowany WYŁĄCZNIE
+ * w nagłówku agenta, więc u właściciela `figma` wisiała na `.claude/agents/figma-extractor.md`,
+ * a `playwright` na `design-qa.md` — i oba znikały razem z tymi plikami, kiedy zostawiał je poza
+ * importem. Zaznaczenie trzyma je dziś w planie (`translate::keep_selected_outputs`), ale
+ * człowiek nadal nie miał jak się dowiedzieć, na czym one wiszą.
+ *
+ * JEDEN NAPIS, NIE DWA: drugi region na ten sam fakt podniósłby gęstość listy, która ma po
+ * jednym wierszu na połączenie (niezmiennik 18). */
+function whereFrom(connection: ImportedConnection): string {
+  let who = 'in the project';
+  if (connection.origin === 'yours-here') who = 'just you, in this project';
+  if (connection.origin === 'yours-everywhere') who = 'just you, everywhere';
+  const file = connection.source ?? '';
+  return file === '' ? who : `${who}, from ${file}`;
 }
 
 const STATUS: Readonly<Record<Compatibility, string>> = {
@@ -1286,8 +1303,10 @@ export function ImportSetup({
                     {/* SKĄD TO JEST, przy nazwie i po cichu. Człowiek stojący nad tą listą pyta
                         o jedno: czy to ustawienie zespołu, czy moje własne — a od 2026-08-22 na
                         liście stoją obie rodzaje naraz. Bez tego zdania `linear-server` z twojej
-                        prywatnej konfiguracji wygląda identycznie jak `context7` z repo. */}
-                    <span className="label">{whereFrom(connection.origin)}</span>
+                        prywatnej konfiguracji wygląda identycznie jak `context7` z repo.
+                        Od 2026-09-16 ten sam napis niesie też plik, w którym serwer jest
+                        zadeklarowany — powód w całości stoi przy `whereFrom`. */}
+                    <span className="label">{whereFrom(connection)}</span>
                   </Tick>
                 ))}
                 {/* CO TE PTASZKI ZROBIĄ AGENTOM, powiedziane PRZED zatwierdzeniem

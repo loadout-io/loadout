@@ -51,8 +51,15 @@ fn both_vendor_agents_translate_to_native_agents() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// 2026-09-16 — TEN AGENT WCHODZI, I MÓWI, CZEGO LOADOUT Z NIEGO NIE PRZENOSI.
+///
+/// Do tego dnia `memory:` i `maxTurns:` robiły z niego `NeedsChoice`, czyli pytanie, którego
+/// obie odpowiedzi dają plik identyczny co do bajtu — a okno odznacza każdą pozycję, która nie
+/// jest gotowa. Właściciel dostał tak jednego agenta z trzynastu. Zdanie o pominiętych kluczach
+/// zostaje, bo to ono jest tu prawdziwą robotą: agent ma przyjechać, a człowiek ma wiedzieć,
+/// czego w nim nie będzie.
 #[test]
-fn a_real_claude_role_is_visible_even_when_one_behavior_needs_a_choice()
+fn a_real_claude_role_arrives_and_says_what_loadout_leaves_behind()
 -> Result<(), Box<dyn std::error::Error>> {
     use loadout_lib::import::Compatibility;
     use loadout_lib::library::agents::{Color, Tools};
@@ -78,12 +85,21 @@ fn a_real_claude_role_is_visible_even_when_one_behavior_needs_a_choice()
         Tools::Only(vec!["Read".into(), "Write".into()])
     );
     assert_eq!(agent.skills, vec!["design-system-reference"]);
-    assert!(preview.draft.report.mappings.iter().any(|mapping| {
-        mapping.compatibility == Compatibility::NeedsChoice
-            && mapping.message.contains("project memory")
-            && mapping.message.contains("turn limit")
-    }));
-    assert!(!preview.draft.runnable());
+    assert!(
+        preview.draft.report.mappings.iter().any(|mapping| {
+            mapping.compatibility == Compatibility::Adjusted
+                && mapping.message.contains("project memory")
+                && mapping.message.contains("turn limit")
+        }),
+        "both answers to that question write the same file byte for byte, so the row states the \
+         two settings it leaves behind instead of asking"
+    );
+    assert_eq!(
+        preview.draft.report.blockers(),
+        0,
+        "and nothing about this role is waiting on a person any more — its skill is still \
+         missing from the fixture, but that is a different sentence and a different row"
+    );
     Ok(())
 }
 

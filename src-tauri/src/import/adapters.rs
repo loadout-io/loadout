@@ -776,11 +776,15 @@ fn claude_agent_from_fields(
         .collect();
     let skills = list_field(fields.get("skills"));
     let connections = nested_names(&file.content, "mcpServers");
+    /* DWIE LISTY, BO TO SĄ DWA RÓŻNE ZDANIA DLA CZŁOWIEKA (2026-09-16). `choices` to pytanie,
+     * na które są dwie odpowiedzi; `dropped` to fakt, o którym trzeba powiedzieć. Powód podziału
+     * w całości stoi przy `how_it_will_arrive`. */
+    let mut dropped: Vec<&'static str> = Vec::new();
     if fields.contains_key("memory") {
-        choices.push("project memory");
+        dropped.push("project memory");
     }
     if fields.contains_key("maxTurns") {
-        choices.push("turn limit");
+        dropped.push("turn limit");
     }
     if fields.contains_key("type") {
         choices.push("agent type");
@@ -820,22 +824,58 @@ fn claude_agent_from_fields(
         vendor_options: VendorOptions::new(),
         extra: serde_json::Map::new(),
     };
-    if choices.is_empty() {
-        Ok((
-            agent,
-            Compatibility::Exact,
-            "This agent will become a native Loadout agent.".to_owned(),
-        ))
+    let (compatibility, message) = how_it_will_arrive(&choices, &dropped);
+    Ok((agent, compatibility, message))
+}
+
+/// Co ten agent zastanie na ekranie: pytanie, zdanie o tym, czego Loadout nie przenosi, albo nic.
+///
+/// # Dlaczego `memory` i `maxTurns` NIE są pytaniem (2026-09-16)
+///
+/// Bo obie odpowiedzi dają plik agenta identyczny **co do bajtu**. `claude_agent_from_fields`
+/// nie czyta żadnego z tych dwóch kluczy poza `contains_key` wyżej — `vendor_options` jest pusty,
+/// `extra` jest puste — a `library::agents::write_agent_file` jest czystą funkcją wartości
+/// `Agent`. Pytanie, którego druga odpowiedź nie zmienia niczego, kosztowało właściciela
+/// dwunastu agentów z trzynastu: `NeedsChoice` staje się `ImportStatus::NeedsChoice`, a okno
+/// odznacza każdą pozycję, która nie jest gotowa (`typedExcludedIn` w `sections/import/setup`).
+///
+/// `agent type` zostaje pytaniem: tamtego nikt jeszcze nie zmierzył, a poluzowanie reguły
+/// „na oko" jest dokładnie tym ruchem, który tę wadę tu postawił.
+///
+/// Zdanie o pominiętych kluczach dokleja się do OBU pozostałych wyników, nie tylko do własnego:
+/// agent z `type:` i `memory:` naraz gubiłby pamięć projektu po cichu, gdyby wygrywało samo
+/// pytanie.
+fn how_it_will_arrive(
+    choices: &[&'static str],
+    dropped: &[&'static str],
+) -> (Compatibility, String) {
+    let left_behind = if dropped.is_empty() {
+        String::new()
     } else {
-        Ok((
-            agent,
+        format!(
+            " Loadout will import this agent, but not its {}.",
+            dropped.join(" or ")
+        )
+    };
+    if !choices.is_empty() {
+        return (
             Compatibility::NeedsChoice,
             format!(
-                "Choose how to reproduce this agent's {}.",
+                "Choose how to reproduce this agent's {}.{left_behind}",
                 choices.join(" and ")
             ),
-        ))
+        );
     }
+    if dropped.is_empty() {
+        return (
+            Compatibility::Exact,
+            "This agent will become a native Loadout agent.".to_owned(),
+        );
+    }
+    (
+        Compatibility::Adjusted,
+        format!("This agent will become a native Loadout agent.{left_behind}"),
+    )
 }
 
 fn codex_agent(

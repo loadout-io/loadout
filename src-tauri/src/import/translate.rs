@@ -264,6 +264,9 @@ fn dependency_is_ready(draft: &MigrationDraft, ready: &BTreeSet<String>, depende
 }
 
 /// Po odznaczeniu pozycji stare wektory nie mogą zachować pliku, którego w planie już nie ma.
+///
+/// Jeden wyjątek, i ma swój powód wypisany niżej przy `connections`: zaznaczone połączenie
+/// zostaje także wtedy, gdy plik, który je zadeklarował, wypadł z planu.
 pub fn keep_selected_outputs(draft: &mut MigrationDraft) {
     draft
         .agents
@@ -273,9 +276,18 @@ pub fn keep_selected_outputs(draft: &mut MigrationDraft) {
         owns_target_or_child(&draft.items, &target)
     });
     draft.connections.retain(|connection| {
-        // Osobiste zakresy nie mają SourceItem w repo. Są jawnie pokazane jako "yours" i ich
-        // osobny przełącznik nadal jest decyzją człowieka, więc brak repo-itemu ich nie usuwa.
-        connection.source == Path::new(".claude.json")
+        /* PTASZEK JEST DECYZJĄ O POŁĄCZENIU, NIE O PLIKU, W KTÓRYM JE ZNALEZIONO (2026-09-16).
+         *
+         * Serwer bywa zadeklarowany WYŁĄCZNIE w nagłówku agenta (`servers_in_the_agent`), a jego
+         * `source` jest wtedy tym plikiem agenta. U właściciela `figma` wisiała na
+         * `figma-extractor.md`, `playwright` na `design-qa.md` — więc zostawienie tych dwóch
+         * plików poza importem zabierało dwa zaznaczone połączenia, zanim ktokolwiek spojrzał
+         * na ptaszek. Zaznaczenie jest tu DRUGĄ racją zachowania, a nie zniesieniem reguły:
+         * połączenie niezaznaczone dalej wypada razem ze swoją pozycją. */
+        connection.enabled
+            // Osobiste zakresy nie mają SourceItem w repo. Są jawnie pokazane jako "yours" i ich
+            // osobny przełącznik nadal jest decyzją człowieka, więc brak repo-itemu ich nie usuwa.
+            || connection.source == Path::new(".claude.json")
             || draft.items.iter().any(|item| {
                 item.sources
                     .iter()
