@@ -113,3 +113,35 @@ export function stillUnread(
 export function readingSays(unread: number): string {
   return `${String(unread)} skill(s) here have not been read yet. Read each one, or take it out of the import.`;
 }
+
+/**
+ * Napis kontrolki, która wypełnia DRUGĄ obietnicę zdania wyżej — jednym ruchem, nie po jednej
+ * pozycji.
+ *
+ * ZGŁOSZENIE WŁAŚCICIELA, 2026-09-15: trzynaście cudzych umiejętności trzymało wyłączony
+ * przycisk Import, a wyłączony przycisk HTML nie wysyła nawet zdarzenia kliknięcia — człowiek
+ * naciskał coś, co nie odpowiadało w żaden sposób. Obie drogi ze zdania `readingSays` istniały
+ * wtedy wyłącznie po jednej pozycji, a jest ich trzynaście.
+ *
+ * PRZYCISKU „PRZECZYTAŁEM WSZYSTKIE" TU NIE MA I NIE BĘDZIE. Czytanie jest całym sensem tej
+ * bramki (`mustBeRead` wyżej); kontrolka odklikująca trzynaście plików bez otwarcia ich jest
+ * kłamstwem, które człowiek mówi sam sobie. Ta wyrzuca je z importu — czyli robi to, co i tak
+ * robił ręcznie, tylko raz.
+ */
+export const DROP_UNREAD = 'Take the unread skills out of the import';
+
+/**
+ * Zdanie gotowości: ile pozycji zostaje poza importem i ile z nich to umiejętności, których
+ * nikt nie przeczytał.
+ *
+ * `dropped === 0` oddaje zdanie sprzed 2026-09-15 CO DO BAJTU i to nie jest ostrożność:
+ * człowiek, który odznaczył ptaszek sam, wie dlaczego, a druga połowa zdania mówiłaby wtedy
+ * o czymś, czego nie było. Pilnują tego istniejące wyrocznie (`rows-say-what-happens`,
+ * `import-list-stays-visible`), więc rozjazd tutaj jest widoczny od razu.
+ */
+export function readySays(excluded: number, dropped: number): string {
+  if (excluded === 0) return 'Ready to import.';
+  const out = `Ready to import. ${String(excluded)} item(s) will not be imported`;
+  if (dropped === 0) return `${out}.`;
+  return `${out}, including ${String(dropped)} skill(s) you did not read.`;
+}
