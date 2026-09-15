@@ -30,12 +30,17 @@ const AGENT_WITH_MISSING_SKILL: &str = "---\n\
                                         Build the requested change.\n";
 
 /// Ten agent jest formatowo poprawny, ale jedno zachowanie wymaga decyzji człowieka.
+///
+/// 2026-09-16 — kluczem jest `type:`, bo `maxTurns:` przestał być pytaniem: obie odpowiedzi na
+/// nie dawały plik identyczny co do bajtu (`adapters::how_it_will_arrive`). Te testy sądzą
+/// propagację zablokowanej zależności i odmowę `without_behavior`, więc potrzebują pozycji,
+/// która NAPRAWDĘ czeka na człowieka — a nie akurat tego klucza.
 const AGENT_WITH_CHOICE: &str = "---\n\
                                  name: builder\n\
                                  description: Builds the project\n\
                                  model: opus\n\
                                  tools: [Read, Write]\n\
-                                 maxTurns: 12\n\
+                                 type: general-purpose\n\
                                  ---\n\
                                  Build the requested change.\n";
 

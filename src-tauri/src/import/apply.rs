@@ -27,12 +27,14 @@ pub struct ImportReceipt {
     pub enabled_connections: Vec<String>,
     /// Agenci, którym ten import dopisał nazwy połączeń — pusto, kiedy nie dopisał nikomu.
     ///
-    /// 2026-09-14 — KOPIA W `imports/<id>.json` NIE NIESIE ANI JEDNEGO WPISU i to jest własność,
-    /// nie przeoczenie: przebieg po agentach, którzy leżeli w bibliotece przed tym importem,
-    /// biegnie dopiero PO atomowym przeniesieniu, czyli po tym, jak ten plik został już zapisany.
-    /// Paragon na dysku opisuje więc to, co import przeniósł; lista niżej jedzie do okna, które
-    /// na odpowiedź czeka. `#[serde(default)]`, bo paragon zapisany przed tym dniem tego klucza
-    /// nie ma, a jego brak znaczy dokładnie „nikomu niczego nie dopisano".
+    /// 2026-09-16 — PLIK NA DYSKU NIESIE TĘ SAMĄ LISTĘ, CO OKNO. Do tego dnia było odwrotnie
+    /// i opisane tu jako własność: `stage_all` zapisuje paragon z pustą listą, bo przebieg po
+    /// agentach, którzy leżeli w bibliotece przed importem, biegnie dopiero po atomowym
+    /// przeniesieniu. Tyle że plik, który człowiek otwiera w edytorze, mówił przez to, że nikt
+    /// niczego nie dostał — podczas gdy na tym samym dysku dwa pliki agentów naprawdę dostały
+    /// cztery połączenia. Listę dopina [`record_filled_agents`], po przeniesieniu i po
+    /// dopełnieniu. `#[serde(default)]`, bo paragon zapisany przed tym dniem tego klucza nie ma,
+    /// a jego brak znaczy dokładnie „nikomu niczego nie dopisano".
     #[serde(default)]
     pub filled_agents: Vec<crate::connections::fill::FilledAgent>,
     pub vendor_configurations: crate::connections::runtime::VendorConfigurations,
@@ -157,7 +159,7 @@ fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<I
         .map(|connection| connection.id.clone())
         .collect();
     enabled_connections.sort();
-    let receipt_path = PathBuf::from("imports").join(format!("{receipt_id}.json"));
+    let receipt_path = receipt_target(receipt_id);
     written.push(receipt_path.clone());
     let receipt = ImportReceipt {
         id: receipt_id.to_owned(),
@@ -167,12 +169,37 @@ fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<I
         written,
         files,
         enabled_connections,
-        // Pusto: kto co dostał, wie dopiero `commands::import`, po przeniesieniu plików.
+        // Pusto: kto co dostał, wie dopiero `commands::import`, po przeniesieniu plików —
+        // i dopisuje to tutaj z powrotem przez [`record_filled_agents`].
         filled_agents: Vec::new(),
         vendor_configurations: crate::connections::runtime::for_connections(&draft.connections),
     };
     write_json(&stage.join(&receipt_path), &receipt)?;
     Ok(receipt)
+}
+
+/// Gdzie w bibliotece leży paragon tego importu. Jedno miejsce na tę odpowiedź, bo pytają o nią
+/// dwie drogi: [`stage_all`], która paragon tworzy, i [`record_filled_agents`], która go dopina.
+fn receipt_target(receipt_id: &str) -> PathBuf {
+    PathBuf::from("imports").join(format!("{receipt_id}.json"))
+}
+
+/// Dopisuje do paragonu NA DYSKU listę agentów, którym ten import dopisał połączenia.
+///
+/// Wołane po atomowym przeniesieniu i po dopełnieniu agentów zastanych w bibliotece
+/// (`commands::import`) — czyli w jedynej chwili, w której ta lista jest już pełna. Powód
+/// w całości stoi przy [`ImportReceipt::filled_agents`].
+///
+/// Zapis idzie przez plik obok i `rename`, a nie prosto w cel: paragon nadpisywany w miejscu
+/// jest tym samym plikiem, który czyta reimport, więc przerwanie w połowie zostawiłoby po sobie
+/// połowę pliku zamiast poprzedniej — prawdziwej, choć niepełnej — treści.
+pub fn record_filled_agents(home: &Path, receipt: &ImportReceipt) -> Result<()> {
+    let target = home.join(receipt_target(&receipt.id));
+    let writing = home
+        .join("imports")
+        .join(format!("{}.json.writing", receipt.id));
+    write_json(&writing, receipt)?;
+    fs::rename(&writing, &target).map_err(save_error)
 }
 
 fn stage_agents(

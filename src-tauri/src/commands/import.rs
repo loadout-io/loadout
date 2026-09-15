@@ -144,10 +144,18 @@ pub fn apply_setup_inner(
         .draft
         .items
         .retain(|item| !excluded.contains(item.id.as_str()));
-    crate::import::translate::keep_selected_outputs(&mut preview.draft);
+    /* ZAZNACZENIA PRZED PRZYCINANIEM PLANU, i to jest cała naprawa (2026-09-16).
+     *
+     * Do tego dnia `keep_selected_outputs` biegło o trzy linie wcześniej, czyli ZANIM
+     * którekolwiek połączenie dowiedziało się, że człowiek postawił przy nim ptaszek. Serwer
+     * zadeklarowany wyłącznie w nagłówku wykluczonego agenta wypadał więc razem z tym plikiem,
+     * a zaznaczenie nie miało już czego dotyczyć: właściciel zaznaczył sześć połączeń i dostał
+     * cztery, bez ani jednego zdania o pozostałych dwóch. Drugą połowę tej naprawy —
+     * `connection.enabled` jako racja zachowania — niesie samo `keep_selected_outputs`. */
     for connection in &mut preview.draft.connections {
         connection.enabled = requested.contains(connection.id.as_str());
     }
+    crate::import::translate::keep_selected_outputs(&mut preview.draft);
     apply_with_the_agents_filled_in(home, &mut preview.draft)
 }
 
@@ -199,6 +207,14 @@ fn apply_with_the_agents_filled_in(
     receipt
         .filled_agents
         .extend(fill::fill_saved(home, &brought));
+    /* I DOPIERO TERAZ PARAGON NA DYSKU MÓWI TO, CO POWIE OKNO (2026-09-16).
+     *
+     * Odmowa jest tu PRZEMILCZANA, tym samym powodem, co przy `fill_saved` linijkę wyżej: pliki
+     * są już przeniesione, więc import nie ma się z czego wycofać, a `Err` w tym miejscu
+     * powiedziałby człowiekowi „nic nie weszło" nad biblioteką, w której wszystko leży — i do
+     * tego zablokowałby ponowienie, bo `preflight` odmawia każdemu plikowi, który już istnieje.
+     * Paragon zostaje wtedy taki, jaki zapisało `stage_all`: niepełny, ale prawdziwy. */
+    let _ = crate::import::apply::record_filled_agents(home, &receipt);
     Ok(receipt)
 }
 

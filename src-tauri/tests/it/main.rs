@@ -208,6 +208,7 @@ mod host_deny_rewrite;
 mod import_agents_are_native;
 mod import_apply_is_atomic;
 mod import_check_step_needs_its_evidence;
+mod import_delivers_what_you_ticked;
 mod import_discovers_without_effects;
 mod import_items_are_typed;
 mod import_mcp_is_disabled_and_managed;
