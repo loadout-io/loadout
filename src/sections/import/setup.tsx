@@ -23,6 +23,7 @@ import {
 import * as Disk from './io';
 import {
   BECOMES_INSTRUCTIONS,
+  DROP_UNREAD,
   OPEN_IT,
   READ_ALREADY,
   READ_IT,
@@ -30,9 +31,11 @@ import {
   compatibilityIn,
   mustBeRead,
   readingSays,
+  readySays,
   stillUnread,
 } from './skill-review';
 import { type InventoryView, SHOW_ALL, hiddenSays, hidesEverything, keptBy } from './shown';
+import { A_NEW_CONVERSATION, importedSays, landingSays } from './where-it-lands';
 
 export type Compatibility = 'exact' | 'adjusted' | 'needs_choice' | 'unsupported';
 export type SourceKind =
@@ -435,7 +438,13 @@ export function ImportSetup({
   initialPreview,
   agents = [],
 }: ImportSetupProps): ReactElement {
-  const [disk] = useState(() => Disk.forProject(activeWorkspace()?.folder ?? null));
+  /* DOKĄD ten import zapisze — jedna wartość, z której powstaje ZARÓWNO zdanie na ekranie, jak
+   * i argument `folder` lecący do `apply_setup` (2026-09-15, `./where-it-lands.ts`). Dwa osobne
+   * odczyty `activeWorkspace()` dałyby się rozjechać przy przełączeniu projektu w bocznym menu,
+   * a wtedy okno nazywałoby jedno miejsce i pisało do drugiego — czyli gorzej niż dziś, kiedy
+   * nie nazywa żadnego. Czytane RAZ, przy otwarciu: to samo domknięcie, które ma `forProject`. */
+  const [target] = useState(() => activeWorkspace());
+  const [disk] = useState(() => Disk.forProject(target?.folder ?? null));
   const io = suppliedIo ?? disk;
   /* Import dotyczy projektu otwartego w bocznym menu, więc zaczyna od tego samego, jedynego
    * źródła prawdy co Run i Skills. Puste pole zostaje wyłącznie wtedy, gdy człowiek nie wybrał
@@ -485,6 +494,12 @@ export function ImportSetup({
   /* Umiejętności, o których człowiek powiedział, że je przeczytał. Nie przeżywa skanu: świeży
    * skan czyta pliki na nowo, więc zgoda sprzed niego dotyczyła innego tekstu. */
   const [read, setRead] = useState<string[]>([]);
+  /* Które pozycje wyszły poza import HURTEM, jednym kliknięciem `DROP_UNREAD` — podzbiór
+   * `excludedItems`, nie druga lista pominięć. Stoi osobno wyłącznie po to, żeby zdanie
+   * gotowości umiało powiedzieć, że chodzi o umiejętności, których nikt nie przeczytał:
+   * z samego `excludedItems` nie da się tego odróżnić od ptaszka odznaczonego ręcznie. Nie
+   * przeżywa skanu, tak samo jak `read` — plan po skanie jest inny. */
+  const [dropped, setDropped] = useState<string[]>([]);
   const whoCompares = chosenAgent === '' ? (agents[0]?.id ?? '') : chosenAgent;
   /* Zdanie o tym, komu ten import dał połączenia — `null`, kiedy nie dał nikomu. */
   const gave = saved === null ? null : whatTheyGot(saved.filledAgents);
@@ -554,6 +569,7 @@ export function ImportSetup({
          * zgoda na cudzą umiejętność: dotyczyła tekstu sprzed tego skanu. */
         setAsked(IDLE);
         setRead([]);
+        setDropped([]);
       })
       .catch((error: unknown) => {
         setRefusal(why(error, 'Loadout could not inspect that folder.'));
@@ -700,6 +716,19 @@ export function ImportSetup({
           </button>
         </form>
 
+        {/* DOKĄD TE PLIKI TRAFIĄ, powiedziane PRZED Skanem i PRZED Importem (2026-09-15).
+            Pole nad tym zdaniem odpowiada na pytanie „co czytamy" i przy tym znaczeniu zostaje;
+            to zdanie odpowiada na drugie, którego ekran nie zadawał: `apply_setup` bierze
+            OSOBNY argument `folder`, czyli bibliotekę projektu aktywnego w oknie. Powód, dla
+            którego te dwa miejsca rozjeżdżają się bez niczyjego błędu, stoi w nagłówku
+            `./where-it-lands.ts`.
+
+            JEDEN ŻYWY REGION NA TEN FAKT (niezmiennik 13): po zapisie ten sam projekt nazywa
+            zdanie wyniku, więc to znika dokładnie wtedy, kiedy tamto się pojawia. */}
+        {saved === null ? (
+          <p className="lead">{landingSays(preview?.snapshot.root ?? workspace, target)}</p>
+        ) : null}
+
         {/* WSKAŹNIK TRWANIA NA GRANICĘ IPC (DESIGN §7). Skan cudzego projektu i zapis planu idą
             przez Rusta i przez dysk, a do 2026-08-31 nie zmieniały tu ani jednego piksela:
             oba przyciski dostawały wyłącznie `disabled`, więc kliknięcie kończyło się ciszą,
@@ -728,8 +757,13 @@ export function ImportSetup({
              o zamiarze, a nie o tym, co się stało — a różnica między jednym a drugim jest
              całą treścią tego produktu (`docs/FOUNDATIONS.md` §2.1). */
           <p role="status" className="enter text-ink">
-            {`${String(saved.written.length)} files imported.`}
+            {importedSays(saved.written.length, target)}
             {gave === null ? '' : ` ${gave}`}
+            {/* CO Z ROZMOWĄ, KTÓRA JUŻ TRWA. Zmierzone: sterownik lidera dostaje połączenia
+                raz, przy starcie rozmowy — więc człowiek, który zaimportuje je i napisze do
+                otwartego okna, dalej nie będzie miał narzędzi. Zdanie stoi w TYM samym
+                regionie co wynik, bo to jest jedna wiadomość o jednym imporcie. */}
+            <span className="lead block">{A_NEW_CONVERSATION}</span>
           </p>
         )}
 
@@ -1097,11 +1131,20 @@ export function ImportSetup({
                                 name="Import this item"
                                 checked={!excludedItems.includes(item.id)}
                                 onChange={(event) => {
+                                  const { checked } = event.target;
                                   setExcludedItems((now) =>
-                                    event.target.checked
+                                    checked
                                       ? now.filter((id) => id !== item.id)
                                       : [...now, item.id],
                                   );
+                                  /* Ptaszek postawiony z powrotem cofa TĘ pozycję z hurtowego
+                                     wyrzucenia (2026-09-15). Bez tego stopka dalej liczyłaby
+                                     ją wśród nieprzeczytanych umiejętności, których poza
+                                     importem już nie ma — a to jest zdanie o czymś, co się
+                                     nie dzieje. */
+                                  if (checked) {
+                                    setDropped((now) => now.filter((id) => id !== item.id));
+                                  }
                                 }}
                               />
                               {item.status !== 'needs_choice' ? null : (
@@ -1275,6 +1318,27 @@ export function ImportSetup({
                   Leave out all unresolved items
                 </button>
               )}
+              {/* DRUGA DROGA ZE ZDANIA OBOK, jednym kliknięciem (2026-09-15).
+                  Stopka obiecuje „Read each one, or take it out of the import", a do tego dnia
+                  drugie dało się zrobić wyłącznie po jednej pozycji — przy trzynastu cudzych
+                  umiejętnościach import nie odbywał się nigdy, bo wyłączony przycisk Import nie
+                  wysyła nawet zdarzenia kliknięcia. Kontrolka stoi PRZY tym zdaniu i znika
+                  razem z powodem: bez ani jednej nieprzeczytanej umiejętności nie miałaby co
+                  wyrzucić (niezmiennik 16). Czego tu nie ma: przycisku „przeczytałem
+                  wszystkie" — powód stoi przy `DROP_UNREAD`. */}
+              {!hasTypedItems || unread.length === 0 ? null : (
+                <button
+                  type="button"
+                  data-drop-unread
+                  className="btn-quiet"
+                  onClick={() => {
+                    setExcludedItems((now) => [...now, ...unread]);
+                    setDropped((now) => [...now, ...unread]);
+                  }}
+                >
+                  {DROP_UNREAD}
+                </button>
+              )}
               <p className="lead">
                 {saved !== null
                   ? 'Close this window when you have read what came over.'
@@ -1287,9 +1351,7 @@ export function ImportSetup({
                           : `${String(blocked)} item(s) still need attention.`
                         : `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
                       : hasTypedItems
-                        ? excludedItems.length === 0
-                          ? 'Ready to import.'
-                          : `Ready to import. ${String(excludedItems.length)} item(s) will not be imported.`
+                        ? readySays(excludedItems.length, dropped.length)
                         : leftOut === 0
                           ? 'Ready to import.'
                           : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
