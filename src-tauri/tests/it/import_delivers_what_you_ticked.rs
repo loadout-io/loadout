@@ -69,7 +69,7 @@ fn import_without_the_agent(ticked: Vec<String>) -> Result<tempfile::TempDir, Bo
     write_agent(repo.path(), "figma-extractor.md", FIGMA_EXTRACTOR)?;
     write_agent(repo.path(), "writer.md", WRITER)?;
 
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     let agent_item = preview
         .draft
         .items
@@ -208,7 +208,7 @@ fn the_saved_import_file_lists_the_agents_the_window_named() -> Result<(), Box<d
     lead.connections = Vec::new();
     save_agent_inner(home.path(), &lead, None)?;
 
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     let receipt = apply_setup_inner(
         home.path(),
         nothing.path(),

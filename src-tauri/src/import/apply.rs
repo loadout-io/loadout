@@ -93,7 +93,13 @@ where
     result
 }
 
-fn preflight(home: &Path, draft: &MigrationDraft) -> Result<()> {
+/// Co ten plan zapisze w bibliotece — jedna odpowiedź na pytanie, które zadają dwie drogi.
+///
+/// [`preflight`] pyta o to tuż przed zapisem, a [`mark_what_the_library_already_has`] — zanim
+/// ekran w ogóle pokaże plan. Dwa rachunki tych samych ścieżek rozjechałyby się przy pierwszej
+/// zmianie którejkolwiek nazwy pliku, a rozjazd byłoby widać dopiero jako import, który odmawia
+/// zapisania czegoś, o czym ekran mówił, że tego nie ma.
+fn would_write(draft: &MigrationDraft) -> Vec<PathBuf> {
     let mut targets = Vec::new();
     targets.extend(
         draft
@@ -122,9 +128,81 @@ fn preflight(home: &Path, draft: &MigrationDraft) -> Result<()> {
     // o tym samym tytule wskazują jeden plik. Bez tej linii druga po cichu podbiłaby licznik
     // wystąpień pierwszej i zniknęłaby jako osobne zdanie.
     targets.extend(draft.notes.iter().map(|note| note_target(&note.title)));
+    targets
+}
 
+/// Wpisuje w plan to, na co odpowiada wyłącznie dysk biblioteki: czego już nie trzeba wnosić.
+///
+/// # Dlaczego to nie jest praca [`preflight`]
+///
+/// 2026-09-16 — bo odpowiedź jest znana PRZY SKANIE, a padała jako odmowa całego zapisu.
+/// Drugi import tego samego projektu wywracał się na pierwszym pliku, który już leżał
+/// w bibliotece („agents/project-manager-backlog.md already exists. Nothing was imported."),
+/// a ekran nie oznaczał ani jednego z wierszy, które przyjechały przy pierwszym imporcie.
+/// Stan „już to mam" jest normalny; awaryjny jest dopiero wtedy, kiedy człowiek każe wnieść
+/// to jeszcze raz — i wtedy dalej odmawia [`preflight`], bo nadpisania tu nie ma
+/// (`library::agents::write_agent_file` bez oczekiwanej rewizji odmawia istniejącemu plikowi,
+/// a `commit` przenosi przez `fs::rename`).
+///
+/// # Dlaczego WSZYSTKIE pliki pozycji, a nie którykolwiek
+///
+/// Bo jedna pozycja bywa kilkoma plikami: strona pamięci wzięta z wiązki `MEMORY.md` i plik
+/// `.mcp.json` z trzema serwerami. Biblioteka, która ma połowę z nich, nie jest biblioteką,
+/// która ma tę pozycję — takiej dalej odmawia [`preflight`], zamiast po cichu wnieść połowę.
+pub fn mark_what_the_library_already_has(home: &Path, draft: &mut MigrationDraft) {
+    draft.already_in_the_library = would_write(draft)
+        .into_iter()
+        .filter(|target| home.join(target).exists())
+        .collect();
+    // Dwa przebiegi, bo `files_of` czyta CAŁY draft (notatki i połączenia stoją w jego wektorach),
+    // a pisać trzeba do pozycji w tym samym drafcie.
+    let already: Vec<bool> = draft
+        .items
+        .iter()
+        .map(|item| {
+            let files = files_of(draft, item);
+            !files.is_empty() && files.iter().all(|file| home.join(file).exists())
+        })
+        .collect();
+    for (item, here) in draft.items.iter_mut().zip(already) {
+        item.already_here = here;
+    }
+}
+
+/// Które pliki biblioteki należą do TEJ pozycji.
+///
+/// Dwa rodzaje mają ich więcej niż jeden i oba liczą się z wektorów draftu, a nie z `target`:
+/// wiersz pamięci wzięty z wiązki `MEMORY.md` odpowiada za wszystkie notatki tamtego katalogu,
+/// a jeden `.mcp.json` bywa trzema plikami połączeń. `target` mówi wtedy goły katalog
+/// (`memory/notes`, `connections`), czyli ścieżkę, której żaden powstały plik nie ma.
+fn files_of(draft: &MigrationDraft, item: &super::ImportItem) -> Vec<PathBuf> {
+    match item.kind {
+        super::ItemKind::Memory => draft
+            .notes
+            .iter()
+            .filter(|note| item.sources.iter().any(|source| source.path == note.source))
+            .map(|note| note_target(&note.title))
+            .collect(),
+        super::ItemKind::Connection => draft
+            .connections
+            .iter()
+            .filter(|connection| {
+                item.sources
+                    .iter()
+                    .any(|source| source.path == connection.source)
+            })
+            .map(|connection| PathBuf::from("connections").join(format!("{}.json", connection.id)))
+            .collect(),
+        super::ItemKind::Agent | super::ItemKind::Skill | super::ItemKind::Workflow => {
+            item.target.clone().into_iter().collect()
+        }
+    }
+}
+
+fn preflight(home: &Path, draft: &MigrationDraft) -> Result<()> {
     let mut unique = BTreeSet::new();
-    for target in targets {
+    let mut clashing = BTreeSet::new();
+    for target in would_write(draft) {
         if !unique.insert(target.clone()) {
             return Err(ImportError::Save(format!(
                 "Two imported items would both become {}. Choose different names before importing.",
@@ -132,13 +210,68 @@ fn preflight(home: &Path, draft: &MigrationDraft) -> Result<()> {
             )));
         }
         if home.join(&target).exists() {
-            return Err(ImportError::Save(format!(
-                "{} already exists. Nothing was imported.",
-                target.display()
-            )));
+            clashing.insert(target);
         }
     }
-    Ok(())
+    if clashing.is_empty() {
+        return Ok(());
+    }
+    Err(ImportError::Save(already_in_the_library_says(
+        rows_that_clash(draft, &clashing),
+        clashing.len(),
+    )))
+}
+
+/// Ile WIERSZY planu koliduje — nie ile plików.
+///
+/// 2026-09-17 — jedna pozycja bywa kilkoma plikami, więc licznik plików podany jako licznik
+/// wierszy każe człowiekowi szukać trzech ptaszków tam, gdzie stoi jeden. Zmierzone na wiązce
+/// `.claude/agent-memory/<agent>/MEMORY.md`: dwie strony pamięci, JEDEN wiersz na ekranie.
+///
+/// Dopasowanie po przedrostku, a nie po równości, bo [`would_write`] nazywa wiązkę umiejętności
+/// jej KATALOGIEM (`skills/<nazwa>` — to jest ścieżka, którą przenosi `commit`), a wiersz nazywa
+/// swój plik (`skills/<nazwa>/SKILL.md`). Bez tego wiersz umiejętności wypadałby z licznika.
+fn rows_that_clash(draft: &MigrationDraft, clashing: &BTreeSet<PathBuf>) -> usize {
+    draft
+        .items
+        .iter()
+        .filter(|item| {
+            files_of(draft, item).iter().any(|file| {
+                clashing
+                    .iter()
+                    .any(|clash| file == clash || file.starts_with(clash))
+            })
+        })
+        .count()
+}
+
+/// Odmowa dla planu, który zapisałby pliki leżące już w bibliotece — licznikiem, nie pierwszą
+/// ścieżką, na którą trafiliśmy.
+///
+/// 2026-09-16 — do tego dnia to zdanie nazywało jeden plik z pięćdziesięciu i kończyło się na
+/// nim, więc drugi import tego samego projektu trzeba było uruchamiać raz na kolidujący plik,
+/// żeby w ogóle poznać ich listę. Ta odmowa jest dziś OSTATNIĄ linią obrony, a nie pierwszą:
+/// wiersze, których biblioteka już ma, wracają ze skanu odznaczone
+/// ([`mark_what_the_library_already_has`]), więc żeby tu dojść, trzeba było je zaznaczyć
+/// z powrotem — czyli jawnie poprosić o wniesienie ich jeszcze raz.
+///
+/// DWIE LICZBY, BO TO SĄ DWA RÓŻNE FAKTY (2026-09-17). Pliki mówią, ile rzeczy w bibliotece ten
+/// import by ruszył; wiersze mówią, ile ptaszków trzeba zdjąć. `rows == 0` znaczy „tych plików
+/// nie da się przypisać do żadnego wiersza" — tak wygląda ręcznie złożony draft sprzed `items`,
+/// i wtedy zdanie nie każe szukać ptaszka, którego nie ma.
+fn already_in_the_library_says(rows: usize, files: usize) -> String {
+    let next = if rows == 0 {
+        "Move those files out of your library first.".to_owned()
+    } else {
+        format!(
+            "Untick the {rows} row(s) marked Already in your library, or move those files out of \
+             your library first."
+        )
+    };
+    format!(
+        "Nothing was imported: your library already has {files} of the file(s) this import would \
+         write, and Loadout does not replace files it did not write. {next}"
+    )
 }
 
 fn stage_all(stage: &Path, draft: &MigrationDraft, receipt_id: &str) -> Result<ImportReceipt> {

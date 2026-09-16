@@ -2653,14 +2653,22 @@ pub fn new_id() -> String {
 }
 
 /// Odczytuje konfigurację wskazanego repo bez uruchamiania znalezionych rozszerzeń.
+///
+/// `folder` jest TYM SAMYM argumentem, co przy [`apply_setup`], i z tego samego powodu
+/// (2026-09-16): skanowany katalog i projekt, do którego biblioteki ten import zapisze, to dwie
+/// różne rzeczy. Bez niego skan nie miał jak powiedzieć, czego biblioteka już ma — a to pytanie
+/// wracało dopiero odmową zapisu.
 #[tauri::command]
 pub async fn scan_setup(
+    state: State<'_, AppState>,
+    folder: Option<String>,
     workspace: std::path::PathBuf,
 ) -> Result<crate::import::ImportPreview, String> {
+    let library = state.library_for(folder.as_deref()).await?;
     // Ścieżka wchodzi do domknięcia NA WŁASNOŚĆ, więc `drop`, który stał tu wcześniej po to,
     // żeby argument był naprawdę zużyty (`clippy::needless_pass_by_value`), jest już zbędny.
     tokio::task::spawn_blocking(move || {
-        commands::import::scan_setup_inner(&crate::your_home(), &workspace)
+        commands::import::scan_setup_inner(&crate::your_home(), &workspace, &library)
     })
     .await
     .map_err(|error| did_not_finish("reading that folder", &error))?

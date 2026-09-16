@@ -11,7 +11,7 @@ fn scan_and_apply_cross_the_real_product_seam() -> Result<(), Box<dyn std::error
         repo.path().join(".codex/agents/builder.toml"),
         "name = \"builder\"\ndescription = \"Builds\"\ndeveloper_instructions = \"Build the task.\"\n",
     )?;
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     let receipt = apply_setup_inner(
         home.path(),
         nothing.path(),
@@ -53,7 +53,7 @@ fn an_explicit_leave_out_choice_crosses_ipc_and_unblocks_apply()
         repo.path().join(".claude/commands/ship.md"),
         "Ship whatever looks ready.",
     )?;
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     let choice = preview
         .draft
         .report
@@ -106,7 +106,7 @@ fn an_explicit_skip_keeps_an_unknown_setting_from_blocking_compatible_items()
         repo.path().join(".claude/skills/dreaming/SKILL.md"),
         "---\nname: dreaming\ndescription: Dream about the task.\n---\nDream\u{200b} about it.",
     )?;
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     let unknown = preview
         .draft
         .report

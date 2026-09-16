@@ -9,8 +9,15 @@ import type {
   ImportReceipt,
 } from './setup';
 
-export function scanSetup(workspace: string): Promise<ImportPreview> {
-  return invoke<ImportPreview>('scan_setup', { workspace });
+/** Skan cudzego projektu. `folder` to projekt, do którego biblioteki ten import ZAPISZE —
+ *  bez niego skan nie ma jak powiedzieć, czego ta biblioteka już ma (`scan_setup` w `ipc.rs`).
+ *
+ *  Klucze wypisane wprost, tym samym powodem, co przy `compareCopies` niżej. */
+export function scanSetup(
+  workspace: string,
+  folder: string | null = activeWorkspace()?.folder ?? null,
+): Promise<ImportPreview> {
+  return invoke<ImportPreview>('scan_setup', { folder, workspace });
 }
 
 /** Zapis planu. Odpowiedź przechodzi przez bramkę kształtu, bo `invoke<T>` jest rzutowaniem:
@@ -50,7 +57,7 @@ export function stopComparing(): Promise<void> {
 
 export function forProject(folder: string | null) {
   return {
-    scanSetup,
+    scanSetup: (workspace: string) => scanSetup(workspace, folder),
     stopComparing,
     applySetup: (request: ApplyRequest) => applySetup(request, folder),
     compareCopies: (ask: CompareRequest) => compareCopies(ask, folder),

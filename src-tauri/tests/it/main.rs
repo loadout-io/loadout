@@ -211,6 +211,7 @@ mod import_check_step_needs_its_evidence;
 mod import_delivers_what_you_ticked;
 mod import_discovers_without_effects;
 mod import_items_are_typed;
+mod import_knows_what_you_have;
 mod import_mcp_is_disabled_and_managed;
 mod import_memory_becomes_notes;
 mod import_one_thing_is_one_row;

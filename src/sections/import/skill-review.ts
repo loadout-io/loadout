@@ -131,17 +131,25 @@ export function readingSays(unread: number): string {
 export const DROP_UNREAD = 'Take the unread skills out of the import';
 
 /**
- * Zdanie gotowości: ile pozycji zostaje poza importem i ile z nich to umiejętności, których
- * nikt nie przeczytał.
+ * Zdanie gotowości: ile pozycji zostaje poza importem i — osobno — z jakich powodów, których
+ * człowiek sam nie wybrał.
  *
- * `dropped === 0` oddaje zdanie sprzed 2026-09-15 CO DO BAJTU i to nie jest ostrożność:
- * człowiek, który odznaczył ptaszek sam, wie dlaczego, a druga połowa zdania mówiłaby wtedy
- * o czymś, czego nie było. Pilnują tego istniejące wyrocznie (`rows-say-what-happens`,
+ * `dropped === 0 && alreadyHere === 0` oddaje zdanie sprzed 2026-09-15 CO DO BAJTU i to nie jest
+ * ostrożność: człowiek, który odznaczył ptaszek sam, wie dlaczego, a druga połowa zdania mówiłaby
+ * wtedy o czymś, czego nie było. Pilnują tego istniejące wyrocznie (`rows-say-what-happens`,
  * `import-list-stays-visible`), więc rozjazd tutaj jest widoczny od razu.
+ *
+ * TRZECI LICZNIK JEST Z 2026-09-16 i liczy pozycje pominięte DLATEGO, że biblioteka już je ma.
+ * Osobno od dwóch pozostałych, bo to jedyna z trzech przyczyn, której człowiek nie wybrał ani
+ * ptaszkiem, ani przyciskiem: bez własnej liczby wpadała do „N item(s) will not be imported"
+ * i czytała się jak pominięcie, którego nie pamięta.
  */
-export function readySays(excluded: number, dropped: number): string {
+export function readySays(excluded: number, dropped: number, alreadyHere: number): string {
   if (excluded === 0) return 'Ready to import.';
   const out = `Ready to import. ${String(excluded)} item(s) will not be imported`;
-  if (dropped === 0) return `${out}.`;
-  return `${out}, including ${String(dropped)} skill(s) you did not read.`;
+  const because: string[] = [];
+  if (dropped > 0) because.push(`${String(dropped)} skill(s) you did not read`);
+  if (alreadyHere > 0) because.push(`${String(alreadyHere)} you already have`);
+  if (because.length === 0) return `${out}.`;
+  return `${out}, including ${because.join(' and ')}.`;
 }

@@ -162,6 +162,22 @@ pub struct ImportItem {
     /// ma": nieobecność dowodu nie jest dowodem nieobecności.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed: Option<crate::commands::skills::ReviewWire>,
+    /// Czy biblioteka ma już **wszystkie** pliki tej pozycji.
+    ///
+    /// 2026-09-16 — PO CO TO ISTNIEJE. Drugi import tego samego projektu odmawiał W CAŁOŚCI, na
+    /// pierwszym pliku docelowym, który już leżał w bibliotece: „agents/project-manager-backlog.md
+    /// already exists. Nothing was imported." Stan „już to mam" jest normalny, a nie awaryjny —
+    /// i był znany JUŻ PRZY SKANIE, bo odpowiada na niego dysk. Ekran nie oznaczał wtedy ani
+    /// jednego takiego wiersza, więc człowiek miał je znaleźć okiem wśród kilkudziesięciu pozycji.
+    ///
+    /// **Wszystkie**, nie „którykolwiek": pozycja, której biblioteka ma połowę plików (strona
+    /// pamięci, która urosła od pierwszego importu), nie jest pozycją, której nie trzeba wnosić.
+    /// Takiej dalej odmawia [`apply::preflight`] i to jest świadome zawężenie, nie przeoczenie.
+    ///
+    /// `#[serde(default)]`, bo plan zapisany przed tym dniem tego klucza nie ma, a jego brak
+    /// znaczy dokładnie „biblioteka tego nie miała".
+    #[serde(default)]
+    pub already_here: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +257,26 @@ pub struct MigrationDraft {
     /// Pamięć projektu jako notatki, nie jako akapity w instrukcjach agenta.
     #[serde(default)]
     pub notes: Vec<MemoryNote>,
+    /// Pliki, które ten plan by zapisał, a biblioteka już je ma — ścieżki względem jej korzenia.
+    ///
+    /// 2026-09-16 — PO CO TO STOI NA DRAFCIE, A NIE NA POZYCJACH. Trzy pytania, jedna odpowiedź,
+    /// i wszystkie trzy zadaje kod, który korzenia biblioteki nie widzi:
+    ///
+    ///   * **czy tę zależność ktoś już wniósł.** Agent, którego umiejętność leży w bibliotece od
+    ///     pierwszego importu, nie jest agentem bez umiejętności — a pozycji tamtej umiejętności
+    ///     nie ma już w planie, bo człowiek ją odznaczył ([`translate::dependency_is_ready`]).
+    ///   * **czy wolno zapisać to połączenie.** Serwery z `~/.claude.json` zostają w planie
+    ///     ZAWSZE (`keep_selected_outputs`), więc drugi import właściciela wchodził prosto
+    ///     w kolizję na `linear-server.json`, zanim ktokolwiek spojrzał na ptaszek. Flagi na
+    ///     [`Connection`] być nie może: ta struktura JEST plikiem zapisywanym w `connections/`,
+    ///     a to jest fakt o jednym przebiegu importu, nie o połączeniu.
+    ///   * **ile pozycji koliduje.** Odmowa [`apply::preflight`] liczy z tej listy, zamiast
+    ///     nazywać pierwszy plik, na który trafiła.
+    ///
+    /// `#[serde(default)]`, bo plan zapisany przed tym dniem tego klucza nie ma, a jego brak
+    /// znaczy dokładnie „biblioteka nie miała ani jednego z tych plików".
+    #[serde(default)]
+    pub already_in_the_library: Vec<PathBuf>,
     pub report: CompatibilityReport,
 }
 

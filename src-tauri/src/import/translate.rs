@@ -84,6 +84,9 @@ fn from_inspection(inspection: Inspection, home: Option<&Path>) -> ImportPreview
         // Pamięć projektu jako notatki (2026-08-22, T-80). Składa je adapter, bo to on czyta
         // katalogi vendorów — tutaj mieszka wyłącznie polityka zgodności.
         notes: adapted.notes,
+        // Pusto: co biblioteka już ma, wie wyłącznie dysk, a tu nie ma jej korzenia. Dopisuje to
+        // `apply::mark_what_the_library_already_has`, wołane przez `commands::import`.
+        already_in_the_library: Vec::new(),
         report: CompatibilityReport {
             mappings: adapted.mappings,
         },
@@ -199,16 +202,42 @@ pub fn refresh_statuses(draft: &mut MigrationDraft) {
         };
         item.status = ImportStatus::MissingDependencies;
         item.status_message = format!(
-            "Blocked because {} will not be imported or enabled.",
-            dependencies.join(", ")
+            "Blocked because {} will not come over. Bring that one over first, then tick this row.",
+            what_is_missing(dependencies)
         );
     }
+}
+
+/// Czego tej pozycji brakuje — nazwami, a nie kluczami z drutu.
+///
+/// 2026-09-16 — do tego dnia stało tu gołe `connection:figma`, czyli klucz zależności wprost
+/// na ekranie (niezmiennik 14). U właściciela zdanie brzmiało „Blocked because connection:figma
+/// will not be imported or enabled." przy trzech z trzynastu agentów — i nie mówiło ani czym
+/// jest `connection:`, ani co z tym zrobić. Ptaszki połączeń stoją w tym samym oknie, pod tabelą.
+fn what_is_missing(dependencies: &[String]) -> String {
+    let named: Vec<String> = dependencies
+        .iter()
+        .map(|dependency| match dependency.split_once(':') {
+            Some(("connection", name)) => format!("the connection {name}"),
+            Some(("skill", name)) => format!("the skill {name}"),
+            Some(("agent", name)) => format!("the agent {name}"),
+            _ => dependency.clone(),
+        })
+        .collect();
+    named.join(", ")
 }
 
 fn dependency_is_ready(draft: &MigrationDraft, ready: &BTreeSet<String>, dependency: &str) -> bool {
     let Some((kind, name)) = dependency.split_once(':') else {
         return false;
     };
+    /* CO JUŻ LEŻY W BIBLIOTECE, TEŻ DOMYKA ZALEŻNOŚĆ (2026-09-16). Pozycja, której pliki
+     * przyjechały poprzednim importem, wraca ze skanu odznaczona — a odznaczona znaczyła do tego
+     * dnia „nie będzie jej", więc agent wymieniający umiejętność leżącą na dysku stawał się
+     * wierszem zablokowanym i odmawiał CAŁEGO importu. Agent nie widzi planu; widzi bibliotekę. */
+    if the_library_already_has(draft, kind, name) {
+        return true;
+    }
     match kind {
         "skill" => draft
             .skills
@@ -261,6 +290,42 @@ fn dependency_is_ready(draft: &MigrationDraft, ready: &BTreeSet<String>, depende
             }),
         _ => false,
     }
+}
+
+/// Czy plik, którego ta zależność wymaga, leży w bibliotece od poprzedniego importu.
+///
+/// Ścieżki liczone TYMI SAMYMI funkcjami, którymi liczy je cel wiersza ([`agent_target`],
+/// `skills/<nazwa>`), a nie przepisane obok: drugi rachunek nazwy pliku rozjechałby się przy
+/// pierwszej zmianie któregokolwiek z nich, a rozjazd byłoby widać dopiero jako zablokowany
+/// wiersz nad biblioteką, w której wszystko leży.
+fn the_library_already_has(draft: &MigrationDraft, kind: &str, name: &str) -> bool {
+    let target = match kind {
+        "skill" => PathBuf::from("skills").join(name),
+        "agent" => draft
+            .agents
+            .iter()
+            .find(|agent| {
+                agent.id.to_string().eq_ignore_ascii_case(name)
+                    || agent.name.eq_ignore_ascii_case(name)
+            })
+            .map_or_else(
+                || PathBuf::from("agents").join(format!("{}.md", slug(name))),
+                agent_target,
+            ),
+        "connection" => draft
+            .connections
+            .iter()
+            .find(|connection| {
+                connection.id.eq_ignore_ascii_case(name)
+                    || connection.name.eq_ignore_ascii_case(name)
+            })
+            .map_or_else(
+                || PathBuf::from("connections").join(format!("{}.json", slug(name))),
+                |connection| PathBuf::from("connections").join(format!("{}.json", connection.id)),
+            ),
+        _ => return false,
+    };
+    draft.already_in_the_library.contains(&target)
 }
 
 /// Po odznaczeniu pozycji stare wektory nie mogą zachować pliku, którego w planie już nie ma.
@@ -376,6 +441,9 @@ fn typed_items(
                      * wskazuje cudzy — czysty — egzemplarz. Klucz `file.item.id` jest tożsamy
                      * z plikiem i tylko dlatego wiersz może potem wziąć gorszy z dwóch. */
                     reviewed: adapted.skill_reviews.get(&file.item.id).cloned(),
+                    // Ten sam powód, co przy `already_in_the_library` wyżej: odpowiada na to dysk
+                    // biblioteki, a tłumaczenie nie zna jej korzenia.
+                    already_here: false,
                 },
             )
         })
