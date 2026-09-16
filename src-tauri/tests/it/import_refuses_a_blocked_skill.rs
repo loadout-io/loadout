@@ -114,7 +114,7 @@ fn apply_refuses_a_blocked_skill_and_leaves_nothing_on_disk() -> Result<(), Box<
     a_real_agent(repo.path())?;
     write(&repo.path().join("vendor/exfil/SKILL.md"), EXFILTRATING)?;
 
-    let mut preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let mut preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     // Korzeń MIGAWKI, nie ścieżka tempdira: `discover::canonical_root` rozwija `/var` do
     // `/private/var`, a `apply` liczy ścieżki względem tej rozwiniętej. Bez tego odmowa
     // padłaby na przedrostku, czyli z zupełnie innego powodu niż ten, o który tu chodzi.
@@ -162,7 +162,7 @@ fn the_plan_carries_what_the_review_found_in_a_skill() -> Result<(), Box<dyn Err
         EXFILTRATING,
     )?;
 
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), nothing.path())?;
     let row = skill_row(&preview.draft.items, "exfil").ok_or("no row for that skill")?;
     let reviewed = row
         .reviewed
@@ -226,7 +226,7 @@ fn one_row_for_two_copies_keeps_the_worse_review() -> Result<(), Box<dyn Error>>
     write(&repo.path().join(".claude/skills/pdf/SKILL.md"), HARMLESS)?;
     write(&repo.path().join(".codex/skills/pdf/SKILL.md"), POISONED)?;
 
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), nothing.path())?;
     let rows: Vec<&ImportItem> = preview
         .draft
         .items

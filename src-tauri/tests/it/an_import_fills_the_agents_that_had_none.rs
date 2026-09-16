@@ -120,7 +120,7 @@ fn a_scanned_setup_gives_its_turned_on_connections_to_the_agent_that_named_none(
         "---\nname: builder\ndescription: Builds\n---\nBuild the task.\n",
     )?;
 
-    let preview = scan_setup_inner(nothing.path(), repo.path())?;
+    let preview = scan_setup_inner(nothing.path(), repo.path(), home.path())?;
     let ticked: Vec<String> = preview
         .draft
         .connections

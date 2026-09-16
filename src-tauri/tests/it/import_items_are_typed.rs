@@ -276,7 +276,7 @@ fn excluding_an_item_removes_it_from_the_write_plan() -> Result<(), Box<dyn Erro
     let home = tempfile::tempdir()?;
     let personal = tempfile::tempdir()?;
     write_agent(repo.path(), AGENT_WITH_CHOICE)?;
-    let preview = scan_setup_inner(personal.path(), repo.path())?;
+    let preview = scan_setup_inner(personal.path(), repo.path(), home.path())?;
     let choice = preview
         .draft
         .report
@@ -320,7 +320,7 @@ fn importing_without_one_behavior_keeps_the_item_in_the_write_plan() -> Result<(
     let home = tempfile::tempdir()?;
     let personal = tempfile::tempdir()?;
     write_agent(repo.path(), AGENT_WITH_CHOICE)?;
-    let preview = scan_setup_inner(personal.path(), repo.path())?;
+    let preview = scan_setup_inner(personal.path(), repo.path(), home.path())?;
     let choice = preview
         .draft
         .report

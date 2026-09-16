@@ -40,18 +40,35 @@ pub struct ApplySetup {
     pub without_behavior: Vec<String>,
 }
 
-pub fn scan_setup_inner(home: &Path, workspace: &Path) -> Result<ImportPreview> {
-    // Katalog domowy CZŁOWIEKA, nie biblioteka Loadouta: stąd czytamy `~/.claude.json`, żeby
-    // serwery zapisane `claude mcp add --scope local|user` też trafiły na listę.
-    crate::import::translate::preview_with_personal(workspace, home)
+/// Czyta cudzy projekt i mówi, czego z niego biblioteka `library` jeszcze nie ma.
+///
+/// Trzy różne katalogi, bo to trzy różne pytania (2026-09-16). `personal` to katalog domowy
+/// CZŁOWIEKA: stąd czytamy `~/.claude.json`, żeby serwery zapisane `claude mcp add --scope
+/// local|user` też trafiły na listę. `workspace` to skanowane repo. `library` to miejsce, do
+/// którego ten import ZAPISZE — i dopiero ono odpowiada na pytanie „czy ja to już mam".
+///
+/// Bez trzeciego argumentu skan nie pytał biblioteki o nic, a odpowiedź na to pytanie padała
+/// dopiero jako odmowa całego zapisu, po nazwie jednego pliku z pięćdziesięciu.
+pub fn scan_setup_inner(
+    personal: &Path,
+    workspace: &Path,
+    library: &Path,
+) -> Result<ImportPreview> {
+    let mut preview = crate::import::translate::preview_with_personal(workspace, personal)?;
+    crate::import::apply::mark_what_the_library_already_has(library, &mut preview.draft);
+    Ok(preview)
 }
 
-/// Jeszcze raz czyta repo i akceptuje z webviewa wyłącznie wybór włączenia znanych połączeń.
-pub fn apply_setup_inner(
+/// Świeży plan tego samego projektu plus to, czego biblioteka już nie potrzebuje.
+///
+/// Osobna funkcja, bo [`apply_setup_inner`] stoi tuż pod sufitem stu linii (clippy) — a te trzy
+/// kroki i tak są jedną rzeczą: przeczytaj repo jeszcze raz, sprawdź, że się nie zmieniło,
+/// i dopisz do planu odpowiedź, której udziela wyłącznie dysk biblioteki.
+fn the_plan_and_what_you_already_have(
     home: &Path,
     personal: &Path,
     request: &ApplySetup,
-) -> Result<ImportReceipt> {
+) -> Result<ImportPreview> {
     /* TEN SAM WIDOK, CO PRZY SCANIE. Gdyby tu stała `preview()` bez twoich zakresów, włączenie
      * `linear-server` wracałoby jako „The import requested a connection that was not in the
      * latest Scan." — czyli odmowa dla pozycji, którą ekran właśnie pokazał. */
@@ -60,6 +77,22 @@ pub fn apply_setup_inner(
     if preview.draft.source_hashes != request.expected_source_hashes {
         return Err(ImportError::Changed);
     }
+    /* CZEGO BIBLIOTEKA JUŻ MA — LICZONE NAD PEŁNYM PLANEM, PRZED PRZYCINANIEM (2026-09-16).
+     *
+     * Ta lista odpowiada na pytanie „czy tę zależność ktoś już wniósł", więc musi powstać, zanim
+     * `keep_selected_outputs` wyrzuci z wektorów pliki odznaczonych pozycji: policzona po tamtym
+     * przycięciu byłaby pusta dokładnie dla tych rzeczy, dla których jest potrzebna. */
+    crate::import::apply::mark_what_the_library_already_has(home, &mut preview.draft);
+    Ok(preview)
+}
+
+/// Jeszcze raz czyta repo i akceptuje z webviewa wyłącznie wybór włączenia znanych połączeń.
+pub fn apply_setup_inner(
+    home: &Path,
+    personal: &Path,
+    request: &ApplySetup,
+) -> Result<ImportReceipt> {
+    let mut preview = the_plan_and_what_you_already_have(home, personal, request)?;
     let requested: BTreeSet<&str> = request
         .enable_connections
         .iter()
@@ -200,6 +233,20 @@ fn apply_with_the_agents_filled_in(
         }
     }
     crate::import::translate::refresh_statuses(draft);
+    /* POŁĄCZENIE, KTÓRE BIBLIOTEKA JUŻ MA, NIE JEST PISANE DRUGI RAZ (2026-09-16).
+     *
+     * Dopiero TUTAJ, po `refresh_statuses`: do tej chwili te wpisy są jedyną drogą, którą agent
+     * wymieniający taki serwer domyka swoją zależność (`translate::the_library_already_has`).
+     *
+     * Odznaczenie ich nie wystarcza i to jest sedno: serwery z `~/.claude.json` zostają w planie
+     * ZAWSZE (`keep_selected_outputs` — ich decyzją jest osobny ptaszek, nie wiersz tabeli), więc
+     * drugi import właściciela wchodził prosto w kolizję na `linear-server.json` i odmawiał
+     * całości. Ptaszek dalej znaczy „daj to agentom" i dalej działa: nazwy zebrał `brought` wyżej,
+     * a plik w bibliotece zostaje taki, jaki człowiek go tam zastał. */
+    let already = draft.already_in_the_library.clone();
+    draft.connections.retain(|connection| {
+        !already.contains(&PathBuf::from("connections").join(format!("{}.json", connection.id)))
+    });
     let mut receipt = crate::import::apply::apply(home, draft)?;
     receipt.filled_agents = filled;
     // Agenci zapisani przed tym importem idą PO przeniesieniu plików: dopiero teraz katalog

@@ -168,7 +168,15 @@ fn a_missing_step_skill_keeps_the_workflow_not_ready() -> Result<(), Box<dyn Err
     assert_eq!(item.status, ImportStatus::MissingDependencies);
     assert!(item.target.is_none());
     assert!(item.dependencies.contains(&format!("skill:{SKILL}")));
-    assert!(item.status_message.contains(&format!("skill:{SKILL}")));
+    /* NAZWA, NIE KLUCZ ZALEŻNOŚCI (2026-09-16). Do tego dnia stało tu `contains("skill:…")`,
+     * czyli asercja wymagająca, żeby klucz z drutu stanął na ekranie — a niezmiennik 14 mówi
+     * odwrotnie i to on wygrywa. Zdanie wiersza ma nazwać brakującą rzecz i ruch, który ją
+     * odblokuje; `dependencies` wyżej dalej pilnuje samego klucza, po tej stronie granicy. */
+    assert!(
+        item.status_message.contains(SKILL) && !item.status_message.contains("skill:"),
+        "the row has to name the missing skill in words a person reads, not by its wire key: {}",
+        item.status_message
+    );
     Ok(())
 }
 

@@ -92,6 +92,14 @@ export interface ImportItem {
    * i nigdy „przejrzano, nic nie ma" — te dwa zdania wolno pomylić dokładnie raz.
    */
   reviewed?: Reviewed;
+  /**
+   * Czy biblioteka ma już wszystkie pliki tej pozycji — lustro `ImportItem::already_here`.
+   *
+   * OPCJONALNE, bo siedem fikstur w `*.test.tsx` opisuje plan sprzed 2026-09-16 i brak klucza
+   * ma tam znaczyć dokładnie to, co znaczył wtedy: „biblioteka tego nie miała". Pytamy więc
+   * o `=== true`, nigdy o `!== false`.
+   */
+  alreadyHere?: boolean;
 }
 
 /** Czego agent ma dotknąć, żeby porównać kopie jednej pozycji.
@@ -145,6 +153,13 @@ export interface ImportPreview {
     agents: Array<{ id: string; name: string }>;
     skills: Array<{ name: string }>;
     connections: ImportedConnection[];
+    /** Pliki, które ten plan by zapisał, a biblioteka już je ma — lustro
+     * `MigrationDraft::already_in_the_library`, ścieżki względem korzenia biblioteki.
+     *
+     * Ekran czyta z tego JEDNĄ rzecz, której nie niesie `alreadyHere` pozycji: połączenia
+     * z `~/.claude.json` nie mają w planie ani jednego wiersza, a to właśnie one startują
+     * zaznaczone. Opcjonalne z tego samego powodu, co `alreadyHere` wyżej. */
+    alreadyInTheLibrary?: string[];
     workflows: Array<{
       id: string;
       name: string;
@@ -235,14 +250,34 @@ const WINDOW =
  * importem. Zaznaczenie trzyma je dziś w planie (`translate::keep_selected_outputs`), ale
  * człowiek nadal nie miał jak się dowiedzieć, na czym one wiszą.
  *
+ * TRZECIE ZDANIE JEST Z 2026-09-16 i ma ten sam incydent, co `alreadyHere` przy pozycji: serwer,
+ * którego plik biblioteka dostała przy pierwszym imporcie, nie jedzie drugi raz. Bez tego napisu
+ * człowiek widzi wyłącznie pusty ptaszek przy własnym połączeniu, które „przecież startuje
+ * zaznaczone" — i nie ma jak się dowiedzieć, że nic nie zginęło.
+ *
  * JEDEN NAPIS, NIE DWA: drugi region na ten sam fakt podniósłby gęstość listy, która ma po
  * jednym wierszu na połączenie (niezmiennik 18). */
-function whereFrom(connection: ImportedConnection): string {
+function whereFrom(connection: ImportedConnection, alreadyHere: boolean): string {
   let who = 'in the project';
   if (connection.origin === 'yours-here') who = 'just you, in this project';
   if (connection.origin === 'yours-everywhere') who = 'just you, everywhere';
   const file = connection.source ?? '';
-  return file === '' ? who : `${who}, from ${file}`;
+  const from = file === '' ? who : `${who}, from ${file}`;
+  return alreadyHere ? `${from} — already in your library, and this import leaves it alone` : from;
+}
+
+/** Gdzie w bibliotece leżałby plik tego połączenia.
+ *
+ * Jedna odpowiedź na cały ekran i jedyne miejsce, w którym ta strona granicy zna tę nazwę;
+ * po tamtej liczy ją `import::apply::would_write`. Połączenia z `~/.claude.json` nie mają
+ * w planie ani jednego wiersza, więc `alreadyHere` pozycji nie umie o nich nic powiedzieć. */
+function connectionFile(connection: ImportedConnection): string {
+  return `connections/${connection.id}.json`;
+}
+
+/** Czy biblioteka ma już plik tego połączenia. */
+function libraryHasConnection(preview: ImportPreview, connection: ImportedConnection): boolean {
+  return (preview.draft.alreadyInTheLibrary ?? []).includes(connectionFile(connection));
 }
 
 const STATUS: Readonly<Record<Compatibility, string>> = {
@@ -281,6 +316,25 @@ const ITEM_STATUS: Readonly<Record<ImportStatus, string>> = {
   unsupported: "Can't be reproduced",
   missing_dependencies: 'Missing dependencies',
 };
+
+/* CO WIDZI CZŁOWIEK, KTÓRY IMPORTUJE TEN SAM PROJEKT DRUGI RAZ (2026-09-16).
+ *
+ * ZGŁOSZENIE WŁAŚCICIELA, Loadout 0.6.2: drugi import urc-monorepo oddał jedno czerwone zdanie
+ * („…already exists. Nothing was imported.") i ani jednego znaku przy wierszach, które przyjechały
+ * przy pierwszym imporcie. Człowiek miał je znaleźć okiem wśród kilkudziesięciu pozycji.
+ *
+ * Status, a nie sam brak ptaszka: pusty ptaszek odpowiada na pytanie „co się stanie", a nie na
+ * pytanie „dlaczego". Bez tego słowa wiersz stał na ekranie jako `Ready` i odznaczony naraz. */
+const ALREADY_HERE = 'Already in your library';
+
+/** Dlaczego tej jednej pozycji nie da się wnieść jeszcze raz — i co z tym zrobić.
+ *
+ * Nadpisania tu nie ma i to jest zmierzone, nie ostrożność: `library::agents::write_agent_file`
+ * bez oczekiwanej rewizji odmawia istniejącemu plikowi, a `apply::commit` przenosi pliki przez
+ * `fs::rename`. Zdanie mówi więc jedyną prawdziwą drogę wyjścia zamiast obiecywać podmianę. */
+const WILL_NOT_REPLACE =
+  'Loadout will not replace the file you already have. Take that file out of your library first ' +
+  'if you want this copy instead.';
 
 function sourceLabel(item: SourceItem): string {
   if (item.source !== undefined) return SOURCES[item.source];
@@ -337,10 +391,29 @@ function SecondOpinion({ said }: { said: Comparison }): ReactElement {
   );
 }
 
+/* TĄ SAMĄ DROGĄ, CO POZYCJE NIEGOTOWE (2026-09-16). Wiersz, którego pliki biblioteka już ma,
+ * wraca ze skanu odznaczony — bo zaznaczony jest prośbą o zapisanie pliku, którego Loadout nie
+ * podmieni, a to kończy się odmową CAŁEGO importu (`apply::preflight`). Powód stoi w wierszu
+ * (`ALREADY_HERE`, `WILL_NOT_REPLACE`), więc odznaczenie niczego nie przemilcza. */
 function typedExcludedIn(preview: ImportPreview): string[] {
-  return preview.draft.items.filter((item) => item.status !== 'ready').map((item) => item.id);
+  return preview.draft.items
+    .filter((item) => item.status !== 'ready' || item.alreadyHere === true)
+    .map((item) => item.id);
 }
 
+/** Pozycje pominięte DLATEGO, że już je masz — osobno od tych, które człowiek odznaczył sam. */
+function alreadyHereAmong(preview: ImportPreview, excludedItems: readonly string[]): string[] {
+  return preview.draft.items
+    .filter((item) => item.alreadyHere === true && excludedItems.includes(item.id))
+    .map((item) => item.id);
+}
+
+/* ODZNACZONE, BO JUŻ JE MASZ, TEŻ DOMYKA ZALEŻNOŚĆ (2026-09-16). Trzy gałęzie niżej pytają
+ * „czy to przyjedzie razem z tym" — a agent nie widzi planu, tylko bibliotekę: umiejętność,
+ * która leży tam od pierwszego importu, jest dla niego obecna. Bez tego wyjątku drugi import
+ * odznaczał umiejętność (bo już ją ma) i zaraz potem liczył jej agenta jako zablokowanego,
+ * czyli wygaszał przycisk Import nad planem, który da się wnieść w całości. Ta sama zasada stoi
+ * po drugiej stronie granicy (`translate::the_library_already_has`). */
 function hasDependency(
   preview: ImportPreview,
   dependency: string,
@@ -354,7 +427,7 @@ function hasDependency(
   if (kind === 'connection') {
     return preview.draft.connections.some(
       (connection) =>
-        enabledConnections.includes(connection.id) &&
+        (enabledConnections.includes(connection.id) || libraryHasConnection(preview, connection)) &&
         (connection.id.toLocaleLowerCase() === name ||
           connection.name.toLocaleLowerCase() === name),
     );
@@ -365,7 +438,7 @@ function hasDependency(
       .filter((item) => item.kind === 'skill')
       .some(
         (item) =>
-          !excludedItems.includes(item.id) &&
+          (!excludedItems.includes(item.id) || item.alreadyHere === true) &&
           (item.target?.toLocaleLowerCase().includes(`/skills/${name}/`) === true ||
             item.target?.toLocaleLowerCase().startsWith(`skills/${name}/`) === true),
       );
@@ -379,7 +452,7 @@ function hasDependency(
       .filter((item) => item.kind === 'agent')
       .some(
         (item) =>
-          !excludedItems.includes(item.id) &&
+          (!excludedItems.includes(item.id) || item.alreadyHere === true) &&
           item.target?.toLocaleLowerCase().startsWith(`agents/${name}`) === true,
       );
     return exists && selected;
@@ -433,7 +506,13 @@ export function yoursAmong(preview: ImportPreview): string[] {
   return preview.draft.connections
     .filter(
       (connection) =>
-        connection.origin === 'yours-here' || connection.origin === 'yours-everywhere',
+        (connection.origin === 'yours-here' || connection.origin === 'yours-everywhere') &&
+        /* CHYBA ŻE BIBLIOTEKA JUŻ TO MA (2026-09-16). Ptaszek postawiony za człowieka przy
+         * połączeniu, którego plik już leży na dysku, nie wnosi niczego — a do tego dnia wnosił
+         * kolizję: serwery z `~/.claude.json` zostają w planie ZAWSZE, więc `linear-server`
+         * i `murmur` wywracały drugi import właściciela, zanim spojrzał na tę listę. Ptaszek
+         * postawiony RĘCZNIE dalej działa i dalej znaczy „daj to agentom". */
+        !libraryHasConnection(preview, connection),
     )
     .map((connection) => connection.id);
 }
@@ -536,6 +615,10 @@ export function ImportSetup({
      przyczynę po imieniu: „N item(s) still need attention" nie mówi, że wystarczy przeczytać. */
   const unread =
     preview === null || !hasTypedItems ? [] : stillUnread(preview, excludedItems, read);
+  /* Ile pozycji zostaje poza importem DLATEGO, że biblioteka już je ma. Osobno od `dropped`
+     i od ptaszka odznaczonego ręcznie: to jedyna z trzech przyczyn, której człowiek nie wybrał. */
+  const alreadyHere =
+    preview === null || !hasTypedItems ? [] : alreadyHereAmong(preview, excludedItems);
   const hasItems = preview !== null && preview.snapshot.items.length > 0;
   const unresolved = preview === null ? [] : unresolvedIn(preview);
   /* Ile pozycji naprawdę zostanie poza importem — liczone z listy pominięć, nie z `unresolved`:
@@ -993,6 +1076,14 @@ export function ImportSetup({
                               <span className="lead block" data-tone="body">
                                 {item.statusMessage}
                               </span>
+                              {/* DLACZEGO TEN WIERSZ NIE WCHODZI, przy nim i po ludzku
+                                  (2026-09-16). Kolumna Status mówi JAKI to stan; to zdanie mówi,
+                                  co się z nim stanie i jaka jest droga wyjścia. Sam pusty ptaszek
+                                  nie mówi ani jednego, ani drugiego — a przez to wyglądał jak
+                                  ekran, który o tym wierszu zapomniał. */}
+                              {item.alreadyHere !== true ? null : (
+                                <span className="lead block">{WILL_NOT_REPLACE}</span>
+                              )}
                               {item.target === null ? null : (
                                 <span className="block font-mono text-meta text-muted">
                                   Target: {item.target}
@@ -1139,7 +1230,7 @@ export function ImportSetup({
                                 : SOURCES[definition.provider]}
                             </td>
                             <td className="px-3 py-2 text-body text-muted">
-                              {ITEM_STATUS[item.status]}
+                              {item.alreadyHere === true ? ALREADY_HERE : ITEM_STATUS[item.status]}
                             </td>
                             <td className="px-3 py-2">
                               <Tick
@@ -1306,7 +1397,9 @@ export function ImportSetup({
                         prywatnej konfiguracji wygląda identycznie jak `context7` z repo.
                         Od 2026-09-16 ten sam napis niesie też plik, w którym serwer jest
                         zadeklarowany — powód w całości stoi przy `whereFrom`. */}
-                    <span className="label">{whereFrom(connection)}</span>
+                    <span className="label">
+                      {whereFrom(connection, libraryHasConnection(preview, connection))}
+                    </span>
                   </Tick>
                 ))}
                 {/* CO TE PTASZKI ZROBIĄ AGENTOM, powiedziane PRZED zatwierdzeniem
@@ -1370,7 +1463,7 @@ export function ImportSetup({
                           : `${String(blocked)} item(s) still need attention.`
                         : `${String(blocked)} item(s) need a choice. Tick Skip to leave them out.`
                       : hasTypedItems
-                        ? readySays(excludedItems.length, dropped.length)
+                        ? readySays(excludedItems.length, dropped.length, alreadyHere.length)
                         : leftOut === 0
                           ? 'Ready to import.'
                           : `Ready to import. ${String(leftOut)} item(s) will be left out.`}
