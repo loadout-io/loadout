@@ -1,6 +1,6 @@
 [package]
 name = "loadout"
-version = "0.6.2"
+version = "0.6.3"
 description = "Build and run graphs of coding agents"
 edition.workspace = true
 rust-version.workspace = true
